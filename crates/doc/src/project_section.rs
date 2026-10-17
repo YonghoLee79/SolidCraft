@@ -15,17 +15,29 @@ use solidcraft_geom::{Mesh, Plane, Vec2};
 
 /// Faces' curves in one cut at most, and points in one spline at most.
 const MAX_PIECES: usize = 100_000;
-const MAX_SPLINE_POINTS: usize = 2000;
+const MAX_SPLINE_POINTS: usize = 500;
 
 /// One curve of a section loop, in the plane's frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SectionSeg {
-    Line { a: Vec2, b: Vec2 },
+    Line {
+        a: Vec2,
+        b: Vec2,
+    },
     /// Around `c` with radius `r`, from the angle `start` through `sweep` (counter-clockwise
     /// when positive; a whole circle when it is ±2π).
-    Arc { c: Vec2, r: f64, start: f64, sweep: f64 },
-    /// A fit spline through `pts` (the sketch's interpolating cubic, closed when `periodic`).
-    Spline { pts: Vec<Vec2>, periodic: bool },
+    Arc {
+        c: Vec2,
+        r: f64,
+        start: f64,
+        sweep: f64,
+    },
+    /// A fit spline through `pts` (the sketch's interpolating cubic; when `periodic`, closed
+    /// and C2 all round, the last point repeating the first).
+    Spline {
+        pts: Vec<Vec2>,
+        periodic: bool,
+    },
 }
 
 impl SectionSeg {
@@ -41,7 +53,7 @@ impl SectionSeg {
         match self {
             SectionSeg::Line { b, .. } => *b,
             SectionSeg::Arc { c, r, start, sweep } => *c + Vec2::from_angle(*start + *sweep) * *r,
-            SectionSeg::Spline { pts, periodic } => if *periodic { pts.first() } else { pts.last() }.copied().unwrap_or_default(),
+            SectionSeg::Spline { pts, .. } => pts.last().copied().unwrap_or_default(),
         }
     }
 
@@ -50,16 +62,28 @@ impl SectionSeg {
             SectionSeg::Line { a, b } => SectionSeg::Line { a: b, b: a },
             SectionSeg::Arc { c, r, start, sweep } => SectionSeg::Arc { c, r, start: start + sweep, sweep: -sweep },
             SectionSeg::Spline { mut pts, periodic } => {
-                if periodic {
-                    // Same first point, the other way round.
-                    if let Some(rest) = pts.get_mut(1..) {
-                        rest.reverse();
-                    }
-                } else {
-                    pts.reverse();
-                }
+                pts.reverse();
                 SectionSeg::Spline { pts, periodic }
             }
+        }
+    }
+
+    /// A spline made periodic: its last point (when it is within reach of the first) becomes
+    /// the first exactly, or the first is repeated.
+    fn closed(self, closed: bool) -> SectionSeg {
+        match self {
+            SectionSeg::Spline { mut pts, periodic: false } if closed => {
+                let (Some(first), Some(last)) = (pts.first().copied(), pts.last().copied()) else {
+                    return SectionSeg::Spline { pts, periodic: false };
+                };
+                let span = pts.windows(2).map(|w| w.first().zip(w.get(1)).map_or(0.0, |(a, b)| a.dist(*b))).fold(0.0, f64::max);
+                if last.dist(first) <= span * 1e-6 {
+                    pts.pop();
+                }
+                pts.push(first);
+                SectionSeg::Spline { periodic: pts.len() >= 4, pts }
+            }
+            other => other,
         }
     }
 
@@ -159,7 +183,8 @@ pub fn section_loops(plane: &Plane, m: &Mesh) -> Vec<SectionLoop> {
             }
         }
     }
-    let mut loops: Vec<SectionLoop> = join(pieces).into_iter().map(|(closed, segs)| SectionLoop { closed, segments: merge(segs, closed, size), area: None }).collect();
+    let mut loops: Vec<SectionLoop> =
+        join(pieces).into_iter().map(|(closed, segs)| SectionLoop { closed, segments: merge(segs, closed, size), area: None }).collect();
     orient(&mut loops);
     loops
 }
@@ -249,7 +274,7 @@ fn classify(chain: &[Vec2], closed: bool, exact: &BTreeSet<Key>, key: &dyn Fn(Ve
     } else {
         chain.to_vec()
     };
-    if closed && pts.len() > 1 && pts.first().zip(pts.last()).is_some_and(|(a, b)| a.dist(*b) <= tight) {
+    if closed && pts.len() > 1 && pts.first().zip(pts.last()).is_some_and(|(a, b)| a.dist(*b) <= tight * 10.0) {
         pts.pop();
     }
     pts.dedup_by(|a, b| a.dist(*b) <= tight * 10.0);
@@ -265,7 +290,7 @@ fn classify(chain: &[Vec2], closed: bool, exact: &BTreeSet<Key>, key: &dyn Fn(Ve
         0 | 1 => None,
         2 if !closed => Some(SectionSeg::Line { a: first, b: last }),
         n if closed && n < 3 => None,
-        _ => Some(SectionSeg::Spline { pts, periodic: closed }),
+        _ => Some(SectionSeg::Spline { pts, periodic: false }.closed(closed)),
     }
 }
 
@@ -347,10 +372,7 @@ fn merge(segs: Vec<SectionSeg>, closed: bool, size: f64) -> Vec<SectionSeg> {
     if closed && let [only] = &mut out[..] {
         match only {
             SectionSeg::Arc { sweep, .. } if (sweep.abs() - TAU).abs() < 1e-6 => *sweep = TAU.copysign(*sweep),
-            SectionSeg::Spline { pts, periodic } if !*periodic && pts.len() > 3 => {
-                pts.pop();
-                *periodic = true;
-            }
+            SectionSeg::Spline { .. } => *only = std::mem::replace(only, SectionSeg::Line { a: Vec2::ZERO, b: Vec2::ZERO }).closed(true),
             _ => {}
         }
     }
@@ -366,8 +388,12 @@ fn joined(a: &SectionSeg, b: &SectionSeg, tight: f64) -> Option<SectionSeg> {
         }
         (SectionSeg::Arc { c, r, start, sweep }, SectionSeg::Arc { c: c2, r: r2, sweep: s2, .. }) => {
             let total = sweep + s2;
-            (c.dist(*c2) <= tight && (r - r2).abs() <= tight && sweep * s2 > 0.0 && total.abs() <= TAU + 1e-6)
-                .then_some(SectionSeg::Arc { c: *c, r: *r, start: *start, sweep: total.clamp(-TAU, TAU) })
+            (c.dist(*c2) <= tight && (r - r2).abs() <= tight && sweep * s2 > 0.0 && total.abs() <= TAU + 1e-6).then_some(SectionSeg::Arc {
+                c: *c,
+                r: *r,
+                start: *start,
+                sweep: total.clamp(-TAU, TAU),
+            })
         }
         (SectionSeg::Spline { pts: p, periodic: false }, SectionSeg::Spline { pts: q, periodic: false }) => {
             // Smooth when the turn across the joint is no sharper than the turns beside it.

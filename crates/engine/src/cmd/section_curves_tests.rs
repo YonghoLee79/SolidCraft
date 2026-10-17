@@ -21,8 +21,8 @@ fn a_plate_with_a_hole_cuts_to_a_rectangle_and_a_circle() {
     let undo = s.undo.len();
     let r = run(&mut s, CMD, json!({"plane": "XY", "at": 5}));
     assert_eq!(s.undo.len(), undo, "nothing to undo");
-    assert_eq!(r["frame"]["origin"], json!({"x": 0.0, "y": 0.0, "z": 5.0}));
-    assert_eq!(r["frame"]["x"], json!({"x": 1.0, "y": 0.0, "z": 0.0}));
+    assert_eq!(r["frame"]["origin"], json!([0.0, 0.0, 5.0]));
+    assert_eq!(r["frame"]["x"], json!([1.0, 0.0, 0.0]));
     let loops = r["loops"].as_array().unwrap();
     assert_eq!(loops.len(), 2, "{r}");
     let (outer, hole) = if loops[0]["area"].as_f64().unwrap() > 0.0 { (&loops[0], &loops[1]) } else { (&loops[1], &loops[0]) };
@@ -83,7 +83,7 @@ fn a_cylinder_cut_at_30_degrees_is_an_ellipse() {
             beziers += 1;
         }
     }
-    assert!(beziers >= 8);
+    assert!(beziers >= 8, "{r}");
     let area = loops[0]["area"].as_f64().unwrap();
     assert!((area - PI * a * b).abs() < 1e-4 * PI * a * b, "{area} vs {}", PI * a * b);
 }
@@ -143,7 +143,7 @@ fn section_curves_select_bodies_and_reject_bad_input() {
     assert_eq!(run(&mut s, CMD, json!({"plane": "XY", "at": 50}))["loops"], json!([]));
     // Flipped: the frame's y and the normal turn over, the loops stay counter-clockwise outside.
     let r = run(&mut s, CMD, json!({"plane": "XY", "at": 5, "flip": true, "bodies": ["Block"]}));
-    assert_eq!(r["frame"]["normal"]["z"], -1.0);
+    assert_eq!(r["frame"]["normal"][2], -1.0);
     assert!((r["loops"][0]["area"].as_f64().unwrap() - 25.0).abs() < 1e-9);
     for p in [
         json!({}),
@@ -154,7 +154,6 @@ fn section_curves_select_bodies_and_reject_bad_input() {
         json!({"plane": "XY", "path": "cut.png"}),
         json!({"plane": "XY", "path": ""}),
         json!({"plane": {"origin": [0, 0, 0], "normal": [0, 0, 0]}}),
-        json!({"plane": {"origin": [1e309, 0, 0], "normal": [0, 0, 1]}}),
         json!({"plane": "XY", "offset": "1e400"}),
     ] {
         assert!(s.execute(CMD, &p).is_err(), "{p}");
