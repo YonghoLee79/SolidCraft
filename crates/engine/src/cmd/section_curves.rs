@@ -136,7 +136,8 @@ fn svg(cut: &[(String, Vec<SectionLoop>)]) -> String {
     let (lo, hi) = if lo.is_finite() && hi.is_finite() { (lo, hi) } else { (Vec2::ZERO, Vec2::ZERO) };
     let margin = ((hi.x - lo.x).max(hi.y - lo.y) * 0.05).max(1.0);
     let (w, h) = (hi.x - lo.x + 2.0 * margin, hi.y - lo.y + 2.0 * margin);
-    let f = |v: f64| format!("{:.6}", v).trim_end_matches('0').trim_end_matches('.').to_string();
+    // Six decimals, no trailing zeros, and no "-0".
+    let f = |v: f64| format!("{:.6}", (v * 1e6).round() / 1e6 + 0.0).trim_end_matches('0').trim_end_matches('.').to_string();
     let xy = |p: Vec2| format!("{} {}", f(p.x), f(-p.y));
     let mut o = String::new();
     let _ = writeln!(o, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
