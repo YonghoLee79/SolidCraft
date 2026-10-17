@@ -3408,6 +3408,11 @@ fn whole_face_tool(
     if !matches!(operation, Operation::Join | Operation::Cut) || hi - lo <= 0.0 {
         return None;
     }
+    // An outline of lines and arcs is the face's own: the profile's tool already meets the body
+    // exactly, and keeps the names later features attach to (#489).
+    if r.outer.segs.iter().all(|s| matches!(s, solidcraft_geom::Seg2::Line { .. } | solidcraft_geom::Seg2::Arc { .. })) {
+        return None;
+    }
     let mut candidates = st.bodies.iter().filter(|b| targets.is_empty() || targets.contains(&b.name));
     let target = candidates.next()?;
     if candidates.next().is_some() {

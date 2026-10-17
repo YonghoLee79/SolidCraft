@@ -271,7 +271,7 @@ pub fn cut_tool(target: &Body, face: WholeFace, depth: f64, built: Option<&Body>
             .filter(|(d, _)| *d <= tol)
             .map(|(_, w)| w)
     };
-    let edges: Vec<(mt::Edge, Wall)> = wire.edge_iter().map(|e| wall_of(&e).map(|w| (e.clone(), w))).collect::<Option<_>>()?;
+    let edges: Vec<(mt::Edge, Wall)> = wire.edge_iter().map(|e| wall_of(e).map(|w| (e.clone(), w))).collect::<Option<_>>()?;
     // Start at a cutting edge that follows a touching one.
     let k = edges.len();
     let start =
