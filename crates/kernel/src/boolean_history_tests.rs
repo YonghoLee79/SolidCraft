@@ -449,6 +449,35 @@ fn coalesced_stepped_walls() {
     }
 }
 
+/// A join's cylindrical wall, sewn as one face across the slabs the join sliced it into
+/// (#1986): it carries the provenance of the operand wall it is, so a feature that picked that
+/// wall still resolves to it after the design is built again. A straight wall left split slab
+/// by slab is put back together by the coplanar healing after the boolean; a cylindrical one is
+/// not, so a join used to leave one cylinder as a stack of co-cylindrical faces.
+#[test]
+fn a_joins_coalesced_cylindrical_wall_comes_from_the_operands_wall() {
+    use solidcraft_geom::{Loop2, Plane, Region2, Vec2};
+    let disc = |r: f64, z0: f64, z1: f64| {
+        crate::extrude(&Plane::XY, &[Region2 { outer: Loop2::circle(Vec2::ZERO, r), holes: vec![] }], z0, z1).unwrap().pop().unwrap()
+    };
+    // A column with a narrower one standing on its top half: the levels are 0, 10 and 30, so the
+    // wide wall is the same arc in the first two slabs.
+    let (wide, narrow) = (disc(10.0, 0.0, 20.0), disc(6.0, 10.0, 30.0));
+    let r = boolean(&wide, &narrow, BoolOp::Union).unwrap().unwrap();
+    let h = verified(&r, &[&wide, &narrow], 0.01);
+    let walls: Vec<usize> = (0..r.face_count())
+        .filter(|i| matches!(crate::face_surface(&r, *i), Some(crate::FaceSurface::Cylinder { radius, .. }) if (radius - 10.0).abs() < 1e-6))
+        .collect();
+    // The wide column's wall is the one cylinder it is - two faces across its seam, not the
+    // four of a wall per slab - and each piece of it is that operand's own wall, so a feature
+    // that picked the wall finds it again.
+    assert_eq!(walls.len(), 2, "the wide wall is one cylinder across both slabs: {}", show(h));
+    for i in walls {
+        assert!(matches!(h.faces[i].origins.as_slice(), [FaceOrigin::Face { operand: 0, .. }]), "{}", show(h));
+        assert_eq!(h.faces[i].change, Change::Modified, "{}", show(h));
+    }
+}
+
 /// A step cut into a box: the stepped prism path sews the box's face 3 in pieces at the
 /// slab stations, and the joining of generated walls on their common supports makes it one face
 /// again; the joined body keeps the sewn body's history composed through the join. A certified
