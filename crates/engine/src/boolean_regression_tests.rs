@@ -1150,3 +1150,28 @@ fn joined_loft_frames_reference_mesh_covers_each_face_once() {
         }
     }
 }
+
+/// The block of #2040 with `extra` run after it.
+fn rounded_block_and(extra: Value) -> Session {
+    let mut script: Value = serde_json::from_str(include_str!("../../../examples/regressions/extrude_face_rounded_by_fillets.json")).unwrap();
+    script["commands"].as_array_mut().unwrap().push(extra);
+    replay(&script.to_string())
+}
+
+/// #2040: the slanted face of a block whose ends fillets round, extruded as a join. Its outline's
+/// quarter-ellipses come into the face's sketch as splines a hair off the body's edges, and the
+/// join failed with "boolean Union: no result"; it now sweeps the body's own face. It adds the
+/// face's area times its height: a 10 x 12 face less four corners of (1 - pi/4) r * r*sqrt(2).
+#[test]
+fn extrude_join_from_a_face_rounded_by_fillets() {
+    let at = json!([16.191269086108846, -6.702792508916929, 4.676550460347439]);
+    let before = volume(&replay(include_str!("../../../examples/regressions/extrude_face_rounded_by_fillets.json")), "Body1");
+    let r = 3.8_f64;
+    let area = 10.0 * 12.0 - 4.0 * (1.0 - std::f64::consts::FRAC_PI_4) * r * r * 2f64.sqrt();
+    let joined = rounded_block_and(json!({"command": "solid.extrude", "params": {"face": at, "distance": 5, "operation": "join"}}));
+    let bodies = &joined.model.state().bodies;
+    assert_eq!(bodies.len(), 1, "the join makes no second body");
+    assert!(bodies[0].body.validity().is_empty(), "{:?}", bodies[0].body.validity());
+    let v = volume(&joined, "Body1");
+    assert!((v - (before + area * 5.0)).abs() < 0.05, "join {v} expected {}", before + area * 5.0);
+}
