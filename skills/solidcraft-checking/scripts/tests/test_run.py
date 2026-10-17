@@ -83,40 +83,38 @@ def test_execute_raises_on_failure():
 
 @pytest.fixture
 def flush_design(tmp_path):
-    """A cut 10 mm deep into a 12 mm plate; at depth 13 mm its tapered end lies on the plate top."""
-    design = tmp_path / "plate.json"
+    """A shelled case with a joined standoff and a cut pilot hole; Pilot warns tool displacement."""
+    design = tmp_path / "standoff.json"
     built = report(tmp_path, [
-        {"command": "parameters.add", "params": {"name": "depth", "expression": "10 mm"}},
-        {"command": "sketch.create", "params": {"plane": "XY", "name": "Plate sketch"}},
-        {"command": "sketch.rectangle.center", "params": {"center": [0, 0], "corner": [40, 40]}},
-        {"command": "sketch.finish", "params": {}},
-        {"command": "solid.extrude", "params": {"sketch": "Plate sketch", "distance": "12 mm", "body_name": "P"}},
-        {"command": "sketch.create", "params": {"plane": "XY", "offset": "-1 mm", "name": "Cut sketch"}},
-        {"command": "sketch.circle.center", "params": {"center": [5, 5], "diameter": 20}},
-        {"command": "sketch.finish", "params": {}},
-        {"command": "solid.extrude", "params": {"sketch": "Cut sketch", "distance": "depth", "taper": "10 deg",
-                                                "operation": "cut", "targets": ["P"], "name": "Cut"}},
+        {"command": "parameters.add", "params": {"name": "h", "expression": "5 mm"}},
+        {"command": "solid.box", "params": {"length": 91, "width": 62, "height": 30, "center": [0, 0, 15], "body_name": "Case"}},
+        {"command": "solid.fillet", "params": {"edges": [[45.5, 31, 15], [-45.5, 31, 15], [45.5, -31, 15], [-45.5, -31, 15]], "radius": 3}},
+        {"command": "solid.shell", "params": {"faces": [[0, 0, 30]], "thickness": 2}},
+        {"command": "solid.fillet", "params": {"edges": [[0, -31, 30]], "radius": 1}},
+        {"command": "solid.cylinder", "params": {"diameter": "6 mm", "height": "h", "base": [-39, -24.5, 2], "operation": "join", "targets": ["Case"], "name": "Standoff"}},
+        {"command": "solid.cylinder", "params": {"diameter": "2.5 mm", "height": "h", "base": [-39, -24.5, 2], "operation": "cut", "targets": ["Case"], "name": "Pilot"}},
     ], "--save", design)
-    assert built.returncode == 0 and "WARN" not in built.stdout, built.stdout + built.stderr
+    assert built.returncode == 0, built.stdout + built.stderr
     return design
 
 
 def depth(value: str) -> dict:
-    return {"command": "parameters.change", "params": {"name": "depth", "expression": value}}
+    return {"command": "parameters.change", "params": {"name": "h", "expression": value}}
 
 
 def test_reports_warnings_after_a_parameter_change(tmp_path, flush_design):
-    flush = report(tmp_path, [depth("13 mm")], "--in", flush_design)
+    flush = report(tmp_path, [depth("7 mm")], "--in", flush_design)
     assert flush.returncode == 0, flush.stderr
-    assert "BODY P: volume" in flush.stdout
+    assert 'WARN "Pilot": Boolean retry' in flush.stdout
 
 
 def test_reports_every_inspection_in_the_script(tmp_path, flush_design):
-    walk = report(tmp_path, [depth("13 mm"), {"command": "document.inspect", "params": {"measure": True}},
-                             depth("10 mm")], "--in", flush_design)
+    walk = report(tmp_path, [depth("7 mm"), {"command": "document.inspect", "params": {"measure": True}},
+                             depth("5 mm")], "--in", flush_design)
     lines = walk.stdout.splitlines()
-    assert any(line.startswith("step 2 BODY P: volume") for line in lines)
-    assert not any(line.startswith("WARN") for line in lines)
+    assert any(line.startswith('step 2 WARN "Pilot": Boolean retry') for line in lines)
+    assert any(line.startswith("step 2 BODY Case: volume") for line in lines)
+    assert any(line.startswith('WARN "Pilot": Boolean retry') for line in lines)
 
 
 def test_reports_bodies_inspected_without_measurements(tmp_path):

@@ -412,3 +412,12 @@ def test_a_ring_profile_builds_the_same_standoffs_exactly(height):
     assert warned == {}
 
 
+def test_a_sunk_join_on_a_shelled_floor_does_not_warn():
+    warned = warnings([
+        *SHELLED_CASE,
+        cmd("solid.cylinder", diameter="6 mm", height="h + 1 mm", base=["-39 mm", "-24.5 mm", "1 mm"], operation="join",
+            targets=["Case"], name="Standoff"),
+    ])
+    assert warned == []
+
+
