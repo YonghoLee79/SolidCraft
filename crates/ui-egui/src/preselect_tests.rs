@@ -2111,3 +2111,58 @@ fn convert_mesh_asks_for_the_body_and_converts_the_selected_one() {
     let state = h.app.session.model.state();
     assert!(!state.body("Mesh").unwrap().body.is_mesh(), "rebuilt as faces");
 }
+
+#[test]
+fn plane_at_angle_rotates_about_a_straight_edge() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length": 40, "width": 30, "height": 20, "body_name": "Box"})).unwrap();
+    h.app.start("construct.plane.at_angle");
+    h.frames(2);
+    let d = h.app.dialog.as_ref().unwrap();
+    assert!(matches!(d.kind, Kind::AnglePlane { .. }));
+    assert_ne!(d.inputs[1].accept & crate::selection::EDGES, 0, "Axis input must accept edges");
+
+    h.app.dialog.as_mut().unwrap().inputs[0].items = vec![Sel::Plane { name: "XY".into() }];
+
+    let mesh = h.app.session.world_state().body("Box").unwrap().mesh();
+    let edge_idx = mesh
+        .edges
+        .iter()
+        .position(|e| {
+            let (a, b) = (e.first().unwrap(), e.last().unwrap());
+            (a.z - 20.0).abs() < 1e-6 && (b.z - 20.0).abs() < 1e-6 && (a.y - 0.0).abs() < 1e-6 && (b.y - 0.0).abs() < 1e-6
+        })
+        .expect("top front edge");
+
+    h.app.dialog.as_mut().unwrap().inputs[1].items = vec![Sel::Edge { body: "Box".into(), index: edge_idx, point: Vec3::new(20.0, 0.0, 20.0) }];
+
+    h.step(&json!({"click":{"handle":"dialog:OK"}})).unwrap();
+    h.frames(2);
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog.as_ref().and_then(|d| d.error.clone()));
+
+    let (_, _, pl) = solidcraft_engine::view::construction_planes(&h.app.session).into_iter().next().expect("the construction plane");
+    let half = 1.0_f64 / 2.0_f64.sqrt();
+    assert!(pl.origin.x.abs() < 1e-6, "{pl:?}");
+    assert!((pl.origin.y - 20.0 * half).abs() < 1e-6, "{pl:?}");
+    assert!((pl.origin.z - (20.0 - 20.0 * half)).abs() < 1e-6, "{pl:?}");
+    assert!((pl.normal().y - (-half)).abs() < 1e-6, "{pl:?}");
+    assert!((pl.normal().z - half).abs() < 1e-6, "{pl:?}");
+}
+
+#[test]
+fn plane_at_angle_refuses_curved_edge_as_axis() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.cylinder", json!({"radius": 15, "height": 30, "body_name": "Cyl"})).unwrap();
+    h.app.start("construct.plane.at_angle");
+    h.frames(2);
+
+    h.app.dialog.as_mut().unwrap().inputs[0].items = vec![Sel::Plane { name: "XY".into() }];
+
+    let mesh = h.app.session.world_state().body("Cyl").unwrap().mesh();
+    let edge_idx = mesh.edges.iter().position(|e| e.iter().all(|p| (p.z - 30.0).abs() < 1e-6)).expect("cylinder rim edge");
+
+    h.app.dialog.as_mut().unwrap().inputs[1].items = vec![Sel::Edge { body: "Cyl".into(), index: edge_idx, point: mesh.edges[edge_idx][0] }];
+
+    let err = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap_err();
+    assert!(err.contains("straight edge"), "{err}");
+}
