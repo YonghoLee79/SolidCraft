@@ -3393,7 +3393,9 @@ struct ExtrudeConstructor {
 /// and the boolean fails there. A join takes the body's own face swept instead, which is sewn on
 /// along it. A cut whose walls take nothing from the body (all of it within the depth lies over
 /// the face) takes a slab beyond the depth plane instead, which meets the body only across that
-/// plane. `None` (the profile's own tool) otherwise. With the interval along the normal it spans.
+/// plane; one whose walls cut into the body at some edges keeps those walls, exactly, and moves
+/// the others off it (`kernel::cut_tool`). `None` (the profile's own tool) otherwise. With the
+/// interval along the normal it spans.
 fn whole_face_tool(
     st: &ModelState,
     targets: &[String],
@@ -3430,7 +3432,15 @@ fn whole_face_tool(
             kernel::can_join_touching_faces(&target.body, &exact).then(|| (roles(r).tool(exact, Some(&built.body)), (lo, hi)))
         }
         // Into the body from the face, its walls touching it at most.
-        Operation::Cut if ((up && at_hi) || (!up && at_lo)) && kernel::cut_takes_only_the_face(&target.body, face, hi - lo) => {
+        Operation::Cut if ((up && at_hi) || (!up && at_lo)) && !kernel::cut_takes_only_the_face(&target.body, face, hi - lo) => {
+            // Some walls go into the body: those that only touch it are moved off.
+            let built = centered_extrude(&ss.plane, r, lo, hi, Some(ss)).ok()?;
+            let [built] = built.as_slice() else { return None };
+            let (tool, off) = kernel::cut_tool(&target.body, face, hi - lo, Some(&built.body))?;
+            let span = if up { (lo, hi + off) } else { (lo - off, hi) };
+            Some((roles(r).tool(tool, Some(&built.body)), span))
+        }
+        Operation::Cut if (up && at_hi) || (!up && at_lo) => {
             // Over the whole body, from the depth plane out past it.
             let reach = target.body.size() * 2.0 + (hi - lo);
             let c = r.outer.centroid();
