@@ -55,14 +55,18 @@ impl Turn {
 pub(crate) struct Rules {
     pub tol: f64,
     pub max_len: f64,
+    /// The body's extent (see [`extent`]); 0 when it has none. Tolerances that measure the
+    /// body's own geometry rather than the mesh are fractions of it.
+    pub extent: f64,
     pub turn: Option<Turn>,
 }
 
 impl Rules {
     /// Rules for a body of extent `extent` (see [`extent`]).
     pub(crate) fn new(tol: f64, extent: f64, turn: Option<Turn>) -> Rules {
-        let max_len = if extent.is_finite() && extent > 0.0 { extent * MAX_LEN_FRACTION } else { f64::INFINITY };
-        Rules { tol, max_len: max_len.max(tol), turn }
+        let sound = extent.is_finite() && extent > 0.0;
+        let max_len = if sound { extent * MAX_LEN_FRACTION } else { f64::INFINITY };
+        Rules { tol, max_len: max_len.max(tol), extent: if sound { extent } else { 0.0 }, turn }
     }
 
     /// The side length for a curvature `k` (1/mm): the chord sags at most the tolerance across
