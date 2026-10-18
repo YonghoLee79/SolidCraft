@@ -159,3 +159,104 @@ fn section_curves_select_bodies_and_reject_bad_input() {
         assert!(s.execute(CMD, &p).is_err(), "{p}");
     }
 }
+
+fn closed_areas(r: &Value) -> Vec<f64> {
+    r["loops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            assert_eq!(l["closed"], true, "{r}");
+            l["area"].as_f64().unwrap()
+        })
+        .collect()
+}
+
+fn types(l: &Value) -> Vec<String> {
+    l["segments"].as_array().unwrap().iter().map(|g| g["type"].as_str().unwrap().to_string()).collect()
+}
+
+/// A torus cut just off its equator is two large closed splines: capped at the spline's point
+/// limit (they came out empty, with area 0, before), and written to SVG and DXF.
+#[test]
+fn a_large_closed_spline_keeps_its_points_and_area() {
+    let mut s = Session::default();
+    run(&mut s, "solid.torus", json!({"major": 40, "minor": 10, "body_name": "Ring"}));
+    let dir = std::env::temp_dir().join(format!("solidcraft-section-torus-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let svg = dir.join("cut.svg");
+    let r = run(&mut s, CMD, json!({"plane": "XY", "at": 0.1, "tolerance": 0.001, "path": svg.to_string_lossy()}));
+    let areas = closed_areas(&r);
+    assert_eq!(areas.len(), 2, "{r}");
+    let half = (100.0f64 - 0.01).sqrt();
+    let (outer, inner) = (PI * (40.0 + half).powi(2), PI * (40.0 - half).powi(2));
+    let total: f64 = areas.iter().sum();
+    assert!((total - (outer - inner)).abs() < 1e-3 * (outer - inner), "{areas:?}");
+    for l in r["loops"].as_array().unwrap() {
+        for g in l["segments"].as_array().unwrap() {
+            if g["type"] == "spline" {
+                assert!(g["points"].as_array().unwrap().len() <= 500, "{g}");
+                assert!(!g["beziers"].as_array().unwrap().is_empty(), "{g}");
+            }
+        }
+    }
+    let text = std::fs::read_to_string(&svg).unwrap();
+    assert!(text.matches(" C ").count() >= 8, "{text}");
+    let dxf = dir.join("cut.dxf");
+    run(&mut s, CMD, json!({"plane": "XY", "at": 0.1, "tolerance": 0.001, "path": dxf.to_string_lossy()}));
+    let text = std::fs::read_to_string(&dxf).unwrap().replace("\r\n", "\n");
+    assert!(text.matches("\nSPLINE\n").count() + text.matches("\nCIRCLE\n").count() >= 2, "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A plane on a body's face cuts it along that face's outline: a closed loop, not fragments.
+#[test]
+fn a_plane_on_a_face_cuts_along_its_outline() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 20, "height": 10, "body_name": "Plate"}));
+    for at in [10.0, 0.0] {
+        let r = run(&mut s, CMD, json!({"plane": "XY", "at": at}));
+        assert_eq!(closed_areas(&r).len(), 1, "z = {at}: {r}");
+        assert!((closed_areas(&r)[0] - 800.0).abs() < 1e-9, "z = {at}: {r}");
+        assert_eq!(types(&r["loops"][0]), ["line"; 4], "z = {at}: {r}");
+    }
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": 10, "height": 40, "body_name": "Rod"}));
+    for at in [40.0, 0.0] {
+        let r = run(&mut s, CMD, json!({"plane": "XY", "at": at}));
+        assert_eq!(closed_areas(&r).len(), 1, "z = {at}: {r}");
+        assert!((closed_areas(&r)[0] - 100.0 * PI).abs() < 1e-6, "z = {at}: {r}");
+        assert_eq!(types(&r["loops"][0]), ["arc"], "z = {at}: {r}");
+    }
+}
+
+/// A plane through a cone's apex and its axis: a triangle, base line included.
+#[test]
+fn a_plane_through_a_cones_apex_keeps_its_base() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XZ"}));
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [10, 0], [0, -20]], "closed": true}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.revolve", json!({"axis": "Z", "body_name": "Cone"}));
+    let r = run(&mut s, CMD, json!({"plane": "XZ"}));
+    let areas = closed_areas(&r);
+    assert_eq!(areas.len(), 1, "{r}");
+    assert!((areas[0] - 200.0).abs() < 1e-6, "{r}");
+    assert_eq!(types(&r["loops"][0]), ["line"; 3], "{r}");
+}
+
+/// A cylinder cut through its axis (the section through a hole) has straight sides, whether
+/// the plane runs through the mesh's vertices or between them.
+#[test]
+fn a_cylinder_cut_through_its_axis_has_straight_sides() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": 10, "height": 40, "base": [20, 10, 0], "body_name": "Rod"}));
+    for deg in [0.0f64, 7.0, 45.0] {
+        let (sin, cos) = (deg.to_radians().sin(), deg.to_radians().cos());
+        let r = run(&mut s, CMD, json!({"plane": {"origin": [20, 10, 20], "normal": [sin, cos, 0]}}));
+        let areas = closed_areas(&r);
+        assert_eq!(areas.len(), 1, "{deg}°: {r}");
+        assert!((areas[0] - 800.0).abs() < 1e-4, "{deg}°: {r}");
+        assert_eq!(types(&r["loops"][0]), ["line"; 4], "{deg}°: {r}");
+    }
+}

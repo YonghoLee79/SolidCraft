@@ -61,11 +61,13 @@ pub(super) fn section_curves(s: &mut Session, p: &Value) -> Result<Value> {
             .flat_map(|x| [bounds.min.y, bounds.max.y].map(|y| (*x, y)))
             .flat_map(|(x, y)| [bounds.min.z, bounds.max.z].map(|z| plane.height(solidcraft_geom::Vec3::new(x, y, z))))
             .collect::<Vec<_>>();
-        if bounds.is_empty() || heights.iter().all(|h| *h > 0.0) || heights.iter().all(|h| *h < 0.0) {
+        // A plane on a face (within rounding) still cuts the body there.
+        let on = bounds.diagonal() * 1e-9;
+        if bounds.is_empty() || heights.iter().all(|h| *h > on) || heights.iter().all(|h| *h < -on) {
             continue;
         }
         let mesh = b.body.reference_display_mesh_angular(tolerance, solidcraft_kernel::DISPLAY_ANGLE)?;
-        let loops = section_loops(&plane, &mesh);
+        let loops = section_loops(&plane, &mesh)?;
         if !loops.is_empty() {
             cut.push((b.name.clone(), loops));
         }
@@ -110,7 +112,7 @@ fn seg_json(s: &SectionSeg) -> Value {
         SectionSeg::Arc { c, r, sweep, .. } => {
             json!({"type": "arc", "center": pt(*c), "radius": r, "start": pt(s.start()), "end": pt(s.end()), "sweep_deg": sweep.to_degrees()})
         }
-        SectionSeg::Spline { pts, periodic } => json!({
+        SectionSeg::Spline { pts, periodic, .. } => json!({
             "type": "spline",
             "closed": periodic,
             "points": pts.iter().map(|p| pt(*p)).collect::<Vec<_>>(),
@@ -172,7 +174,7 @@ fn svg(cut: &[(String, Vec<SectionLoop>)]) -> String {
                         }
                     }
                     SectionSeg::Spline { .. } => {
-                        for [_, p1, p2, p3] in s.beziers() {
+                        for &[_, p1, p2, p3] in s.beziers() {
                             let _ = write!(d, " C {} {} {}", xy(p1), xy(p2), xy(p3));
                         }
                     }

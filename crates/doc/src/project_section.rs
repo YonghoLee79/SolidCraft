@@ -13,6 +13,8 @@ use std::f64::consts::TAU;
 
 use solidcraft_geom::{Mesh, Plane, Vec2};
 
+use crate::{DocError, Result};
+
 /// Faces' curves in one cut at most, and points in one spline at most.
 const MAX_PIECES: usize = 100_000;
 const MAX_SPLINE_POINTS: usize = 500;
@@ -33,10 +35,11 @@ pub enum SectionSeg {
         sweep: f64,
     },
     /// A fit spline through `pts` (the sketch's interpolating cubic; when `periodic`, closed
-    /// and C2 all round, the last point repeating the first).
+    /// and C2 all round, the last point repeating the first), with its cubic Bézier pieces.
     Spline {
         pts: Vec<Vec2>,
         periodic: bool,
+        beziers: Vec<[Vec2; 4]>,
     },
 }
 
@@ -61,9 +64,13 @@ impl SectionSeg {
         match self {
             SectionSeg::Line { a, b } => SectionSeg::Line { a: b, b: a },
             SectionSeg::Arc { c, r, start, sweep } => SectionSeg::Arc { c, r, start: start + sweep, sweep: -sweep },
-            SectionSeg::Spline { mut pts, periodic } => {
+            SectionSeg::Spline { mut pts, periodic, mut beziers } => {
                 pts.reverse();
-                SectionSeg::Spline { pts, periodic }
+                beziers.reverse();
+                for [p0, p1, p2, p3] in &mut beziers {
+                    (*p0, *p1, *p2, *p3) = (*p3, *p2, *p1, *p0);
+                }
+                SectionSeg::Spline { pts, periodic, beziers }
             }
         }
     }
@@ -72,26 +79,46 @@ impl SectionSeg {
     /// the first exactly, or the first is repeated.
     fn closed(self, closed: bool) -> SectionSeg {
         match self {
-            SectionSeg::Spline { mut pts, periodic: false } if closed => {
+            SectionSeg::Spline { mut pts, periodic: false, .. } if closed => {
                 let (Some(first), Some(last)) = (pts.first().copied(), pts.last().copied()) else {
-                    return SectionSeg::Spline { pts, periodic: false };
+                    return SectionSeg::spline(pts);
                 };
                 let span = pts.windows(2).map(|w| w.first().zip(w.get(1)).map_or(0.0, |(a, b)| a.dist(*b))).fold(0.0, f64::max);
                 if last.dist(first) <= span * 1e-6 {
                     pts.pop();
                 }
                 pts.push(first);
-                SectionSeg::Spline { periodic: pts.len() >= 4, pts }
+                // The repeated first point can take it past the cap.
+                let pts = capped(pts);
+                SectionSeg::Spline { periodic: pts.len() >= 4, pts, beziers: Vec::new() }
             }
             other => other,
         }
     }
 
+    /// An open spline through `pts`, not fitted yet.
+    fn spline(pts: Vec<Vec2>) -> SectionSeg {
+        SectionSeg::Spline { pts, periodic: false, beziers: Vec::new() }
+    }
+
+    /// Fit a spline's cubic pieces through its points (once the loop's curves are final).
+    fn fit(&mut self) -> Result<()> {
+        if let SectionSeg::Spline { pts, periodic, beziers } = self {
+            let fitted = solidcraft_sketch::fit_beziers_mode(pts, *periodic)
+                .map_err(|e| DocError::Invalid(format!("a section spline cannot be fitted: {e}")))?;
+            if fitted.is_empty() {
+                return Err(DocError::Invalid(format!("a section spline through {} points cannot be fitted", pts.len())));
+            }
+            *beziers = fitted;
+        }
+        Ok(())
+    }
+
     /// The cubic Bézier pieces of a spline (empty for lines and arcs).
-    pub fn beziers(&self) -> Vec<[Vec2; 4]> {
+    pub fn beziers(&self) -> &[[Vec2; 4]] {
         match self {
-            SectionSeg::Spline { pts, periodic } => solidcraft_sketch::fit_beziers_mode(pts, *periodic).unwrap_or_default(),
-            _ => Vec::new(),
+            SectionSeg::Spline { beziers, .. } => beziers,
+            _ => &[],
         }
     }
 
@@ -160,8 +187,29 @@ struct Piece {
     ends: Option<(Key, Key)>,
 }
 
-/// The loops where `plane` cuts the mesh, in the plane's frame.
-pub fn section_loops(plane: &Plane, m: &Mesh) -> Vec<SectionLoop> {
+/// At most `MAX_SPLINE_POINTS` spline points, thinned evenly, keeping both ends (so a periodic
+/// spline's last point still repeats its first).
+fn capped(pts: Vec<Vec2>) -> Vec<Vec2> {
+    let n = pts.len();
+    if n <= MAX_SPLINE_POINTS {
+        return pts;
+    }
+    let step = (n - 1).div_ceil(MAX_SPLINE_POINTS - 1);
+    let last = pts.last().copied();
+    let mut out: Vec<Vec2> = pts.into_iter().step_by(step).collect();
+    if out.last() != last.as_ref() {
+        // Drop the kept point nearest the end rather than go past the cap.
+        if out.len() >= MAX_SPLINE_POINTS {
+            out.pop();
+        }
+        out.extend(last);
+    }
+    out
+}
+
+/// The loops where `plane` cuts the mesh, in the plane's frame. An error when a spline of the
+/// cut cannot be fitted (rather than leaving it out).
+pub fn section_loops(plane: &Plane, m: &Mesh) -> Result<Vec<SectionLoop>> {
     let size = m.bounds().diagonal().max(1e-9);
     let q = size * 1e-7;
     let key = |p: Vec2| -> Key { ((p.x / q).round() as i64, (p.y / q).round() as i64) };
@@ -185,8 +233,11 @@ pub fn section_loops(plane: &Plane, m: &Mesh) -> Vec<SectionLoop> {
     }
     let mut loops: Vec<SectionLoop> =
         join(pieces).into_iter().map(|(closed, segs)| SectionLoop { closed, segments: merge(segs, closed, size), area: None }).collect();
+    for s in loops.iter_mut().flat_map(|l| l.segments.iter_mut()) {
+        s.fit()?;
+    }
     orient(&mut loops);
-    loops
+    Ok(loops)
 }
 
 /// Chain segments into simple paths (open ones from their ends) and closed loops.
@@ -242,7 +293,10 @@ fn classify(chain: &[Vec2], closed: bool, exact: &BTreeSet<Key>, key: &dyn Fn(Ve
     if chain.len() < 2 || (!closed && first.dist(last) <= tight) {
         return None;
     }
-    if !closed && super::fits_line(chain, tight) {
+    // Straight: within rounding of one line, or (the crossings of a ruled face cut along its
+    // rulings, which follow the mesh's curved triangles) within the surface's deviation over a
+    // mesh edge, and a ten-thousandth of the chain's length.
+    if !closed && (super::fits_line(chain, tight) || super::fits_line(chain, near.min(first.dist(last) * 1e-4))) {
         return Some(SectionSeg::Line { a: first, b: last });
     }
     let on: Vec<Vec2> = chain.iter().copied().filter(|p| exact.contains(&key(*p))).collect();
@@ -278,19 +332,12 @@ fn classify(chain: &[Vec2], closed: bool, exact: &BTreeSet<Key>, key: &dyn Fn(Ve
         pts.pop();
     }
     pts.dedup_by(|a, b| a.dist(*b) <= tight * 10.0);
-    if pts.len() > MAX_SPLINE_POINTS {
-        let step = pts.len().div_ceil(MAX_SPLINE_POINTS);
-        let end = pts.last().copied();
-        pts = pts.into_iter().step_by(step).collect();
-        if !closed && let Some(e) = end.filter(|e| pts.last() != Some(e)) {
-            pts.push(e);
-        }
-    }
+    let pts = capped(pts);
     match pts.len() {
         0 | 1 => None,
         2 if !closed => Some(SectionSeg::Line { a: first, b: last }),
         n if closed && n < 3 => None,
-        _ => Some(SectionSeg::Spline { pts, periodic: false }.closed(closed)),
+        _ => Some(SectionSeg::spline(pts).closed(closed)),
     }
 }
 
@@ -395,7 +442,7 @@ fn joined(a: &SectionSeg, b: &SectionSeg, tight: f64) -> Option<SectionSeg> {
                 sweep: total.clamp(-TAU, TAU),
             })
         }
-        (SectionSeg::Spline { pts: p, periodic: false }, SectionSeg::Spline { pts: q, periodic: false }) => {
+        (SectionSeg::Spline { pts: p, periodic: false, .. }, SectionSeg::Spline { pts: q, periodic: false, .. }) => {
             // Smooth when the turn across the joint is no sharper than the turns beside it.
             let turn = |a: Vec2, b: Vec2, c: Vec2| -> Option<f64> {
                 let (u, v) = ((b - a).normalized()?, (c - b).normalized()?);
@@ -409,7 +456,7 @@ fn joined(a: &SectionSeg, b: &SectionSeg, tight: f64) -> Option<SectionSeg> {
             (pc.dist(qa) <= tight && across <= 1.5 * beside + 0.5f64.to_radians()).then(|| {
                 let mut pts = p.clone();
                 pts.extend(q.iter().skip(1).copied());
-                SectionSeg::Spline { pts, periodic: false }
+                SectionSeg::spline(capped(pts))
             })
         }
         _ => None,

@@ -1035,6 +1035,13 @@ fn section_segments(plane: &Plane, m: &Mesh, face: Option<u32>) -> (Vec<(Vec2, V
     // Surface normal at each mesh vertex where the surface is smooth (None at creases), over
     // all faces and per face.
     type Key = (i64, i64, i64);
+    // A vertex this close to the plane is on it, and lies on the same side for every edge it
+    // ends (so a plane through a vertex, or on a face, cuts every edge there alike): below when
+    // the mesh lies on or above the plane (the cut at its bottom face), else above (at its top
+    // face, through an apex). An edge with an end on the plane crosses it at that end.
+    let snap = size * 1e-9;
+    let zero_above = m.positions.iter().any(|p| plane.height(*p) < -snap);
+    let above = |h: f64| if h.abs() <= snap { zero_above } else { h > 0.0 };
     let mut normals: BTreeMap<Key, Option<Vec3>> = BTreeMap::new();
     let mut face_normals: BTreeMap<(u32, Key), Option<Vec3>> = BTreeMap::new();
     // Faces on either side of each mesh edge.
@@ -1067,14 +1074,25 @@ fn section_segments(plane: &Plane, m: &Mesh, face: Option<u32>) -> (Vec<(Vec2, V
     let crossing = |a: Vec3, b: Vec3| -> Option<Vec3> {
         let (a, b) = if key(a) <= key(b) { (a, b) } else { (b, a) };
         let (ha, hb) = (plane.height(a), plane.height(b));
-        if (ha > 0.0) == (hb > 0.0) {
+        if above(ha) == above(hb) {
             return None;
+        }
+        if let Some(p) = [(a, ha), (b, hb)].into_iter().find(|(_, h)| h.abs() <= snap).map(|(p, _)| p) {
+            exact.borrow_mut().push(plane.to_local(p));
+            return Some(p);
         }
         let d = b - a;
         // An edge inside one face takes that face's normals (its ends may lie on the face's
         // boundary, a crease for the whole mesh); an edge between faces, the merged ones, so
         // both faces agree on the crossing.
-        let inside = edge_faces.get(&(key(a), key(b))).and_then(|fs| fs.first().filter(|f| fs.len() == 2 && fs.iter().all(|x| x == *f)).copied());
+        let faces = edge_faces.get(&(key(a), key(b)));
+        let inside = faces.and_then(|fs| fs.first().filter(|f| fs.len() == 2 && fs.iter().all(|x| x == *f)).copied());
+        // An edge where a curved face meets another (a cylinder's rim on its cap) lies on the
+        // curved face: its normals there put the crossing on the curve, not on the chord.
+        let face_normal = |f: u32, p: Vec3| face_normals.get(&(f, key(p))).copied().flatten();
+        let curved =
+            || faces?.iter().copied().find(|f| matches!((face_normal(*f, a), face_normal(*f, b)), (Some(x), Some(y)) if x.dot(y) < 1.0 - 1e-12));
+        let inside = inside.or_else(curved);
         let normal = |p: Vec3| match inside {
             Some(f) => face_normals.get(&(f, key(p))).copied().flatten(),
             None => normals.get(&key(p)).copied().flatten(),
