@@ -133,3 +133,74 @@ pub(crate) fn rows(ui: &mut egui::Ui, designation: &mut String, suggested: &mut 
     }
     (enter, reset)
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod contribution_tests {
+    use super::*;
+    use crate::{
+        Services, SolveApp,
+        dialogs::{Dialog, Kind, apply_commands},
+    };
+    use serde_json::json;
+    use solidcraft_engine::{Sel, Session, geom::Vec3};
+    fn hole() -> (SolveApp, Dialog) {
+        let mut app = SolveApp::new(Session::default(), Services::default());
+        app.run("solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Plate"})).unwrap();
+        app.session.selection = vec![Sel::Face { body: "Plate".into(), index: 5, point: Vec3::new(10.0, 10.0, 10.0) }];
+        let d = Dialog::for_command(&app, "solid.hole").unwrap();
+        (app, d)
+    }
+    #[test]
+    fn contribution_tapped_holes_derive_the_drill_from_the_catalogue() {
+        for (designation, expected) in [("M5", 4.2), ("M6x1", 5.0), ("M5x0.5", 4.5)] {
+            let (mut app, mut d) = hole();
+            if let Kind::Hole { diameter, opts, .. } = &mut d.kind {
+                *diameter = "17 mm".into();
+                opts.tapped = true;
+                opts.all = true;
+                opts.thread = designation.into();
+            }
+            assert!(d.primary().is_none(), "no independent diameter editor for a tapped hole");
+            let commands = apply_commands(&app, &d).unwrap();
+            let (id, p) = &commands[0];
+            assert!(p.get("diameter").is_none());
+            assert_eq!(p["thread"], designation);
+            let out = app.run(id, p.clone()).unwrap();
+            let f = app.session.doc.feature(out["feature"].as_u64().unwrap()).unwrap();
+            let solidcraft_engine::doc::FeatureKind::Hole { diameter, .. } = &f.kind else { panic!("not a Hole") };
+            let drill = app.session.doc.eval(diameter, solidcraft_engine::doc::expr::Kind::Length).unwrap();
+            assert!((drill - expected).abs() < 1e-9, "{designation}: {drill}");
+        }
+    }
+    #[test]
+    fn contribution_invalid_tapped_holes_are_refused_and_plain_holes_keep_diameter() {
+        let (app, mut d) = hole();
+        assert!(d.primary().is_some());
+        assert!(apply_commands(&app, &d).unwrap()[0].1.get("diameter").is_some());
+        for designation in ["", "M0", "M5x5", "M5xNaN", "not a thread"] {
+            if let Kind::Hole { opts, .. } = &mut d.kind {
+                opts.tapped = true;
+                opts.thread = designation.into();
+            }
+            assert!(apply_commands(&app, &d).is_err(), "{designation}");
+        }
+    }
+    #[test]
+    fn contribution_thread_catalogue_is_parseable_and_rendering_keeps_custom_designations() {
+        for (d, p) in metric_thread_sizes() {
+            assert_eq!(parse_metric_thread(&format!("M{d}")), Some((*d, *p)));
+            assert_eq!(parse_metric_thread(&format!("M{d}x{p}")), Some((*d, *p)));
+        }
+        let ctx = egui::Context::default();
+        for original in ["M5", "M5x0.5", "M33x1", "invalid"] {
+            let mut designation = original.to_string();
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                egui::Grid::new("hole_catalogue").show(ui, |ui| {
+                    hole_rows(ui, &mut designation);
+                });
+            });
+            assert_eq!(designation, original);
+        }
+    }
+}
