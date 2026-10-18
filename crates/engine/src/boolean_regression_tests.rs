@@ -1204,3 +1204,22 @@ fn extrude_cut_into_a_face_beside_rounds() {
     let v = before - volume(&cut, "Body1");
     assert!((v - taken).abs() < 0.05, "took {v}, expected {taken}");
 }
+
+/// #2040: a cut 2 mm into the top face of the block rounded at its ends, the strip 10 − 2r wide
+/// between the rounds. Below the face the rounds stand out past its outline, so a slab over the
+/// whole body would take them too: the cut takes only what lies over the face, at height z from
+/// x = 0 to the slanted face at x = x0 + z.
+#[test]
+fn extrude_cut_into_the_top_face_of_a_rounded_block_takes_only_what_lies_over_it() {
+    let (h, r, x0, d) = (8.485281374238571_f64, 3.8_f64, 11.514718625761429_f64, 2.0_f64);
+    let before = volume(&replay(include_str!("../../../examples/regressions/extrude_face_rounded_by_fillets.json")), "Body1");
+    let cut = rounded_block_and(
+        json!({"command": "solid.extrude", "params": {"face": [5, -5, h], "distance": d, "direction": "negative", "operation": "cut"}}),
+    );
+    let bodies = &cut.model.state().bodies;
+    assert_eq!(bodies.len(), 1);
+    assert!(bodies[0].body.validity().is_empty(), "{:?}", bodies[0].body.validity());
+    let taken = (10.0 - 2.0 * r) * (x0 * d + (h * h - (h - d) * (h - d)) / 2.0);
+    let v = before - volume(&cut, "Body1");
+    assert!((v - taken).abs() < 0.05, "took {v}, expected {taken}");
+}

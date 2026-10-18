@@ -237,6 +237,11 @@ fn inside(poly: &[Vec2], q: Vec2) -> bool {
 /// depth lies where the outline runs round. Its faces come from those of `built` (the profile's
 /// own tool) they lie nearest, when given. With how far out from the face it starts.
 pub fn cut_tool(target: &Body, face: WholeFace, depth: f64, built: Option<&Body>) -> Option<(Body, f64)> {
+    // Every step reads or builds truck's shapes, so all of it runs under the guard.
+    crate::guard("cut tool from a face", || Ok(build_cut_tool(target, face, depth, built))).ok().flatten()
+}
+
+fn build_cut_tool(target: &Body, face: WholeFace, depth: f64, built: Option<&Body>) -> Option<(Body, f64)> {
     use mt::{BoundedCurve, ParametricCurve};
     use std::f64::consts::{PI, TAU};
     if !depth.is_finite() || depth <= 0.0 {
@@ -347,7 +352,7 @@ pub fn cut_tool(target: &Body, face: WholeFace, depth: f64, built: Option<&Body>
     // Out from the face, then swept back through it and the depth.
     let off = (size * 1e-2).max(tol * 10.0);
     let base = mt::builder::translated(&base, v3(n * off));
-    let tool = crate::guard("cut tool from a face", || Body::new(mt::builder::tsweep(&base, v3(n * -(off + depth))))).ok()?;
+    let tool = Body::new(mt::builder::tsweep(&base, v3(n * -(off + depth)))).ok()?;
     match built {
         Some(built) => traced_onto(tool, built, tol).ok().map(|t| (t, off)),
         None => Some((tool, off)),
