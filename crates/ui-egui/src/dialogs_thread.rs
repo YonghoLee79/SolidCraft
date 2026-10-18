@@ -37,10 +37,10 @@ pub(crate) fn hole_rows(ui: &mut egui::Ui, designation: &mut String) -> bool {
     row_label(ui, "Designation");
     let r = ui.add(egui::TextEdit::singleline(designation).hint_text("M5 or M5x0.5"));
     ui.end_row();
-    row_label(ui, "Diameter");
+    row_label(ui, "Tap drill diameter");
     match parse_metric_thread(designation) {
         Some((d, p)) => {
-            ui.label(format!("{} mm", d - p));
+            ui.label(format!("{:.3} mm", d - p));
         }
         None => {
             ui.label(tr("Select size"));
