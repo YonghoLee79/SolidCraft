@@ -1,22 +1,29 @@
-//! A range of parameters along a curve, from `lo` to `hi`.
+//! A range of parameters along a curve.
 
-/// The parameters of a curve from `lo` to `hi`. Fractions run from `lo` (0) to `hi` (1);
-/// [`contains`](Self::contains) and [`clamp`](Self::clamp) take the ends in either order.
+/// Parameters from `lo` to `hi`, held in order (`lo <= hi`) from however they were given.
+/// Fractions run from `lo` (0) to `hi` (1).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Interval {
-    pub lo: f64,
-    pub hi: f64,
+    lo: f64,
+    hi: f64,
 }
 
 impl From<(f64, f64)> for Interval {
-    fn from((lo, hi): (f64, f64)) -> Self {
-        Interval { lo, hi }
+    fn from((a, b): (f64, f64)) -> Self {
+        Interval::new(a, b)
     }
 }
 
 impl Interval {
-    pub fn new(lo: f64, hi: f64) -> Self {
-        Interval { lo, hi }
+    /// The parameters between `a` and `b`, in either order. A NaN end takes the other end's value.
+    pub fn new(a: f64, b: f64) -> Self {
+        Interval { lo: a.min(b), hi: a.max(b) }
+    }
+    pub fn lo(&self) -> f64 {
+        self.lo
+    }
+    pub fn hi(&self) -> f64 {
+        self.hi
     }
     /// `hi - lo`.
     pub fn span(&self) -> f64 {
@@ -26,8 +33,16 @@ impl Interval {
     pub fn at(&self, f: f64) -> f64 {
         self.lo + self.span() * f
     }
-    /// The parameter `k` steps of `n` from `lo` (`at(k / n)`, rounded as `span * k / n`).
+    /// How far `t` lies from `lo` to `hi` as a fraction (`at`'s inverse); `None` for a span of 0.
+    pub fn fraction(&self, t: f64) -> Option<f64> {
+        let f = (t - self.lo) / self.span();
+        (self.span() > 0.0 && f.is_finite()).then_some(f)
+    }
+    /// The parameter `k` steps of `n` from `lo` (`at(k / n)`, rounded as `span * k / n`); `lo` when `n` is 0.
     pub fn step(&self, k: usize, n: usize) -> f64 {
+        if n == 0 {
+            return self.lo;
+        }
         self.lo + self.span() * k as f64 / n as f64
     }
     /// `n + 1` parameters evenly from `lo` to `hi`, both included.
@@ -39,15 +54,15 @@ impl Interval {
     }
     /// Whether `t` lies between the ends, both included.
     pub fn contains(&self, t: f64) -> bool {
-        self.lo.min(self.hi) <= t && t <= self.lo.max(self.hi)
+        self.lo <= t && t <= self.hi
     }
-    /// The ends in order, each moved out by `e`.
+    /// Each end moved out by `e`.
     pub fn inflated(&self, e: f64) -> Interval {
-        Interval { lo: self.lo.min(self.hi) - e, hi: self.lo.max(self.hi) + e }
+        Interval::new(self.lo - e, self.hi + e)
     }
-    /// `t` moved onto the nearer end when it lies outside; never panics, even on NaN ends.
+    /// `t` moved onto the nearer end when it lies outside.
     pub fn clamp(&self, t: f64) -> f64 {
-        t.max(self.lo.min(self.hi)).min(self.lo.max(self.hi))
+        t.max(self.lo).min(self.hi)
     }
 }
 
@@ -60,21 +75,29 @@ mod tests {
         let r = Interval::new(2.0, 6.0);
         assert_eq!(r.span(), 4.0);
         assert_eq!(r.at(0.25), 3.0);
+        assert_eq!(r.fraction(3.0), Some(0.25));
         assert_eq!(r.mid(), 4.0);
         assert_eq!(r.samples(4).collect::<Vec<_>>(), [2.0, 3.0, 4.0, 5.0, 6.0]);
-        assert_eq!(Interval::new(6.0, 2.0).at(0.25), 5.0);
+        assert_eq!(Interval::new(5.0, 5.0).fraction(5.0), None);
     }
 
     #[test]
-    fn contains_and_clamp_take_the_ends_in_either_order() {
-        for r in [Interval::new(1.0, 3.0), Interval::new(3.0, 1.0)] {
-            assert!(r.contains(1.0) && r.contains(3.0) && !r.contains(3.5));
-            assert_eq!(r.clamp(0.0), 1.0);
-            assert_eq!(r.clamp(5.0), 3.0);
-            assert_eq!(r.clamp(2.0), 2.0);
-            assert!(r.inflated(0.5).contains(3.5) && !r.contains(3.5));
-        }
-        assert!(Interval::new(f64::NAN, f64::NAN).clamp(1.0).is_finite());
+    fn the_ends_are_held_in_order() {
+        let r = Interval::new(3.0, 1.0);
+        assert_eq!((r.lo(), r.hi()), (1.0, 3.0));
+        assert_eq!(r, Interval::from((1.0, 3.0)));
+        assert!(r.contains(1.0) && r.contains(3.0) && !r.contains(3.5));
+        assert!(r.inflated(0.5).contains(3.5));
+        assert_eq!((r.clamp(0.0), r.clamp(5.0), r.clamp(2.0)), (1.0, 3.0, 2.0));
+        let nan = Interval::new(f64::NAN, 2.0);
+        assert_eq!((nan.lo(), nan.hi()), (2.0, 2.0));
+    }
+
+    #[test]
+    fn no_steps_give_lo() {
+        let r = Interval::new(1.0, 3.0);
+        assert_eq!(r.samples(0).collect::<Vec<_>>(), [1.0]);
+        assert_eq!(r.step(1, 0), 1.0);
     }
 
     #[test]
