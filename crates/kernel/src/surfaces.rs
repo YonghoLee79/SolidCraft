@@ -11,7 +11,7 @@ use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurfa
 use solidcraft_geom::{Plane, Region2, Seg2, UnitVec3, Vec2, Vec3};
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3, range};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::history::{Change, EdgeOrigin, FaceOrigin, FaceProv};
 use crate::record::{self, Rebuild, Side, rebuilt_body};
 use crate::{KernelError, Result, guard};
@@ -296,7 +296,7 @@ fn far_wire(swept: &mt::Shell, start: &mt::Wire, map: &dyn Fn(Vec3) -> Vec3) -> 
     let near = |p: Vec3, q: Vec3| p.dist(q) <= 1e-6 * (1.0 + p.len().max(q.len()));
     let mid = |e: &mt::Edge| {
         let c = e.oriented_curve();
-        from_p3(c.subs(range(&c).mid()))
+        from_p3(c.subs(c.range().mid()))
     };
     let mut out = Vec::new();
     for e in start.edge_iter() {
@@ -409,7 +409,7 @@ pub(crate) fn edge_near(body: &Body, p: Vec3) -> Option<mt::Edge> {
     let mut best: Option<(f64, mt::Edge)> = None;
     for e in body.solid.edge_iter() {
         let c = e.curve();
-        for t in range(&c).samples(32) {
+        for t in c.range().samples(32) {
             let d = from_p3(c.subs(t)).dist(p);
             if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, e.clone()));
@@ -648,7 +648,7 @@ pub fn stitch(bodies: &[&Body], tol: f64) -> Result<Body> {
                     let abs = if e.orientation() { e.clone() } else { e.inverse() };
                     let (a, b) = (canon(abs.front(), &mut verts), canon(abs.back(), &mut verts));
                     let c = abs.curve();
-                    let mid = c.subs(range(&c).mid());
+                    let mid = c.subs(c.range().mid());
                     let found = edges.iter().find_map(|(x, m)| {
                         if m.distance(mid) > tol * 10.0 {
                             return None;
@@ -753,7 +753,7 @@ pub(crate) fn map_curve(off: &Offset, c: &mt::Curve, d: f64) -> Result<mt::Curve
         return Ok(moved);
     }
     // Anything else: a cubic through moved samples.
-    let pts: Vec<Vec3> = range(c).samples(32).map(|t| off.map(from_p3(c.subs(t)), d)).collect();
+    let pts: Vec<Vec3> = c.range().samples(32).map(|t| off.map(from_p3(c.subs(t)), d)).collect();
     Ok(mt::Curve::BSplineCurve(crate::build::interpolate_cubic(&pts).ok_or_else(|| KernelError::Failed("offset edge".into()))?))
 }
 
@@ -884,12 +884,12 @@ pub fn thicken(body: &Body, thickness: f64, symmetric: bool) -> Result<Body> {
                         continue;
                     };
                     let c = abs.curve();
-                    let mid = off.point(from_p3(c.subs(range(&c).mid())), d)?;
+                    let mid = off.point(from_p3(c.subs(c.range().mid())), d)?;
                     let list = ecopies[side].entry(abs.id()).or_default();
                     let shared = list.iter().find(|m| {
                         m.front().id() == a.id() && m.back().id() == b.id() && {
                             let mc = m.curve();
-                            near(from_p3(mc.subs(range(&mc).mid())), mid)
+                            near(from_p3(mc.subs(mc.range().mid())), mid)
                         }
                     });
                     let copy = match shared {
@@ -969,7 +969,7 @@ pub fn thicken(body: &Body, thickness: f64, symmetric: bool) -> Result<Body> {
                     let surf = ruled.surface();
                     // The wall's outward normal: across the edge, away from the face.
                     let c = le.oriented_curve();
-                    let tm = range(&c).mid();
+                    let tm = c.range().mid();
                     let p = c.subs(tm);
                     let tangent = c.der(tm);
                     let n =
@@ -1003,7 +1003,7 @@ pub fn thicken(body: &Body, thickness: f64, symmetric: bool) -> Result<Body> {
                 // Which way the faces bend across the edge: each lies behind the other's normal
                 // (convex toward the normals) or in front of it.
                 let c = abs.curve();
-                let p = from_p3(c.subs(range(&c).mid()));
+                let p = from_p3(c.subs(c.range().mid()));
                 let normal = |fi: usize| -> Option<Vec3> {
                     let s = faces.get(fi)?.oriented_surface();
                     let (u, v) = s.search_nearest_parameter(p3(p), None, 50)?;

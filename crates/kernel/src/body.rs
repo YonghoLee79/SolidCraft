@@ -492,10 +492,13 @@ pub(crate) fn v3(v: Vec3) -> mt::Vector3 {
 pub(crate) fn from_p3(p: mt::Point3) -> Vec3 {
     Vec3::new(p.x, p.y, p.z)
 }
-/// The parameters of a bounded curve, front to back.
-pub(crate) fn range(c: &impl mt::BoundedCurve) -> Interval {
-    c.range_tuple().into()
+/// A bounded curve's parameters, front to back, as an [`Interval`].
+pub(crate) trait CurveRange: mt::BoundedCurve {
+    fn range(&self) -> Interval {
+        self.range_tuple().into()
+    }
 }
+impl<C: mt::BoundedCurve> CurveRange for C {}
 
 /// The distinct edges of `faces` in order of first use, and the faces (by position) each one
 /// bounds: the one edge order of a body, used by [`Body::edges`], tessellations and

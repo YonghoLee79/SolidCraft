@@ -28,7 +28,7 @@ use solidcraft_geom::{Aabb3, Ring, UnitVec3, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::shell_groups::boxes_separate;
-use crate::body::{Body, Solid, from_p3, p3, range, v3};
+use crate::body::{Body, CurveRange, Solid, from_p3, p3, v3};
 use crate::clearance::{Clearance, Occupancy};
 use crate::history::{Change, EdgeOrigin, FaceOrigin, FaceProv, History};
 use crate::{BoolOp, KernelError, Result, guard, record};
@@ -327,7 +327,7 @@ pub(crate) fn grow_faces_exact(b: &Body, n: Vec3, d: f64, delta: f64) -> Result<
                         // Its surface is the edge's curve swept along `n`, facing the way the face beside it does; a straight edge
                         // sweeps to a plane (truck makes that a B-spline patch, which does not mesh).
                         let curve = e.curve();
-                        let r = range(&curve);
+                        let r = curve.range();
                         let mid = from_p3(curve.subs(r.mid()));
                         let old = faces.get(beside).ok_or_else(|| fail("face"))?.oriented_surface();
                         let Some((u0, v0)) = old.search_nearest_parameter(p3(mid), None, 100) else {
@@ -400,7 +400,7 @@ pub(crate) fn grow_faces_exact(b: &Body, n: Vec3, d: f64, delta: f64) -> Result<
 fn edge_samples(e: &mt::Edge, k: u32) -> Vec<Vec3> {
     use mt::ParametricCurve;
     let c = e.curve();
-    range(&c).samples(k as usize).map(|t| from_p3(c.subs(t))).collect()
+    c.range().samples(k as usize).map(|t| from_p3(c.subs(t))).collect()
 }
 
 /// Where the edges of `b` cross the plane (n, d), one point for every time (edges are cut there before a body is trimmed).
@@ -410,7 +410,7 @@ fn plane_crossings(b: &Body, n: Vec3, d: f64, tol: f64) -> Vec<Vec3> {
     let mut out = Vec::new();
     for e in b.solid.edge_iter() {
         let c = e.curve();
-        let r = range(&c);
+        let r = c.range();
         let at = |t: f64| from_p3(c.subs(t));
         let h = |t: f64| n.dot(at(t)) - d;
         let ts: Vec<f64> = r.samples(STEPS as usize).collect();
@@ -1251,7 +1251,7 @@ fn glue_impl(a: &Body, b: &Body, all_caps: bool) -> Option<Result<Body>> {
     let tol = (size * 1e-7).max(1e-9) * 10.0;
     let mid = |e: &mt::Edge| {
         let c = e.curve();
-        from_p3(c.subs(range(&c).mid()))
+        from_p3(c.subs(c.range().mid()))
     };
     // Matching faces: same plane, opposite normals, the same edges. Every pair is glued: a
     // pair left behind would stay inside the result as a zero-thickness slit (issue #616).
@@ -1309,7 +1309,7 @@ fn glue_impl(a: &Body, b: &Body, all_caps: bool) -> Option<Result<Body>> {
                 let on = |f: &mt::Edge| {
                     use mt::SearchNearestParameter;
                     let c = f.curve();
-                    let r = range(&c);
+                    let r = c.range();
                     key(mid(f)) == key(m)
                         || c.search_nearest_parameter(p3(m), None, 100)
                             .is_some_and(|t| r.inflated(1e-9).contains(t) && from_p3(c.subs(t)).dist(m) <= tol)
@@ -1439,7 +1439,7 @@ fn inset_into(outer: &Body, inner: &Body, outer_operand: usize) -> Option<Result
         let mut pts = Vec::with_capacity(w.len() * SAMPLES);
         for e in w.edge_iter() {
             let c = e.oriented_curve();
-            let r = range(&c);
+            let r = c.range();
             pts.extend((0..SAMPLES).map(|k| from_p3(c.subs(r.step(k, SAMPLES)))));
         }
         (!pts.is_empty() && pts.iter().all(|p| p.is_finite())).then(|| Ring::new(pts))

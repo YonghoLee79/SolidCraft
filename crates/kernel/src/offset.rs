@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use solidcraft_geom::Vec3;
 use truck_modeling::{self as mt, builder};
 
-use crate::body::{Body, Solid, from_p3, p3, range};
+use crate::body::{Body, CurveRange, Solid, from_p3, p3};
 use crate::{KernelError, Result, guard};
 
 #[derive(Clone, Copy, Debug)]
@@ -179,7 +179,7 @@ fn samples(f: &mt::Face) -> Vec<(Vec3, Vec3)> {
     for w in f.boundaries() {
         for e in w.edge_iter() {
             let c = e.oriented_curve();
-            let r = range(&c);
+            let r = c.range();
             for k in 0..5 {
                 // The previous point's parameters as a hint, unless that lands elsewhere (a
                 // singular point such as a pole holds the search).
@@ -686,7 +686,7 @@ fn crossed_loops(
 pub(crate) fn arc_mid(e: &mt::Edge, tol: f64) -> Option<Option<Vec3>> {
     use mt::ParametricCurve;
     let c = e.curve();
-    let pts: Vec<Vec3> = range(&c).samples(16).map(|t| from_p3(c.subs(t))).collect();
+    let pts: Vec<Vec3> = c.range().samples(16).map(|t| from_p3(c.subs(t))).collect();
     let (a, b, m) = (*pts.first()?, *pts.last()?, *pts.get(8)?);
     if a.dist(b) < tol {
         return None;
@@ -809,7 +809,7 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
             let c = e.curve();
             Some((
                 efaces.get(&e.id())?.clone(),
-                [from_p3(e.absolute_front().point()), from_p3(e.absolute_back().point()), from_p3(c.subs(range(&c).mid()))],
+                [from_p3(e.absolute_front().point()), from_p3(e.absolute_back().point()), from_p3(c.subs(c.range().mid()))],
             ))
         })
         .collect();
@@ -1022,7 +1022,7 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                 use mt::ParametricCurve;
                 let fs = efaces.get(&e.id()).ok_or_else(|| fail("edge faces"))?;
                 let cv = e.curve();
-                let mid = from_p3(cv.subs(range(&cv).mid()));
+                let mid = from_p3(cv.subs(cv.range().mid()));
                 // The face across: the strip's far side (`opposite_side`), the nearest of them
                 // when several; the nearest along the rounds when the strip has none.
                 let (mut meet, cand) = across(fs, mid);
@@ -1044,7 +1044,7 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                         let (pa, pc) = (from_p3(a.point()), from_p3(c.point()));
                         let x = if m.dist_to_segment(pa, pc) < near { builder::line(a, c) } else { builder::circle_arc(a, c, p3(m)) };
                         let xc = x.curve();
-                        let pts: Vec<Vec3> = range(&xc).samples(16).map(|t| from_p3(xc.subs(t))).collect();
+                        let pts: Vec<Vec3> = xc.range().samples(16).map(|t| from_p3(xc.subs(t))).collect();
                         if !pts.iter().all(|p| n.iter().all(|sf| sf.dist(*p).abs() < near)) {
                             return Err(fail("not supported yet: faces meeting along a collapsed round in a curve other than a line or circle"));
                         }
@@ -1063,7 +1063,7 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                 let fs = efaces.get(&e.id()).ok_or_else(|| fail("edge faces"))?;
                 let (o, s, n) = pick(fs);
                 let cv = e.curve();
-                let r = range(&cv);
+                let r = cv.range();
                 let k = 16;
                 let mut pts = vec![from_p3(a.point())];
                 for j in 1..k {
@@ -1143,7 +1143,7 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                     use mt::ParametricCurve;
                     let mt::Surface::RevolutedCurve(rc) = f.surface() else { return Err(fail("torus surface")) };
                     let curve = rc.entity().entity_curve().clone();
-                    let q = from_p3(curve.subs(range(&curve).mid()));
+                    let q = from_p3(curve.subs(curve.range().mid()));
                     let c = tube_centre(to, a, big, h, q).ok_or_else(|| fail("torus"))?;
                     let k = r2 / r;
                     let t = c * (1.0 - k);
