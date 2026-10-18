@@ -564,11 +564,16 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
 /// top-left corner. `select_all` re-selects the whole field, both right after a pick and on every
 /// frame a drag is changing the value underneath it: without the latter, a drag that grows the
 /// text (e.g. "4 mm" -> "15 mm") would leave the stale, shorter selection from the pick in place,
-/// covering only part of the new text.
+/// covering only part of the new text. Under the pointer the box stays where it is: the wheel
+/// steps its value (`value_step`), which moves the arrow tip the box follows, and a box sliding
+/// out from under the pointer would hand the next notch to the camera.
 fn value_box(ui: &mut egui::Ui, label: &str, value: &mut String, at: Pos2, select_all: bool) {
     let t = Tokens::get();
     let id = egui::Id::new("sc_canvas_value");
-    crate::frame::area(egui::Id::new("sc_canvas_area")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+    let area = egui::Id::new("sc_canvas_area");
+    let pointer = ui.ctx().pointer_hover_pos();
+    let at = ui.ctx().memory(|m| m.area_rect(area)).filter(|r| pointer.is_some_and(|p| r.contains(p))).map_or(at, |r| r.min);
+    crate::frame::area(area).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(crate::i18n::tr_label(label)).color(t.text_dim).size(crate::theme::Tokens::get().font_caption));
