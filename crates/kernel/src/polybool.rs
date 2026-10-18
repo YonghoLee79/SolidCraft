@@ -3,9 +3,9 @@
 //! as a wall flush with the side of its base. The polygons are rebuilt into a B-rep: coplanar
 //! pieces are merged into faces, T-junctions are split so neighbouring faces share edges.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Path, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, edge_order, from_p3, p3};
@@ -308,11 +308,9 @@ fn planar_polys(b: &Body, operand: usize) -> std::result::Result<Vec<Poly>, NotP
     Ok(out)
 }
 
-/// Polygons of any body: planar faces exactly, curved ones as their triangles (within `tol`);
-/// pieces of its faces as operand `operand`.
-fn faceted_polys(b: &Body, tol: f64, operand: usize) -> Option<Vec<Poly>> {
-    let faces = b.faces(tol).ok()?;
-    let mesh = b.tessellate(tol).ok()?;
+/// Polygons of any body from its `faces` and `mesh` (at one tolerance): planar faces exactly,
+/// curved ones as their triangles; pieces of its faces as operand `operand`.
+fn faceted_polys(faces: &[crate::FaceInfo], mesh: &Mesh, operand: usize) -> Option<Vec<Poly>> {
     let planes: Vec<Option<PlaneEq>> = faces.iter().map(|f| f.plane_normal.map(|n| PlaneEq { n, w: n.dot(f.centroid) })).collect();
     let mut out = Vec::new();
     for (t, fi) in mesh.triangles.iter().zip(&mesh.tri_face) {
@@ -335,8 +333,10 @@ fn faceted_polys(b: &Body, tol: f64, operand: usize) -> Option<Vec<Poly>> {
 }
 
 /// Boolean of a body, its curved faces faceted to `tol`, with a closed triangle mesh (wound
-/// outward); the result has planar faces only. For tools the B-rep boolean cannot take, such as
-/// the helical groove of a thread.
+/// outward). For tools the B-rep boolean cannot take, such as the helical groove of a thread.
+/// Only the faces round the tool are faceted: the faces of `a` it leaves whole stay exactly as
+/// they were (see [`Kept`]); the faces it cuts, and the curved faces next to those, become
+/// planar facets. Where that fails, the whole result is planar facets.
 ///
 /// The result's history is over `[a, b]`, the mesh's faces being its triangles (and it having
 /// no edges): a face of the result lies on faces of `a` (a facet of a curved one) or on
@@ -351,9 +351,11 @@ fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<O
     if !(tol.is_finite() && tol > 0.0) {
         return Err(KernelError::Invalid("facet tolerance".into()));
     }
-    let Some(pa) = faceted_polys(a, tol, 0) else {
+    let (infos, mesh) = (a.faces(tol).ok(), a.tessellate(tol).ok());
+    let Some(pa) = infos.as_deref().zip(mesh.as_ref()).and_then(|(infos, mesh)| faceted_polys(infos, mesh, 0)) else {
         return Err(KernelError::Failed("the body is too detailed to facet".into()));
     };
+    let areas = face_areas(&pa, a.face_count());
     let mut pb = Vec::with_capacity(b.triangles.len());
     for (face, t) in b.triangles.iter().enumerate() {
         let Some([p, q, r]) = b.tri(t) else { continue };
@@ -394,8 +396,24 @@ fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<O
         if out.is_empty() {
             return Ok(None);
         }
+        let keep = infos
+            .as_deref()
+            .zip(mesh.as_ref())
+            .and_then(|(infos, mesh)| guard("faceted boolean", || Ok(Kept::of(a, infos, mesh, &out, &areas))).ok().flatten());
         let weld = size * 1e-7;
-        match rebuild(&out, size, weld, &sources) {
+        if let Some(keep) = keep {
+            let rest: Vec<Poly> = out.iter().filter(|p| !keep.holds(p.src)).cloned().collect();
+            // At the usual weld, then at the finer ones the retries below use (thin crest facets).
+            for precision in [weld, 3.0 * eps, eps] {
+                if precision <= weld {
+                    match rebuild(&rest, size, precision, &sources, Some(&keep)).and_then(|b| keep.check(b, vo, tol)) {
+                        Ok(b) => return Ok(Some(b)),
+                        Err(e) => log::debug!("faceted boolean: the faces away from the tool could not be kept exact ({e})"),
+                    }
+                }
+            }
+        }
+        match rebuild(&out, size, weld, &sources, None) {
             Ok(b) => return Ok(Some(b)),
             Err(e) => last = e,
         }
@@ -407,7 +425,7 @@ fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<O
         // Never return a shell that fails the closed-solid check.
         for precision in [3.0 * eps, eps] {
             if precision < weld {
-                match rebuild(&out, size, precision, &sources) {
+                match rebuild(&out, size, precision, &sources, None) {
                     Ok(b) => return Ok(Some(b)),
                     Err(e) => last = e,
                 }
@@ -415,6 +433,257 @@ fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<O
         }
     }
     Err(last)
+}
+
+/// Area of a planar polygon.
+fn poly_area(p: &Poly) -> f64 {
+    let Some(&o) = p.v.first() else { return 0.0 };
+    let mut s = Vec3::ZERO;
+    for w in p.v.windows(2).skip(1) {
+        s += (w[0] - o).cross(w[1] - o);
+    }
+    s.len() * 0.5
+}
+
+/// The area of each of operand 0's `count` faces that `polys` (pieces of them) cover.
+fn face_areas(polys: &[Poly], count: usize) -> Vec<f64> {
+    let mut areas = vec![0.0; count];
+    for p in polys {
+        if let FaceOrigin::Face { operand: 0, face } = p.src
+            && let Some(slot) = areas.get_mut(face)
+        {
+            *slot += poly_area(p);
+        }
+    }
+    areas
+}
+
+/// The faces of a faceted boolean's body (operand 0) that the result keeps exactly as they were,
+/// and how the rebuilt faces join them. A face the tool leaves whole (its pieces cover all of
+/// it) is kept, unless it is next to a curved face that is faceted: their common edge would be
+/// a chain of chords on one side and the exact curve on the other. Curved faces next to a cut one
+/// are faceted too, as far as that goes; a planar one is rebuilt with its edges to kept faces
+/// exactly as they were (the seams), so the faceting stops there.
+struct Kept {
+    /// Kept faces: (index in the body's face order, the face).
+    faces: Vec<(usize, mt::Face)>,
+    kept: Vec<bool>,
+    /// The kept faces' vertices.
+    vertices: Vec<(Vec3, mt::Vertex)>,
+    /// Every edge of the kept faces by identity, and its index in the body's edge order.
+    edges: Vec<(mt::EdgeID, usize)>,
+    /// Edges between a kept face and a rebuilt one.
+    seams: Vec<Seam>,
+}
+
+/// An edge of the body between a kept face and a rebuilt planar one, and the chain of points
+/// its mesh has along it (front to back), which the rebuilt face's pieces follow.
+struct Seam {
+    edge: mt::Edge,
+    front: Vec3,
+    back: Vec3,
+    closed: bool,
+    chain: Path<Vec3>,
+    bounds: Aabb3,
+}
+
+impl Seam {
+    /// Whether `p` lies on the chain (within `tol`).
+    fn holds(&self, p: Vec3, tol: f64) -> bool {
+        self.bounds.inflated(tol).contains(p) && self.chain.edges().any(|(a, b)| p.dist_to_segment(*a, *b) <= tol)
+    }
+
+    /// Distance of `p` along the chain, from its front.
+    fn along(&self, p: Vec3) -> f64 {
+        let (mut acc, mut best, mut at) = (0.0, f64::INFINITY, 0.0);
+        for (a, b) in self.chain.edges() {
+            let (a, b) = (*a, *b);
+            let d = b - a;
+            let l = d.len();
+            let t = if l > 0.0 { ((p - a).dot(d) / (l * l)).clamp(0.0, 1.0) } else { 0.0 };
+            let dist = p.dist(a + d * t);
+            if dist < best {
+                (best, at) = (dist, acc + l * t);
+            }
+            acc += l;
+        }
+        at
+    }
+
+    fn length(&self) -> f64 {
+        self.chain.edges().map(|(a, b)| a.dist(*b)).sum()
+    }
+}
+
+impl Kept {
+    /// What the result of a faceted boolean of `a` (faced as `infos`, meshed as `mesh`, the
+    /// polygons' source) can keep, from the boolean's polygons `out` and the area of each face of
+    /// `a` before it (`areas`). `None` when nothing is kept, or when the mesh does not match the
+    /// body's faces and edges.
+    fn of(a: &Body, infos: &[crate::FaceInfo], mesh: &Mesh, out: &[Poly], areas: &[f64]) -> Option<Kept> {
+        let count = a.face_count();
+        let (edges, bounds) = edge_order(a.solid.face_iter());
+        if infos.len() != count || areas.len() != count || mesh.edges.len() != edges.len() || mesh.edge_faces.len() != edges.len() {
+            return None;
+        }
+        // Faces the tool cut: some of them is gone.
+        let after = face_areas(out, count);
+        let mut faceted: Vec<bool> =
+            areas.iter().zip(&after).map(|(was, is)| (was - is).abs() > 1e-9 * was.max(a.size() * a.size() * 1e-6)).collect();
+        if !faceted.contains(&true) {
+            return None;
+        }
+        let surface_tol = kind_tol(a);
+        let planar: Vec<bool> =
+            a.solid.face_iter().zip(infos).map(|(f, info)| info.plane_normal.is_some() && curved_kind(f, true, surface_tol).is_none()).collect();
+        let mut face_edges: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for (e, fs) in bounds.iter().enumerate() {
+            for f in fs {
+                face_edges.get_mut(*f)?.push(e);
+            }
+        }
+        // The faceting spreads from curved faces to every face next to them.
+        let mut todo: Vec<usize> = (0..count).filter(|f| faceted.get(*f) == Some(&true)).collect();
+        while let Some(f) = todo.pop() {
+            if *planar.get(f)? {
+                continue;
+            }
+            for e in face_edges.get(f)? {
+                for g in bounds.get(*e)? {
+                    if let Some(slot) = faceted.get_mut(*g)
+                        && !*slot
+                    {
+                        *slot = true;
+                        todo.push(*g);
+                    }
+                }
+            }
+        }
+        if !faceted.contains(&false) {
+            return None;
+        }
+        let kept: Vec<bool> = faceted.iter().map(|f| !f).collect();
+        let faces: Vec<(usize, mt::Face)> =
+            a.solid.face_iter().enumerate().filter(|(f, _)| kept.get(*f) == Some(&true)).map(|(f, face)| (f, face.clone())).collect();
+        let index: HashMap<mt::EdgeID, usize> = edges.iter().enumerate().map(|(i, e)| (e.id(), i)).collect();
+        let (mut vertices, mut seen_v) = (Vec::new(), HashSet::new());
+        let (mut kept_edges, mut seen_e) = (Vec::new(), BTreeSet::new());
+        for (_, face) in &faces {
+            for e in face.edge_iter() {
+                if seen_e.insert(*index.get(&e.id())?) {
+                    kept_edges.push((e.id(), *index.get(&e.id())?));
+                }
+                for v in [e.front(), e.back()] {
+                    if seen_v.insert(v.id()) {
+                        vertices.push((from_p3(v.point()), v.clone()));
+                    }
+                }
+            }
+        }
+        let size = a.size();
+        let near = |p: Vec3, q: Vec3| p.dist(q) <= size * 1e-7;
+        let mut seams = Vec::new();
+        for (e, fs) in bounds.iter().enumerate() {
+            let [f, g] = fs.as_slice() else { continue };
+            let (kf, kg) = (*kept.get(*f)?, *kept.get(*g)?);
+            if kf == kg {
+                continue;
+            }
+            // The rebuilt side must be planar for its face to take the exact edge.
+            if !*planar.get(if kf { *g } else { *f })? {
+                return None;
+            }
+            let edge = edges.get(e)?.clone();
+            let (front, back) = (from_p3(edge.front().point()), from_p3(edge.back().point()));
+            let mut chain = mesh.edges.get(e)?.clone();
+            let (first, last) = (*chain.first()?, *chain.last()?);
+            if near(first, back) && near(last, front) && !near(first, front) {
+                chain.reverse();
+            } else if !(near(first, front) && near(last, back)) {
+                return None;
+            }
+            let bounds = chain.iter().copied().collect::<Aabb3>();
+            let closed = edge.front().id() == edge.back().id();
+            seams.push(Seam { edge, front, back, closed, chain: Path::new(chain), bounds });
+        }
+        Some(Kept { faces, kept, vertices, edges: kept_edges, seams })
+    }
+
+    /// Whether a polygon from `src` is a piece of a kept face.
+    fn holds(&self, src: FaceOrigin) -> bool {
+        matches!(src, FaceOrigin::Face { operand: 0, face } if self.kept.get(face) == Some(&true))
+    }
+
+    /// The seam the segment from `u` to `v` runs along, if any.
+    fn seam_of(&self, u: Vec3, v: Vec3, tol: f64) -> Option<usize> {
+        let mid = u.lerp(v, 0.5);
+        self.seams.iter().position(|s| s.holds(u, tol) && s.holds(v, tol) && s.holds(mid, tol))
+    }
+
+    /// The kept vertex within `q` of `p`, if any (`grid`: [`Kept::grid`] with cells of `q`).
+    fn vertex_at(&self, grid: &BTreeMap<(i64, i64, i64), Vec<usize>>, p: Vec3, q: f64) -> Option<mt::Vertex> {
+        let k = key(p, q);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    for i in grid.get(&(k.0 + dx, k.1 + dy, k.2 + dz)).into_iter().flatten() {
+                        if let Some((at, v)) = self.vertices.get(*i)
+                            && at.dist(p) <= q
+                        {
+                            return Some(v.clone());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The kept vertices binned in cells of `q`, for [`Kept::vertex_at`].
+    fn grid(&self, q: f64) -> BTreeMap<(i64, i64, i64), Vec<usize>> {
+        let mut grid: BTreeMap<(i64, i64, i64), Vec<usize>> = BTreeMap::new();
+        for (i, (p, _)) in self.vertices.iter().enumerate() {
+            grid.entry(key(*p, q)).or_default().push(i);
+        }
+        grid
+    }
+
+    /// Seam `j`, oriented to run from `first` (through `second`) to `last`: the run of a rebuilt
+    /// face's boundary along it.
+    fn seam_edge(&self, j: usize, first: Vec3, second: Vec3, last: Vec3, tol: f64) -> Result<mt::Edge> {
+        let s = self.seams.get(j).ok_or_else(|| KernelError::Failed("seam".into()))?;
+        let near = |p: Vec3, q: Vec3| p.dist(q) <= tol;
+        let forward = if s.closed {
+            if !(near(first, s.front) && near(last, s.front)) {
+                return Err(KernelError::Failed("a rebuilt face runs along part of a closed seam".into()));
+            }
+            s.along(second) < s.length() * 0.5
+        } else if near(first, s.front) && near(last, s.back) {
+            true
+        } else if near(first, s.back) && near(last, s.front) {
+            false
+        } else {
+            return Err(KernelError::Failed("a rebuilt face runs along part of a seam".into()));
+        };
+        Ok(if forward { s.edge.clone() } else { s.edge.inverse() })
+    }
+
+    /// `b`, the rebuilt body, if every face of it meshes (a planar face bounded by kept curves
+    /// as well as chords) and it encloses the volume of the boolean's polygons (`want`, its
+    /// curved faces within `tol`) up to the sag of a coarser mesh over its area: a rebuilt face
+    /// on the wrong side of a seam is out by far more.
+    fn check(&self, b: Body, want: f64, tol: f64) -> Result<Body> {
+        let missing = b.unmeshed_faces();
+        if missing > 0 {
+            return Err(KernelError::Failed(format!("{missing} face(s) of the body with exact faces kept don't mesh")));
+        }
+        let tol = tol.max(b.size() * 1e-3);
+        let m = b.tessellate(tol)?.measure();
+        if (m.volume - want).abs() > tol * m.area + 1e-6 * want.abs() {
+            return Err(KernelError::Failed(format!("the body with exact faces kept has volume {} where the facets enclose {want}", m.volume)));
+        }
+        Ok(b)
+    }
 }
 
 /// `polys` in a fixed pseudo-random order (the same every run, so results are reproducible).
@@ -696,7 +965,7 @@ fn polys_boolean(pa: Vec<Poly>, pb: Vec<Poly>, size: f64, op: BoolOp, eps: f64, 
     if polys.is_empty() {
         return Ok(None);
     }
-    rebuild(&polys, size, size * 1e-7, sources).map(Some)
+    rebuild(&polys, size, size * 1e-7, sources, None).map(Some)
 }
 
 /// What a rebuilt body's history is over: each operand's face and edge counts and, where it is
@@ -848,7 +1117,11 @@ fn key(p: Vec3, q: f64) -> (i64, i64, i64) {
 /// Its history over the operands the polygons are pieces of (`sources`): each face the
 /// operand faces whose pieces it joins (pieces joined across the edges between them), each edge
 /// what the pieces either side of it say (see [`Sources::edge`]).
-fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body> {
+///
+/// With `keep`, the polygons are what is left of a faceted boolean once the pieces of its kept
+/// faces are taken out: the kept faces join the rebuilt ones as they were, the rebuilt faces
+/// taking the seams for their runs along them and the kept faces' vertices.
+fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources, keep: Option<&Kept>) -> Result<Body> {
     // Global vertex table.
     let mut index: BTreeMap<(i64, i64, i64), usize> = BTreeMap::new();
     let mut verts: Vec<Vec3> = Vec::new();
@@ -1037,29 +1310,86 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
         // The original vertex of each vertex index (pinched vertices get copies, below).
         let mut orig: Vec<usize> = (0..verts.len()).collect();
         split_pinched_vertices(&mut all_loops, &mut verts, &mut orig);
-        let tv: Vec<mt::Vertex> = verts.iter().map(|v| builder::vertex(p3(*v))).collect();
+        // Where a kept face's vertex is, the rebuilt faces take that vertex. Within the seams'
+        // tolerance, not the polygons' (a mesh puts an edge's ends on its curve, a hair off the
+        // vertex).
+        let seam_tol = size * 1e-6;
+        let grid = keep.map(|kp| kp.grid(seam_tol));
+        let tv: Vec<mt::Vertex> = verts
+            .iter()
+            .enumerate()
+            .map(|(k, v)| {
+                let kept = keep.zip(grid.as_ref()).filter(|_| orig.get(k) == Some(&k)).and_then(|(kp, grid)| kp.vertex_at(grid, *v, seam_tol));
+                kept.unwrap_or_else(|| builder::vertex(p3(*v)))
+            })
+            .collect();
+        let mut used = vec![0usize; keep.map_or(0, |kp| kp.seams.len())];
         let mut edges: BTreeMap<(usize, usize), mt::Edge> = BTreeMap::new();
-        let mut faces: Vec<mt::Face> = Vec::new();
         let mut face_from: HashMap<mt::FaceID, Option<BTreeSet<FaceOrigin>>> = HashMap::new();
+        // The kept faces first, in the body's order.
+        let mut faces: Vec<mt::Face> = Vec::new();
+        let mut whole: HashSet<mt::FaceID> = HashSet::new();
+        for (f, face) in keep.map(|kp| kp.faces.as_slice()).unwrap_or(&[]) {
+            face_from.insert(face.id(), Some(BTreeSet::from([FaceOrigin::Face { operand: 0, face: *f }])));
+            whole.insert(face.id());
+            faces.push(face.clone());
+        }
         for (g, plane) in groups.iter().enumerate() {
             let Some(loops_g) = all_loops.get(g) else { continue };
             let mut wires: Vec<mt::Wire> = Vec::new();
             for lp in loops_g {
                 let n = lp.len();
+                let pos = |i: usize| lp.get(i % n).and_then(|k| verts.get(*k)).copied();
+                // The seam each segment runs along, if any.
+                let seam: Vec<Option<usize>> =
+                    (0..n).map(|i| keep.zip(pos(i)).zip(pos(i + 1)).and_then(|((kp, a), b)| kp.seam_of(a, b, seam_tol))).collect();
+                let unfollowed = || KernelError::Failed("a rebuilt face does not follow a seam".into());
                 let mut es = Vec::with_capacity(n);
-                for i in 0..n {
-                    let (Some(&a), Some(&b)) = (lp.get(i), lp.get((i + 1) % n)) else { continue };
-                    let k = (a.min(b), a.max(b));
-                    let e = match edges.get(&k) {
-                        Some(e) => e.clone(),
-                        None => {
-                            let (Some(va), Some(vb)) = (tv.get(k.0), tv.get(k.1)) else { continue };
-                            let e = builder::line(va, vb);
-                            edges.insert(k, e.clone());
-                            e
+                // Start where a run along a seam starts or ends.
+                let start = (0..n).find(|i| seam.get((i + n - 1) % n) != seam.get(*i));
+                match (start, seam.first().copied().flatten(), keep) {
+                    // The whole loop runs along one seam: a closed edge, from its vertex.
+                    (None, Some(j), Some(kp)) => {
+                        let front = kp.seams.get(j).map(|s| s.front).ok_or_else(unfollowed)?;
+                        let at = (0..n).find(|i| pos(*i).is_some_and(|p| p.dist(front) <= seam_tol)).ok_or_else(unfollowed)?;
+                        let (Some(first), Some(second)) = (pos(at), pos(at + 1)) else { return Err(unfollowed()) };
+                        es.push(kp.seam_edge(j, first, second, first, seam_tol)?);
+                        *used.get_mut(j).ok_or_else(unfollowed)? += 1;
+                    }
+                    _ => {
+                        let start = start.unwrap_or(0);
+                        let mut i = 0;
+                        while i < n {
+                            let at = (start + i) % n;
+                            if let (Some(j), Some(kp)) = (seam.get(at).copied().flatten(), keep) {
+                                // The run along seam `j`: one edge, the seam itself.
+                                let mut m = i;
+                                while m < n && seam.get((start + m) % n).copied().flatten() == Some(j) {
+                                    m += 1;
+                                }
+                                let (Some(first), Some(second), Some(last)) = (pos(at), pos(at + 1), pos(start + m)) else {
+                                    return Err(unfollowed());
+                                };
+                                es.push(kp.seam_edge(j, first, second, last, seam_tol)?);
+                                *used.get_mut(j).ok_or_else(unfollowed)? += 1;
+                                i = m;
+                                continue;
+                            }
+                            i += 1;
+                            let (Some(&a), Some(&b)) = (lp.get(at), lp.get((at + 1) % n)) else { continue };
+                            let k = (a.min(b), a.max(b));
+                            let e = match edges.get(&k) {
+                                Some(e) => e.clone(),
+                                None => {
+                                    let (Some(va), Some(vb)) = (tv.get(k.0), tv.get(k.1)) else { continue };
+                                    let e = builder::line(va, vb);
+                                    edges.insert(k, e.clone());
+                                    e
+                                }
+                            };
+                            es.push(if a < b { e } else { e.inverse() });
                         }
-                    };
-                    es.push(if a < b { e } else { e.inverse() });
+                    }
                 }
                 wires.push(es.into());
             }
@@ -1128,10 +1458,15 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
                 faces.push(face);
             }
         }
+        // Each seam joins a kept face to exactly one rebuilt one.
+        if used.iter().any(|n| *n != 1) {
+            return Err(KernelError::Failed("the rebuilt faces do not meet the kept ones along their edges".into()));
+        }
         let shell: mt::Shell = faces.into();
         let parts = components_in_order(&shell);
         let solid = Solid::try_new(parts).map_err(|e| KernelError::Failed(format!("planar boolean: {e}")))?;
-        let regions = solid.face_iter().map(|f| face_from.get(&f.id()).cloned().flatten().map(|o| (o, false))).collect::<Option<Vec<_>>>();
+        let regions =
+            solid.face_iter().map(|f| face_from.get(&f.id()).cloned().flatten().map(|o| (o, whole.contains(&f.id())))).collect::<Option<Vec<_>>>();
         let tol = size * 1e-6;
         let edge_from = edges
             .iter()
@@ -1146,6 +1481,7 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
                 }
                 Some((e.id(), origins.into_iter().collect()))
             })
+            .chain(keep.into_iter().flat_map(|kp| &kp.edges).map(|(id, edge)| Some((*id, vec![EdgeOrigin::Edge { operand: 0, edge: *edge }]))))
             .collect::<Option<HashMap<mt::EdgeID, Vec<EdgeOrigin>>>>();
         record::build(solid, &sources.counts, regions.map(record::regions), edge_from.as_ref())
     })
