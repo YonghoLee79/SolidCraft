@@ -114,3 +114,41 @@ fn construction_key_outside_a_sketch_opens_nothing_and_keys_in_a_sketch_keep_it(
     assert_eq!(h.app.session.world_state().sketches.len(), 1);
     assert_eq!(tool(&h), Some("sketch.circle.center"));
 }
+
+#[test]
+fn a_feature_started_in_a_sketch_finishes_the_sketch_and_takes_its_profile() {
+    for cmd in ["solid.extrude", "solid.revolve"] {
+        let mut h = Harness::new();
+        h.app.start("sketch.create");
+        h.step(&json!({"click":{"plane":"XY"}})).unwrap();
+        h.settle();
+        let sketch = h.app.session.active_sketch.expect("sketch opened");
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[20,10]})).unwrap();
+        h.app.start(cmd);
+        h.settle();
+        assert!(h.app.session.active_sketch.is_none(), "{cmd}: sketch still open");
+        assert_eq!(h.app.ui.tab, "SOLID", "{cmd}");
+        let items = h.app.dialog.as_ref().and_then(|d| d.inputs.first()).map(|i| i.items.clone()).unwrap_or_default();
+        assert_eq!(items, vec![Sel::Profile { sketch, index: 0 }], "{cmd}");
+    }
+}
+
+#[test]
+fn the_extrude_key_in_a_sketch_finishes_the_sketch() {
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[20,10]})).unwrap();
+    press(&mut h, "E");
+    assert!(h.app.session.active_sketch.is_none());
+    assert!(matches!(h.app.dialog.as_ref().map(|d| &d.kind), Some(crate::dialogs::Kind::Extrude { .. })));
+}
+
+#[test]
+fn a_construct_command_keeps_the_sketch_open() {
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    let sketch = h.app.session.active_sketch;
+    h.app.start("construct.plane.offset");
+    h.settle();
+    assert_eq!(h.app.session.active_sketch, sketch);
+}
