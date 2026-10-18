@@ -6,7 +6,7 @@ use solidcraft_geom::{UnitVec3, Vec3};
 use truck_modeling as mt;
 
 use crate::Body;
-use crate::body::from_p3;
+use crate::body::{CurveRange, from_p3};
 use crate::offset::{Surf, surf_of};
 
 /// A face's analytic surface.
@@ -78,7 +78,7 @@ pub struct EdgeCircle {
 /// lies on, if its curve is a circle or an arc of one. `None` for other curves, mesh bodies
 /// and an index out of range.
 pub fn edge_circle(b: &Body, edge: usize) -> Option<EdgeCircle> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     if b.mesh.is_some() {
         return None;
     }
@@ -86,8 +86,7 @@ pub fn edge_circle(b: &Body, edge: usize) -> Option<EdgeCircle> {
     let tol = (b.size() * 1e-7).max(1e-9) * 100.0;
     crate::guard("edge circle", || {
         let c = e.oriented_curve();
-        let (t0, t1) = c.range_tuple();
-        let at = |f: f64| from_p3(c.subs(t0 + (t1 - t0) * f));
+        let at = |f: f64| from_p3(c.subs(c.range().at(f)));
         let samples: Vec<Vec3> = (0..=24).map(|i| at(f64::from(i) / 24.0)).collect();
         Ok(circle_through(&samples, tol))
     })

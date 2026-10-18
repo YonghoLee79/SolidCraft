@@ -4,7 +4,7 @@ use mt::builder;
 use solidcraft_geom::{Grid, Loop2, Plane, Region2, Ring, Seg2, Vec2, Vec3};
 use truck_modeling as mt;
 
-use crate::body::{Body, Solid, from_p3, p3, v3};
+use crate::body::{Body, CurveRange, Solid, from_p3, p3, v3};
 use crate::history::FaceProv;
 use crate::numbered::{self, NumberedLoop, NumberedRegion};
 use crate::record::{self, Side};
@@ -1447,7 +1447,7 @@ const FULL_TURN_START: f64 = 0.4142;
 /// end), which share the axis edge; a full turn ends where it started. `None` when the loop
 /// isn't like that.
 fn revolve_on_axis(plane: &Plane, numbered: &NumberedLoop, axis_origin: Vec2, d: Vec2, angle: f64) -> Result<Option<Body>> {
-    use mt::{BoundedCurve, ParametricCurve, ParametricSurface3D, SearchNearestParameter, Transformed};
+    use mt::{ParametricCurve, ParametricSurface3D, SearchNearestParameter, Transformed};
     let lp = &numbered.lp;
     let on_axis = |p: Vec2| d.cross(p - axis_origin).abs() < 1e-9;
     let n = lp.segs.len();
@@ -1588,8 +1588,7 @@ fn revolve_on_axis(plane: &Plane, numbered: &NumberedLoop, axis_origin: Vec2, d:
                         .edge_iter()
                         .flat_map(|ed| {
                             let c = ed.oriented_curve();
-                            let (t0, t1) = c.range_tuple();
-                            (0..8).map(move |j| from_p3(c.subs(t0 + (t1 - t0) * j as f64 / 8.0))).collect::<Vec<_>>()
+                            (0..8).map(move |j| from_p3(c.subs(c.range().step(j, 8)))).collect::<Vec<_>>()
                         })
                         .collect();
                     let nw = poly.area_vector();

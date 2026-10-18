@@ -19,7 +19,7 @@ use solidcraft_geom::network::{self, CrossFace, FaceFrame, NetCurve, NetworkCurv
 use solidcraft_geom::{Plane, Seg2, Vec3};
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::bridge::Continuity;
 use crate::plane_fit::EdgeSampler;
 use crate::record::Rebuild;
@@ -396,8 +396,8 @@ fn face_of(s: &NurbsSurface, corners: &[Vec3]) -> Result<mt::Face> {
     let left = row(first.clone(), &vk)?;
     let right = row(last.clone(), &vk)?;
     let corner = |c: &mt::BSplineCurve<mt::Point3>, end: bool| {
-        let (t0, t1) = c.range_tuple();
-        c.subs(if end { t1 } else { t0 })
+        let r = c.range();
+        c.subs(if end { r.hi() } else { r.lo() })
     };
     let (c00, c10, c11, c01) = (corner(&bottom, false), corner(&bottom, true), corner(&top, true), corner(&top, false));
     let size = [c00, c10, c11, c01].iter().map(|p| from_p3(*p).dist(from_p3(c00))).fold(0.0, f64::max).max(1.0);
@@ -438,13 +438,13 @@ fn face_of(s: &NurbsSurface, corners: &[Vec3]) -> Result<mt::Face> {
 /// The edges of one side from `a` to `b`, split at the points of `corners` that lie on it
 /// (within [`CROSS_TOLERANCE`]) strictly between its ends.
 fn side_edges(mut curve: mt::BSplineCurve<mt::Point3>, a: &mt::Vertex, b: &mt::Vertex, corners: &[Vec3]) -> Vec<mt::Edge> {
-    let (t0, t1) = curve.range_tuple();
-    let margin = (t1 - t0) * 1e-6;
+    let r = curve.range();
+    let margin = r.span() * 1e-6;
     let mut cuts: Vec<f64> = corners
         .iter()
         .filter_map(|c| {
             let t = curve.search_nearest_parameter(p3(*c), None, 100)?;
-            (t > t0 + margin && t < t1 - margin && from_p3(curve.subs(t)).dist(*c) <= CROSS_TOLERANCE).then_some(t)
+            (t > r.lo() + margin && t < r.hi() - margin && from_p3(curve.subs(t)).dist(*c) <= CROSS_TOLERANCE).then_some(t)
         })
         .collect();
     cuts.sort_by(f64::total_cmp);

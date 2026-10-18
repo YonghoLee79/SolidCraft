@@ -20,7 +20,7 @@ use mt::EuclideanSpace as _;
 use serde::{Deserialize, Serialize};
 use truck_modeling as mt;
 
-use crate::body::Body;
+use crate::body::{Body, CurveRange};
 use crate::{KernelError, Result, guard};
 use geom::R;
 use p21::{Entity, Exchange, Param};
@@ -948,7 +948,7 @@ impl Reader {
 /// seen from that side. Checked on faces whose loop spans a clear direction (patches, not bands
 /// around a closed surface). Returns one message per bad face.
 pub fn step_orientation_errors(text: &str) -> std::result::Result<Vec<String>, String> {
-    use mt::{BoundedCurve, InnerSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
+    use mt::{InnerSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
     let imp = step_import(text).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for b in &imp.bodies {
@@ -975,8 +975,7 @@ pub fn step_orientation_errors(text: &str) -> std::result::Result<Vec<String>, S
                     .edge_iter()
                     .flat_map(|e| {
                         let c = e.oriented_curve();
-                        let (t0, t1) = c.range_tuple();
-                        (0..16).map(move |i| c.subs(t0 + (t1 - t0) * i as f64 / 16.0)).collect::<Vec<_>>()
+                        (0..16).map(move |i| c.subs(c.range().step(i, 16))).collect::<Vec<_>>()
                     })
                     .collect();
                 let n = pts.len();

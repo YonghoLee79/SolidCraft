@@ -436,9 +436,8 @@ fn rephase_revolved(solid: Solid) -> Solid {
                 for w in f.absolute_boundaries() {
                     for e in w.edge_iter() {
                         let c = e.oriented_curve();
-                        let (t0, t1) = c.range_tuple();
                         for k in 0..4 {
-                            acc += from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 4.0));
+                            acc += from_p3(c.subs(c.range().step(k, 4)));
                             n += 1.0;
                         }
                     }

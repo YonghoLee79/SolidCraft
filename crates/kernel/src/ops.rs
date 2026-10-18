@@ -6,7 +6,7 @@ use truck_modeling as mt;
 
 use std::collections::HashMap;
 
-use crate::body::{Body, Solid, from_p3};
+use crate::body::{Body, CurveRange, Solid, from_p3};
 use crate::boolean_diagnostics::{BooleanFallback, BooleanStrategy, capture_boolean_diagnostics, merge, record, reject};
 use crate::boolean_record::{self as recorded, Traced};
 use crate::{KernelError, Result, guard, record};
@@ -2351,13 +2351,12 @@ pub(crate) fn off_plane(body: &Body, plane: &solidcraft_geom::Plane, positive: b
         }
         // Its vertices and points along its edges (a disc has one vertex).
         let lies = |f: &mt::Face| {
-            use mt::{BoundedCurve, ParametricCurve};
+            use mt::ParametricCurve;
             let on = |p: mt::Point3| (n.dot(from_p3(p)) - d).abs() < exact;
             f.vertex_iter().all(|v| on(v.point()))
                 && f.edge_iter().all(|e| {
                     let c = e.curve();
-                    let (t0, t1) = c.range_tuple();
-                    [0.25, 0.5, 0.75].iter().all(|k| on(c.subs(t0 + (t1 - t0) * k)))
+                    [0.25, 0.5, 0.75].iter().all(|k| on(c.subs(c.range().at(*k))))
                 })
         };
         if !taken.iter().all(|f| lies(f)) {

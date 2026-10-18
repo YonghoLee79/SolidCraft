@@ -6,6 +6,7 @@
 //! in two along the parameter line opposite its seam; the ring edges it crosses are cut in every
 //! face that uses them.
 
+use crate::body::CurveRange;
 use std::collections::HashMap;
 
 use mt::{BoundedCurve, BoundedSurface, InnerSpace, Invertible, MetricSpace, ParametricCurve, ParametricSurface, SearchNearestParameter};
@@ -40,10 +41,10 @@ fn closed_dirs(s: &mt::Surface, periodic: bool) -> Vec<(Dir, f64, f64)> {
     match s {
         mt::Surface::RevolutedCurve(p) => {
             let c = p.entity().entity_curve();
-            let (t0, t1) = c.range_tuple();
+            let r = c.range();
             let mut out = Vec::new();
             if c.front().distance(c.back()) < 1e-7 * (1.0 + c.front().to_homogeneous().truncate().magnitude()) {
-                out.push((Dir::U, t0, t1));
+                out.push((Dir::U, r.lo(), r.hi()));
             }
             if periodic {
                 out.extend(turn_dir(s));
@@ -99,8 +100,7 @@ fn turn_dir(s: &mt::Surface) -> Option<(Dir, f64, f64)> {
 }
 
 fn samples(c: &mt::Curve, n: usize) -> Vec<(f64, mt::Point3)> {
-    let (t0, t1) = c.range_tuple();
-    (0..=n).map(|i| t0 + (t1 - t0) * i as f64 / n as f64).map(|t| (t, c.subs(t))).collect()
+    (0..=n).map(|i| c.range().step(i, n)).map(|t| (t, c.subs(t))).collect()
 }
 
 /// Where a ring chain crosses `w = mid`: (edge index in the chain, parameter on the edge's
@@ -197,17 +197,17 @@ fn iso_curve(s: &mt::Surface, d: Dir, mid: f64, q1: mt::Point3, q2: mt::Point3, 
             };
             let iso = mt::Curve::NurbsCurve(iso_bsp(&hom, mid, d == Dir::V)?);
             let near = |p: mt::Point3| {
-                let (t0, t1) = iso.range_tuple();
-                let mut best = (t0, f64::INFINITY);
+                let r = iso.range();
+                let mut best = (r.lo(), f64::INFINITY);
                 for i in 0..=256 {
-                    let t = t0 + (t1 - t0) * i as f64 / 256.0;
+                    let t = r.step(i, 256);
                     let dd = iso.subs(t).distance(p);
                     if dd < best.1 {
                         best = (t, dd);
                     }
                 }
                 if let Some(t) = iso.search_nearest_parameter(p, best.0, 64) {
-                    let t = t.clamp(t0, t1);
+                    let t = r.clamp(t);
                     if iso.subs(t).distance(p) <= best.1 {
                         best = (t, iso.subs(t).distance(p));
                     }
@@ -220,13 +220,13 @@ fn iso_curve(s: &mt::Surface, d: Dir, mid: f64, q1: mt::Point3, q2: mt::Point3, 
                 return Err("split line does not reach the rings".into());
             }
             let (lo, hi) = if ta < tb { (ta, tb) } else { (tb, ta) };
-            let (t0, t1) = iso.range_tuple();
+            let r = iso.range();
             let mut c = iso;
-            let eps = (t1 - t0) * 1e-9;
-            if lo > t0 + eps {
+            let eps = r.span() * 1e-9;
+            if lo > r.lo() + eps {
                 c = mt::Cut::cut(&mut c, lo);
             }
-            if hi < t1 - eps {
+            if hi < r.hi() - eps {
                 let _ = mt::Cut::cut(&mut c, hi);
             }
             if ta > tb {
@@ -264,10 +264,10 @@ type Cut = (mt::Edge, (mt::Edge, mt::Edge));
 /// the split point, the edge cut (unless the point is an existing vertex) and the split vertex.
 fn split_chain(chain: &[mt::Edge], k: usize, t: f64, q: mt::Point3) -> R<(Vec<mt::Edge>, Vec<mt::Edge>, Option<Cut>, mt::Vertex)> {
     let e = chain.get(k).ok_or("bad crossing")?;
-    let (t0, t1) = e.curve().range_tuple();
-    let eps = (t1 - t0).abs() * 1e-7;
-    let at_front = (t - t0).abs() <= eps;
-    let at_back = (t - t1).abs() <= eps;
+    let r = e.curve().range();
+    let eps = r.span() * 1e-7;
+    let at_front = (t - r.lo()).abs() <= eps;
+    let at_back = (t - r.hi()).abs() <= eps;
     if at_front || at_back {
         // The split point is a vertex already: split the chain between edges.
         let v = if at_front { e.absolute_front().clone() } else { e.absolute_back().clone() };

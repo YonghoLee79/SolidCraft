@@ -375,12 +375,12 @@ fn boundary_hits(face: &mt::Face, g: &Field) -> Vec<Hit> {
     for w in face.absolute_boundaries() {
         for e in w.edge_iter() {
             let c = e.curve();
-            let (t0, t1) = c.range_tuple();
+            let r = c.range();
             let n = 64;
             let val = |t: f64| g.eval(from_p3(c.subs(t)));
-            let mut prev = (t0, val(t0));
+            let mut prev = (r.lo(), val(r.lo()));
             for k in 1..=n {
-                let t = t0 + (t1 - t0) * k as f64 / n as f64;
+                let t = r.step(k, n);
                 let cur = (t, val(t));
                 if (prev.1 >= 0.0) != (cur.1 >= 0.0) {
                     let (mut lo, mut hi) = (prev.0, cur.0);
@@ -596,8 +596,8 @@ pub(crate) fn split_edges_at(body: &Body, points: &[Vec3]) -> Result<Body> {
                     return false;
                 }
                 let c = e.curve();
-                let (t0, t1) = c.range_tuple();
-                nearest(&c, q).is_some_and(|t| t > t0.min(t1) && t < t0.max(t1) && c.subs(t).distance(q) <= tol * 10.0)
+                let r = c.range();
+                nearest(&c, q).is_some_and(|t| t > r.lo() && t < r.hi() && c.subs(t).distance(q) <= tol * 10.0)
             });
             let Some(k) = hit else { continue };
             let (e, root) = current.swap_remove(k);

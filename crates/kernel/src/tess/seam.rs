@@ -7,6 +7,7 @@
 //! the two lines inside the face join the pieces into closed loops. Both lines are one curve
 //! on the surface, so their nodes are made once and shared: the face stays closed across it.
 
+use crate::body::CurveRange;
 use solidcraft_geom::Vec3;
 use solidcraft_geom::tess::EvalSurface;
 
@@ -375,11 +376,10 @@ pub(crate) fn turns_more_than_once(solid: &crate::body::Solid) -> bool {
             let mut prev: Option<f64> = None;
             for e in wire.edge_iter() {
                 let c = e.oriented_curve();
-                let (t0, t1) = c.range_tuple();
                 // Samples dense enough that no step turns half way round.
                 let mut n = 16usize;
                 let steps = loop {
-                    let xs: Vec<f64> = (0..=n).map(|i| angle(c.subs(t0 + (t1 - t0) * i as f64 / n as f64))).collect();
+                    let xs: Vec<f64> = (0..=n).map(|i| angle(c.subs(c.range().step(i, n)))).collect();
                     let ok = xs.windows(2).all(|w| ((w[1] - w[0] + std::f64::consts::PI).rem_euclid(tau) - std::f64::consts::PI).abs() < 1.0);
                     if ok || n >= 4096 {
                         break xs;

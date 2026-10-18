@@ -11,7 +11,7 @@ use solidcraft_geom::Vec3;
 use truck_modeling as mt;
 
 use crate::Result;
-use crate::body::{Body, Solid, edge_order};
+use crate::body::{Body, CurveRange, Solid, edge_order};
 use crate::history::{Change, EdgeOrigin, FaceOrigin, FaceProv, History};
 use crate::record;
 
@@ -125,12 +125,10 @@ const EVALUATION_SAMPLES: usize = 32;
 /// healing and measuring all sample the edge and stumble over the gap.
 pub(crate) fn edges_evaluate(solid: &Solid) -> bool {
     use truck_meshalgo::prelude::TrySubs;
-    use truck_modeling::BoundedCurve;
     solid.boundaries().iter().flat_map(|shell| shell.edge_iter()).all(|edge| {
         let curve = edge.curve();
-        let (t0, t1) = curve.range_tuple();
         (0..=EVALUATION_SAMPLES).all(|k| {
-            let t = t0 + (t1 - t0) * k as f64 / EVALUATION_SAMPLES as f64;
+            let t = curve.range().step(k, EVALUATION_SAMPLES);
             curve.try_subs(t).is_some_and(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
         })
     })

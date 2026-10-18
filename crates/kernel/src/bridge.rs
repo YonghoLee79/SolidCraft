@@ -16,12 +16,12 @@
 //! speed) by finite differences: the second derivative of a surface curve with a unit tangent is
 //! its curvature vector, and the third is the arclength derivative of that curvature vector.
 
-use mt::{BoundedCurve, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
+use mt::{ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
 use solidcraft_geom::Vec3;
 use solidcraft_geom::bspline::{CurveN, HPoint, NurbsSurface};
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::surfaces::surface_body;
 use crate::{KernelError, Result, guard};
 
@@ -167,14 +167,14 @@ impl ChainLine {
         };
         for (i, e) in edges.iter().enumerate() {
             let c = e.curve();
-            let (t0, t1) = c.range_tuple();
-            if !(t1 > t0) || ![t0, t1].into_iter().all(f64::is_finite) {
+            let r = c.range();
+            if !(r.hi() > r.lo()) || ![r.lo(), r.hi()].into_iter().all(f64::is_finite) {
                 return Err(KernelError::Invalid("an edge has no parameter range".into()));
             }
             for k in 0..=PER_EDGE {
                 // The segment that starts at this point: along this edge, or the zero-length join
                 // to the next edge.
-                let t = t0 + (t1 - t0) * k as f64 / PER_EDGE as f64;
+                let t = r.step(k, PER_EDGE);
                 push(&mut samples, from_p3(c.subs(t)), i, t);
             }
             curves.push(c);

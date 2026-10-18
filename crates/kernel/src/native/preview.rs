@@ -1,7 +1,8 @@
 //! Bounded provisional tessellation. Fixed sampling avoids untrusted adaptive
 //! subdivision before output budgets can be checked; editing uses the normal mesh.
 use super::{Body, Result, invalid};
-use mt::{BoundedCurve, ParametricCurve};
+use crate::body::CurveRange;
+use mt::ParametricCurve;
 use solidcraft_geom::{Mesh, Vec3};
 
 use truck_modeling as mt;
@@ -68,9 +69,9 @@ pub fn native_preview_mesh(body: &Body, detail: usize, remaining: &mut usize) ->
                     if count > 4096 {
                         return Err(invalid("preview boundary budget"));
                     }
-                    let (a, b) = curve.range_tuple();
+                    let r = curve.range();
                     for i in 0..n {
-                        let t = a * (1. - i as f64 / n as f64) + b * (i as f64 / n as f64);
+                        let t = r.lo() * (1. - i as f64 / n as f64) + r.hi() * (i as f64 / n as f64);
                         let point = match &curve {
                             mt::Curve::IntersectionCurve(c) => c.leader().subs(t),
                             _ => curve.subs(t),

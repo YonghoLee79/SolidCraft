@@ -7,6 +7,7 @@
 //! exactly from its start vertex to its end vertex. Lengths are scaled to millimetres while
 //! reading.
 
+use crate::body::CurveRange;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use mt::{BoundedCurve, Cut, InnerSpace, Invertible, MetricSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
@@ -505,18 +506,18 @@ fn nearest_param<C>(c: &C, p: mt::Point3) -> Option<(f64, f64)>
 where
     C: ParametricCurve<Point = mt::Point3> + BoundedCurve + SearchNearestParameter<mt::D1, Point = mt::Point3>,
 {
-    let (t0, t1) = c.range_tuple();
+    let r = c.range();
     let n = 256;
-    let mut best = (t0, f64::INFINITY);
+    let mut best = (r.lo(), f64::INFINITY);
     for i in 0..=n {
-        let t = t0 + (t1 - t0) * i as f64 / n as f64;
+        let t = r.step(i, n);
         let d = c.subs(t).distance(p);
         if d < best.1 {
             best = (t, d);
         }
     }
     if let Some(t) = c.search_nearest_parameter(p, best.0, 64) {
-        let t = t.clamp(t0, t1);
+        let t = r.clamp(t);
         let d = c.subs(t).distance(p);
         if d < best.1 {
             best = (t, d);
@@ -527,13 +528,13 @@ where
 
 /// Sub-curve on `[a, b]` (inside the curve's range).
 fn sub_curve<C: Cut + BoundedCurve + Clone>(c: &C, a: f64, b: f64) -> C {
-    let (t0, t1) = c.range_tuple();
-    let eps = (t1 - t0).abs() * 1e-9;
+    let r = c.range();
+    let eps = r.span() * 1e-9;
     let mut out = c.clone();
-    if a > t0 + eps {
+    if a > r.lo() + eps {
         out = out.cut(a);
     }
-    if b < t1 - eps {
+    if b < r.hi() - eps {
         let _ = out.cut(b);
     }
     out
@@ -544,32 +545,32 @@ fn spline_pieces<C>(c: &C, ps: mt::Point3, pe: mt::Point3, sense: bool, closed: 
 where
     C: ParametricCurve<Point = mt::Point3> + BoundedCurve + SearchNearestParameter<mt::D1, Point = mt::Point3> + Cut + Clone + Invertible,
 {
-    let (t0, t1) = c.range_tuple();
+    let r = c.range();
     let (ts, ds) = nearest_param(c, ps).ok_or("spline evaluation failed")?;
     let (te, de) = nearest_param(c, pe).ok_or("spline evaluation failed")?;
     if ds > tol || de > tol {
         return Err(format!("edge vertices are {:.3e} mm off their curve", ds.max(de)));
     }
-    let span = t1 - t0;
+    let span = r.span();
     let near = |a: f64, b: f64| (a - b).abs() <= span * 1e-7;
     let mut pieces = if closed {
         // Whole closed curve starting at the vertex.
-        if near(ts, t0) || near(ts, t1) {
-            let m = t0 + span * 0.5;
-            vec![sub_curve(c, t0, m), sub_curve(c, m, t1)]
+        if near(ts, r.lo()) || near(ts, r.hi()) {
+            let m = r.lo() + span * 0.5;
+            vec![sub_curve(c, r.lo(), m), sub_curve(c, m, r.hi())]
         } else {
-            vec![sub_curve(c, ts, t1), sub_curve(c, t0, ts)]
+            vec![sub_curve(c, ts, r.hi()), sub_curve(c, r.lo(), ts)]
         }
     } else {
         let (mut a, mut b) = if sense { (ts, te) } else { (te, ts) };
         // A closed curve traversed across its seam.
-        if a >= b && c.subs(t0).distance(c.subs(t1)) <= tol {
-            if near(b, t0) {
-                b = t1;
-            } else if near(a, t1) {
-                a = t0;
+        if a >= b && c.subs(r.lo()).distance(c.subs(r.hi())) <= tol {
+            if near(b, r.lo()) {
+                b = r.hi();
+            } else if near(a, r.hi()) {
+                a = r.lo();
             } else {
-                let mut v = vec![sub_curve(c, a, t1), sub_curve(c, t0, b)];
+                let mut v = vec![sub_curve(c, a, r.hi()), sub_curve(c, r.lo(), b)];
                 if !sense {
                     v.reverse();
                     v.iter_mut().for_each(|x| x.invert());
@@ -1149,8 +1150,7 @@ pub(crate) fn surface(cx: &Ctx, id: u64, extent: &[mt::Point3], seam: &[mt::Poin
                 mt::Curve::NurbsCurve(c) => c,
                 mt::Curve::IntersectionCurve(_) => return Err("unsupported extrusion profile".into()),
             };
-            let (t0, t1) = nurbs.range_tuple();
-            let profile: Vec<mt::Point3> = (0..=32).map(|i| nurbs.subs(t0 + (t1 - t0) * i as f64 / 32.0)).collect();
+            let profile: Vec<mt::Point3> = (0..=32).map(|i| nurbs.subs(nurbs.range().step(i, 32))).collect();
             let (plo, phi) = span_along(&profile, mt::Point3::new(0.0, 0.0, 0.0), d);
             let (elo, ehi) = span_along(extent, mt::Point3::new(0.0, 0.0, 0.0), d);
             let (lo, hi) = (elo - phi, ehi - plo);

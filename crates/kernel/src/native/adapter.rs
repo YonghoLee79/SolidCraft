@@ -330,6 +330,7 @@ fn load_surface(s: b::Surface) -> Result<mt::Surface> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body::CurveRange;
     use mt::{BoundedCurve, InnerSpace, ParametricCurve, Transformed};
 
     #[test]
@@ -390,9 +391,8 @@ mod tests {
         let record = save_curve(&curve, 0).unwrap();
         assert!(matches!(record, b::Curve::SurfaceIntersection { .. }), "the procedural curve itself, not a fit");
         let restored = load_curve(record.clone()).unwrap();
-        let (a, b) = curve.range_tuple();
         for i in 0..=64 {
-            let t = a + (b - a) * i as f64 / 64.;
+            let t = curve.range().step(i, 64);
             assert_eq!(curve.subs(t), restored.subs(t), "sample {i}");
         }
         assert_eq!(save_curve(&restored, 0).unwrap(), record);

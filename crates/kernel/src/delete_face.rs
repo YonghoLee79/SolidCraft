@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashMap};
 use solidcraft_geom::{Aabb3, Vec3};
 use truck_modeling::{self as mt, builder};
 
-use crate::body::{Body, Solid, from_p3, p3};
+use crate::body::{Body, CurveRange, Solid, from_p3, p3};
 use crate::{KernelError, Result, guard};
 
 fn fail(m: impl Into<String>) -> KernelError {
@@ -25,16 +25,15 @@ fn fail(m: impl Into<String>) -> KernelError {
 /// Outward plane (unit normal, offset) of a face, if it is planar: sampled along its edges,
 /// the surface's outward normal stays the same and the points stay on one plane.
 fn face_plane(f: &mt::Face, tol: f64) -> Option<(Vec3, f64)> {
-    use mt::{BoundedCurve, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
+    use mt::{ParametricCurve, ParametricSurface3D, SearchNearestParameter};
     let surf = f.oriented_surface();
     let mut pts: Vec<(Vec3, Vec3)> = Vec::new();
     let mut last: Option<(f64, f64)> = None;
     for w in f.boundaries() {
         for e in w.edge_iter() {
             let c = e.oriented_curve();
-            let (t0, t1) = c.range_tuple();
             for k in 0..6 {
-                let p = c.subs(t0 + (t1 - t0) * k as f64 / 6.0);
+                let p = c.subs(c.range().step(k, 6));
                 let (u, v) = surf.search_nearest_parameter(p, last, 50)?;
                 last = Some((u, v));
                 let n = surf.normal(u, v);

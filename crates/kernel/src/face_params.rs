@@ -11,7 +11,7 @@ use solidcraft_geom::tess::EvalSurface;
 use solidcraft_geom::{Ring, Vec3};
 use truck_modeling as mt;
 
-use crate::body::from_p3;
+use crate::body::{CurveRange, from_p3};
 use crate::tess::uv::{self, Domain};
 use crate::{KernelError, Result};
 
@@ -82,10 +82,9 @@ pub(crate) fn sample_loop(s: &EvalSurface, dom: &Domain, wire: &mt::Wire, accept
     let mut prev: Option<[f64; 2]> = None;
     for e in wire.edge_iter() {
         let c = e.oriented_curve();
-        let (t0, t1) = c.range_tuple();
         let mut samples = Vec::with_capacity(EDGE_SAMPLES + 1);
         for k in 0..=EDGE_SAMPLES {
-            let t = t0 + (t1 - t0) * k as f64 / EDGE_SAMPLES as f64;
+            let t = c.range().step(k, EDGE_SAMPLES);
             let p = from_p3(c.subs(t));
             let q = parameters(s, dom, p, prev, accept)?;
             samples.push((t, p, q));
@@ -179,12 +178,9 @@ pub(crate) fn extreme(s: &EvalSurface, dom: &Domain, lp: &LoopSamples, d: usize,
 
 /// Whether the curve passes within `tol` of `p`.
 pub(crate) fn passes(curve: &mt::Curve, p: mt::Point3, tol: f64) -> bool {
-    let (t0, t1) = curve.range_tuple();
-    let start = (0..=64)
-        .map(|k| t0 + (t1 - t0) * k as f64 / 64.0)
-        .min_by(|a, b| curve.subs(*a).distance(p).total_cmp(&curve.subs(*b).distance(p)))
-        .unwrap_or(t0);
-    let t = curve.search_nearest_parameter(p, Some(start), 100).unwrap_or(start).clamp(t0.min(t1), t0.max(t1));
+    let r = curve.range();
+    let start = (0..=64).map(|k| r.step(k, 64)).min_by(|a, b| curve.subs(*a).distance(p).total_cmp(&curve.subs(*b).distance(p))).unwrap_or(r.lo());
+    let t = r.clamp(curve.search_nearest_parameter(p, Some(start), 100).unwrap_or(start));
     curve.subs(t).distance(p) <= tol
 }
 
@@ -250,12 +246,12 @@ pub(crate) fn iso_curve(surface: &mt::Surface, along_u: bool, w: f64, from: f64,
 /// The piece of `curve` between its parameters `from` and `to`, running from `from`.
 pub(crate) fn piece(mut curve: mt::Curve, from: f64, to: f64) -> mt::Curve {
     let (lo, hi) = if from < to { (from, to) } else { (to, from) };
-    let (t0, t1) = curve.range_tuple();
-    let eps = (t1 - t0).abs() * 1e-12;
-    if lo > t0 + eps {
+    let r = curve.range();
+    let eps = r.span() * 1e-12;
+    if lo > r.lo() + eps {
         curve = curve.cut(lo);
     }
-    if hi < t1 - eps {
+    if hi < r.hi() - eps {
         let _ = curve.cut(hi);
     }
     if from > to {

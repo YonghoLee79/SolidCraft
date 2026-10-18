@@ -36,7 +36,7 @@ use solidcraft_geom::Vec3;
 use solidcraft_geom::tess::{EvalSurface, FacePlan, TessPlan};
 use truck_modeling as mt;
 
-use crate::body::{Solid, edge_order};
+use crate::body::{CurveRange, Solid, edge_order};
 use crate::{KernelError, Result};
 
 /// How the faces of a plan were meshed.
@@ -161,7 +161,7 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>) -> Result<
 /// off the surface's own parameter range is off it. The planner needs this of every face; a
 /// blend that runs on past the end of a neighbouring round's surface does not have it.
 pub(crate) fn boundaries_on_surfaces(solid: &Solid, accept: f64) -> bool {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     for face in solid.face_iter() {
         let Some(eval) = surface::eval_surface(&face.surface()) else { continue };
         if matches!(eval, EvalSurface::Plane { .. }) {
@@ -171,9 +171,8 @@ pub(crate) fn boundaries_on_surfaces(solid: &Solid, accept: f64) -> bool {
         let mut prev: Option<[f64; 2]> = None;
         for e in face.edge_iter() {
             let c = e.oriented_curve();
-            let (lo, hi) = c.range_tuple();
             for k in 0..=32 {
-                let p = crate::body::from_p3(c.subs(lo + (hi - lo) * f64::from(k) / 32.0));
+                let p = crate::body::from_p3(c.subs(c.range().step(k, 32)));
                 match uv::project(&eval, &dom, p, prev, accept) {
                     Some(uv) => prev = Some(uv),
                     None => return false,
