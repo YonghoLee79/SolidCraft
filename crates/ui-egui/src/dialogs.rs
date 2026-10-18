@@ -3604,7 +3604,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let mut out = Vec::new();
             for place in places {
                 let mut params = place;
-                params["diameter"] = json!(diameter);
+                if !opts.tapped {
+                    params["diameter"] = json!(diameter);
+                }
                 params["type"] = json!(ty);
                 if to_object_on(&d.inputs) {
                     params["to"] = to_object_point(&d.inputs).ok_or("select the object to drill to")?;
@@ -3614,7 +3616,8 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 if ty == "drilled" {
                     params["tip_angle"] = json!(opts.tip_angle);
                 }
-                if opts.tapped && !opts.thread.trim().is_empty() {
+                if opts.tapped {
+                    solidcraft_engine::doc::parse_metric_thread(&opts.thread).ok_or("select a valid metric thread size")?;
                     params["thread"] = json!(opts.thread.trim());
                 }
                 match *kind {

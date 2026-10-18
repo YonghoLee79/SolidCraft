@@ -11,6 +11,45 @@ use crate::ui_kit::text_row;
 /// The coarse and current pitches are included separately; custom pairs remain editable.
 const PITCHES: &[f64] = &[0.2, 0.25, 0.35, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
+/// Tapped holes use the existing metric catalogue; the engine derives the tap drill.
+/// Explicit designations also allow pitches outside the coarse-size presets.
+pub(crate) fn hole_rows(ui: &mut egui::Ui, designation: &mut String) -> bool {
+    row_label(ui, "Profile");
+    ui.label(tr("ISO metric"));
+    ui.end_row();
+
+    row_label(ui, "Size");
+    let sizes = metric_thread_sizes();
+    let current = parse_metric_thread(designation);
+    let mut selected = current.and_then(|pair| sizes.iter().position(|s| *s == pair)).unwrap_or(sizes.len());
+    let before = selected;
+    let mut labels: Vec<String> = sizes.iter().map(|(d, p)| format!("M{d} × {p}")).collect();
+    labels.push(tr("Custom").to_string());
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    combo(ui, "hole_thread_catalogue", &labels, &mut selected);
+    if selected != before
+        && let Some((d, p)) = sizes.get(selected)
+    {
+        *designation = format!("M{d}x{p}");
+    }
+    ui.end_row();
+
+    row_label(ui, "Designation");
+    let r = ui.add(egui::TextEdit::singleline(designation).hint_text("M5 or M5x0.5"));
+    ui.end_row();
+    row_label(ui, "Diameter");
+    match parse_metric_thread(designation) {
+        Some((d, p)) => {
+            ui.label(format!("{} mm", d - p));
+        }
+        None => {
+            ui.label(tr("Select size"));
+        }
+    }
+    ui.end_row();
+    r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+}
+
 /// Returns (Enter pressed, automatic sizing requested).
 pub(crate) fn rows(ui: &mut egui::Ui, designation: &mut String, suggested: &mut Option<String>, modeled: &mut bool, full: &mut bool) -> (bool, bool) {
     form_row(ui, "Profile", |ui| {
