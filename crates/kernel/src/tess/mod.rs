@@ -61,6 +61,14 @@ const PARALLEL_EDGES: usize = 256;
 const MAX_LINES: usize = 1024;
 /// Most points Ruppert refinement may add to one face, beyond its seeds.
 const MAX_REFINE: usize = 20_000;
+/// How far a face's boundary may lie off its surface, as a fraction of the body's extent: a
+/// file writes its curves and surfaces to its own uncertainty, which a reader keeps below a
+/// thousandth of the model. See `accept` in [`plan_face`].
+const OFF_SURFACE: f64 = 1e-3;
+/// Two boundary nodes this close together on the surface (mm) are one node. Far below any
+/// spacing a mesh can carry, and far above the parameters a projection tells apart. See
+/// [`drop_collapsed`].
+const SAME_NODE: f64 = 1e-6;
 
 fn unsupported(what: impl std::fmt::Display) -> KernelError {
     KernelError::Failed(format!("not supported yet: tessellation: {what}"))
@@ -279,6 +287,41 @@ fn drop_slits(loops3: &[Vec<Vec3>], known: &[Vec<Option<[f64; 2]>>], eps: f64) -
     (out3, outq)
 }
 
+/// Boundary nodes a loop keeps only one of: nodes whose parameters land on the node before them.
+///
+/// A boundary that runs a little off its surface (a STEP file writes its curves and surfaces to
+/// its own uncertainty, so an edge may lie micrometres off the face it bounds) projects onto the
+/// nearest surface point. Around a convex corner of the surface every point of such an edge is
+/// nearest that corner, so a whole run of nodes comes out with the corner's parameters. The finer
+/// the chord tolerance, the more nodes the run holds, and a boundary that repeats a point in
+/// (u, v) encloses no area there and cannot be triangulated (#1721).
+///
+/// One node stands for the run. The nodes dropped are nearer to it than `SAME_NODE` on the
+/// surface, so the face is the same without them.
+fn drop_collapsed(l: &mut seam::Loop, speed: [f64; 2]) {
+    let eps = |d: usize| {
+        let s = speed.get(d).copied().unwrap_or(1.0);
+        if s.is_finite() && s > 0.0 { SAME_NODE / s } else { 0.0 }
+    };
+    let (eu, ev) = (eps(0), eps(1));
+    let same = |a: &[f64; 2], b: &[f64; 2]| (a[0] - b[0]).abs() <= eu && (a[1] - b[1]).abs() <= ev;
+    let (mut uv, mut pts) = (Vec::with_capacity(l.uv.len()), Vec::with_capacity(l.pts.len()));
+    for (q, p) in l.uv.iter().zip(&l.pts) {
+        if uv.last().is_some_and(|last| same(last, q)) {
+            continue;
+        }
+        uv.push(*q);
+        pts.push(*p);
+    }
+    // The loop is cyclic: its last node may land on its first.
+    while uv.len() > 2 && uv.last().zip(uv.first()).is_some_and(|(a, b)| same(a, b)) {
+        uv.pop();
+        pts.pop();
+    }
+    l.uv = uv;
+    l.pts = pts;
+}
+
 /// Bring every loop of a face into the same period as its outer boundary. A loop is projected
 /// on its own, and a periodic surface repeats, so a hole can come out a whole turn away from the
 /// boundary it lies in — where it no longer cuts the face, and the face is drawn over its hole.
@@ -355,7 +398,11 @@ fn plan_face(
     let tol = rules.tol;
     let (h, speed) = size;
     let dom = uv::domain(s);
-    let accept = (tol * 10.0).max(1e-6);
+    // How far a boundary node may lie off its surface and still be projected. An imported
+    // boundary lies off it by up to the file's own uncertainty, which is a property of the body,
+    // not of the mesh asked for: a finer chord tolerance must not refuse a boundary a coarser
+    // one accepted, or zooming in would drop the face (#1721).
+    let accept = (tol * 10.0).max(rules.extent * OFF_SURFACE).max(1e-6);
     let fail = |why: &str| unsupported(format!("face {fi}: {why}"));
     // Project every loop, unwrapping periodic parameters along it.
     let mut projected: Vec<seam::Loop> = Vec::with_capacity(loops3.len());
@@ -378,7 +425,9 @@ fn plan_face(
             luv.push(q);
             prev = Some(q);
         }
-        projected.push(seam::Loop { uv: luv, pts: pts.clone() });
+        let mut l = seam::Loop { uv: luv, pts: pts.clone() };
+        drop_collapsed(&mut l, speed);
+        projected.push(l);
     }
     align_periods(&mut projected, &dom);
     // A loop that winds around a periodic direction does not close in (u, v): the face is cut

@@ -1065,6 +1065,34 @@ fn band_faces_split_when_ring_edges_run_off_their_surface() {
     assert!(rel(area.iter().sum::<f64>(), want) < 5e-3, "{area:?} sums to {} not {want}", area.iter().sum::<f64>());
     // Neither half of the split is a sliver: the split line runs from ring to ring.
     assert!(area.iter().all(|a| *a > 0.2 * side * H), "a face of the split tube is nearly empty: {area:?}");
+    // The body closes: its volume is the pentagon prism's. `measure` tessellates far finer than
+    // any display does, and the planner used to give up on a boundary running off its surface
+    // once the chord tolerance came near the gap. One face without a plan costs the whole body
+    // its plan, and the reference mesher cannot mesh a face on a closed B-spline surface at all,
+    // so both halves of the band came out with no triangles: the volume was the top cap's alone.
+    let vol = measure(&ib.body).unwrap().volume;
+    let want_vol = 2.5 * R * R * (std::f64::consts::TAU / 5.0).sin() * H;
+    assert!(rel(vol, want_vol) < 1e-3, "the split band does not close the body: {vol} not {want_vol}");
+    // Every face keeps its triangles at every tolerance, coarse to fine.
+    for t in [5e-2, 1e-2, 1e-3, 3e-4, 1e-4] {
+        let plan = ib.body.display_plan(t).unwrap_or_else(|e| panic!("no display plan at tol {t}: {e}"));
+        let bare: Vec<u32> = plan.faces.iter().filter(|f| f.triangles.is_empty()).map(|f| f.face).collect();
+        assert!(bare.is_empty(), "faces {bare:?} have no triangles at tol {t}");
+    }
+    // What the viewport and a snapshot actually draw: the display tolerance with a facet angle.
+    // The angle divides an edge wherever it kinks, far below the chord tolerance, which is what
+    // used to crowd the boundary against a corner of the surface and leave the band undrawn.
+    let tol = (ib.body.size() * 1e-3).max(1e-3);
+    let shown = ib.body.reference_display_mesh_angular(tol, crate::DISPLAY_ANGLE).unwrap();
+    let mut drawn = vec![0.0f64; ib.body.face_count()];
+    for (t, f) in shown.triangles.iter().zip(&shown.tri_face) {
+        let (a, b, c) = (shown.positions[t[0] as usize], shown.positions[t[1] as usize], shown.positions[t[2] as usize]);
+        if let Some(sum) = drawn.get_mut(*f as usize) {
+            *sum += 0.5 * (b - a).cross(c - a).len();
+        }
+    }
+    assert!(drawn.iter().all(|a| *a > 0.2 * side * H), "a face of the split tube is not drawn: {drawn:?}");
+    assert!(rel(drawn.iter().sum::<f64>(), want) < 5e-3, "{drawn:?} sums to {} not {want}", drawn.iter().sum::<f64>());
 }
 
 /// Revolved faces of a mirrored tool keep their orientation through STEP (the writer used to
