@@ -1,5 +1,5 @@
 use serde::Serialize;
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Interval, Mesh, Vec3};
 use truck_meshalgo::prelude::*;
 use truck_modeling as mt;
 
@@ -491,6 +491,10 @@ pub(crate) fn v3(v: Vec3) -> mt::Vector3 {
 }
 pub(crate) fn from_p3(p: mt::Point3) -> Vec3 {
     Vec3::new(p.x, p.y, p.z)
+}
+/// The parameters of a bounded curve, front to back.
+pub(crate) fn range(c: &impl mt::BoundedCurve) -> Interval {
+    c.range_tuple().into()
 }
 
 /// The distinct edges of `faces` in order of first use, and the faces (by position) each one

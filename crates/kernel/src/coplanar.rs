@@ -28,7 +28,7 @@ use solidcraft_geom::{Aabb3, Ring, UnitVec3, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::shell_groups::boxes_separate;
-use crate::body::{Body, Solid, from_p3, p3, v3};
+use crate::body::{Body, Solid, from_p3, p3, range, v3};
 use crate::clearance::{Clearance, Occupancy};
 use crate::history::{Change, EdgeOrigin, FaceOrigin, FaceProv, History};
 use crate::{BoolOp, KernelError, Result, guard, record};
@@ -248,7 +248,7 @@ pub(crate) fn push_faces_exact(b: &Body, n: Vec3, d: f64, delta: f64) -> Result<
 /// the old one with a short prism of the faces' outline on each of them. Exact, with no boolean. The result has no
 /// history.
 pub(crate) fn grow_faces_exact(b: &Body, n: Vec3, d: f64, delta: f64) -> Result<Body> {
-    use mt::{BoundedCurve, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
+    use mt::{ParametricCurve, ParametricSurface3D, SearchNearestParameter};
     let size = b.size();
     let tol = (size * 1e-7).max(1e-9);
     let fail = |m: &str| KernelError::Failed(format!("growing a face: {m}"));
@@ -327,8 +327,8 @@ pub(crate) fn grow_faces_exact(b: &Body, n: Vec3, d: f64, delta: f64) -> Result<
                         // Its surface is the edge's curve swept along `n`, facing the way the face beside it does; a straight edge
                         // sweeps to a plane (truck makes that a B-spline patch, which does not mesh).
                         let curve = e.curve();
-                        let (t0, t1) = curve.range_tuple();
-                        let mid = from_p3(curve.subs(0.5 * (t0 + t1)));
+                        let r = range(&curve);
+                        let mid = from_p3(curve.subs(r.mid()));
                         let old = faces.get(beside).ok_or_else(|| fail("face"))?.oriented_surface();
                         let Some((u0, v0)) = old.search_nearest_parameter(p3(mid), None, 100) else {
                             return Err(fail("which way a strip faces"));
@@ -337,7 +337,7 @@ pub(crate) fn grow_faces_exact(b: &Body, n: Vec3, d: f64, delta: f64) -> Result<
                         let outward = Vec3::new(outward.x, outward.y, outward.z);
                         // (a loft's straight section edge is a B-spline of degree one, so ask the points, not the type)
                         let straight = [0.2, 0.4, 0.6, 0.8].iter().all(|t| {
-                            let x = from_p3(curve.subs(t0 + t * (t1 - t0)));
+                            let x = from_p3(curve.subs(r.at(*t)));
                             let chord = from_p3(q.point()) - from_p3(p.point());
                             let off = (x - from_p3(p.point())).cross(chord).len();
                             off <= tol * 10.0 * chord.len()
@@ -398,23 +398,22 @@ pub(crate) fn grow_faces_exact(b: &Body, n: Vec3, d: f64, delta: f64) -> Result<
 
 /// An edge's points from its start to its end along its curve, `k + 1` of them.
 fn edge_samples(e: &mt::Edge, k: u32) -> Vec<Vec3> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let c = e.curve();
-    let (t0, t1) = c.range_tuple();
-    (0..=k).map(|i| from_p3(c.subs(t0 + (t1 - t0) * f64::from(i) / f64::from(k)))).collect()
+    range(&c).samples(k as usize).map(|t| from_p3(c.subs(t))).collect()
 }
 
 /// Where the edges of `b` cross the plane (n, d), one point for every time (edges are cut there before a body is trimmed).
 fn plane_crossings(b: &Body, n: Vec3, d: f64, tol: f64) -> Vec<Vec3> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     const STEPS: u32 = 64;
     let mut out = Vec::new();
     for e in b.solid.edge_iter() {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
+        let r = range(&c);
         let at = |t: f64| from_p3(c.subs(t));
         let h = |t: f64| n.dot(at(t)) - d;
-        let ts: Vec<f64> = (0..=STEPS).map(|i| t0 + (t1 - t0) * f64::from(i) / f64::from(STEPS)).collect();
+        let ts: Vec<f64> = r.samples(STEPS as usize).collect();
         // The samples clear of the plane, and between each two that lie on different sides the crossing.
         let clear: Vec<(f64, f64)> = ts.iter().map(|t| (*t, h(*t))).filter(|(_, x)| x.abs() > tol).collect();
         for pair in clear.windows(2) {
@@ -1247,13 +1246,12 @@ pub(crate) fn glue_all_caps(a: &Body, b: &Body) -> Option<Result<Body>> {
 }
 
 fn glue_impl(a: &Body, b: &Body, all_caps: bool) -> Option<Result<Body>> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let size = a.size().max(b.size());
     let tol = (size * 1e-7).max(1e-9) * 10.0;
     let mid = |e: &mt::Edge| {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
-        from_p3(c.subs((t0 + t1) * 0.5))
+        from_p3(c.subs(range(&c).mid()))
     };
     // Matching faces: same plane, opposite normals, the same edges. Every pair is glued: a
     // pair left behind would stay inside the result as a zero-thickness slit (issue #616).
@@ -1311,10 +1309,10 @@ fn glue_impl(a: &Body, b: &Body, all_caps: bool) -> Option<Result<Body>> {
                 let on = |f: &mt::Edge| {
                     use mt::SearchNearestParameter;
                     let c = f.curve();
-                    let (t0, t1) = c.range_tuple();
+                    let r = range(&c);
                     key(mid(f)) == key(m)
                         || c.search_nearest_parameter(p3(m), None, 100)
-                            .is_some_and(|t| (t0.min(t1) - 1e-9..=t0.max(t1) + 1e-9).contains(&t) && from_p3(c.subs(t)).dist(m) <= tol)
+                            .is_some_and(|t| r.inflated(1e-9).contains(t) && from_p3(c.subs(t)).dist(m) <= tol)
                 };
                 let hit = ea.iter().find(|f| {
                     let fe = (key(from_p3(f.absolute_front().point())), key(from_p3(f.absolute_back().point())));
@@ -1427,7 +1425,7 @@ pub(crate) fn inset(a: &Body, b: &Body) -> Option<Result<Body>> {
 
 /// [`inset`] with a face of `inner` inside one of `outer`, `outer` being operand `outer_operand`.
 fn inset_into(outer: &Body, inner: &Body, outer_operand: usize) -> Option<Result<Body>> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     const SAMPLES: usize = 64;
     const MAX_WORK: usize = 4_000_000;
     let size = outer.size().max(inner.size());
@@ -1441,8 +1439,8 @@ fn inset_into(outer: &Body, inner: &Body, outer_operand: usize) -> Option<Result
         let mut pts = Vec::with_capacity(w.len() * SAMPLES);
         for e in w.edge_iter() {
             let c = e.oriented_curve();
-            let (t0, t1) = c.range_tuple();
-            pts.extend((0..SAMPLES).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / SAMPLES as f64))));
+            let r = range(&c);
+            pts.extend((0..SAMPLES).map(|k| from_p3(c.subs(r.step(k, SAMPLES)))));
         }
         (!pts.is_empty() && pts.iter().all(|p| p.is_finite())).then(|| Ring::new(pts))
     };
