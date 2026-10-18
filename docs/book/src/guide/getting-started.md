@@ -142,6 +142,13 @@ so put a reverse proxy with a certificate in front (Caddy, Traefik, nginx); the 
 any URL path, such as `https://example.com/cad/`. To build the image without Compose, from the
 repository root: `docker build -f packaging/docker/Dockerfile -t solidcraft-web .`
 
+### Free orbit and Normal to Selection
+
+Enable **Preferences → Navigation → Free orbit** to rotate the mouse and 3D mouse continuously
+through both poles, preserving roll without axis snapping. It defaults to off for every mouse
+preset. With SolidWorks navigation, right-click a planar face and choose **Normal to Selection**
+to use Look At (also Ctrl+8); repeat to flip the side, preserving scale and projection.
+
 ### 3D mouse in the browser
 
 The web app reads a 3Dconnexion SpaceMouse or SpaceNavigator through the browser's Gamepad API,
