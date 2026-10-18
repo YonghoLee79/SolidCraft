@@ -23,6 +23,19 @@ pub struct Body {
     /// Bounding-box diagonal, measured by [`Body::new`] while it read the vertices anyway; 0
     /// means "not measured, walk the geometry". Every kernel tolerance is a fraction of it.
     pub(crate) size: f64,
+    /// How far this body's face boundaries may lie off their surfaces (mm) and still be taken as
+    /// lying on them. `Some` for a body read from a file that declares its own numeric
+    /// uncertainty (a STEP file's `GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT`, see
+    /// `crate::step_in::Units::tol`); `None` for a body this kernel built, which has no such
+    /// declaration.
+    ///
+    /// This one tolerance is deliberately **not** a fraction of [`Body::size`], unlike the rest:
+    /// a file's uncertainty says how accurately that file was written, and that does not grow
+    /// with the part. A fraction of the size let a 2 m part accept a boundary 2 mm off its
+    /// surface and project it there without a word, while a 20 mm copy of the very same part
+    /// accepted only 0.02 mm. The exception is the point of the field; see `accept` in
+    /// [`crate::tess::plan_face`].
+    pub(crate) boundary_tol: Option<f64>,
     /// The last volume measured for this solid and the tolerance it was measured at, shared by
     /// clones because they share the solid. A boolean measures its operands, and a later boolean
     /// takes the result as an operand again, so the same body is measured twice otherwise.
@@ -612,6 +625,7 @@ impl Body {
         Ok(Body {
             solid: std::sync::Arc::new(solid),
             size: if span.is_finite() && span > 0.0 { span } else { 0.0 },
+            boundary_tol: None,
             volume: Some(std::sync::Arc::new(std::sync::Mutex::new(None))),
             coarse_missing: Some((tol, missing)),
             mesh: None,
@@ -651,6 +665,7 @@ impl Body {
         Ok(Body {
             solid: std::sync::Arc::new(solid),
             size: if span.is_finite() && span > 0.0 { span } else { 0.0 },
+            boundary_tol: None,
             volume: Some(std::sync::Arc::new(std::sync::Mutex::new(None))),
             coarse_missing: coarse,
             mesh: None,
@@ -679,7 +694,12 @@ impl Body {
             return Err(KernelError::Invalid("degenerate placement".into()));
         }
         let rigid = crate::ops::rigid_placement(&a);
-        Body::placed_as_is(mt::builder::transformed(&*self.solid, *m), det < 0.0, rigid.then_some(self.coarse_missing).flatten())
+        let out = Body::placed_as_is(mt::builder::transformed(&*self.solid, *m), det < 0.0, rigid.then_some(self.coarse_missing).flatten())?;
+        // A placement that does not change distances leaves the boundaries exactly as far off
+        // their surfaces as they were, so the file's own figure still describes them (see
+        // [`Body::boundary_tol`]); one that scales the part does not, and the copy declares
+        // nothing. The same rule as the mesh count above.
+        Ok(if rigid { out.with_boundary_tol(self.boundary_tol) } else { out })
     }
 
     pub(crate) fn inherit_regularization_protection(mut self, input: &Body) -> Self {
@@ -965,6 +985,14 @@ impl Body {
         self.color
     }
 
+    /// The same body, with how far its boundaries may lie off their surfaces (mm) as the file it
+    /// was read from declares (see [`Body::boundary_tol`]). A value that is not finite and above
+    /// zero clears the declaration, which puts the body back on the kernel's own bound.
+    pub(crate) fn with_boundary_tol(mut self, tol: Option<f64>) -> Body {
+        self.boundary_tol = tol.filter(|t| t.is_finite() && *t > 0.0);
+        self
+    }
+
     /// The same body with a display colour.
     pub fn with_color(mut self, c: Option<[f32; 3]>) -> Body {
         self.color = c.filter(|c| c.iter().all(|x| x.is_finite())).map(|c| c.map(|x| x.clamp(0.0, 1.0)));
@@ -1178,7 +1206,7 @@ impl Body {
         if planned.unwrap_or(false) {
             let turn = (angle.is_finite() && angle > 0.0)
                 .then(|| crate::tess::size::Turn { angle: angle.max(MIN_DISPLAY_ANGLE), floor: tol * DISPLAY_ANGLE_FLOOR });
-            match guard("tessellate", || crate::tess::plan(&self.solid, tol, turn)) {
+            match guard("tessellate", || crate::tess::plan(&self.solid, tol, turn, self.boundary_tol)) {
                 Ok((plan, _)) => return Ok(plan.evaluate()),
                 Err(e) => log::debug!("no display plan ({e}); meshing the reference way"),
             }
@@ -1289,7 +1317,7 @@ impl Body {
         // The same angle and floor as the reference mesher's angular display mesh.
         let turn =
             angle.filter(|a| a.is_finite()).map(|a| crate::tess::size::Turn { angle: a.max(MIN_DISPLAY_ANGLE), floor: tol * DISPLAY_ANGLE_FLOOR });
-        guard("tessellate", || crate::tess::plan(&self.solid, tol, turn).map(|(plan, _)| plan))
+        guard("tessellate", || crate::tess::plan(&self.solid, tol, turn, self.boundary_tol).map(|(plan, _)| plan))
     }
 
     /// Planar faces whose boundary crosses itself: two of its loops crossing each other, or a

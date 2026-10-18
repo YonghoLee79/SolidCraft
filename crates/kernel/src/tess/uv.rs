@@ -296,7 +296,7 @@ mod tests {
             1,
             (0.0, std::f64::consts::TAU),
             (0.0, 1.0),
-            &Rules { tol: 0.01, max_len: f64::INFINITY, extent: 0.0, turn: None },
+            &Rules { tol: 0.01, max_len: f64::INFINITY, extent: 0.0, turn: None, boundary_tol: None },
             f64::INFINITY,
             10_000,
         );
@@ -305,7 +305,7 @@ mod tests {
             0,
             (0.0, 1.0),
             (0.0, std::f64::consts::TAU),
-            &Rules { tol: 0.01, max_len: f64::INFINITY, extent: 0.0, turn: None },
+            &Rules { tol: 0.01, max_len: f64::INFINITY, extent: 0.0, turn: None, boundary_tol: None },
             f64::INFINITY,
             10_000,
         );
@@ -318,7 +318,7 @@ mod tests {
             0,
             (0.0, 1.0),
             (0.0, std::f64::consts::TAU),
-            &Rules { tol: 0.01, max_len: f64::INFINITY, extent: 0.0, turn: None },
+            &Rules { tol: 0.01, max_len: f64::INFINITY, extent: 0.0, turn: None, boundary_tol: None },
             0.5,
             10_000,
         );
@@ -336,7 +336,7 @@ mod tests {
             1,
             (a0, a1),
             (0.0, 1.0),
-            &Rules { tol: 0.01, max_len: f64::INFINITY, extent: 0.0, turn: None },
+            &Rules { tol: 0.01, max_len: f64::INFINITY, extent: 0.0, turn: None, boundary_tol: None },
             f64::INFINITY,
             10_000,
         );

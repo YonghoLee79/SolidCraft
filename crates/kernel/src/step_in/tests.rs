@@ -247,7 +247,7 @@ fn parallel_body_preparation_reports_errors_in_place_and_preserves_placement() {
     // The second item is not in the file.
     let jobs: Vec<_> = [solid, 999_999_999, solid, solid]
         .into_iter()
-        .map(|item| parallel::Job { source: parallel::Source::Item { item, units }, placement, check_mesh: true })
+        .map(|item| parallel::Job { source: parallel::Source::Item { item, units }, placement, check_mesh: true, tol: units.tol })
         .collect();
     let serial = parallel::bodies(&ex, &jobs, 1);
     let threaded = parallel::bodies(&ex, &jobs, 4);
@@ -994,37 +994,77 @@ fn split_band_edges_are_seams() {
     assert!(m.seams.iter().filter(|s| **s).count() >= 2, "{:?}", m.seams);
 }
 
-/// A band face is split although its ring edges run a little off its surface. A file writes
-/// edges and surfaces to its own uncertainty, so the two disagree by a few micrometres; the
-/// split line lies on the surface and can only reach the surface points below the rings.
-#[test]
-fn band_faces_split_when_ring_edges_run_off_their_surface() {
-    // A five-sided tube on a B-spline surface closed around (radius 10, height 8), bounded by
-    // ring edges 4 µm outside it, with a seam edge up one corner used both ways.
-    const R: f64 = 10.0;
-    const H: f64 = 8.0;
-    const OFF: f64 = 0.004;
-    let corner = |k: usize, r: f64| {
+/// A five-sided tube on a B-spline surface closed around (radius `r`, height `h`), as one band
+/// face bounded by ring edges `off` mm outside the surface, with a seam edge up one corner used
+/// both ways; plus the two flat ends on the planes the rings lie in. The file declares
+/// `uncertainty` mm of uncertainty of its own, which is what tells a reader how far the rings
+/// may lie off the surface.
+///
+/// The part's size, the rings' off-surface distance and the declared uncertainty are separate on
+/// purpose: a real file's slop stays a few micrometres whether the part is 20 mm or 2 m across
+/// (see `off_surface_budget_follows_the_file_not_the_part_size`).
+#[derive(Clone, Copy)]
+struct RingEdgeTube {
+    /// Radius of the surface (mm).
+    r: f64,
+    /// Height of the tube (mm).
+    h: f64,
+    /// How far outside the surface the ring edges run (mm).
+    off: f64,
+    /// The uncertainty the file declares for itself (mm).
+    uncertainty: f64,
+}
+
+impl RingEdgeTube {
+    /// A 20 mm part with a few micrometres of slop and a micrometre of declared uncertainty:
+    /// what a well-behaved writer puts out.
+    fn small() -> RingEdgeTube {
+        RingEdgeTube { r: 10.0, h: 8.0, off: 0.004, uncertainty: 1e-3 }
+    }
+
+    /// The same part, and the same slop, scaled to about 2 m across.
+    fn large() -> RingEdgeTube {
+        RingEdgeTube { r: 1000.0, h: 800.0, ..RingEdgeTube::small() }
+    }
+
+    /// The volume the closed pentagon prism encloses (mm³).
+    fn volume(&self) -> f64 {
+        2.5 * self.r * self.r * (std::f64::consts::TAU / 5.0).sin() * self.h
+    }
+
+    /// The area of the five sides and the two five-sided ends together (mm²).
+    fn area(&self) -> f64 {
+        let side = 2.0 * self.r * (std::f64::consts::TAU / 10.0).sin();
+        5.0 * side * self.h + 5.0 * side * self.r * (std::f64::consts::TAU / 10.0).cos()
+    }
+
+    fn step(&self) -> String {
+        ring_edge_tube_step(self.r, self.h, self.off, self.uncertainty)
+    }
+}
+
+fn ring_edge_tube_step(r: f64, h: f64, off: f64, uncertainty: f64) -> String {
+    let corner = |k: usize, radius: f64| {
         let a = std::f64::consts::TAU * (k % 5) as f64 / 5.0;
-        (r * a.cos(), r * a.sin())
+        (radius * a.cos(), radius * a.sin())
     };
     let mut t = String::from(HEAD);
-    // Control net: the corners around (the first repeated to close it) × the two ends.
+    // Control net: the corners around (the first repeated to close it) x the two ends.
     let mut rows = Vec::new();
     for k in 0..=5 {
-        let (x, y) = corner(k, R);
+        let (x, y) = corner(k, r);
         let id = 100 + 2 * k as u64;
-        t += &format!("#{id}=CARTESIAN_POINT('',({x:.12},{y:.12},0.));\n#{}=CARTESIAN_POINT('',({x:.12},{y:.12},{H:.1}));\n", id + 1);
+        t += &format!("#{id}=CARTESIAN_POINT('',({x:.9},{y:.9},0.));\n#{}=CARTESIAN_POINT('',({x:.9},{y:.9},{h:.9}));\n", id + 1);
         rows.push(format!("(#{id},#{})", id + 1));
     }
     t += &format!(
         "#200=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,({}),.UNSPECIFIED.,.T.,.F.,.F.,(2,1,1,1,1,2),(2,2),(0.,1.,2.,3.,4.,5.),(0.,1.),.UNSPECIFIED.);\n",
         rows.join(",")
     );
-    // The rings, 4 µm outside the surface: each is one closed polyline edge.
+    // The rings, `off` mm outside the surface: each is one closed polyline edge.
     for k in 0..5u64 {
-        let (x, y) = corner(k as usize, R + OFF);
-        t += &format!("#{}=CARTESIAN_POINT('',({x:.12},{y:.12},0.));\n#{}=CARTESIAN_POINT('',({x:.12},{y:.12},{H:.1}));\n", 300 + k, 310 + k);
+        let (x, y) = corner(k as usize, r + off);
+        t += &format!("#{}=CARTESIAN_POINT('',({x:.9},{y:.9},0.));\n#{}=CARTESIAN_POINT('',({x:.9},{y:.9},{h:.9}));\n", 300 + k, 310 + k);
     }
     t += "#320=VERTEX_POINT('',#300);\n#321=VERTEX_POINT('',#310);\n";
     t += "#330=POLYLINE('',(#300,#301,#302,#303,#304,#300));\n#331=POLYLINE('',(#310,#311,#312,#313,#314,#310));\n";
@@ -1036,23 +1076,35 @@ fn band_faces_split_when_ring_edges_run_off_their_surface() {
     // The two ends, on the planes the rings lie in.
     t += "#370=CARTESIAN_POINT('',(0.,0.,0.));\n#371=DIRECTION('',(1.,0.,0.));\n#372=AXIS2_PLACEMENT_3D('',#370,#340,#371);\n#373=PLANE('',#372);\n";
     t += "#374=ORIENTED_EDGE('',*,*,#350,.F.);\n#375=EDGE_LOOP('',(#374));\n#376=FACE_OUTER_BOUND('',#375,.T.);\n#377=ADVANCED_FACE('',(#376),#373,.F.);\n";
-    t += &format!("#380=CARTESIAN_POINT('',(0.,0.,{H:.1}));\n#381=AXIS2_PLACEMENT_3D('',#380,#340,#371);\n#382=PLANE('',#381);\n");
+    t += &format!("#380=CARTESIAN_POINT('',(0.,0.,{h:.9}));\n#381=AXIS2_PLACEMENT_3D('',#380,#340,#371);\n#382=PLANE('',#381);\n");
     t += "#383=ORIENTED_EDGE('',*,*,#351,.T.);\n#384=EDGE_LOOP('',(#383));\n#385=FACE_OUTER_BOUND('',#384,.T.);\n#386=ADVANCED_FACE('',(#385),#382,.T.);\n";
     t += "#390=CLOSED_SHELL('',(#366,#377,#386));\n#391=MANIFOLD_SOLID_BREP('Tube',#390);\n#392=SHAPE_REPRESENTATION('',(#391),#20);\n";
-    // The file's uncertainty is 1 µm, so the ring edges are off the surface well inside it.
+    // What the file declares about its own numbers. This, and not the part's size, is how far a
+    // reader may let the ring edges lie off the surface.
     t += "#20=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#21))GLOBAL_UNIT_ASSIGNED_CONTEXT((#22,#23))REPRESENTATION_CONTEXT('',''));\n";
-    t += "#21=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-3),#22,'','');\n";
+    t += &format!("#21=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE({uncertainty:.9}),#22,'','');\n");
     t += "#22=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n#23=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\n";
     t += TAIL;
-    let imp = step_import(&t).unwrap();
+    t
+}
+
+/// Every check the split band must pass, at whatever size the part is: the band comes in as two
+/// faces, every face has triangles at every chord tolerance from coarse to fine, and the four
+/// faces together cover the tube once and close it.
+///
+/// Every tolerance here is a fraction of the body, so the same mesh is asked for at every scale;
+/// the rings' off-surface distance is the one thing that stays absolute.
+fn assert_ring_edge_tube_meshes(tube: &RingEdgeTube) {
+    let imp = step_import(&tube.step()).unwrap();
     assert!(!imp.warnings.iter().any(|w| w.contains("kept whole")), "{:?}", imp.warnings);
     let ib = &imp.bodies[0];
     assert_eq!(ib.file_faces, 3);
     assert_eq!(ib.body.face_count(), 4, "the band face is split in two: {:?}", imp.warnings);
     assert_eq!(ib.body.unmeshed_faces(), 0, "{:?}", imp.warnings);
+    let size = ib.body.size();
     // Every face is meshed, and the four together cover the tube once: five sides of
-    // 2·R·sin(36°) by the height, plus the two five-sided ends.
-    let m = ib.body.display_mesh(0.05).unwrap();
+    // 2*R*sin(36 deg) by the height, plus the two five-sided ends.
+    let m = ib.body.display_mesh(size * 2e-3).unwrap();
     let mut area = vec![0.0f64; ib.body.face_count()];
     for (t, f) in m.triangles.iter().zip(&m.tri_face) {
         let (a, b, c) = (m.positions[t[0] as usize], m.positions[t[1] as usize], m.positions[t[2] as usize]);
@@ -1060,21 +1112,22 @@ fn band_faces_split_when_ring_edges_run_off_their_surface() {
             *sum += 0.5 * (b - a).cross(c - a).len();
         }
     }
-    let side = 2.0 * R * (std::f64::consts::TAU / 10.0).sin();
-    let want = 5.0 * side * H + 5.0 * side * R * (std::f64::consts::TAU / 10.0).cos();
+    let side = 2.0 * tube.r * (std::f64::consts::TAU / 10.0).sin();
+    let want = tube.area();
     assert!(rel(area.iter().sum::<f64>(), want) < 5e-3, "{area:?} sums to {} not {want}", area.iter().sum::<f64>());
     // Neither half of the split is a sliver: the split line runs from ring to ring.
-    assert!(area.iter().all(|a| *a > 0.2 * side * H), "a face of the split tube is nearly empty: {area:?}");
+    assert!(area.iter().all(|a| *a > 0.2 * side * tube.h), "a face of the split tube is nearly empty: {area:?}");
     // The body closes: its volume is the pentagon prism's. `measure` tessellates far finer than
     // any display does, and the planner used to give up on a boundary running off its surface
     // once the chord tolerance came near the gap. One face without a plan costs the whole body
     // its plan, and the reference mesher cannot mesh a face on a closed B-spline surface at all,
     // so both halves of the band came out with no triangles: the volume was the top cap's alone.
     let vol = measure(&ib.body).unwrap().volume;
-    let want_vol = 2.5 * R * R * (std::f64::consts::TAU / 5.0).sin() * H;
+    let want_vol = tube.volume();
     assert!(rel(vol, want_vol) < 1e-3, "the split band does not close the body: {vol} not {want_vol}");
     // Every face keeps its triangles at every tolerance, coarse to fine.
-    for t in [5e-2, 1e-2, 1e-3, 3e-4, 1e-4] {
+    for frac in [2e-3, 4e-4, 4e-5, 1.1e-5, 4e-6] {
+        let t = size * frac;
         let plan = ib.body.display_plan(t).unwrap_or_else(|e| panic!("no display plan at tol {t}: {e}"));
         let bare: Vec<u32> = plan.faces.iter().filter(|f| f.triangles.is_empty()).map(|f| f.face).collect();
         assert!(bare.is_empty(), "faces {bare:?} have no triangles at tol {t}");
@@ -1082,7 +1135,7 @@ fn band_faces_split_when_ring_edges_run_off_their_surface() {
     // What the viewport and a snapshot actually draw: the display tolerance with a facet angle.
     // The angle divides an edge wherever it kinks, far below the chord tolerance, which is what
     // used to crowd the boundary against a corner of the surface and leave the band undrawn.
-    let tol = (ib.body.size() * 1e-3).max(1e-3);
+    let tol = (size * 1e-3).max(1e-3);
     let shown = ib.body.reference_display_mesh_angular(tol, crate::DISPLAY_ANGLE).unwrap();
     let mut drawn = vec![0.0f64; ib.body.face_count()];
     for (t, f) in shown.triangles.iter().zip(&shown.tri_face) {
@@ -1091,8 +1144,62 @@ fn band_faces_split_when_ring_edges_run_off_their_surface() {
             *sum += 0.5 * (b - a).cross(c - a).len();
         }
     }
-    assert!(drawn.iter().all(|a| *a > 0.2 * side * H), "a face of the split tube is not drawn: {drawn:?}");
+    assert!(drawn.iter().all(|a| *a > 0.2 * side * tube.h), "a face of the split tube is not drawn: {drawn:?}");
     assert!(rel(drawn.iter().sum::<f64>(), want) < 5e-3, "{drawn:?} sums to {} not {want}", drawn.iter().sum::<f64>());
+}
+
+/// A band face is split although its ring edges run a little off its surface. A file writes
+/// edges and surfaces to its own uncertainty, so the two disagree by a few micrometres; the
+/// split line lies on the surface and can only reach the surface points below the rings.
+#[test]
+fn band_faces_split_when_ring_edges_run_off_their_surface() {
+    assert_ring_edge_tube_meshes(&RingEdgeTube::small());
+}
+
+/// The very same fixture, the very same few micrometres of slop in the file, scaled to a part
+/// about 2 m across: it must still mesh. The accepted off-surface distance used to be a
+/// thousandth of the part, so a big part hid whatever it could not mesh behind a bound 100 times
+/// the small part's; this is the scaled copy that stops the bound from masking anything (#1721).
+#[test]
+fn band_faces_split_when_a_scaled_copy_runs_off_its_surface() {
+    assert_ring_edge_tube_meshes(&RingEdgeTube::large());
+}
+
+/// How far a boundary may lie off its surface comes from what the file declares about its own
+/// numbers, not from how big the part is. A writer puts a 2 m part's boundaries on their
+/// surfaces as accurately as a 20 mm part's, so a scaled copy must keep the accuracy of the
+/// original: the same slop is accepted at both sizes, and slop the file cannot account for is
+/// refused at both sizes (#1721).
+#[test]
+fn off_surface_budget_follows_the_file_not_the_part_size() {
+    // Whether the planner takes the ring edges as lying on the band's surface. Asked at a coarse
+    // chord tolerance and a fine one, because the answer must not depend on the mesh either: a
+    // face accepted while the model is far away must not drop out when the user zooms in.
+    let accepted = |tube: &RingEdgeTube| -> bool {
+        let imp = step_import(&tube.step()).unwrap();
+        let ib = &imp.bodies[0];
+        let size = ib.body.size();
+        [2e-3, 4e-6].iter().all(|fraction| ib.body.display_plan(size * fraction).is_ok())
+    };
+    // 4 µm of slop against 1 µm of declared uncertainty: the file accounts for it, so it is
+    // accepted at either size.
+    assert!(accepted(&RingEdgeTube::small()), "20 mm part, 4 µm off its surface");
+    assert!(accepted(&RingEdgeTube::large()), "2 m part, 4 µm off its surface");
+    // 2 mm is a thousandth of a 2 m part, which is exactly what the bound used to be: the 2 m
+    // copy projected such a boundary onto its surface without a word, while the 20 mm original
+    // refused it. Nothing in either file accounts for 2 mm, so both refuse it now.
+    for tube in [RingEdgeTube { off: 2.0, ..RingEdgeTube::small() }, RingEdgeTube { off: 2.0, ..RingEdgeTube::large() }] {
+        assert!(!accepted(&tube), "a part {} mm across accepts a boundary 2 mm off its surface", 2.0 * tube.r);
+    }
+    // The file's own figure decides, and only that: one part, one size, half a millimetre of
+    // slop, read twice. A declared micrometre refuses it; a declared 60 µm (ten times which is
+    // 0.6 mm, over the slop) accepts it. The part's size changes neither answer.
+    for r in [10.0, 1000.0] {
+        let tight = RingEdgeTube { r, h: 0.8 * r, off: 0.5, uncertainty: 1e-3 };
+        let loose = RingEdgeTube { uncertainty: 0.06, ..tight };
+        assert!(!accepted(&tight), "a part {} mm across accepts 0.5 mm of slop on 1 µm of declared uncertainty", 2.0 * r);
+        assert!(accepted(&loose), "a part {} mm across refuses 0.5 mm of slop on 60 µm of declared uncertainty", 2.0 * r);
+    }
 }
 
 /// Revolved faces of a mirrored tool keep their orientation through STEP (the writer used to
