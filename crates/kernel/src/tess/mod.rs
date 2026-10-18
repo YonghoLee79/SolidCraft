@@ -61,10 +61,11 @@ const PARALLEL_EDGES: usize = 256;
 const MAX_LINES: usize = 1024;
 /// Most points Ruppert refinement may add to one face, beyond its seeds.
 const MAX_REFINE: usize = 20_000;
-/// How far a face's boundary may lie off its surface, as a fraction of the body's extent: a
-/// file writes its curves and surfaces to its own uncertainty, which a reader keeps below a
-/// thousandth of the model. See `accept` in [`plan_face`].
-const OFF_SURFACE: f64 = 1e-3;
+/// How far a face's boundary may lie off its surface, as a fraction of the body's extent, for a
+/// body that declares no budget of its own: everything this kernel builds puts its boundaries on
+/// their surfaces far inside this. A body read from a file uses the file's declared uncertainty
+/// instead, which does not grow with the part. See `accept` in [`plan_face`].
+pub(crate) const OFF_SURFACE: f64 = 1e-3;
 /// Two boundary nodes this close together on the surface (mm) are one node. Far below any
 /// spacing a mesh can carry, and far above the parameters a projection tells apart. See
 /// [`drop_collapsed`].
@@ -76,10 +77,13 @@ fn unsupported(what: impl std::fmt::Display) -> KernelError {
 
 /// Plan the display tessellation of `solid` with chord tolerance `tol` and, when given, a
 /// facet angle no facet may turn more than (where it sags above the angle's floor).
-pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>) -> Result<(TessPlan, PlanStats)> {
+/// `boundary_tol`: how far the body's boundaries may lie off their surfaces (mm) as the file it
+/// was read from declares, `None` for a body this kernel built (see
+/// [`crate::body::Body::boundary_tol`]).
+pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_tol: Option<f64>) -> Result<(TessPlan, PlanStats)> {
     let faces: Vec<&mt::Face> = solid.face_iter().collect();
     let (edges, edge_faces) = edge_order(faces.iter().copied());
-    let rules = size::Rules::new(tol, size::extent(solid.vertex_iter().map(|v| crate::body::from_p3(v.point()))), turn);
+    let rules = size::Rules::new(tol, size::extent(solid.vertex_iter().map(|v| crate::body::from_p3(v.point()))), turn, boundary_tol);
     // Each face's surface and target side length, then every edge once at the smaller size of
     // its faces; faces then read their nodes. A planar face costs microseconds and a curved
     // one about a hundred, so the pool is used only where curved faces (or intersection
@@ -398,11 +402,21 @@ fn plan_face(
     let tol = rules.tol;
     let (h, speed) = size;
     let dom = uv::domain(s);
-    // How far a boundary node may lie off its surface and still be projected. An imported
-    // boundary lies off it by up to the file's own uncertainty, which is a property of the body,
-    // not of the mesh asked for: a finer chord tolerance must not refuse a boundary a coarser
-    // one accepted, or zooming in would drop the face (#1721).
-    let accept = (tol * 10.0).max(rules.extent * OFF_SURFACE).max(1e-6);
+    // How far a boundary node may lie off its surface and still be projected onto it. An
+    // imported boundary lies off it by up to the file's own uncertainty, which is a property of
+    // the body, not of the mesh asked for: a finer chord tolerance must not refuse a boundary a
+    // coarser one accepted, or zooming in would drop the face (#1721).
+    //
+    // A file states that uncertainty itself, and it does not grow with the part: the same writer
+    // puts a 2 m part's boundaries on their surfaces as accurately as a 20 mm part's. So a body
+    // read from such a file is held to the file's own figure, at every chord tolerance, and a
+    // scaled copy of a part keeps the accuracy of the original. A body this kernel built
+    // declares nothing, and keeps the bound it has always had: ten chord tolerances, or a
+    // thousandth of the body, whichever is larger.
+    let accept = match rules.boundary_tol {
+        Some(file) => file.max(1e-6),
+        None => (tol * 10.0).max(rules.extent * OFF_SURFACE).max(1e-6),
+    };
     let fail = |why: &str| unsupported(format!("face {fi}: {why}"));
     // Project every loop, unwrapping periodic parameters along it.
     let mut projected: Vec<seam::Loop> = Vec::with_capacity(loops3.len());

@@ -522,9 +522,11 @@ pub(crate) fn split_seams(body: &crate::Body) -> Option<crate::Body> {
         return None;
     }
     // How far a ring edge of such a face may lie off the surface it bounds (see `iso_curve`).
-    // This body was not read here, so no file states a figure for it: it keeps the kernel's own
-    // bound, a thousandth of the body, floored at 1 µm.
-    let tol = (body.size() * 1e-3).max(1e-6);
+    // A body read from a file is held to the file's own declared uncertainty; one this kernel
+    // built declares none and keeps the kernel's own bound, a thousandth of the body. The same
+    // two cases as `accept` in `crate::tess::plan_face`, without its chord-tolerance term:
+    // nothing is meshed here, so no mesh tolerance is asked for.
+    let tol = body.boundary_tol.unwrap_or(body.size() * crate::tess::OFF_SURFACE).max(1e-6);
     let mut shells: Vec<mt::Shell> = Vec::new();
     for sh in body.solid.boundaries() {
         let mut faces: Vec<mt::Face> = sh.face_iter().cloned().collect();

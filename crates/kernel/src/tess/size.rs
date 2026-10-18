@@ -59,14 +59,26 @@ pub(crate) struct Rules {
     /// body's own geometry rather than the mesh are fractions of it.
     pub extent: f64,
     pub turn: Option<Turn>,
+    /// How far the body's boundaries may lie off their surfaces (mm), as the file the body was
+    /// read from declares; `None` for a body this kernel built (see
+    /// [`crate::body::Body::boundary_tol`]). The one tolerance here that is *not* a fraction of
+    /// the extent, on purpose: a file's declared uncertainty does not grow with the part.
+    pub boundary_tol: Option<f64>,
 }
 
 impl Rules {
-    /// Rules for a body of extent `extent` (see [`extent`]).
-    pub(crate) fn new(tol: f64, extent: f64, turn: Option<Turn>) -> Rules {
+    /// Rules for a body of extent `extent` (see [`extent`]). `boundary_tol`: the body's declared
+    /// off-surface budget (mm), `None` for a body this kernel built.
+    pub(crate) fn new(tol: f64, extent: f64, turn: Option<Turn>, boundary_tol: Option<f64>) -> Rules {
         let sound = extent.is_finite() && extent > 0.0;
         let max_len = if sound { extent * MAX_LEN_FRACTION } else { f64::INFINITY };
-        Rules { tol, max_len: max_len.max(tol), extent: if sound { extent } else { 0.0 }, turn }
+        Rules {
+            tol,
+            max_len: max_len.max(tol),
+            extent: if sound { extent } else { 0.0 },
+            turn,
+            boundary_tol: boundary_tol.filter(|t| t.is_finite() && *t > 0.0),
+        }
     }
 
     /// The side length for a curvature `k` (1/mm): the chord sags at most the tolerance across
@@ -176,21 +188,21 @@ mod tests {
             swap: false,
         };
         // A 20 mm body: sides from 1 mm (the floor, a quarter of the longest) to 4 mm.
-        let rules = Rules::new(0.01, 20.0, THIRTY);
+        let rules = Rules::new(0.01, 20.0, THIRTY, None);
         let (h, speed) = face_size(&s, &super::super::uv::domain(&s), &rules);
         // r = 3: 30° of turn is 1.57 mm; the 0.01 mm sag chord is √(8·3·0.01) = 0.49 mm, times the
         // aspect, unless that is under the floor.
         assert!((h - (ASPECT * (8.0 * 3.0 * 0.01f64).sqrt()).max(20.0 * MAX_LEN_FRACTION * MIN_LEN_FRACTION)).abs() < 0.01, "{h}");
         assert!((speed[0] - 40.0).abs() < 1e-6 && (speed[1] - 3.0).abs() < 1e-6, "{speed:?}");
         // Coarser: the turn limit governs.
-        let (h, _) = face_size(&s, &super::super::uv::domain(&s), &Rules::new(0.5, 100.0, THIRTY));
+        let (h, _) = face_size(&s, &super::super::uv::domain(&s), &Rules::new(0.5, 100.0, THIRTY, None));
         assert!((h - (ASPECT * 3.0 * std::f64::consts::PI / 6.0).max(100.0 * MAX_LEN_FRACTION * MIN_LEN_FRACTION)).abs() < 0.01, "{h}");
         // Without a facet angle the sag alone: √(8·3·0.5) = 3.46 mm, four times along.
-        let (h, _) = face_size(&s, &super::super::uv::domain(&s), &Rules::new(0.5, 100.0, None));
+        let (h, _) = face_size(&s, &super::super::uv::domain(&s), &Rules::new(0.5, 100.0, None, None));
         assert!((h - ASPECT * (8.0 * 3.0 * 0.5f64).sqrt()).abs() < 0.01, "{h}");
         // A turn that sags below its floor does not divide.
         let floored = Some(Turn { angle: std::f64::consts::PI / 6.0, floor: 1.0 });
-        let (h, _) = face_size(&s, &super::super::uv::domain(&s), &Rules::new(0.5, 100.0, floored));
+        let (h, _) = face_size(&s, &super::super::uv::domain(&s), &Rules::new(0.5, 100.0, floored, None));
         assert!((h - ASPECT * (8.0 * 3.0 * 0.5f64).sqrt()).abs() < 0.01, "{h}");
     }
 
@@ -205,7 +217,7 @@ mod tests {
         };
         assert!(planar(&patch(0.0)));
         assert!(!planar(&patch(0.5)));
-        let rules = Rules::new(0.01, 100.0, THIRTY);
+        let rules = Rules::new(0.01, 100.0, THIRTY, None);
         let (h, speed) = face_size(&patch(0.0), &super::super::uv::domain(&patch(0.0)), &rules);
         assert_eq!(h, rules.max_len);
         assert!((speed[0] - 4.0).abs() < 1e-9 && (speed[1] - 3.0).abs() < 1e-9, "{speed:?}");
@@ -222,7 +234,7 @@ mod tests {
             transform: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
             swap: false,
         };
-        let rules = Rules::new(0.1, 100.0, THIRTY);
+        let rules = Rules::new(0.1, 100.0, THIRTY, None);
         let (h, _) = face_size(&s, &super::super::uv::domain(&s), &rules);
         assert!((h - rules.max_len * MIN_LEN_FRACTION).abs() < 1e-9, "{h}");
     }
@@ -230,7 +242,7 @@ mod tests {
     #[test]
     fn a_plane_takes_the_longest_side() {
         let s = EvalSurface::Plane { origin: Vec3::ZERO, du: Vec3::X, dv: Vec3::Y };
-        let rules = Rules::new(0.01, 100.0, THIRTY);
+        let rules = Rules::new(0.01, 100.0, THIRTY, None);
         assert_eq!(face_size(&s, &super::super::uv::domain(&s), &rules).0, 20.0);
     }
 }

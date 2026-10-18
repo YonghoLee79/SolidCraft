@@ -761,7 +761,7 @@ impl Reader {
             };
             let placement = self.batches.get(p.batch).map_or(mt::Matrix4::from_scale(1.0), |b| b.m);
             sources.push((i, item));
-            jobs.push(parallel::Job { source, placement, check_mesh: !self.unmeshed_checked.contains(&item) });
+            jobs.push(parallel::Job { source, placement, check_mesh: !self.unmeshed_checked.contains(&item), tol: units.tol });
         }
         // Reading and orienting new parts is shared out between the workers.
         let prepared = parallel::bodies(&ex, &jobs, self.workers);
