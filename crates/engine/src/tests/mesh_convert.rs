@@ -191,3 +191,39 @@ fn installed_slicers_are_listed() {
     let r = s.execute("file.slicers", &json!({})).unwrap();
     assert!(r["slicers"].is_array());
 }
+
+#[test]
+fn open_in_slicer_needs_a_slicer_and_bodies() {
+    let mut s = imported_box();
+    assert!(s.execute("file.open_in_slicer", &json!({"bodies":["Mesh"]})).is_err());
+    assert!(s.execute("file.open_in_slicer", &json!({"slicer":"no such slicer anywhere","bodies":["Mesh"]})).is_err());
+    // Nothing selected and nothing named.
+    assert!(s.execute("file.open_in_slicer", &json!({"slicer":"no such slicer anywhere"})).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut s = imported_box();
+    let dir = std::env::temp_dir().join(format!("solidcraft-open-in-slicer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (script, seen) = (dir.join("fake-slicer"), dir.join("seen"));
+    std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" > {}\n", seen.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    run(&mut s, "select.set", json!({"items":[{"type":"body","name":"Mesh"}]}));
+    let r = s.execute("file.open_in_slicer", &json!({"slicer": script})).unwrap();
+    assert_eq!(r["format"], "3mf");
+    let file = r["path"].as_str().unwrap().to_string();
+    assert!(std::fs::read(&file).unwrap().starts_with(b"PK"));
+    for _ in 0..100 {
+        if seen.exists() && std::fs::metadata(&seen).unwrap().len() > 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), file);
+    std::fs::remove_file(file).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}

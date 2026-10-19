@@ -527,6 +527,10 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     app.start("file.save_mesh");
                     close = true;
                 }
+                if item_if(ui, "Open in Slicer", "", shown) {
+                    app.start("file.open_in_slicer");
+                    close = true;
+                }
                 if item_if(ui, "Export STEP…", "", shown) {
                     export(app, "step");
                     close = true;

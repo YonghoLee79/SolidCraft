@@ -44,6 +44,12 @@ a temporary folder and opens it in the chosen slicer instead of asking for a fil
 list shows the slicers found on the computer with their icons; **Custom…** adds any other program
 to the top of the list (kept between runs; hover an entry you added and press Delete to remove it).
 
+**File → Open in Slicer** (also on the Mesh tab under Modify, and in the right-click menu of a
+body) is the short way: it saves the selected bodies as a 3MF in millimetres, without face tags,
+and opens it in the slicer you used last. The first time, or when that slicer is gone, it asks which
+one, with the same list as Save as mesh. It falls back to an STL if the 3MF can't be written.
+Scripts and the control channel use `file.open_in_slicer`.
+
 Closed mechanical meshes with a constant cross-section can be rebuilt as solids with the
 `mesh.convert` command (command palette, scripts and the control channel).
 

@@ -367,6 +367,8 @@ pub struct Prefs {
     pub view_dxf_tolerance: f64,
     pub save_mesh_send: bool,
     pub save_mesh_slicer: String,
+    /// Open in Slicer: the last slicer used (same kind of key as `save_mesh_slicer`).
+    pub open_slicer: String,
     pub custom_slicers: Vec<String>,
     /// AI features (docs/agent-chat.md): the master switch. Off: no AI button, shortcut, menu
     /// entry or panel, and nothing is looked for or started.
@@ -488,6 +490,7 @@ impl Default for Prefs {
             view_dxf_tolerance: 0.01,
             save_mesh_send: false,
             save_mesh_slicer: String::new(),
+            open_slicer: String::new(),
             custom_slicers: Vec::new(),
             ai_features: true,
             ai_toolbar_button: true,

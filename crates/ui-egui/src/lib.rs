@@ -762,6 +762,10 @@ impl SolveApp {
             let _ = self.run(id, json!({"enabled": !self.preferences.ambient_occlusion}));
             return;
         }
+        // Open in Slicer asks which slicer only when none is remembered.
+        if id == "file.open_in_slicer" && dialogs_save_mesh::open_remembered(self) {
+            return;
+        }
         // Another command ends Edit Text (its dialog is not a feature edit to keep).
         sketch_text_move::cancel_drag(self);
         if sketch_text::editing(self) || self.dialog.as_ref().is_some_and(|d| matches!(d.kind, dialogs::Kind::TextMove(_))) {

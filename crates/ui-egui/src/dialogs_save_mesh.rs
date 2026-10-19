@@ -1,5 +1,7 @@
 //! The Save as mesh dialog (`file.save_mesh`): which bodies, the mesh format, and optionally a
-//! slicer to open the saved file in.
+//! slicer to open the saved file in. Open in Slicer (`file.open_in_slicer`) shares its slicer
+//! list: it opens the selected bodies in the last slicer used, and asks (with this dialog, minus
+//! the format) only when none is remembered or the selection is empty.
 //!
 //! Every place that saves a mesh opens this dialog: File › Save as mesh, the Mesh tab, and the
 //! Save As Mesh item of the body menus. The slicer list holds the programs the user added (kept
@@ -32,6 +34,8 @@ const MAX_CUSTOM: usize = 24;
 pub struct SaveMesh {
     format: usize,
     send: bool,
+    /// Open in Slicer: only the bodies and the slicer are asked.
+    open: bool,
     /// The chosen slicer: an installed one's id, or the path of one the user added.
     slicer: String,
     /// The slicer list has not been read for this opening yet.
@@ -75,15 +79,46 @@ impl SlicerMenu {
     }
 }
 
-/// The dialog for `file.save_mesh`, with the choices of last time.
+/// The dialog for `file.save_mesh` or `file.open_in_slicer`, with the choices of last time.
 pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
-    if id != "file.save_mesh" {
-        return None;
-    }
+    let open = match id {
+        "file.save_mesh" => false,
+        "file.open_in_slicer" => true,
+        _ => return None,
+    };
     let p = &app.preferences;
     let format = FORMATS.iter().position(|f| f.1 == p.save_mesh_format).unwrap_or(0);
-    let kind = Kind::SaveMesh(SaveMesh { format, send: p.save_mesh_send, slicer: p.save_mesh_slicer.clone(), stale: true });
+    let slicer = if open && !p.open_slicer.is_empty() { p.open_slicer.clone() } else { p.save_mesh_slicer.clone() };
+    let kind = Kind::SaveMesh(SaveMesh { format, send: open || p.save_mesh_send, open, slicer, stale: true });
     Some((kind, vec![SelInput::new("Bodies", BODIES, true)]))
+}
+
+/// The names of the selected bodies.
+fn selected_bodies(app: &SolveApp) -> Vec<String> {
+    app.session.selection.iter().filter_map(|s| if let Sel::Body { name } = s { Some(name.clone()) } else { None }).collect()
+}
+
+/// Open in Slicer without a dialog: the last slicer used is still there and bodies are selected.
+/// False means the dialog has to ask.
+pub fn open_remembered(app: &mut SolveApp) -> bool {
+    let bodies = selected_bodies(app);
+    let key = app.preferences.open_slicer.clone();
+    if key.is_empty() || bodies.is_empty() {
+        return false;
+    }
+    app.slicer_menu.refresh(&app.preferences.custom_slicers);
+    if !app.slicer_menu.entries().iter().any(|e| e.key == key) {
+        return false;
+    }
+    open_in_slicer(app, &key, bodies);
+    true
+}
+
+/// Run `file.open_in_slicer` and report what happened.
+fn open_in_slicer(app: &mut SolveApp, slicer: &str, bodies: Vec<String>) {
+    let _language = crate::i18n::scope(&app.preferences.language);
+    let Ok(result) = app.run("file.open_in_slicer", json!({ "slicer": slicer, "bodies": bodies })) else { return };
+    report(app, &result);
 }
 
 /// A popup with the slicer list is open (Delete belongs to it, not to the design's selection).
@@ -142,20 +177,22 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) -> bool {
         if !entries.iter().any(|e| e.key == k.slicer) {
             k.slicer = entries.first().map(|e| e.key.clone()).unwrap_or_default();
         }
-        k.send &= !entries.is_empty();
+        k.send &= !entries.is_empty() || k.open;
     }
-    row_label(ui, "Format");
-    combo(ui, "sm_format", &FORMATS.map(|f| f.0), &mut k.format);
-    ui.end_row();
+    if !k.open {
+        row_label(ui, "Format");
+        combo(ui, "sm_format", &FORMATS.map(|f| f.0), &mut k.format);
+        ui.end_row();
 
-    // A browser has no installed programs to send a file to.
-    if app.services.pick_program.is_none() {
-        k.send = false;
-        return false;
+        // A browser has no installed programs to send a file to.
+        if app.services.pick_program.is_none() {
+            k.send = false;
+            return false;
+        }
+        row_label(ui, "Send to slicer");
+        ui.checkbox(&mut k.send, "");
+        ui.end_row();
     }
-    row_label(ui, "Send to slicer");
-    ui.checkbox(&mut k.send, "");
-    ui.end_row();
 
     row_label(ui, "Slicer");
     if let Some(path) = app.slicer_menu.picked.take() {
@@ -282,6 +319,12 @@ pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)
     if names.is_empty() {
         return Err(crate::i18n::tr("ui.save_mesh_pick_bodies").into());
     }
+    if k.open {
+        if k.slicer.is_empty() {
+            return Err(crate::i18n::tr("ui.save_mesh_no_slicer_open").into());
+        }
+        return Ok(vec![("file.open_in_slicer".into(), json!({ "slicer": k.slicer, "bodies": names }))]);
+    }
     p["bodies"] = json!(names);
     if k.send {
         if k.slicer.is_empty() {
@@ -299,13 +342,24 @@ pub fn ready(inputs: &[SelInput]) -> bool {
 
 /// The button's label: Save, or Send when the file goes to a slicer.
 pub fn button(k: &SaveMesh) -> &'static str {
-    if k.send { "Send" } else { "Save" }
+    if k.open {
+        "Open"
+    } else if k.send {
+        "Send"
+    } else {
+        "Save"
+    }
 }
 
 /// Save: ask for a file name and write the file. Send: write it to a temporary file and start the
 /// slicer with it, with no file dialog.
 pub fn run(app: &mut SolveApp, k: &SaveMesh, inputs: &[SelInput]) -> Result<(), String> {
     let (_, params) = commands(k, inputs)?.into_iter().next().ok_or("nothing to save")?;
+    if k.open {
+        app.preferences.open_slicer = k.slicer.clone();
+        open_in_slicer(app, &k.slicer, bodies(inputs));
+        return Ok(());
+    }
     let (format, ext) = FORMATS.get(k.format).map_or(("stl", "stl"), |f| (f.1, f.2));
     let name = bodies(inputs).first().cloned().unwrap_or_else(|| app.session.doc.name.clone());
     let p = &mut app.preferences;
@@ -337,11 +391,34 @@ fn save(app: &mut SolveApp, mut params: Value, path: &str) {
     let _language = crate::i18n::scope(&app.preferences.language);
     params["path"] = json!(path);
     let Ok(result) = app.run("file.save_mesh", params) else { return };
+    report(app, &result);
+}
+
+/// The status line after a save or a send.
+fn report(app: &mut SolveApp, result: &Value) {
+    let path = result.get("path").and_then(Value::as_str).unwrap_or_default();
     match result.get("slicer_error").and_then(Value::as_str) {
         Some(e) => app.set_status(e.to_string(), true),
         None => match result.get("slicer").and_then(Value::as_str) {
             Some(s) => app.set_status(crate::i18n::format("ui.sent_to_slicer", &[("slicer", s)]), false),
             None => app.set_status(crate::i18n::format("ui.saved_to", &[("path", path)]), false),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_in_slicer_asks_for_bodies_and_a_slicer_but_not_a_format() {
+        let k = SaveMesh { format: 0, send: true, open: true, slicer: "prusa".into(), stale: false };
+        let mut input = SelInput::new("Bodies", BODIES, true);
+        assert!(commands(&k, std::slice::from_ref(&input)).is_err());
+        input.items = vec![Sel::Body { name: "Part".into() }];
+        let cmds = commands(&k, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(cmds, [("file.open_in_slicer".to_string(), json!({"slicer": "prusa", "bodies": ["Part"]}))]);
+        assert_eq!(button(&k), "Open");
+        assert!(commands(&SaveMesh { slicer: String::new(), ..k }, &[input]).is_err());
     }
 }
