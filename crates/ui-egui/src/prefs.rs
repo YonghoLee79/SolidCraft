@@ -369,6 +369,8 @@ pub struct Prefs {
     pub save_mesh_slicer: String,
     /// Open in Slicer: the last slicer used (same kind of key as `save_mesh_slicer`).
     pub open_slicer: String,
+    /// The line about sending again replacing the slicer's file has been shown.
+    pub slicer_resend_hint_seen: bool,
     pub custom_slicers: Vec<String>,
     /// AI features (docs/agent-chat.md): the master switch. Off: no AI button, shortcut, menu
     /// entry or panel, and nothing is looked for or started.
@@ -491,6 +493,7 @@ impl Default for Prefs {
             save_mesh_send: false,
             save_mesh_slicer: String::new(),
             open_slicer: String::new(),
+            slicer_resend_hint_seen: false,
             custom_slicers: Vec::new(),
             ai_features: true,
             ai_toolbar_button: true,

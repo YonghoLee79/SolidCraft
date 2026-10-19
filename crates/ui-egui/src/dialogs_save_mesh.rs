@@ -110,14 +110,14 @@ pub fn open_remembered(app: &mut SolveApp) -> bool {
     if !app.slicer_menu.entries().iter().any(|e| e.key == key) {
         return false;
     }
-    open_in_slicer(app, &key, bodies);
+    send_to_slicer(app, json!({ "slicer": key, "bodies": bodies }));
     true
 }
 
 /// Run `file.open_in_slicer` and report what happened.
-fn open_in_slicer(app: &mut SolveApp, slicer: &str, bodies: Vec<String>) {
+fn send_to_slicer(app: &mut SolveApp, params: Value) {
     let _language = crate::i18n::scope(&app.preferences.language);
-    let Ok(result) = app.run("file.open_in_slicer", json!({ "slicer": slicer, "bodies": bodies })) else { return };
+    let Ok(result) = app.run("file.open_in_slicer", params) else { return };
     report(app, &result);
 }
 
@@ -311,7 +311,8 @@ fn bodies(inputs: &[SelInput]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// What the Save (or Send) button asks `file.save_mesh` to do, without the file name.
+/// What the Save (or Send) button asks `file.save_mesh` or `file.open_in_slicer` to do; Save is
+/// without the file name.
 pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)>, String> {
     let format = FORMATS.get(k.format).map_or("stl", |f| f.1);
     let mut p = json!({ "format": format });
@@ -319,18 +320,16 @@ pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)
     if names.is_empty() {
         return Err(crate::i18n::tr("ui.save_mesh_pick_bodies").into());
     }
-    if k.open {
-        if k.slicer.is_empty() {
-            return Err(crate::i18n::tr("ui.save_mesh_no_slicer_open").into());
-        }
-        return Ok(vec![("file.open_in_slicer".into(), json!({ "slicer": k.slicer, "bodies": names }))]);
-    }
     p["bodies"] = json!(names);
-    if k.send {
+    if k.open || k.send {
         if k.slicer.is_empty() {
-            return Err(crate::i18n::tr("ui.save_mesh_no_slicer").into());
+            return Err(crate::i18n::tr(if k.open { "ui.save_mesh_no_slicer_open" } else { "ui.save_mesh_no_slicer" }).into());
         }
         p["slicer"] = json!(k.slicer);
+        if k.open {
+            p["format"] = json!("3mf");
+        }
+        return Ok(vec![("file.open_in_slicer".into(), p)]);
     }
     Ok(vec![("file.save_mesh".into(), p)])
 }
@@ -357,7 +356,7 @@ pub fn run(app: &mut SolveApp, k: &SaveMesh, inputs: &[SelInput]) -> Result<(), 
     let (_, params) = commands(k, inputs)?.into_iter().next().ok_or("nothing to save")?;
     if k.open {
         app.preferences.open_slicer = k.slicer.clone();
-        open_in_slicer(app, &k.slicer, bodies(inputs));
+        send_to_slicer(app, params);
         return Ok(());
     }
     let (format, ext) = FORMATS.get(k.format).map_or(("stl", "stl"), |f| (f.1, f.2));
@@ -369,11 +368,7 @@ pub fn run(app: &mut SolveApp, k: &SaveMesh, inputs: &[SelInput]) -> Result<(), 
         p.save_mesh_slicer = k.slicer.clone();
     }
     if k.send {
-        let dir = std::env::temp_dir().join("solidcraft-slicer");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| crate::i18n::format("ui.save_mesh_temp_failed", &[("folder", &dir.display().to_string()), ("error", &e.to_string())]))?;
-        let file: String = name.chars().map(|c| if c.is_alphanumeric() || "-_. ".contains(c) { c } else { '_' }).collect();
-        save(app, params, &dir.join(format!("{file}.{ext}")).to_string_lossy());
+        send_to_slicer(app, params);
     } else {
         // The file dialog answers later; the dialog closes meanwhile, as for every export.
         app.pick_save(&format!("{name}.{ext}"), &[ext], move |app, path| {
@@ -400,7 +395,17 @@ fn report(app: &mut SolveApp, result: &Value) {
     match result.get("slicer_error").and_then(Value::as_str) {
         Some(e) => app.set_status(e.to_string(), true),
         None => match result.get("slicer").and_then(Value::as_str) {
-            Some(s) => app.set_status(crate::i18n::format("ui.sent_to_slicer", &[("slicer", s)]), false),
+            Some(s) => {
+                let mut line = match (result.get("numbered").and_then(Value::as_bool), std::path::Path::new(path).file_name()) {
+                    (Some(true), Some(file)) => crate::i18n::format("ui.sent_to_slicer_copy", &[("slicer", s), ("file", &file.to_string_lossy())]),
+                    _ => crate::i18n::format("ui.sent_to_slicer", &[("slicer", s)]),
+                };
+                // Said once: sending the same bodies again overwrites the file the slicer has open.
+                if result.get("numbered").is_some() && !std::mem::replace(&mut app.preferences.slicer_resend_hint_seen, true) {
+                    line = format!("{line}. {}", crate::i18n::tr("ui.slicer_resend_hint"));
+                }
+                app.set_status(line, false);
+            }
             None => app.set_status(crate::i18n::format("ui.saved_to", &[("path", path)]), false),
         },
     }
@@ -417,7 +422,11 @@ mod tests {
         assert!(commands(&k, std::slice::from_ref(&input)).is_err());
         input.items = vec![Sel::Body { name: "Part".into() }];
         let cmds = commands(&k, std::slice::from_ref(&input)).unwrap();
-        assert_eq!(cmds, [("file.open_in_slicer".to_string(), json!({"slicer": "prusa", "bodies": ["Part"]}))]);
+        assert_eq!(cmds, [("file.open_in_slicer".to_string(), json!({"slicer": "prusa", "bodies": ["Part"], "format": "3mf"}))]);
+        // Send to slicer in the Save as mesh dialog goes the same way, in the chosen format.
+        let send = SaveMesh { format: 2, open: false, ..k.clone() };
+        let (id, p) = commands(&send, std::slice::from_ref(&input)).unwrap().remove(0);
+        assert_eq!((id.as_str(), p["format"].as_str()), ("file.open_in_slicer", Some("3mf-tagged")));
         assert_eq!(button(&k), "Open");
         assert!(commands(&SaveMesh { slicer: String::new(), ..k }, &[input]).is_err());
     }

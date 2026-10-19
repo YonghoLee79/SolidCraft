@@ -440,6 +440,8 @@ impl SolveApp {
         }
         let mut render_workspace = render_workspace::State::default();
         render_workspace.image_host = image_host;
+        #[cfg(not(target_arch = "wasm32"))]
+        solidcraft_engine::slicer_files::clean_old();
         SolveApp {
             session,
             ui: UiState::default(),

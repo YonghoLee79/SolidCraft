@@ -224,6 +224,12 @@ fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), file);
-    std::fs::remove_file(file).unwrap();
+    // Sending the same bodies again replaces the file; the same name in the same private folder.
+    let again = s.execute("file.open_in_slicer", &json!({"slicer": script})).unwrap();
+    assert_eq!((again["path"].as_str(), again["numbered"].as_bool()), (Some(file.as_str()), Some(false)));
+    let stl = s.execute("file.open_in_slicer", &json!({"slicer": script, "format": "stl"})).unwrap();
+    assert!(stl["path"].as_str().unwrap().ends_with(".stl"));
+    assert_ne!(stl["path"], r["path"]);
+    std::fs::remove_dir_all(std::path::Path::new(&file).parent().unwrap()).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }

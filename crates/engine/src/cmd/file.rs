@@ -58,7 +58,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("slicer: id, name or program path from file.slicers; bodies?: [names] (default: the selected bodies) → saves them as 3MF in millimetres (STL if that can't be written) and opens the file in the slicer"),
+        .params("slicer: id, name or program path from file.slicers; bodies?: [names] (default: the selected bodies); format?: 3mf|stl|3mf-tagged (default 3mf, in millimetres; STL if that can't be written) → saves the bodies in this user's slicer folder and opens the file in the slicer. The file name stays the same for the same design and bodies, so sending again replaces it (use the slicer's Reload from disk)"),
     CommandSpec::new("file.slicers", "Installed Slicers", slicers).icon("export")
         .noundo()
         .params("→ the slicers found on this machine: [{id, name, icon?}]; pass an id or name as file.save_mesh's `slicer`"),
@@ -587,41 +587,53 @@ fn save_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
-/// Save the bodies to a file in the temporary folder and start the slicer with it.
+/// Save the bodies to this user's slicer folder and start the slicer with the file. The file
+/// name stays the same for the same design and bodies, so sending again replaces it.
 fn open_in_slicer(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.open_in_slicer";
-    if cfg!(target_arch = "wasm32") {
-        return Err(bad(cmd, "a slicer can't be started from the browser"));
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (s, p);
+        Err(bad(cmd, "a slicer can't be started from the browser"))
     }
-    let spec = str_(p, "slicer").ok_or_else(|| bad(cmd, "give `slicer` (see file.slicers)"))?;
-    let slicer = crate::slicers::resolve(spec).ok_or_else(|| bad(cmd, format!("no slicer `{spec}` (see file.slicers)")))?;
-    let mut bodies = string_list(p, "bodies");
-    if bodies.is_empty() {
-        bodies = s.selection.iter().filter_map(|x| if let crate::Sel::Body { name } = x { Some(name.clone()) } else { None }).collect();
-    }
-    if bodies.is_empty() {
-        return Err(bad(cmd, "select the bodies to open, or give `bodies`"));
-    }
-    let doc = s.doc.painted(&s.world_state());
-    let write = |format| solidcraft_io::export_with_metadata(&doc, &bodies, format, &s.doc.name, &s.doc.metadata);
-    let (bytes, ext) = match write(Format::ThreeMf) {
-        Ok(b) => (b, "3mf"),
-        Err(_) => (write(Format::StlBinary)?, "stl"),
-    };
-    let dir = std::env::temp_dir().join("solidcraft-slicer");
-    std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
-    let stem: String =
-        format!("{}-{}", s.doc.name, bodies.join("-")).chars().map(|c| if c.is_alphanumeric() || "-_. ".contains(c) { c } else { '_' }).collect();
-    let path = dir.join(format!("{stem}.{ext}")).to_string_lossy().into_owned();
-    std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let mut out = json!({"path": path, "bytes": bytes.len(), "format": ext});
-    if let Some(obj) = out.as_object_mut() {
-        match slicer.open(&path) {
-            Ok(()) => obj.insert("slicer".into(), json!(slicer.name)),
-            Err(e) => obj.insert("slicer_error".into(), json!(e)),
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::slicer_files;
+        let format = match str_(p, "format").map(str::to_ascii_lowercase).as_deref() {
+            None | Some("3mf") => Format::ThreeMf,
+            Some("stl") => Format::StlBinary,
+            Some("3mf-tagged") => Format::ThreeMfTagged,
+            Some(other) => return Err(bad(cmd, format!("unknown mesh format `{other}` (stl, 3mf, 3mf-tagged)"))),
         };
+        let spec = str_(p, "slicer").ok_or_else(|| bad(cmd, "give `slicer` (see file.slicers)"))?;
+        let slicer = crate::slicers::resolve(spec).ok_or_else(|| bad(cmd, format!("no slicer `{spec}` (see file.slicers)")))?;
+        let mut bodies = string_list(p, "bodies");
+        if bodies.is_empty() {
+            bodies = s.selection.iter().filter_map(|x| if let crate::Sel::Body { name } = x { Some(name.clone()) } else { None }).collect();
+        }
+        if bodies.is_empty() {
+            return Err(bad(cmd, "select the bodies to open, or give `bodies`"));
+        }
+        let doc = s.doc.painted(&s.world_state());
+        let write = |format| solidcraft_io::export_with_metadata(&doc, &bodies, format, &s.doc.name, &s.doc.metadata);
+        let (bytes, ext) = match (format, write(format)) {
+            (_, Ok(b)) => (b, if format == Format::StlBinary { "stl" } else { "3mf" }),
+            (Format::ThreeMf, Err(_)) => (write(Format::StlBinary)?, "stl"),
+            (_, Err(e)) => return Err(e.into()),
+        };
+        let dir = slicer_files::dir().ok_or_else(|| bad(cmd, "no per-user folder on this system"))?;
+        let stem = slicer_files::stem(&s.doc.name, s.path.as_deref(), &bodies);
+        let (file, numbered) = slicer_files::write(&dir, &stem, ext, &bytes).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
+        let path = file.to_string_lossy().into_owned();
+        let mut out = json!({"path": path, "bytes": bytes.len(), "format": ext, "numbered": numbered});
+        if let Some(obj) = out.as_object_mut() {
+            match slicer.open(&path) {
+                Ok(()) => obj.insert("slicer".into(), json!(slicer.name)),
+                Err(e) => obj.insert("slicer_error".into(), json!(e)),
+            };
+        }
+        Ok(out)
     }
-    Ok(out)
 }
 
 fn slicers(_: &mut Session, _: &Value) -> Result<Value> {

@@ -20,6 +20,8 @@ pub mod product_scene;
 pub mod recovery;
 pub mod render_jobs;
 pub mod sample;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod slicer_files;
 mod slicer_icon;
 pub mod slicers;
 pub mod timing;

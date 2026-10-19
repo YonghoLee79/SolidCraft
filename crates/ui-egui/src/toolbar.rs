@@ -870,6 +870,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                     Some(why) => format!("{}\n{why}", tr_label),
                     None => format!("{}{}", tr_label, selected.shortcut.map(|k| format!("  ({k})")).unwrap_or_default()),
                 };
+                let tip = if selected.id == "file.open_in_slicer" { format!("{tip}\n{}", app.tr("ui.slicer_resend_hint")) } else { tip };
                 if resp.on_hover_text(tip).clicked() && info.enabled {
                     let id = selected.id;
                     app.start(id);
