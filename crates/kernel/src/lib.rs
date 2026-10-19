@@ -27,6 +27,8 @@ mod bore_guard;
 mod boundary;
 mod boundary_network;
 mod bridge;
+#[cfg(test)]
+mod bspline_eval_tests;
 mod build;
 #[cfg(test)]
 mod chamfer_sides_curved_tests;
