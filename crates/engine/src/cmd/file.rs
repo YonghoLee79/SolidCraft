@@ -53,12 +53,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id, name or program path from file.slicers (open the saved file there)"),
+        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id, name or program path from file.slicers (open the saved file there); single_instance?: bool (default true; see file.open_in_slicer)"),
     CommandSpec::new("file.open_in_slicer", "Open in Slicer", open_in_slicer)
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("slicer: id, name or program path from file.slicers; bodies?: [names] (default: the selected bodies); format?: 3mf|stl|3mf-tagged (default 3mf, in millimetres; STL if that can't be written) → saves the bodies in this user's slicer folder and opens the file in the slicer. The file name stays the same for the same design and bodies, so sending again replaces it (use the slicer's Reload from disk)"),
+        .params("slicer: id, name or program path from file.slicers; bodies?: [names] (default: the selected bodies); single_instance?: bool (default true: PrusaSlicer, SuperSlicer, Bambu Studio and Cura load the file in the window that is open); format?: 3mf|stl|3mf-tagged (default 3mf, in millimetres; STL if that can't be written) → saves the bodies in this user's slicer folder and opens the file in the slicer. The file name stays the same for the same design and bodies, so sending again replaces it (use the slicer's Reload from disk)"),
     CommandSpec::new("file.slicers", "Installed Slicers", slicers).icon("export")
         .noundo()
         .params("→ the slicers found on this machine: [{id, name, icon?}]; pass an id or name as file.save_mesh's `slicer`"),
@@ -579,7 +579,7 @@ fn save_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out = export_to(s, path, format, &string_list(p, "bodies"))?;
     if let (Some(slicer), Some(obj)) = (slicer, out.as_object_mut()) {
         // The file is saved either way; a slicer that won't start is reported, not fatal.
-        match slicer.open(path) {
+        match slicer.open(path, bool_(p, "single_instance").unwrap_or(true)) {
             Ok(()) => obj.insert("slicer".into(), json!(slicer.name)),
             Err(e) => obj.insert("slicer_error".into(), json!(e)),
         };
@@ -627,7 +627,7 @@ fn open_in_slicer(s: &mut Session, p: &Value) -> Result<Value> {
         let path = file.to_string_lossy().into_owned();
         let mut out = json!({"path": path, "bytes": bytes.len(), "format": ext, "numbered": numbered});
         if let Some(obj) = out.as_object_mut() {
-            match slicer.open(&path) {
+            match slicer.open(&path, bool_(p, "single_instance").unwrap_or(true)) {
                 Ok(()) => obj.insert("slicer".into(), json!(slicer.name)),
                 Err(e) => obj.insert("slicer_error".into(), json!(e)),
             };

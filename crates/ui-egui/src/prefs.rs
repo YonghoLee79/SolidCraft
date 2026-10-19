@@ -369,6 +369,8 @@ pub struct Prefs {
     pub save_mesh_slicer: String,
     /// Open in Slicer: the last slicer used (same kind of key as `save_mesh_slicer`).
     pub open_slicer: String,
+    /// Slicers that can load a file into the window that is already open do so (default on).
+    pub slicer_single_instance: bool,
     /// The line about sending again replacing the slicer's file has been shown.
     pub slicer_resend_hint_seen: bool,
     pub custom_slicers: Vec<String>,
@@ -493,6 +495,7 @@ impl Default for Prefs {
             save_mesh_send: false,
             save_mesh_slicer: String::new(),
             open_slicer: String::new(),
+            slicer_single_instance: true,
             slicer_resend_hint_seen: false,
             custom_slicers: Vec::new(),
             ai_features: true,
@@ -741,6 +744,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
             p.length_decimals = d.length_decimals;
             p.angle_decimals = d.angle_decimals;
             p.check_updates = d.check_updates;
+            p.slicer_single_instance = d.slicer_single_instance;
             app.ui.dark = true;
             app.ui.agent_cursor = Default::default();
             app.autosave_minutes = 5.0;
@@ -1300,6 +1304,17 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             ui.label("");
             ui.add_enabled(s.show, egui::Checkbox::new(&mut s.follow_camera, crate::i18n::tr_label("Follow the camera (Look At sketches)")));
             ui.end_row();
+            ui.label(app.tr("ui.slicer"));
+            let (single, tip) = (app.tr("ui.slicer_single_instance").to_string(), app.tr("ui.slicer_single_instance_tip").to_string());
+            ui.checkbox(&mut app.preferences.slicer_single_instance, single).on_hover_text(tip);
+            ui.end_row();
+            if !app.preferences.open_slicer.is_empty() {
+                ui.label("");
+                if ui.button(app.tr("ui.slicer_forget")).clicked() {
+                    app.preferences.open_slicer.clear();
+                }
+                ui.end_row();
+            }
             crate::update::prefs_rows(app, ui, t);
         }
         1 => {

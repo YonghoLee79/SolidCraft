@@ -117,6 +117,8 @@ pub fn open_remembered(app: &mut SolveApp) -> bool {
 /// Run `file.open_in_slicer` and report what happened.
 fn send_to_slicer(app: &mut SolveApp, params: Value) {
     let _language = crate::i18n::scope(&app.preferences.language);
+    let mut params = params;
+    params["single_instance"] = json!(app.preferences.slicer_single_instance);
     let Ok(result) = app.run("file.open_in_slicer", params) else { return };
     report(app, &result);
 }

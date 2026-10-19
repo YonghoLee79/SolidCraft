@@ -439,20 +439,47 @@ fn with_file(args: &[String], path: &str) -> Vec<String> {
     out
 }
 
+/// Slicers that load a file into the window that is already open when given this flag. OrcaSlicer
+/// has none; macOS applications (`open -a`) are always single-instance.
+const SINGLE_INSTANCE: &[&str] = &["prusa", "superslicer", "bambu", "cura"];
+
 impl Slicer {
-    /// Start the slicer with `path` loaded; does not wait for it to exit.
-    pub fn open(&self, path: &str) -> std::result::Result<(), String> {
+    /// The arguments after the program: the command's own, the single-instance flag when asked for
+    /// and this slicer has one, and the file. A desktop entry that already carries a
+    /// `--single-instance…` flag (PrusaSlicer 3.0's launcher has `--single-instance-on-url`) is
+    /// never given a second one, and loses its own when `single_instance` is off.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn args(&self, path: &str, single_instance: bool) -> Vec<String> {
+        let mut args: Vec<String> = self.command.iter().skip(1).cloned().collect();
+        let has = |args: &[String]| args.iter().any(|a| a.starts_with("--single-instance"));
+        if !single_instance {
+            args.retain(|a| !a.starts_with("--single-instance"));
+        } else if self.command.first().is_some_and(|p| p != "open") && !has(&args) {
+            // A custom program is recognised by its name, as for its icon.
+            let id = if self.id == "custom" { known_for(&self.name).map_or("", |k| k.id) } else { self.id.as_str() };
+            if SINGLE_INSTANCE.contains(&id) {
+                // Before a Flatpak command's file markers, which close the application's own arguments.
+                let at = args.iter().position(|a| a == "@@" || a == "@@u").unwrap_or(args.len());
+                args.insert(at, "--single-instance".into());
+            }
+        }
+        with_file(&args, path)
+    }
+
+    /// Start the slicer with `path` loaded; does not wait for it to exit. With `single_instance`,
+    /// a slicer that supports it loads the file in the window that is already open.
+    pub fn open(&self, path: &str, single_instance: bool) -> std::result::Result<(), String> {
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = path;
+            let _ = (path, single_instance);
             Err(format!("{} can't be started from the browser", self.name))
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::process::{Command, Stdio};
-            let (program, args) = self.command.split_first().ok_or_else(|| format!("{} has no program to start", self.name))?;
+            let program = self.command.first().ok_or_else(|| format!("{} has no program to start", self.name))?;
             Command::new(program)
-                .args(with_file(args, path))
+                .args(self.args(path, single_instance))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -572,5 +599,37 @@ mod tests {
         assert!(custom(root.join("nope").to_str().unwrap()).is_none());
         assert!(custom(root.to_str().unwrap()).is_none());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn single_instance_is_asked_of_the_slicers_that_have_it() {
+        let slicer = |id: &str, name: &str, command: &[&str]| Slicer {
+            id: id.into(),
+            name: name.into(),
+            command: command.iter().map(|s| s.to_string()).collect(),
+            icon: None,
+        };
+        let args = |s: &Slicer, single| s.args("/t/a.3mf", single);
+        for (id, name) in [("prusa", "PrusaSlicer"), ("superslicer", "SuperSlicer"), ("bambu", "Bambu Studio"), ("cura", "UltiMaker Cura")] {
+            let s = slicer(id, name, &["/x/prog"]);
+            assert_eq!(args(&s, true), ["--single-instance", "/t/a.3mf"], "{id}");
+            assert_eq!(args(&s, false), ["/t/a.3mf"], "{id}");
+        }
+        // OrcaSlicer and the rest have no such flag; a macOS bundle is single-instance already.
+        assert_eq!(args(&slicer("orca", "OrcaSlicer", &["/x/orca"]), true), ["/t/a.3mf"]);
+        assert_eq!(
+            args(&slicer("prusa", "PrusaSlicer", &["open", "-a", "/Applications/PrusaSlicer.app"]), true),
+            ["-a", "/Applications/PrusaSlicer.app", "/t/a.3mf"]
+        );
+        // A program the user picked is known by its name.
+        assert_eq!(args(&slicer("custom", "PrusaSlicer", &["/x/prusa-slicer"]), true), ["--single-instance", "/t/a.3mf"]);
+        assert_eq!(args(&slicer("custom", "Mycura", &["/x/mycura"]), true), ["/t/a.3mf"]);
+        // PrusaSlicer 3.0's launcher entry already has the flag (`%u` is dropped when the entry is read).
+        let launcher = slicer("prusa", "PrusaSlicer", &["slic3r-app-launcher", "--single-instance-on-url"]);
+        assert_eq!(args(&launcher, true), ["--single-instance-on-url", "/t/a.3mf"]);
+        assert_eq!(args(&launcher, false), ["/t/a.3mf"]);
+        // Flatpak: the flag goes among the application's arguments, before the file markers.
+        let flatpak = slicer("prusa", "PrusaSlicer", &["flatpak", "run", "com.prusa3d.PrusaSlicer", "@@u", "@@"]);
+        assert_eq!(args(&flatpak, true), ["run", "com.prusa3d.PrusaSlicer", "--single-instance", "@@", "/t/a.3mf", "@@"]);
     }
 }
