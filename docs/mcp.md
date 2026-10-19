@@ -165,9 +165,9 @@ Start the app with its control channel for `solidcraft-live`, from PowerShell:
 `setx SOLIDCRAFT_CONTROL_PORT 7878`.
 
 Open `claude_desktop_config.json` with Claude Desktop's **Settings > Developer > Edit Config**
-rather than by its path: the Microsoft Store build of Claude Desktop keeps the file in its own
-package folder (`%LOCALAPPDATA%\Packages\…\LocalCache\Roaming\Claude`), so editing
-`%APPDATA%\Claude\claude_desktop_config.json` changes nothing there. Quit Claude Desktop
+rather than by its path: the Microsoft Store (MSIX) build of Claude Desktop can keep its data in
+its own package folder (`%LOCALAPPDATA%\Packages\…\LocalCache\Roaming\Claude`) instead of
+`%APPDATA%\Claude`, and Edit Config opens the file the app actually reads. Quit Claude Desktop
 completely (from the notification area) and start it again to load the servers.
 
 ### Agent skills
