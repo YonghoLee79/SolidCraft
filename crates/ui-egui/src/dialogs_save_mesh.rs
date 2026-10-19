@@ -143,14 +143,27 @@ fn send_to_slicer(app: &mut SolveApp, params: Value) {
     params["single_instance"] = json!(app.preferences.slicer_single_instance);
     params["wait"] = json!("return");
     let Ok(result) = app.run("file.open_in_slicer", params.clone()) else { return };
-    let Some(name) = result.get("starting").and_then(Value::as_str) else { return report(app, &result) };
+    if result.get("starting").is_none() {
+        return report(app, &result);
+    }
+    begin_wait(app, params, &result);
+}
+
+/// The command started the slicer on its own (`result.starting`): wait for it in the background.
+fn begin_wait(app: &mut SolveApp, mut params: Value, result: &Value) {
+    let name = result.get("starting").and_then(Value::as_str).unwrap_or_default().to_string();
+    let path = result.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
     let spec = params["slicer"].as_str().unwrap_or_default().to_string();
     params["wait"] = json!("no");
-    let path = result.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
-    let Some(slicer) = slicers::resolve(&spec) else { return };
+    let Some(slicer) = slicers::resolve(&spec) else {
+        // Started, but it can't be found again to be sent the file: say so rather than go quiet.
+        app.set_status(crate::i18n::format("ui.slicer_lost", &[("slicer", &name), ("path", &path)]), true);
+        return;
+    };
+    // Same reading as `slicers::wait_for_ready`: when readiness can't be told, send.
     let done = spawn_wait(move || slicer.is_ready() != Some(false), slicers::READY_LIMIT, slicers::READY_POLL);
-    app.slicer_wait = Some(SlicerWait { done, params, slicer: name.to_string(), path });
-    app.set_status(crate::i18n::format("ui.slicer_starting", &[("slicer", name)]), false);
+    app.slicer_wait = Some(SlicerWait { done, params, slicer: name.clone(), path });
+    app.set_status(crate::i18n::format("ui.slicer_starting", &[("slicer", &name)]), false);
 }
 
 /// Per frame: when the slicer being waited for is ready, send the file; when the wait ran out, say so.
@@ -568,6 +581,16 @@ mod tests {
         assert!(app.status.as_ref().is_some_and(|(_, _, error)| !*error), "{:?}", app.status);
         let _ = std::fs::remove_dir_all(seen.parent().unwrap());
         solidcraft_engine::slicers::set_chosen_programs(&[]);
+    }
+
+    #[test]
+    fn a_started_slicer_that_can_not_be_found_again_is_reported() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let result = json!({"starting": "Ghost Slicer", "path": "/tmp/part.3mf"});
+        begin_wait(&mut app, json!({"slicer": "no such slicer anywhere", "bodies": ["Part"]}), &result);
+        assert!(app.slicer_wait.is_none());
+        let status = app.status.clone().unwrap();
+        assert!(status.2 && status.0.contains("Ghost Slicer") && status.0.contains("/tmp/part.3mf"), "{status:?}");
     }
 
     #[cfg(unix)]

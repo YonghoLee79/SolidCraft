@@ -1510,6 +1510,7 @@
   "ui.slice": "切片",
   "ui.slicer": "切片软件",
   "ui.slicer_delete_tip": "{program}\n按 Delete 键从列表中移除",
+  "ui.slicer_lost": "{slicer} 已启动，但无法再次找到它来发送文件。文件已保存到 {path}：请从该位置打开。",
   "ui.slicer_no_response": "{slicer} 未在规定时间内响应。文件已保存到 {path}：切片软件启动后请再次发送。",
   "ui.slicer_resend_hint": "再次发送会替换切片软件中已打开的文件。",
   "ui.slicer_single_instance": "在已运行的切片软件中打开文件",
