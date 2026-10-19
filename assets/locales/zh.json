@@ -1385,6 +1385,7 @@
   "ui.open": "打开",
   "ui.open_ellipsis": "打开...",
   "ui.open_ends_tip": "未接触任何曲线",
+  "ui.open_in_slicer_unavailable": "“在切片软件中打开”需要桌面应用：浏览器无法启动程序",
   "ui.open_preferences": "打开首选项",
   "ui.open_recent": "打开最近",
   "ui.operation": "操作",

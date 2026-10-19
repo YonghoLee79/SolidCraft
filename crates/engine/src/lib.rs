@@ -206,6 +206,9 @@ impl WorldCache {
 }
 
 /// An editing session on one design.
+/// Source of [`Session::uid`].
+static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub struct Session {
     pub doc: Arc<Document>,
     pub model: Model,
@@ -215,6 +218,10 @@ pub struct Session {
     pub active_sketch: Option<u64>,
     pub selection: Vec<Sel>,
     pub path: Option<String>,
+    /// Tells this document from every other one opened or started in this process: new for each
+    /// `Session::new` (so for each New, Open and Recover), the same for the life of the document.
+    /// Not saved.
+    pub uid: u64,
     /// One-shot display-only notification during doc.open, before authoritative evaluation.
     /// Interactive loaders may show it provisionally; it never becomes model state.
     pub open_preview: Option<Box<dyn Fn(solidcraft_io::DesignPreview) + Send + Sync>>,
@@ -365,6 +372,7 @@ impl Session {
             active_sketch: None,
             selection: Vec::new(),
             path: None,
+            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             open_preview: None,
             log: Vec::new(),
             revision: 1,
@@ -836,6 +844,7 @@ impl Session {
             active_sketch: self.active_sketch,
             selection: self.selection.clone(),
             path: None,
+            uid: self.uid,
             open_preview: None,
             saved: self.saved.clone(),
             log: Vec::new(),

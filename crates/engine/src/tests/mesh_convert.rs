@@ -203,10 +203,42 @@ fn open_in_slicer_needs_a_slicer_and_bodies() {
     assert!(s.execute("file.open_in_slicer", &json!({"slicer":"no such slicer anywhere"})).is_err());
 }
 
+/// The chosen-programs list is process-wide: tests that set it take turns.
+static CHOSEN_PROGRAMS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+#[test]
+fn unsaved_designs_of_one_name_send_to_different_files_and_one_design_to_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("solidcraft-open-in-slicer-uid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("fake-slicer");
+    std::fs::write(&script, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let spec = script.to_string_lossy().into_owned();
+    let _turn = CHOSEN_PROGRAMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut a, mut b) = (imported_box(), imported_box());
+    assert_eq!((a.path.is_none(), a.doc.name == b.doc.name), (true, true));
+    // Chosen list is process-wide: set it for this test, clear it before leaving.
+    crate::slicers::set_chosen_programs(std::slice::from_ref(&spec));
+    let send = |s: &mut Session| {
+        s.execute("file.open_in_slicer", &json!({"slicer": spec, "bodies": ["Mesh"]})).map(|r| r["path"].as_str().unwrap().to_string())
+    };
+    let (a1, a2, b1) = (send(&mut a), send(&mut a), send(&mut b));
+    crate::slicers::set_chosen_programs(&[]);
+    let (a1, a2, b1) = (a1.unwrap(), a2.unwrap(), b1.unwrap());
+    assert_eq!(a1, a2, "sending again from one document keeps one file");
+    assert_ne!(a1, b1, "two unsaved documents with the same name and bodies get their own files");
+    std::fs::remove_dir_all(std::path::Path::new(&a1).parent().unwrap()).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
     use std::os::unix::fs::PermissionsExt;
+    let _turn = CHOSEN_PROGRAMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut s = imported_box();
     let dir = std::env::temp_dir().join(format!("solidcraft-open-in-slicer-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

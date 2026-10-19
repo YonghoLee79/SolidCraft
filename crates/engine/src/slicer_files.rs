@@ -40,15 +40,19 @@ fn make_private(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// A file name (no extension) for `bodies` of a design: the design's name, then a short hash of
-/// where the design is saved (its name when it is not) and of the bodies, so two designs with the
-/// same name, or two selections of one design, never share a file.
-pub fn stem(design: &str, path: Option<&str>, bodies: &[String]) -> String {
+/// A file name (no extension) for `bodies` of a design: the design's name, then a hash of which
+/// document it is and of the bodies, so two designs with the same name, or two selections of one
+/// design, never share a file. A saved design is told apart by its path; one that was never saved
+/// by this process and its `uid` (`Session::uid`), so two unsaved "Untitled" designs differ too.
+/// At the first Save As the name changes to the path-based one: the slicer gets a new file once,
+/// and the unsaved one is left to the seven-day sweep.
+pub fn stem(design: &str, path: Option<&str>, uid: u64, bodies: &[String]) -> String {
     let mut names: Vec<&str> = bodies.iter().map(String::as_str).collect();
     names.sort_unstable();
     // FNV-1a: the same on every release, unlike `DefaultHasher`.
     let mut h: u64 = 0xcbf29ce484222325;
-    for part in std::iter::once(path.unwrap_or(design)).chain(names) {
+    let unsaved = format!("unsaved:{}:{uid}", std::process::id());
+    for part in std::iter::once(path.unwrap_or(&unsaved)).chain(names) {
         for b in part.bytes().chain([0]) {
             h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
         }
@@ -114,13 +118,22 @@ mod tests {
 
     #[test]
     fn the_name_is_stable_per_design_and_bodies() {
-        let a = |names: &[&str]| stem("Bracket", Some("/d/bracket.solidcraft"), &names.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let a = |names: &[&str]| stem("Bracket", Some("/d/bracket.solidcraft"), 1, &names.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(a(&["Arm", "Base"]), a(&["Base", "Arm"]));
         assert_ne!(a(&["Arm", "Base"]), a(&["Arm"]));
-        assert_ne!(a(&["Arm"]), stem("Bracket", Some("/other/bracket.solidcraft"), &["Arm".to_string()]));
+        assert_ne!(a(&["Arm"]), stem("Bracket", Some("/other/bracket.solidcraft"), 1, &["Arm".to_string()]));
         assert!(a(&["Arm"]).starts_with("Bracket-"));
-        assert_eq!(stem("a/b:c", None, &[]).split('-').next(), Some("a_b_c"));
-        assert!(stem("", None, &[]).starts_with("design-"));
+        assert_eq!(stem("a/b:c", None, 1, &[]).split('-').next(), Some("a_b_c"));
+        assert!(stem("", None, 1, &[]).starts_with("design-"));
+    }
+
+    #[test]
+    fn unsaved_designs_with_the_same_name_get_different_files() {
+        let bodies = ["Arm".to_string()];
+        let (a, b) = (stem("Untitled", None, 1, &bodies), stem("Untitled", None, 2, &bodies));
+        assert_ne!(a, b);
+        assert_eq!(a, stem("Untitled", None, 1, &bodies), "one document keeps one file");
+        assert_eq!(a.len(), "Untitled-".len() + 16);
     }
 
     #[test]

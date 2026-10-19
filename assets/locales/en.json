@@ -1385,6 +1385,7 @@
   "ui.open": "Open",
   "ui.open_ellipsis": "Open...",
   "ui.open_ends_tip": "Touches nothing",
+  "ui.open_in_slicer_unavailable": "Open in Slicer needs the desktop app: a browser can't start a program",
   "ui.open_preferences": "Open Preferences",
   "ui.open_recent": "Open Recent",
   "ui.operation": "Operation",

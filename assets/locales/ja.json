@@ -1385,6 +1385,7 @@
   "ui.open": "開く",
   "ui.open_ellipsis": "開く…",
   "ui.open_ends_tip": "どこにも接していない",
+  "ui.open_in_slicer_unavailable": "「スライサーで開く」にはデスクトップアプリが必要です。ブラウザーではプログラムを起動できません",
   "ui.open_preferences": "環境設定を開く",
   "ui.open_recent": "最近使った項目を開く",
   "ui.operation": "操作",

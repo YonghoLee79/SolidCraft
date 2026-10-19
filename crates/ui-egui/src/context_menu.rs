@@ -518,7 +518,7 @@ fn body_items(app: &SolveApp, bodies: &[String], browser: bool) -> Vec<Item> {
         act("ui.properties", "Properties", "measure").with(json!({ "bodies": names })),
         Item::sep(),
         act("ui.saveMesh", "Save As Mesh", "export").with(json!({ "bodies": names })),
-        act("ui.openInSlicer", "Open in Slicer", "export").with(json!({ "bodies": names })),
+        act("ui.openInSlicer", "Open in Slicer", "export").with(json!({ "bodies": names })).on(crate::dialogs_save_mesh::available(app)),
         act("ui.export", "Export…", "export").with(json!({ "bodies": names })),
         Item::sep(),
         act("ui.delete", "Delete", "delete").key("Del").with(json!({ "items": items })).on(!locked),
@@ -724,7 +724,11 @@ fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
     v.push(Item::sep());
     v.push(act("ui.export", "Export…", "export").with(json!({ "bodies": names })).on(!bodies.is_empty()));
     v.push(act("ui.saveMesh", "Save As Mesh", "export").with(json!({ "bodies": names })).on(!bodies.is_empty()));
-    v.push(act("ui.openInSlicer", "Open in Slicer", "export").with(json!({ "bodies": names })).on(!bodies.is_empty()));
+    v.push(
+        act("ui.openInSlicer", "Open in Slicer", "export")
+            .with(json!({ "bodies": names }))
+            .on(!bodies.is_empty() && crate::dialogs_save_mesh::available(app)),
+    );
     v.push(Item::sep());
     if id != 0 {
         v.push(cmd(app, "occurrence.copy", "Paste (Instance)").with(json!({ "component": id, "translate": [10, 10, 0] })));

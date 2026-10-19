@@ -93,6 +93,11 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
     Some((kind, vec![SelInput::new("Bodies", BODIES, true)]))
 }
 
+/// Open in Slicer needs a way to start a program: a browser has none.
+pub fn available(app: &SolveApp) -> bool {
+    app.services.pick_program.is_some()
+}
+
 /// The names of the selected bodies.
 fn selected_bodies(app: &SolveApp) -> Vec<String> {
     app.session.selection.iter().filter_map(|s| if let Sel::Body { name } = s { Some(name.clone()) } else { None }).collect()
@@ -181,16 +186,18 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) -> bool {
         }
         k.send &= !entries.is_empty() || k.open;
     }
+    // A browser has no installed programs to send a file to.
+    let can_send = app.services.pick_program.is_some();
     if !k.open {
         row_label(ui, "Format");
         combo(ui, "sm_format", &FORMATS.map(|f| f.0), &mut k.format);
         ui.end_row();
-
-        // A browser has no installed programs to send a file to.
-        if app.services.pick_program.is_none() {
-            k.send = false;
-            return false;
-        }
+    }
+    if !can_send {
+        k.send = false;
+        return false;
+    }
+    if !k.open {
         row_label(ui, "Send to slicer");
         ui.checkbox(&mut k.send, "");
         ui.end_row();
@@ -419,6 +426,19 @@ fn report(app: &mut SolveApp, result: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn without_a_program_dialog_open_in_slicer_is_unavailable_and_starts_nothing() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        assert!(app.services.pick_program.is_none());
+        assert!(!available(&app));
+        app.preferences.open_slicer = "prusa".into();
+        app.start("file.open_in_slicer");
+        assert!(app.dialog.is_none(), "no dialog to choose a slicer in");
+        assert!(matches!(&app.status, Some((_, _, true))));
+        app.services.pick_program = Some(Box::new(|| Box::pin(async { None })));
+        assert!(available(&app));
+    }
 
     #[test]
     fn open_in_slicer_asks_for_bodies_and_a_slicer_but_not_a_format() {

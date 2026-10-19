@@ -527,7 +527,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     app.start("file.save_mesh");
                     close = true;
                 }
-                if item_if(ui, "Open in Slicer", "", shown) {
+                if item_if(ui, "Open in Slicer", "", shown && crate::dialogs_save_mesh::available(app)) {
                     app.start("file.open_in_slicer");
                     close = true;
                 }
