@@ -1308,13 +1308,6 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             let (single, tip) = (app.tr("ui.slicer_single_instance").to_string(), app.tr("ui.slicer_single_instance_tip").to_string());
             ui.checkbox(&mut app.preferences.slicer_single_instance, single).on_hover_text(tip);
             ui.end_row();
-            if !app.preferences.open_slicer.is_empty() {
-                ui.label("");
-                if ui.button(app.tr("ui.slicer_forget")).clicked() {
-                    app.preferences.open_slicer.clear();
-                }
-                ui.end_row();
-            }
             crate::update::prefs_rows(app, ui, t);
         }
         1 => {

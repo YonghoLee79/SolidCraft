@@ -106,25 +106,6 @@ pub fn available(app: &SolveApp) -> bool {
     app.services.pick_program.is_some()
 }
 
-/// The names of the selected bodies.
-fn selected_bodies(app: &SolveApp) -> Vec<String> {
-    app.session.selection.iter().filter_map(|s| if let Sel::Body { name } = s { Some(name.clone()) } else { None }).collect()
-}
-
-/// Open in Slicer without a dialog: the last slicer used is still there and bodies are selected.
-/// False means the dialog has to ask.
-pub fn open_remembered(app: &mut SolveApp) -> bool {
-    let bodies = selected_bodies(app);
-    let key = app.preferences.open_slicer.clone();
-    if key.is_empty() || bodies.is_empty() {
-        return false;
-    }
-    app.slicer_menu.refresh(&app.preferences.custom_slicers);
-    let Some(key) = app.slicer_menu.key_for(&key) else { return false };
-    send_to_slicer(app, json!({ "slicer": key, "bodies": bodies }));
-    true
-}
-
 /// A slicer that was started alone and is being waited for, off the UI thread, until it can take
 /// the file (`slicers::WAIT_FOR_READY`). One at a time: a second send while it lasts does nothing.
 pub struct SlicerWait {
@@ -529,6 +510,30 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
         std::fs::read_to_string(seen).map(|t| t.lines().count()).unwrap_or(0)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_menu_entries_always_ask_and_a_script_with_a_slicer_does_not() {
+        let (mut app, seen, mut params) = app_with_fake_slicer("ask");
+        app.services.pick_program = Some(Box::new(|| Box::pin(async { None })));
+        app.run("select.set", json!({"items": [{"type": "body", "name": "Part"}]})).unwrap();
+        // Last time's slicer is remembered and bodies are selected: still the picker, with it pre-selected.
+        let key = params["slicer"].as_str().unwrap().to_string();
+        app.preferences.open_slicer = key.clone();
+        app.start("file.open_in_slicer");
+        let Some(Kind::SaveMesh(k)) = app.dialog.as_ref().map(|d| d.kind.clone()) else { panic!("no picker opened") };
+        assert!(k.open);
+        assert_eq!(k.slicer, key, "pre-selected");
+        assert!(!seen.exists(), "nothing sent until the user confirms");
+        // A script names the slicer: no dialog, the file goes.
+        app.dialog = None;
+        params["wait"] = json!("no");
+        app.run("file.open_in_slicer", params).unwrap();
+        assert!(app.dialog.is_none());
+        assert_eq!(sent(&seen), 1);
+        let _ = std::fs::remove_dir_all(seen.parent().unwrap());
+        solidcraft_engine::slicers::set_chosen_programs(&[]);
     }
 
     #[cfg(unix)]

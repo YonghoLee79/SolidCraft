@@ -46,9 +46,10 @@ to the top of the list (kept between runs; hover an entry you added and press De
 
 **File → Open in Slicer** (also on the Mesh tab under Modify, and in the right-click menu of a
 body) is the short way: it saves the selected bodies as a 3MF in millimetres, without face tags,
-and opens it in the slicer you used last. The first time, or when that slicer is gone, it asks which
-one, with the same list as Save as mesh. It falls back to an STL if the 3MF can't be written.
-Scripts and the control channel use `file.open_in_slicer`. They can start only the slicers in the
+and opens it in a slicer. It always asks which one, with the same list as Save as mesh, and
+pre-selects the slicer you used last time, so the usual case is one click or Enter. It falls back
+to an STL if the 3MF can't be written. Scripts and the control channel use `file.open_in_slicer`
+with a `slicer`, which sends without a dialog. They can start only the slicers in the
 list and programs you added under **Custom…**; any other program path is refused, and an AI agent's
 request to save a mesh or open it in a slicer asks first and names the slicer.
 
@@ -63,8 +64,7 @@ deleted the next time SolidCraft starts.
 If the slicer is already running, PrusaSlicer, SuperSlicer, Bambu Studio and Cura load the file in
 the open window instead of starting another one (they are started with `--single-instance`).
 OrcaSlicer has no such option, so it may open a second window. You can turn this off in
-Preferences → General; the same page has a button that makes Open in Slicer ask which slicer to
-use again. Scripts pass `single_instance: false` to `file.open_in_slicer` or `file.save_mesh`.
+Preferences → General. Scripts pass `single_instance: false` to `file.open_in_slicer` or `file.save_mesh`.
 
 Closed mechanical meshes with a constant cross-section can be rebuilt as solids with the
 `mesh.convert` command (command palette, scripts and the control channel).

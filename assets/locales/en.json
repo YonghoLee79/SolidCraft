@@ -1510,7 +1510,6 @@
   "ui.slice": "Slice",
   "ui.slicer": "Slicer",
   "ui.slicer_delete_tip": "{program}\nPress Delete to remove it from the list",
-  "ui.slicer_forget": "Forget the slicer Open in Slicer uses",
   "ui.slicer_no_response": "{slicer} didn't respond in time. The file is already saved at {path}: send it again once the slicer has started.",
   "ui.slicer_resend_hint": "Sending again replaces the file the slicer has open.",
   "ui.slicer_single_instance": "Open files in a slicer that is already running",

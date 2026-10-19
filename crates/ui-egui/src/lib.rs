@@ -771,15 +771,10 @@ impl SolveApp {
             let _ = self.run(id, json!({"enabled": !self.preferences.ambient_occlusion}));
             return;
         }
-        // Open in Slicer asks which slicer only when none is remembered.
-        if id == "file.open_in_slicer" {
-            if !dialogs_save_mesh::available(self) {
-                self.set_status(self.tr("ui.open_in_slicer_unavailable").to_string(), true);
-                return;
-            }
-            if dialogs_save_mesh::open_remembered(self) {
-                return;
-            }
+        // Open in Slicer always asks which slicer (the dialog pre-selects the last one).
+        if id == "file.open_in_slicer" && !dialogs_save_mesh::available(self) {
+            self.set_status(self.tr("ui.open_in_slicer_unavailable").to_string(), true);
+            return;
         }
         // Another command ends Edit Text (its dialog is not a feature edit to keep).
         sketch_text_move::cancel_drag(self);
