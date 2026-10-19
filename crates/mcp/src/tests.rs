@@ -1521,11 +1521,13 @@ fn tool_annotations_tell_the_whole_truth() {
         "fdm_print_estimate",
         "find_faces",
         "verify_design",
+        "cad_status",
+        "artifacts",
     ] {
         assert_eq!(hints(name), (true, false, false), "{name}");
     }
     assert_eq!(hints("new_design"), (false, true, false));
-    for name in ["set_parameter", "undo", "redo", "fastener_metric_hole", "fastener_hole_pattern"] {
+    for name in ["set_parameter", "undo", "redo", "fastener_metric_hole", "fastener_hole_pattern", "materials"] {
         assert_eq!(hints(name), (false, false, false), "{name}");
     }
     assert!(tools.iter().all(|t| t["annotations"]["readOnlyHint"].is_boolean()), "every tool is annotated");
@@ -2041,5 +2043,70 @@ fn export_drawing_writes_a_tcvn_sheet() {
     let r = raw_tool(&mut s, "export_drawing", json!({"path": outside.join("x.dxf").to_string_lossy()}));
     assert_eq!(r["result"]["isError"], json!(true), "{r}");
     assert!(!outside.join("x.dxf").exists());
+    let _ = std::fs::remove_dir_all(&top);
+}
+
+#[test]
+fn cad_status_reports_environment_and_health() {
+    let mut s = server();
+    let r = tool(&mut s, "cad_status", json!({}));
+    assert_eq!(r["status"], json!("ready"));
+    assert_eq!(r["backend"], json!("headless"));
+    assert_eq!(r["connected_to_gui"], json!(false));
+    assert_eq!(r["body_count"], json!(0));
+    assert_eq!(r["feature_count"], json!(0));
+    assert_eq!(r["timeline_ok"], json!(true));
+
+    tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 20, "width": 20, "height": 10}}));
+    let r2 = tool(&mut s, "cad_status", json!({}));
+    assert_eq!(r2["body_count"], json!(1));
+    assert_eq!(r2["feature_count"], json!(1));
+    assert_eq!(r2["timeline_ok"], json!(true));
+}
+
+#[test]
+fn materials_list_and_assign() {
+    let mut s = server();
+    let list = tool(&mut s, "materials", json!({"action": "list"}));
+    let mats = list["materials"].as_array().unwrap();
+    assert!(mats.iter().any(|m| m["name"] == "Steel"), "Steel in materials: {mats:?}");
+
+    tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 30, "width": 20, "height": 10, "body_name": "Part1"}}));
+    let assigned = tool(&mut s, "materials", json!({"action": "assign", "material": "Steel", "bodies": ["Part1"]}));
+    assert_eq!(assigned["material"]["material"], json!("Steel"));
+
+    let colored =
+        tool(&mut s, "materials", json!({"action": "assign", "appearance": "Custom Red", "color": [255, 0, 0], "opacity": 0.8, "bodies": ["Part1"]}));
+    assert!(colored.get("appearance").is_some());
+}
+
+#[test]
+fn artifacts_scans_and_filters_files() {
+    use solidcraft_engine::io::vfs::PathScope;
+    let top = std::env::temp_dir().join(format!("solidcraft-mcp-artifacts-{}", std::process::id()));
+    let (dir, outside) = (top.join("root"), top.join("outside"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+
+    let mut s = Server::new(Box::new(Headless::default())).with_path_scope(Some(PathScope::new([dir.clone()])));
+    tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 40, "width": 25, "height": 15}}));
+
+    let part_path = dir.join("model.solidcraft");
+    let step_path = dir.join("model.step");
+    tool(&mut s, "save", json!({"path": part_path.to_string_lossy()}));
+    tool(&mut s, "export", json!({"path": step_path.to_string_lossy()}));
+
+    let all = tool(&mut s, "artifacts", json!({"dir": dir.to_string_lossy()}));
+    assert_eq!(all["count"], json!(2), "{all}");
+    let arts = all["artifacts"].as_array().unwrap();
+    assert!(arts.iter().any(|a| a["extension"] == "solidcraft" && a["kind"] == "design"));
+    assert!(arts.iter().any(|a| a["extension"] == "step" && a["kind"] == "model"));
+
+    let filtered = tool(&mut s, "artifacts", json!({"dir": dir.to_string_lossy(), "filter": ".step"}));
+    assert_eq!(filtered["count"], json!(1), "{filtered}");
+
+    let err = raw_tool(&mut s, "artifacts", json!({"dir": outside.to_string_lossy()}));
+    assert_eq!(err["result"]["isError"], json!(true), "outside agent scope: {err}");
+
     let _ = std::fs::remove_dir_all(&top);
 }

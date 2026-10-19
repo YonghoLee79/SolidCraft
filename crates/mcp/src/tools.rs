@@ -451,6 +451,50 @@ pub fn tool_definitions() -> Vec<Value> {
             ),
             Effect::Files,
         ),
+        tool(
+            "cad_status",
+            "CAD status and environment health",
+            "Fast inspection of session state and environment without the overhead of body measurement: backend mode \
+             (headless vs remote bridged app), open design name, units, active sketch (if editing a sketch), \
+             feature count, body count, sketch count, parameter count, undo/redo depth, and timeline health.",
+            obj(json!({}), &[]),
+            Effect::ReadOnly,
+        ),
+        tool(
+            "artifacts",
+            "List generated CAD artifacts",
+            "Scan the workspace and allowed folders for generated CAD models, drawings and exports \
+             (.solidcraft, .step, .stp, .dxf, .stl, .3mf, .obj, .urdf, .png). Returns file paths, \
+             file sizes in bytes, formats, and modification timestamps. Optional `filter` by file extension or name substring.",
+            obj(
+                json!({
+                    "filter": string("Optional file name or extension substring, e.g. \".dxf\", \"bracket\", \".step\""),
+                    "dir": string("Subdirectory or specific folder to scan (default: allowed paths / design folder)"),
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
+            "materials",
+            "Inspect and assign materials and appearances",
+            "List available physical materials (density, mass properties) and visual appearances (color, opacity), \
+             or assign them to bodies and faces. Actions: `list` (default: lists built-in and user materials, and appearances), \
+             or `assign` (assigns a `material` or `appearance` / `color` to `bodies` or `faces`).",
+            obj(
+                json!({
+                    "action": {"type": "string", "enum": ["list", "assign"], "description": "Action to perform (default: list)"},
+                    "bodies": {"type": "array", "items": {"type": "string"}, "description": "Body names to assign to"},
+                    "faces": {"type": "array", "items": {"type": "object"}, "description": "Face selections to assign appearance to: [{\"body\": \"Body1\", \"point\": [x,y,z]}] or [[x,y,z]]"},
+                    "material": string("Physical material name to assign (e.g. \"Steel\", \"Aluminum\", \"ABS\")"),
+                    "appearance": string("Appearance name to assign from library or custom"),
+                    "color": {"description": "Color as \"#rrggbb\" hex or [r, g, b] array 0–255"},
+                    "opacity": {"type": "number", "description": "Opacity 0.0 to 1.0 (default 1.0)"},
+                }),
+                &[],
+            ),
+            Effect::Edits,
+        ),
     ]
 }
 
@@ -624,6 +668,9 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
         "export_drawing" => export_drawing(b, a),
         "find_faces" => find_faces(b, a),
         "verify_design" => verify_design(b, a),
+        "cad_status" => cad_status(b, a),
+        "artifacts" => artifacts(b, a),
+        "materials" => materials(b, a),
         other => Err(format!("unknown tool `{other}`")),
     }
 }
@@ -1704,4 +1751,170 @@ pub(crate) fn base64(data: &[u8]) -> String {
         }
     }
     out
+}
+
+fn cad_status(b: &mut dyn Backend, _a: &Map<String, Value>) -> Result<Value, String> {
+    let insp = b.call("document.inspect", json!({"measure": false}))?;
+    let timeline = insp.get("timeline").and_then(Value::as_array);
+    let bodies = insp.get("bodies").and_then(Value::as_array);
+    let sketches = insp.get("sketches").and_then(Value::as_array);
+    let params = insp.get("params").and_then(Value::as_array);
+
+    let feature_count = timeline.map(Vec::len).unwrap_or(0);
+    let body_count = bodies.map(Vec::len).unwrap_or(0);
+    let sketch_count = sketches.map(Vec::len).unwrap_or(0);
+    let parameter_count = params.map(Vec::len).unwrap_or(0);
+
+    let failing_features: Vec<Value> = timeline
+        .map(|a| {
+            a.iter()
+                .filter(|f| !f.get("error").is_none_or(Value::is_null))
+                .map(|f| {
+                    json!({
+                        "id": f.get("id"),
+                        "name": f.get("name"),
+                        "type": f.get("type"),
+                        "error": f.get("error"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let backend_mode = if b.has_ui() { "remote_gui" } else { "headless" };
+    let design_path = b.design_path().unwrap_or_else(|| insp.get("name").and_then(Value::as_str).unwrap_or("Untitled").to_string());
+
+    Ok(json!({
+        "status": "ready",
+        "backend": backend_mode,
+        "connected_to_gui": b.has_ui(),
+        "design": design_path,
+        "units": insp.get("units").unwrap_or(&json!("mm")),
+        "feature_count": feature_count,
+        "body_count": body_count,
+        "sketch_count": sketch_count,
+        "parameter_count": parameter_count,
+        "active_sketch": insp.get("active_sketch"),
+        "undo_depth": insp.get("undo_depth").unwrap_or(&json!(0)),
+        "timeline_ok": failing_features.is_empty(),
+        "failing_features": failing_features,
+    }))
+}
+
+fn materials(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    let action = str_arg(a, "action").unwrap_or("list");
+    match action {
+        "list" => {
+            let mats = exec(b, "material.list", json!({}))?;
+            let apps = exec(b, "appearance.list", json!({}))?;
+            Ok(json!({
+                "materials": mats.get("materials").cloned().unwrap_or_else(|| json!([])),
+                "appearances": apps.get("in_design").cloned().unwrap_or_else(|| json!([])),
+            }))
+        }
+        "assign" => {
+            let mut results = Map::new();
+            if let Some(mat_name) = str_arg(a, "material") {
+                let bodies = a.get("bodies").cloned().unwrap_or_else(|| json!([]));
+                let res = exec(b, "material.assign", json!({"material": mat_name, "bodies": bodies}))?;
+                results.insert("material".to_string(), res);
+            }
+            if a.contains_key("appearance") || a.contains_key("color") {
+                let mut app_params = pick(a, &["appearance", "color", "opacity", "bodies"]);
+                if let Some(faces) = a.get("faces") {
+                    app_params["faces"] = faces.clone();
+                }
+                let res = exec(b, "appearance.assign", app_params)?;
+                results.insert("appearance".to_string(), res);
+            }
+            if results.is_empty() {
+                return Err("materials: `assign` requires `material`, `appearance`, or `color`".to_string());
+            }
+            Ok(Value::Object(results))
+        }
+        other => Err(format!("materials: unknown action `{other}`, must be `list` or `assign`")),
+    }
+}
+
+fn artifacts(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    let filter = str_arg(a, "filter").map(str::to_lowercase);
+    let target_dir = match str_arg(a, "dir") {
+        Some(d) => {
+            solidcraft_engine::io::vfs::check(d).map_err(|e| format!("{d}: {e}"))?;
+            std::path::PathBuf::from(d)
+        }
+        None => {
+            if let Some(dp) = b.design_path() {
+                let p = std::path::Path::new(&dp);
+                let parent = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let p_str = parent.to_string_lossy();
+                if solidcraft_engine::io::vfs::check(&p_str).is_ok() {
+                    parent.to_path_buf()
+                } else if let Some(scratch) = crate::scratch_dir() {
+                    scratch
+                } else {
+                    return Ok(json!({"count": 0, "artifacts": []}));
+                }
+            } else if let Some(scratch) = crate::scratch_dir() {
+                scratch
+            } else if solidcraft_engine::io::vfs::check(".").is_ok() {
+                std::path::PathBuf::from(".")
+            } else {
+                return Ok(json!({"count": 0, "artifacts": []}));
+            }
+        }
+    };
+
+    const CAD_EXTS: &[&str] = &["solidcraft", "step", "stp", "dxf", "stl", "3mf", "obj", "urdf", "png", "json"];
+    let mut found = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&target_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+            if !CAD_EXTS.contains(&ext.as_str()) {
+                continue;
+            }
+            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            if let Some(ref f) = filter
+                && !file_name.to_lowercase().contains(f)
+                && !ext.contains(f)
+            {
+                continue;
+            }
+            let meta = entry.metadata().ok();
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let modified = meta.and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+
+            let kind = match ext.as_str() {
+                "dxf" => "drawing",
+                "png" => "image",
+                "solidcraft" => "design",
+                "step" | "stp" | "stl" | "3mf" | "obj" | "urdf" => "model",
+                _ => "file",
+            };
+
+            found.push(json!({
+                "name": file_name,
+                "path": path.to_string_lossy().replace('\\', "/"),
+                "extension": ext,
+                "kind": kind,
+                "size_bytes": size,
+                "modified_epoch_s": modified,
+            }));
+        }
+    }
+    found.sort_by(|x, y| {
+        let nx = x.get("name").and_then(Value::as_str).unwrap_or("");
+        let ny = y.get("name").and_then(Value::as_str).unwrap_or("");
+        nx.cmp(ny)
+    });
+
+    Ok(json!({
+        "directory": target_dir.to_string_lossy().replace('\\', "/"),
+        "count": found.len(),
+        "artifacts": found,
+    }))
 }

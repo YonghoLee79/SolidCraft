@@ -174,6 +174,9 @@ They cover the workflow, the command shapes, how to verify with `measure`, and t
 | `new_design` | `name?` | Start an empty design. |
 | `open` | `path` | Open a `.solidcraft` design, a STEP file (`.step`/`.stp`) as a new design holding its bodies (an Import base feature), or a 3MF/STL file as mesh bodies. |
 | `save` | `path?` | Save the design (to its current file without `path`). |
+| `cad_status` | — | Fast inspection of CAD session state and environment without the overhead of body measurement: backend mode (headless vs remote bridged app), open design name, units, active sketch, feature/body/sketch/parameter counts, undo/redo depth, and timeline health. |
+| `artifacts` | `filter?`, `dir?` | Scan workspace and allowed folders for generated CAD artifacts (.solidcraft, .step, .stp, .dxf, .stl, .3mf, .obj, .urdf, .png) with size and timestamp metadata. |
+| `materials` | `action?` (list, assign), `material?`, `appearance?`, `color?`, `opacity?`, `bodies?`, `faces?` | Inspect available physical materials (density, mass properties) and visual appearances (color, opacity), or assign them to bodies and faces. |
 
 `measure` with `items` reports each item under `items` (`length_mm`, `area_mm2` or `position`).
 A circle, arc, hole or other cylindrical face also gives `diameter`, `radius`, `center` and
