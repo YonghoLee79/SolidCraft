@@ -711,17 +711,21 @@ fn bus_list(program: &str, limit: std::time::Duration) -> Option<String> {
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
-        // Read on another thread so a long list can't fill the pipe while this one waits.
-        let mut stdout = child.stdout.take()?;
-        let reader = std::thread::spawn(move || {
-            let mut text = String::new();
-            stdout.read_to_string(&mut text).ok().map(|_| text)
-        });
         let end = std::time::Instant::now() + limit;
+        let left = || end.saturating_duration_since(std::time::Instant::now());
+        // Read on another thread so a long list can't fill the pipe while this one waits, and hand
+        // the text back over a channel so that waiting for it has the same deadline: a process
+        // the program left running may keep the pipe open long after the program is gone.
+        let mut stdout = child.stdout.take()?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = tx.send(stdout.read_to_string(&mut text).ok().map(|_| text));
+        });
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
-                Ok(None) if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Ok(None) if !left().is_zero() => std::thread::sleep(std::time::Duration::from_millis(10).min(left())),
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -729,7 +733,8 @@ fn bus_list(program: &str, limit: std::time::Duration) -> Option<String> {
                 }
             }
         };
-        let text = reader.join().ok()??;
+        // A reader that is still waiting when this gives up ends when the pipe closes.
+        let text = rx.recv_timeout(left()).ok()??;
         status.success().then_some(text)
     }
 }
@@ -1205,6 +1210,11 @@ mod tests {
         let list = bus_list(&answers, std::time::Duration::from_secs(5)).unwrap();
         assert!(has_bus_name(&list, WAIT_FOR_READY[0].bus_prefix));
         assert_eq!(bus_list(&fake("fails", "exit 1"), std::time::Duration::from_secs(5)), None);
+        // It exits at once but leaves a process running that keeps its output open.
+        let lingers = fake("lingers", "echo ':1.5 1 x'; sleep 5 &\nexit 0");
+        let started = std::time::Instant::now();
+        assert_eq!(bus_list(&lingers, std::time::Duration::from_millis(200)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
         assert_eq!(bus_list(&root.join("missing").to_string_lossy(), std::time::Duration::from_secs(1)), None);
         std::fs::remove_dir_all(root).unwrap();
     }
