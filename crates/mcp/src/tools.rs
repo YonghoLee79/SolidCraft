@@ -272,6 +272,28 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Files,
         ),
         tool(
+            "export_drawing",
+            "Export a TCVN drawing sheet as DXF",
+            "Write one 2D DXF drawing sheet in paper millimetres, laid out the way Vietnamese technical drawings are: an ISO              A0–A4 sheet with its frame (20 mm binding margin on the left, 10 mm elsewhere, after TCVN 7285) and centring              marks, a title block in the frame's lower right corner (`production` 180×55 mm with revisions, signatures,              quantity, mass, scale and sheet count; or `school` 140×32 mm), and the shown bodies' views with hidden-line              removal, arranged by first-angle projection (top view under the front, left view on its right) or third-angle,              at the largest standard scale (1, 2 or 5 times a power of ten) that fits unless `scale` is given. Layers:              SHEET, FRAME and VISIBLE (0.5 mm), TITLE_LINES, TITLE_TEXT and dashed HIDDEN (0.25 mm). The reply gives the              scale and where each view is on the sheet; `unused_fields` names fields the chosen block has no cell for.",
+            obj(
+                json!({
+                    "path": string("The .dxf file to write"),
+                    "sheet": {"type": "string", "enum": ["A0", "A1", "A2", "A3", "A4"], "description": "Sheet size (default A3)"},
+                    "orientation": {"type": "string", "enum": ["landscape", "portrait"], "description": "Default landscape; A4 portrait"},
+                    "margins": {"type": "string", "enum": ["tcvn", "compact"], "description": "tcvn: 20 mm left, 10 mm elsewhere (default); compact: 20 mm left, 5 mm elsewhere"},
+                    "title_block": {"type": "string", "enum": ["production", "school", "none"], "description": "Title block layout (default production)"},
+                    "fields": {"type": "object", "description": "Title block text (each at most 80 letters): title, drawing_no, material, quantity, mass, sheet, sheets, organization, designed_by, designed_date, drawn_by, drawn_date, checked_by, checked_date, standards_by, standards_date, approved_by, approved_date, and revisions: up to 3 {mark, document, signature, date}"},
+                    "views": {"type": "array", "items": {"type": "string", "enum": ["front", "back", "left", "right", "top", "bottom", "iso"]}, "description": "Views to place (default front, top, left)"},
+                    "projection": {"type": "string", "enum": ["first_angle", "third_angle"], "description": "View arrangement (default first_angle, as TCVN drawings use)"},
+                    "scale": string("A ratio like \"1:2\" or \"2:1\" (default: the largest standard scale that fits)"),
+                    "hidden": {"type": "string", "enum": ["dashed", "omit"], "description": "Hidden edges dashed or left out (default dashed)"},
+                    "tolerance": {"type": "number", "description": "Curve chord tolerance in model mm, 0.0001 to 1 (default 0.01)"},
+                }),
+                &["path"],
+            ),
+            Effect::Files,
+        ),
+        tool(
             "fdm_print_estimate",
             "FDM Print Estimate (filament and build volume)",
             "Estimate the plastic an FDM print of bodies takes (a shell of `wall_mm` plus `infill_percent` of the inside; \
@@ -599,6 +621,7 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
         "fastener_hole_pattern" => fastener_hole_pattern(b, a),
         "fdm_print_estimate" => fdm_print_estimate(b, a),
         "export_views" => export_views(b, a),
+        "export_drawing" => export_drawing(b, a),
         "find_faces" => find_faces(b, a),
         "verify_design" => verify_design(b, a),
         other => Err(format!("unknown tool `{other}`")),
@@ -1228,6 +1251,12 @@ fn export_views(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, St
     Ok(
         json!({"views": written, "units": "mm", "projection": "orthographic", "hidden": hidden, "tolerance": tolerance, "bbox": {"min": lo, "max": hi}}),
     )
+}
+
+fn export_drawing(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    str_arg(a, "path").map(str::trim).filter(|p| !p.is_empty()).ok_or("`path` is required")?;
+    let keys = ["path", "sheet", "orientation", "margins", "title_block", "fields", "views", "projection", "scale", "hidden", "tolerance"];
+    exec(b, "file.export_drawing_dxf", pick(a, &keys))
 }
 
 /// The volume of every body together (mm³).

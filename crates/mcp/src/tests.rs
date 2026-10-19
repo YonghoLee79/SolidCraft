@@ -503,7 +503,7 @@ fn hostile_arguments_never_panic() {
     for def in &defs {
         let name = def["name"].as_str().unwrap();
         // Hostile strings are relative paths: don't let the sweep write files into the crate.
-        let writes = matches!(name, "save" | "screenshot" | "export" | "export_views");
+        let writes = matches!(name, "save" | "screenshot" | "export" | "export_views" | "export_drawing");
         let keys: Vec<String> = def["inputSchema"]["properties"].as_object().unwrap().keys().filter(|k| !(writes && *k == "path")).cloned().collect();
         for k in &keys {
             for v in hostile_values() {
@@ -1507,7 +1507,7 @@ fn tool_annotations_tell_the_whole_truth() {
         let a = &t["annotations"];
         (a["readOnlyHint"].as_bool().unwrap(), a["destructiveHint"].as_bool().unwrap(), a["openWorldHint"].as_bool().unwrap())
     };
-    for name in ["execute", "batch", "save", "export", "open", "screenshot", "export_views"] {
+    for name in ["execute", "batch", "save", "export", "open", "screenshot", "export_views", "export_drawing"] {
         assert_eq!(hints(name), (false, true, true), "{name}");
     }
     for name in [
@@ -2016,5 +2016,30 @@ fn export_views_writes_orthographic_dxfs_with_hidden_lines() {
     tool(&mut s, "new_design", json!({}));
     let r = raw_tool(&mut s, "export_views", json!({"path": base.to_string_lossy()}));
     assert_eq!(r["result"]["isError"], json!(true), "no bodies: {r}");
+    let _ = std::fs::remove_dir_all(&top);
+}
+
+/// `export_drawing` writes one TCVN sheet: frame, title block and the views at a standard scale,
+/// only inside the agent's folders.
+#[test]
+fn export_drawing_writes_a_tcvn_sheet() {
+    use solidcraft_engine::io::vfs::PathScope;
+    let top = std::env::temp_dir().join(format!("solidcraft-mcp-drawing-{}", std::process::id()));
+    let (dir, outside) = (top.join("root"), top.join("outside"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let mut s = Server::new(Box::new(Headless::default())).with_path_scope(Some(PathScope::new([dir.clone()])));
+    tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 150, "width": 90, "height": 40, "body_name": "Block"}}));
+    let path = dir.join("block.dxf");
+    let r = tool(&mut s, "export_drawing", json!({"path": path.to_string_lossy(), "fields": {"title": "Khối", "drawing_no": "SC-02"}}));
+    assert_eq!((r["sheet"].as_str(), r["scale"].as_str()), (Some("A3"), Some("1:1")), "{r}");
+    let (layers, extent) = dxf_layers_and_extent(&std::fs::read_to_string(&path).unwrap());
+    assert!((extent[0] - 420.0).abs() < 1e-6 && (extent[1] - 297.0).abs() < 1e-6, "the sheet's edge spans A3: {extent:?}");
+    for layer in ["SHEET", "FRAME", "TITLE_LINES", "VISIBLE"] {
+        assert!(layers.contains_key(layer), "{layer}: {layers:?}");
+    }
+    let r = raw_tool(&mut s, "export_drawing", json!({"path": outside.join("x.dxf").to_string_lossy()}));
+    assert_eq!(r["result"]["isError"], json!(true), "{r}");
+    assert!(!outside.join("x.dxf").exists());
     let _ = std::fs::remove_dir_all(&top);
 }

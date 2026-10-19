@@ -76,6 +76,9 @@ partly hidden edges and includes curved silhouettes. Repeated part meshes and tr
 hierarchies are shared; bounded desktop preparation and occlusion use up to eight workers.
 Curves are approximated; drawing sheets,
 annotations and exact projected curves remain deferred. See [view DXF](docs/view-dxf.md).
+Export Drawing Sheet as DXF (`file.export_drawing_dxf`, MCP `export_drawing`) places the front,
+top and left views by first-angle projection at a standard scale on an A0–A4 sheet with the TCVN
+frame and a production or school title block; see [drawing sheets](docs/drawing-sheets.md).
 
 Drawing foundations: [RFC #860](https://github.com/tangency-labs/solidcraft/issues/860)
 and the [foundation ledger](docs/drawing-foundations.md) track the bounded implementation
