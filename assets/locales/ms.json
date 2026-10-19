@@ -1377,7 +1377,6 @@
   "ui.save_as_ellipsis": "Simpan Sebagai...",
   "ui.save_mesh_no_slicer": "Tiada penghiris: pilih program melalui Tersuai… atau matikan Hantar ke penghiris",
   "ui.save_mesh_pick_bodies": "Pilih jasad untuk disimpan",
-  "ui.save_mesh_temp_failed": "Tidak dapat mencipta {folder}: {error}",
   "ui.saved_to": "{path} disimpan",
   "ui.scale": "Skala",
   "ui.second_rail": "Rel Kedua",

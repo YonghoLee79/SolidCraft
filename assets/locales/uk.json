@@ -1348,7 +1348,6 @@
   "ui.save_as_ellipsis": "Зберегти як...",
   "ui.save_mesh_no_slicer": "Слайсер не знайдено: виберіть «Власна…» і вкажіть свою програму-слайсер або вимкніть «Надіслати в слайсер»",
   "ui.save_mesh_pick_bodies": "Виберіть тіла для збереження",
-  "ui.save_mesh_temp_failed": "Не вдалося створити {folder}: {error}",
   "ui.saved_to": "Збережено {path}",
   "ui.sbox_pin": "Закріпити вгорі поля S",
   "ui.sbox_unpin": "Відкріпити",

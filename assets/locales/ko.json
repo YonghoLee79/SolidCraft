@@ -1133,7 +1133,6 @@
   "ui.save_as_ellipsis": "다른 이름으로 저장...",
   "ui.save_mesh_no_slicer": "슬라이서를 찾을 수 없습니다. '사용자 지정…'에서 슬라이서 프로그램을 선택하거나 '슬라이서로 보내기'를 끄세요",
   "ui.save_mesh_pick_bodies": "저장할 바디를 선택하세요",
-  "ui.save_mesh_temp_failed": "{folder}을(를) 만들 수 없습니다: {error}",
   "ui.saved_to": "저장됨: {path}",
   "ui.sbox_pin": "S 상자 맨 위에 고정",
   "ui.sbox_unpin": "고정 해제",

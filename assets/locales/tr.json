@@ -1272,7 +1272,6 @@
   "ui.save_as_ellipsis": "Farklı kaydet...",
   "ui.save_mesh_no_slicer": "Dilimleyici bulunamadı: “Özel…” seçeneğini seçip dilimleyici programını belirtin veya “Dilimleyiciye gönder” seçeneğini kapatın",
   "ui.save_mesh_pick_bodies": "Kaydedilecek gövdeleri seçin",
-  "ui.save_mesh_temp_failed": "{folder} oluşturulamadı: {error}",
   "ui.saved_to": "{path} konumuna kaydedildi",
   "ui.sbox_pin": "S kutusunun en üstüne sabitle",
   "ui.sbox_unpin": "Sabitlemeyi kaldır",

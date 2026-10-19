@@ -1353,7 +1353,6 @@
   "ui.save_as_ellipsis": "Uložit jako...",
   "ui.save_mesh_no_slicer": "Nebyl nalezen žádný slicer: zvolte Vlastní… a vyberte svůj slicer, nebo vypněte Odeslat do sliceru",
   "ui.save_mesh_pick_bodies": "Vyberte tělesa k uložení",
-  "ui.save_mesh_temp_failed": "Nelze vytvořit {folder}: {error}",
   "ui.saved_to": "Uloženo {path}",
   "ui.sbox_pin": "Připnout nahoru ve vyhledávání S",
   "ui.sbox_unpin": "Odepnout",

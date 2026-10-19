@@ -618,16 +618,20 @@ fn open_in_slicer(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let doc = s.doc.painted(&s.world_state());
         let write = |format| solidcraft_io::export_with_metadata(&doc, &bodies, format, &s.doc.name, &s.doc.metadata);
+        let mut fell_back = false;
         let (bytes, ext) = match (format, write(format)) {
             (_, Ok(b)) => (b, if format == Format::StlBinary { "stl" } else { "3mf" }),
-            (Format::ThreeMf, Err(_)) => (write(Format::StlBinary)?, "stl"),
+            (Format::ThreeMf, Err(_)) => {
+                fell_back = true;
+                (write(Format::StlBinary)?, "stl")
+            }
             (_, Err(e)) => return Err(e.into()),
         };
         let dir = slicer_files::dir().ok_or_else(|| bad(cmd, "no per-user folder on this system"))?;
         let stem = slicer_files::stem(&s.doc.name, s.path.as_deref(), &bodies);
         let (file, numbered) = slicer_files::write(&dir, &stem, ext, &bytes).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
         let path = file.to_string_lossy().into_owned();
-        let mut out = json!({"path": path, "bytes": bytes.len(), "format": ext, "numbered": numbered});
+        let mut out = json!({"path": path, "bytes": bytes.len(), "format": ext, "numbered": numbered, "stl_fallback": fell_back});
         if let Some(obj) = out.as_object_mut() {
             match slicer.open(&path, bool_(p, "single_instance").unwrap_or(true)) {
                 Ok(()) => obj.insert("slicer".into(), json!(slicer.name)),

@@ -218,7 +218,12 @@ fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
     // A program nobody chose is refused; once it is among the user's chosen ones it starts.
     assert!(s.execute("file.open_in_slicer", &json!({"slicer": script})).is_err());
     crate::slicers::set_chosen_programs(&[script.to_string_lossy().into_owned()]);
-    let r = s.execute("file.open_in_slicer", &json!({"slicer": script})).unwrap();
+    let r = s.execute("file.open_in_slicer", &json!({"slicer": script}));
+    // Never leave the chosen list set for other tests in this process.
+    if r.is_err() {
+        crate::slicers::set_chosen_programs(&[]);
+    }
+    let r = r.unwrap();
     assert_eq!(r["format"], "3mf");
     let file = r["path"].as_str().unwrap().to_string();
     assert!(std::fs::read(&file).unwrap().starts_with(b"PK"));
@@ -235,6 +240,7 @@ fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
     let stl = s.execute("file.open_in_slicer", &json!({"slicer": script, "format": "stl"})).unwrap();
     assert!(stl["path"].as_str().unwrap().ends_with(".stl"));
     assert_ne!(stl["path"], r["path"]);
+    crate::slicers::set_chosen_programs(&[]);
     std::fs::remove_dir_all(std::path::Path::new(&file).parent().unwrap()).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }

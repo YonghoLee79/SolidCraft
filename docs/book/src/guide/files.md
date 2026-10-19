@@ -42,7 +42,7 @@ a mesh body, with its parts where the slicer placed them.
 body) saves the selected bodies as STL, 3MF or 3MF with face tags (below). With **Send to slicer** ticked, it writes the file to
 SolidCraft's slicer folder and opens it in the chosen slicer instead of asking for a file name. The slicer
 list shows the slicers found on the computer with their icons; **Custom…** adds any other program
-to the top of the list (kept between runs; hover an entry you added and press Delete to remove it). On Linux, a program whose desktop entry says it opens 3MF or STL files is listed even if SolidCraft doesn't know it by name.
+to the top of the list (kept between runs; hover an entry you added and press Delete to remove it). On Linux only, a program whose desktop entry says it opens 3MF or STL files is listed even if SolidCraft doesn't know it by name. Windows and macOS list the known slicers only, found in the usual program folders and on `PATH`.
 
 **File → Open in Slicer** (also on the Mesh tab under Modify, and in the right-click menu of a
 body) is the short way: it saves the selected bodies as a 3MF in millimetres, without face tags,

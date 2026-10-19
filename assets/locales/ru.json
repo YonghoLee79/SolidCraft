@@ -1133,7 +1133,6 @@
   "ui.save_as_ellipsis": "Сохранить как...",
   "ui.save_mesh_no_slicer": "Слайсер не найден: выберите «Другая…» и укажите программу или отключите «Отправить в слайсер»",
   "ui.save_mesh_pick_bodies": "Выберите тела для сохранения",
-  "ui.save_mesh_temp_failed": "Не удалось создать {folder}: {error}",
   "ui.saved_to": "Сохранено: {path}",
   "ui.sbox_pin": "Закрепить вверху панели S",
   "ui.sbox_unpin": "Открепить",

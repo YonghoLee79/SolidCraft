@@ -55,7 +55,7 @@ pub fn stem(design: &str, path: Option<&str>, bodies: &[String]) -> String {
     }
     let name: String = design.chars().take(60).map(|c| if c.is_alphanumeric() || "-_ ".contains(c) { c } else { '_' }).collect();
     let name = name.trim();
-    format!("{}-{:08x}", if name.is_empty() { "design" } else { name }, h as u32)
+    format!("{}-{:016x}", if name.is_empty() { "design" } else { name }, h)
 }
 
 /// Write `bytes` as `<stem>.<ext>` in `dir`: to a temporary name first, then renamed over the

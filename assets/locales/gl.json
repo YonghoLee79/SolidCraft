@@ -1344,7 +1344,6 @@
   "ui.save_as_ellipsis": "Gardar como...",
   "ui.save_mesh_no_slicer": "Non se atopou ningún laminador: escolle Personalizado… e selecciona o teu programa laminador, ou desactiva Enviar ao laminador",
   "ui.save_mesh_pick_bodies": "Selecciona os corpos que queres gardar",
-  "ui.save_mesh_temp_failed": "Non se puido crear {folder}: {error}",
   "ui.saved_to": "Gardado {path}",
   "ui.sbox_pin": "Fixar arriba na caixa S",
   "ui.sbox_unpin": "Desfixar",

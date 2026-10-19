@@ -406,6 +406,9 @@ fn report(app: &mut SolveApp, result: &Value) {
                 if result.get("numbered").is_some() && !std::mem::replace(&mut app.preferences.slicer_resend_hint_seen, true) {
                     line = format!("{line}. {}", crate::i18n::tr("ui.slicer_resend_hint"));
                 }
+                if result.get("stl_fallback").and_then(Value::as_bool) == Some(true) {
+                    line = format!("{line}. {}", crate::i18n::tr("ui.slicer_stl_fallback"));
+                }
                 app.set_status(line, false);
             }
             None => app.set_status(crate::i18n::format("ui.saved_to", &[("path", path)]), false),
