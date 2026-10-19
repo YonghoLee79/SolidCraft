@@ -53,12 +53,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id, name or program path from file.slicers (open the saved file there); single_instance?: bool (default true; see file.open_in_slicer)"),
+        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id or name from file.slicers, or a program the user added under Custom… (open the saved file there); single_instance?: bool (default true; see file.open_in_slicer)"),
     CommandSpec::new("file.open_in_slicer", "Open in Slicer", open_in_slicer)
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("slicer: id, name or program path from file.slicers; bodies?: [names] (default: the selected bodies); single_instance?: bool (default true: PrusaSlicer, SuperSlicer, Bambu Studio and Cura load the file in the window that is open); format?: 3mf|stl|3mf-tagged (default 3mf, in millimetres; STL if that can't be written) → saves the bodies in this user's slicer folder and opens the file in the slicer. The file name stays the same for the same design and bodies, so sending again replaces it (use the slicer's Reload from disk)"),
+        .params("slicer: id or name from file.slicers, or a program the user added under Custom…; bodies?: [names] (default: the selected bodies); single_instance?: bool (default true: PrusaSlicer, SuperSlicer, Bambu Studio and Cura load the file in the window that is open); format?: 3mf|stl|3mf-tagged (default 3mf, in millimetres; STL if that can't be written) → saves the bodies in this user's slicer folder and opens the file in the slicer. The file name stays the same for the same design and bodies, so sending again replaces it (use the slicer's Reload from disk)"),
     CommandSpec::new("file.slicers", "Installed Slicers", slicers).icon("export")
         .noundo()
         .params("→ the slicers found on this machine: [{id, name, icon?}]; pass an id or name as file.save_mesh's `slicer`"),
@@ -572,9 +572,9 @@ fn save_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let slicer = match str_(p, "slicer") {
         None => None,
-        Some(spec) => Some(
-            crate::slicers::resolve(spec).ok_or_else(|| bad(cmd, format!("no slicer `{spec}` (see file.slicers, or give the path of a program)")))?,
-        ),
+        Some(spec) => Some(crate::slicers::resolve(spec).ok_or_else(|| {
+            bad(cmd, format!("no slicer `{spec}` (see file.slicers; a program works only once the user has added it under Custom…)"))
+        })?),
     };
     let mut out = export_to(s, path, format, &string_list(p, "bodies"))?;
     if let (Some(slicer), Some(obj)) = (slicer, out.as_object_mut()) {
@@ -606,7 +606,9 @@ fn open_in_slicer(s: &mut Session, p: &Value) -> Result<Value> {
             Some(other) => return Err(bad(cmd, format!("unknown mesh format `{other}` (stl, 3mf, 3mf-tagged)"))),
         };
         let spec = str_(p, "slicer").ok_or_else(|| bad(cmd, "give `slicer` (see file.slicers)"))?;
-        let slicer = crate::slicers::resolve(spec).ok_or_else(|| bad(cmd, format!("no slicer `{spec}` (see file.slicers)")))?;
+        let slicer = crate::slicers::resolve(spec).ok_or_else(|| {
+            bad(cmd, format!("no slicer `{spec}` (see file.slicers; a program works only once the user has added it under Custom…)"))
+        })?;
         let mut bodies = string_list(p, "bodies");
         if bodies.is_empty() {
             bodies = s.selection.iter().filter_map(|x| if let crate::Sel::Body { name } = x { Some(name.clone()) } else { None }).collect();

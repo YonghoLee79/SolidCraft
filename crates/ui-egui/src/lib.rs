@@ -654,6 +654,10 @@ impl SolveApp {
         if self.file_load.busy() || self.file_picker.is_some() {
             return Err("a file operation is in progress".into());
         }
+        // Commands may start only detected slicers and the programs the user added under Custom….
+        if matches!(id, "file.save_mesh" | "file.open_in_slicer") {
+            solidcraft_engine::slicers::set_chosen_programs(&self.preferences.custom_slicers);
+        }
         let t0 = now_ms();
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.big_operation |= now_ms() - t0 >= recovery_ui::BIG_OPERATION_MS;

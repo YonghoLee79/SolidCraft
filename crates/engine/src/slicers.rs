@@ -436,15 +436,33 @@ pub fn custom(path: &str) -> Option<Slicer> {
     Some(Slicer { id: "custom".into(), name, command, icon })
 }
 
-/// A slicer from a command parameter: the id or name of an installed one, else a program path.
+/// The programs the user picked under Custom…, set by the application. Commands may start these
+/// and the detected slicers, and nothing else.
+static CHOSEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Tell the commands which programs the user has chosen (the application keeps them in its settings).
+pub fn set_chosen_programs(paths: &[String]) {
+    *CHOSEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = paths.to_vec();
+}
+
+/// A slicer from a command parameter: the id or name of a detected one, or a program the user
+/// chose (by its path or name). Any other program path is refused: scripts and agents reach this
+/// through `file.save_mesh` and `file.open_in_slicer`, and must not run arbitrary programs.
 pub fn resolve(spec: &str) -> Option<Slicer> {
+    let chosen = CHOSEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    resolve_in(detect(), &chosen, spec)
+}
+
+fn resolve_in(detected: Vec<Slicer>, chosen: &[String], spec: &str) -> Option<Slicer> {
     let wanted = normalize(spec);
+    let named = |s: &Slicer| normalize(&s.name) == wanted;
     if !wanted.is_empty()
-        && let Some(found) = detect().into_iter().find(|d| normalize(&d.id) == wanted || normalize(&d.name) == wanted)
+        && let Some(found) = detected.into_iter().find(|d| normalize(&d.id) == wanted || named(d))
     {
         return Some(found);
     }
-    custom(spec)
+    let picked = chosen.iter().filter_map(|p| custom(p).map(|s| (p, s)));
+    picked.into_iter().find(|(p, s)| p.as_str() == spec || (!wanted.is_empty() && named(s))).map(|(_, s)| s)
 }
 
 /// `args` with the file added: at the end, or inside the `@@ … @@` pair of a Flatpak command, which
@@ -688,5 +706,33 @@ mod tests {
         // Flatpak: the flag goes among the application's arguments, before the file markers.
         let flatpak = slicer("prusa", "PrusaSlicer", &["flatpak", "run", "com.prusa3d.PrusaSlicer", "@@u", "@@"]);
         assert_eq!(args(&flatpak, true), ["run", "com.prusa3d.PrusaSlicer", "--single-instance", "@@", "/t/a.3mf", "@@"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_detected_slicers_and_chosen_programs_can_be_resolved() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("resolve");
+        let program = root.join("mycura");
+        std::fs::write(&program, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = program.to_str().unwrap();
+        let prusa = Slicer { id: "prusa".into(), name: "PrusaSlicer".into(), command: vec!["prusa-slicer".into()], icon: None };
+        let found = |spec: &str, chosen: &[String]| resolve_in(vec![prusa.clone()], chosen, spec).map(|s| s.id);
+        assert_eq!(found("prusa", &[]).as_deref(), Some("prusa"));
+        assert_eq!(found("Prusa Slicer", &[]).as_deref(), Some("prusa"));
+        // A real program that nobody chose is not a slicer, whatever path it is given by.
+        assert_eq!(found(path, &[]), None);
+        assert_eq!(found("/bin/sh", &[]), None);
+        assert_eq!(found("", &[]), None);
+        // One the user chose works by path and by name; a path that was not chosen still does not.
+        let chosen = [path.to_string()];
+        assert_eq!(found(path, &chosen).as_deref(), Some("custom"));
+        assert_eq!(found("Mycura", &chosen).as_deref(), Some("custom"));
+        assert_eq!(found("/bin/sh", &chosen), None);
+        // Chosen, then uninstalled: gone.
+        std::fs::remove_file(&program).unwrap();
+        assert_eq!(found(path, &chosen), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

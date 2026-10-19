@@ -161,7 +161,9 @@ fn save_mesh_rejects_unknown_format_and_slicer_without_writing() {
     let mut s = imported_box();
     let path = std::env::temp_dir().join(format!("solvecraft-save-mesh-{}.stl", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    for params in [json!({"path":path,"format":"nope"}), json!({"path":path,"slicer":"no such slicer anywhere"})] {
+    for params in
+        [json!({"path":path,"format":"nope"}), json!({"path":path,"slicer":"no such slicer anywhere"}), json!({"path":path,"slicer":"/bin/sh"})]
+    {
         assert!(s.execute("file.save_mesh", &params).is_err());
         assert!(!path.exists());
     }
@@ -213,6 +215,9 @@ fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
     std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" > {}\n", seen.display())).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     run(&mut s, "select.set", json!({"items":[{"type":"body","name":"Mesh"}]}));
+    // A program nobody chose is refused; once it is among the user's chosen ones it starts.
+    assert!(s.execute("file.open_in_slicer", &json!({"slicer": script})).is_err());
+    crate::slicers::set_chosen_programs(&[script.to_string_lossy().into_owned()]);
     let r = s.execute("file.open_in_slicer", &json!({"slicer": script})).unwrap();
     assert_eq!(r["format"], "3mf");
     let file = r["path"].as_str().unwrap().to_string();

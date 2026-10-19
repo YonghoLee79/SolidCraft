@@ -48,7 +48,9 @@ to the top of the list (kept between runs; hover an entry you added and press De
 body) is the short way: it saves the selected bodies as a 3MF in millimetres, without face tags,
 and opens it in the slicer you used last. The first time, or when that slicer is gone, it asks which
 one, with the same list as Save as mesh. It falls back to an STL if the 3MF can't be written.
-Scripts and the control channel use `file.open_in_slicer`.
+Scripts and the control channel use `file.open_in_slicer`. They can start only the slicers in the
+list and programs you added under **Custom…**; any other program path is refused, and an AI agent's
+request to save a mesh or open it in a slicer asks first and names the slicer.
 
 Files sent to a slicer (from Open in Slicer or from Send to slicer) go to a folder only you can
 read: `~/.cache/solidcraft/slicer` on Linux, `~/Library/Caches/SolidCraft/slicer` on macOS and
