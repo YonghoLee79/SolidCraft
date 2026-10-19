@@ -61,9 +61,10 @@ Reload from disk to pick it up. If Windows won't let the file be replaced becaus
 it, the new copy gets a number (`name-2.3mf`) and the status line says so. Files older than seven days are
 deleted the next time SolidCraft starts.
 
-If the slicer is already running, PrusaSlicer, SuperSlicer, Bambu Studio and Cura load the file in
+If the slicer is already running, PrusaSlicer, SuperSlicer and Cura load the file in
 the open window instead of starting another one (they are started with `--single-instance`).
-OrcaSlicer has no such option, so it may open a second window. You can turn this off in
+Other slicers, Bambu Studio and OrcaSlicer among them, are started as they are, so they may open a
+second window. You can turn this off in
 Preferences → General. Scripts pass `single_instance: false` to `file.open_in_slicer` or `file.save_mesh`.
 
 Closed mechanical meshes with a constant cross-section can be rebuilt as solids with the

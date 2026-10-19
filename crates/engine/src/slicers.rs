@@ -559,8 +559,9 @@ fn with_file(args: &[String], path: &str) -> Vec<String> {
 }
 
 /// Slicers that load a file into the window that is already open when given this flag. OrcaSlicer
-/// has none; macOS applications (`open -a`) are always single-instance.
-const SINGLE_INSTANCE: &[&str] = &["prusa", "superslicer", "bambu", "cura"];
+/// has none, and Bambu Studio is left out too; macOS applications (`open -a`) are always
+/// single-instance.
+const SINGLE_INSTANCE: &[&str] = &["prusa", "superslicer", "cura"];
 
 impl Slicer {
     /// The id without the `#<where>` that tells installs of one slicer apart: `prusa` for
@@ -874,11 +875,14 @@ mod tests {
             icon: None,
         };
         let args = |s: &Slicer, single| s.args("/t/a.3mf", single);
-        for (id, name) in [("prusa", "PrusaSlicer"), ("superslicer", "SuperSlicer"), ("bambu", "Bambu Studio"), ("cura", "UltiMaker Cura")] {
+        for (id, name) in [("prusa", "PrusaSlicer"), ("superslicer", "SuperSlicer"), ("cura", "UltiMaker Cura")] {
             let s = slicer(id, name, &["/x/prog"]);
             assert_eq!(args(&s, true), ["--single-instance", "/t/a.3mf"], "{id}");
             assert_eq!(args(&s, false), ["/t/a.3mf"], "{id}");
         }
+        // Bambu Studio is not given the flag, also when the user picked it as a custom program.
+        assert_eq!(args(&slicer("bambu", "Bambu Studio", &["/x/bambu-studio"]), true), ["/t/a.3mf"]);
+        assert_eq!(args(&slicer("custom", "Bambu Studio", &["/x/bambu-studio"]), true), ["/t/a.3mf"]);
         // OrcaSlicer and the rest have no such flag; a macOS bundle is single-instance already.
         assert_eq!(args(&slicer("orca", "OrcaSlicer", &["/x/orca"]), true), ["/t/a.3mf"]);
         assert_eq!(
