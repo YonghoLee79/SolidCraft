@@ -119,7 +119,7 @@ pub struct SlicerWait {
 /// Look at `ready` on another thread until it says so or `limit` runs out; the answer arrives on the
 /// channel.
 fn spawn_wait(
-    ready: impl FnMut() -> bool + Send + 'static,
+    ready: impl FnMut(std::time::Duration) -> bool + Send + 'static,
     limit: std::time::Duration,
     poll: std::time::Duration,
 ) -> std::sync::mpsc::Receiver<bool> {
@@ -161,7 +161,8 @@ fn begin_wait(app: &mut SolveApp, mut params: Value, result: &Value) {
         return;
     };
     // Same reading as `slicers::wait_for_ready`: when readiness can't be told, send.
-    let done = spawn_wait(move || slicer.is_ready() != Some(false), slicers::READY_LIMIT, slicers::READY_POLL);
+    let done =
+        spawn_wait(move |left| slicer.is_ready_within(left.min(slicers::PROBE_LIMIT)) != Some(false), slicers::READY_LIMIT, slicers::READY_POLL);
     app.slicer_wait = Some(SlicerWait { done, params, slicer: name.clone(), path });
     app.set_status(crate::i18n::format("ui.slicer_starting", &[("slicer", &name)]), false);
 }
@@ -557,7 +558,7 @@ mod tests {
         // Ready on the third look; a second click while it waits starts and sends nothing.
         let mut looks = 0;
         let done = spawn_wait(
-            move || {
+            move |_| {
                 looks += 1;
                 looks == 3
             },
@@ -598,7 +599,7 @@ mod tests {
     fn a_slicer_that_never_comes_up_is_reported_and_nothing_is_sent() {
         let ctx = egui::Context::default();
         let (mut app, seen, params) = app_with_fake_slicer("late");
-        let done = spawn_wait(|| false, std::time::Duration::from_millis(30), std::time::Duration::from_millis(5));
+        let done = spawn_wait(|_| false, std::time::Duration::from_millis(30), std::time::Duration::from_millis(5));
         app.slicer_wait = Some(SlicerWait { done, params, slicer: "Fake".into(), path: "/tmp/part.3mf".into() });
         for _ in 0..400 {
             tick_wait(&mut app, &ctx);

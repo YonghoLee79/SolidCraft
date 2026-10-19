@@ -647,8 +647,13 @@ impl Slicer {
     /// Whether the slicer can take a file now: `Some(true)` or `Some(false)`, or `None` when that
     /// can't be told (no `busctl`, or it failed), in which case nobody waits.
     pub fn is_ready(&self) -> Option<bool> {
+        self.is_ready_within(PROBE_LIMIT)
+    }
+
+    /// [`Self::is_ready`], giving `busctl` at most `limit` to answer (`None` when it doesn't).
+    pub fn is_ready_within(&self, limit: std::time::Duration) -> Option<bool> {
         let rule = self.waits_for_ready()?;
-        Some(has_bus_name(&bus_list()?, rule.bus_prefix))
+        Some(has_bus_name(&bus_list("busctl", limit)?, rule.bus_prefix))
     }
 }
 
@@ -671,21 +676,48 @@ pub const WAIT_FOR_READY: &[WaitRule] = &[WaitRule { command_has: "slic3r-app-la
 pub const READY_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const READY_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 
-/// The session bus's names, as `busctl --user --no-legend --no-pager list` prints them; `None`
-/// where that can't be run.
-fn bus_list() -> Option<String> {
+/// The longest one look at the session bus may take.
+pub const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The session bus's names, as `busctl --user --no-legend --no-pager list` (`program` is
+/// `busctl`) prints them; `None` where that can't be run, fails, or takes longer than `limit`.
+fn bus_list(program: &str, limit: std::time::Duration) -> Option<String> {
     #[cfg(any(target_arch = "wasm32", not(unix)))]
     {
+        let _ = (program, limit);
         None
     }
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
-        let out = std::process::Command::new("busctl")
+        use std::io::Read;
+        use std::process::Stdio;
+        let mut child = std::process::Command::new(program)
             .args(["--user", "--no-legend", "--no-pager", "list"])
-            .stdin(std::process::Stdio::null())
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
             .ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        // Read on another thread so a long list can't fill the pipe while this one waits.
+        let mut stdout = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut text = String::new();
+            stdout.read_to_string(&mut text).ok().map(|_| text)
+        });
+        let end = std::time::Instant::now() + limit;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        };
+        let text = reader.join().ok()??;
+        status.success().then_some(text)
     }
 }
 
@@ -699,18 +731,23 @@ fn has_bus_name(list: &str, prefix: &str) -> bool {
     bus_names(list).any(|n| n.starts_with(prefix))
 }
 
-/// Look every `poll` until `ready` says so; false when `limit` runs out first. `ready` is asked at
-/// once, so a slicer that is already up costs no sleep.
-pub fn wait_until(mut ready: impl FnMut() -> bool, limit: std::time::Duration, poll: std::time::Duration) -> bool {
+/// Look every `poll` until `ready` says so; false when `limit` runs out first. `ready` is given the
+/// time that is left, so a probe that can block (`busctl`) can be cut short, and is asked at once,
+/// so a slicer that is already up costs no sleep. Once the limit has passed it is not asked again:
+/// a slow probe can not make the wait run over, or accept a yes that came too late.
+pub fn wait_until(mut ready: impl FnMut(std::time::Duration) -> bool, limit: std::time::Duration, poll: std::time::Duration) -> bool {
     let end = std::time::Instant::now() + limit;
+    let mut first = true;
     loop {
-        if ready() {
-            return true;
-        }
-        if std::time::Instant::now() >= end {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if !first && left.is_zero() {
             return false;
         }
-        std::thread::sleep(poll);
+        first = false;
+        if ready(left) {
+            return true;
+        }
+        std::thread::sleep(poll.min(end.saturating_duration_since(std::time::Instant::now())));
     }
 }
 
@@ -718,7 +755,7 @@ pub fn wait_until(mut ready: impl FnMut() -> bool, limit: std::time::Duration, p
 pub fn wait_for_ready(slicer: &Slicer) -> bool {
     // On purpose: if busctl fails partway through, stop waiting and send, which is what happens
     // when it can't be run at all; a file sent too early is dropped quietly and costs one re-send.
-    wait_until(|| slicer.is_ready() != Some(false), READY_LIMIT, READY_POLL)
+    wait_until(|left| slicer.is_ready_within(left.min(PROBE_LIMIT)) != Some(false), READY_LIMIT, READY_POLL)
 }
 
 #[cfg(test)]
@@ -1043,7 +1080,7 @@ mod tests {
         let tick = std::time::Duration::from_millis(5);
         let mut asked = 0;
         assert!(wait_until(
-            || {
+            |_| {
                 asked += 1;
                 true
             },
@@ -1053,7 +1090,7 @@ mod tests {
         assert_eq!(asked, 1, "already up: no sleep");
         let mut asked = 0;
         assert!(wait_until(
-            || {
+            |_| {
                 asked += 1;
                 asked == 3
             },
@@ -1062,7 +1099,61 @@ mod tests {
         ));
         assert_eq!(asked, 3);
         let started = std::time::Instant::now();
-        assert!(!wait_until(|| false, std::time::Duration::from_millis(40), tick));
+        assert!(!wait_until(|_| false, std::time::Duration::from_millis(40), tick));
         assert!(started.elapsed() >= std::time::Duration::from_millis(40) && started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_slow_probe_can_not_stretch_the_wait_or_win_after_the_limit() {
+        // The first look takes longer than the whole limit and says no; the second would say yes,
+        // but the limit has passed, so it is never asked.
+        let mut asked = 0;
+        let ok = wait_until(
+            |_| {
+                asked += 1;
+                if asked == 1 {
+                    std::thread::sleep(std::time::Duration::from_millis(60));
+                }
+                asked > 1
+            },
+            std::time::Duration::from_millis(30),
+            std::time::Duration::from_millis(5),
+        );
+        assert!(!ok);
+        assert_eq!(asked, 1);
+        // The probe is told how much time is left, and it shrinks.
+        let mut lefts = Vec::new();
+        wait_until(
+            |left| {
+                lefts.push(left);
+                false
+            },
+            std::time::Duration::from_millis(40),
+            std::time::Duration::from_millis(10),
+        );
+        assert!(lefts[0] <= std::time::Duration::from_millis(40) && lefts.windows(2).all(|w| w[1] <= w[0]), "{lefts:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_busctl_that_hangs_is_cut_off_and_one_that_answers_is_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("busctl");
+        let fake = |name: &str, body: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let hang = fake("hang", "sleep 30");
+        let started = std::time::Instant::now();
+        assert_eq!(bus_list(&hang, std::time::Duration::from_millis(100)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "cut off, not waited for");
+        let answers = fake("answers", "echo ':1.5 1 x'; echo 'com.prusa3d.prusaslicer.BroadcastListener.ab 2 y'");
+        let list = bus_list(&answers, std::time::Duration::from_secs(5)).unwrap();
+        assert!(has_bus_name(&list, WAIT_FOR_READY[0].bus_prefix));
+        assert_eq!(bus_list(&fake("fails", "exit 1"), std::time::Duration::from_secs(5)), None);
+        assert_eq!(bus_list(&root.join("missing").to_string_lossy(), std::time::Duration::from_secs(1)), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
