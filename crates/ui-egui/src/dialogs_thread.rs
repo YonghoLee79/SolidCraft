@@ -11,6 +11,13 @@ use crate::ui_kit::text_row;
 /// The coarse and current pitches are included separately; custom pairs remain editable.
 const PITCHES: &[f64] = &[0.2, 0.25, 0.35, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
 
+/// Generated metric designations omit only the shared catalogue's coarse pitch.
+/// Authored designation text is never rewritten just by displaying a dialog.
+pub(crate) fn designation(diameter: f64, pitch: f64) -> String {
+    let coarse = metric_thread_sizes().iter().any(|(d, p)| (d - diameter).abs() < 1e-9 && (p - pitch).abs() < 1e-9);
+    if coarse { format!("M{diameter}") } else { format!("M{diameter}x{pitch}") }
+}
+
 /// Tapped holes use the existing metric catalogue; the engine derives the tap drill.
 /// Explicit designations also allow pitches outside the coarse-size presets.
 pub(crate) fn hole_rows(ui: &mut egui::Ui, designation: &mut String) -> bool {
@@ -23,19 +30,20 @@ pub(crate) fn hole_rows(ui: &mut egui::Ui, designation: &mut String) -> bool {
     let current = parse_metric_thread(designation);
     let mut selected = current.and_then(|pair| sizes.iter().position(|s| *s == pair)).unwrap_or(sizes.len());
     let before = selected;
-    let mut labels: Vec<String> = sizes.iter().map(|(d, p)| format!("M{d} × {p}")).collect();
+    let mut labels: Vec<String> = sizes.iter().map(|(d, p)| self::designation(*d, *p)).collect();
     labels.push(tr("Custom").to_string());
     let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
     combo(ui, "hole_thread_catalogue", &labels, &mut selected);
     if selected != before
         && let Some((d, p)) = sizes.get(selected)
     {
-        *designation = format!("M{d}x{p}");
+        *designation = self::designation(*d, *p);
     }
     ui.end_row();
 
     row_label(ui, "Designation");
     let r = ui.add(egui::TextEdit::singleline(designation).hint_text("M5 or M5x0.5"));
+    crate::scenario::publish_handle("dialog:Designation", r.rect.center());
     ui.end_row();
     row_label(ui, "Tap drill diameter");
     match parse_metric_thread(designation) {
@@ -93,7 +101,7 @@ pub(crate) fn rows(ui: &mut egui::Ui, designation: &mut String, suggested: &mut 
             && let Some(d) = diameters.get(selected)
             && let Some((_, coarse)) = metric_thread_sizes().iter().find(|(n, _)| n == d)
         {
-            *designation = format!("M{d}x{coarse}");
+            *designation = self::designation(*d, *coarse);
             *suggested = None;
         }
     });
@@ -118,7 +126,7 @@ pub(crate) fn rows(ui: &mut egui::Ui, designation: &mut String, suggested: &mut 
             if selected != before
                 && let (Some((d, _)), Some(p)) = (current, pitches.get(selected))
             {
-                *designation = format!("M{d}x{p}");
+                *designation = self::designation(d, *p);
                 *suggested = None;
             }
         });
@@ -190,7 +198,7 @@ mod contribution_tests {
     fn contribution_thread_catalogue_is_parseable_and_rendering_keeps_custom_designations() {
         for (d, p) in metric_thread_sizes() {
             assert_eq!(parse_metric_thread(&format!("M{d}")), Some((*d, *p)));
-            assert_eq!(parse_metric_thread(&format!("M{d}x{p}")), Some((*d, *p)));
+            assert_eq!(parse_metric_thread(&self::designation(d, *p)), Some((*d, *p)));
         }
         let ctx = egui::Context::default();
         for original in ["M5", "M5x0.5", "M33x1", "invalid"] {
@@ -201,6 +209,65 @@ mod contribution_tests {
                 });
             });
             assert_eq!(designation, original);
+        }
+    }
+
+    #[test]
+    fn contribution_metric_designation_omits_only_the_catalogue_coarse_pitch() {
+        for &(d, p) in metric_thread_sizes() {
+            assert_eq!(designation(d, p), format!("M{d}"));
+            assert_eq!(parse_metric_thread(&designation(d, p)), Some((d, p)));
+            assert_eq!(parse_metric_thread(&designation(d, p / 2.)), Some((d, p / 2.)));
+            assert!(designation(d, p / 2.).contains('x'));
+        }
+        assert_eq!(designation(8., 1.25), "M8");
+        assert_eq!(designation(8., 1.), "M8x1");
+        assert_eq!(designation(5., 0.5), "M5x0.5");
+        assert_eq!(designation(33., 1.), "M33x1");
+        assert_eq!(designation(8., 1.25 + 1e-12), "M8");
+        assert!(designation(8., 1.25 + 1e-6).contains('x'));
+    }
+
+    #[test]
+    fn contribution_metric_designation_rendering_preserves_authored_legacy_and_custom_text() {
+        let context = egui::Context::default();
+        for original in ["M8x1.25", "M8x1", "M33x1", "M5×0.5", " m8x1.25 ", "invalid"] {
+            let mut hole = original.to_string();
+            let mut thread = original.to_string();
+            let mut suggested = None;
+            let _ = context.run_ui(Default::default(), |ui| {
+                egui::Grid::new("authored_hole").show(ui, |ui| {
+                    hole_rows(ui, &mut hole);
+                });
+                egui::Grid::new("authored_thread").show(ui, |ui| {
+                    rows(ui, &mut thread, &mut suggested);
+                });
+            });
+            assert_eq!(hole, original);
+            assert_eq!(thread, original);
+        }
+    }
+
+    #[test]
+    fn contribution_metric_designation_keeps_domain_pitch_drill_units_and_reopen() {
+        for (diameter, pitch, drill) in [(8., 1.25, 6.75), (8., 1., 7.), (5., 0.5, 4.5)] {
+            let (mut app, mut dialog) = hole();
+            app.run("document.units", json!({"units":"in"})).unwrap();
+            if let Kind::Hole { opts, .. } = &mut dialog.kind {
+                opts.tapped = true;
+                opts.all = true;
+                opts.thread = designation(diameter, pitch);
+            }
+            let commands = apply_commands(&app, &dialog).unwrap();
+            let result = app.run(&commands[0].0, commands[0].1.clone()).unwrap();
+            let feature = app.session.doc.feature(result["feature"].as_u64().unwrap()).unwrap();
+            let solidcraft_engine::doc::FeatureKind::Hole { diameter, .. } = &feature.kind else { panic!("not a hole") };
+            assert!((app.session.doc.eval(diameter, solidcraft_engine::doc::expr::Kind::Length).unwrap() - drill).abs() < 1e-9);
+            let saved = app.session.doc.to_json();
+            let reopened = Session::new(solidcraft_engine::doc::Document::from_json(&saved).unwrap());
+            let state = reopened.world_state();
+            assert_eq!(state.threads.len(), 1);
+            assert!((state.threads[0].pitch - pitch).abs() < 1e-9);
         }
     }
 }
