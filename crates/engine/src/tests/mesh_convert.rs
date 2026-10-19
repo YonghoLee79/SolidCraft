@@ -234,6 +234,38 @@ fn unsaved_designs_of_one_name_send_to_different_files_and_one_design_to_one() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The first Save As gives the design a path, and with it a new file name, once. Later sends keep
+/// the name that comes from the saved path.
+#[cfg(unix)]
+#[test]
+fn the_first_save_as_changes_the_file_name_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let _turn = CHOSEN_PROGRAMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = std::env::temp_dir().join(format!("solidcraft-open-in-slicer-saveas-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("fake-slicer");
+    std::fs::write(&script, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let spec = script.to_string_lossy().into_owned();
+    let mut s = imported_box();
+    crate::slicers::set_chosen_programs(std::slice::from_ref(&spec));
+    let send = |s: &mut Session| {
+        s.execute("file.open_in_slicer", &json!({"slicer": spec, "bodies": ["Mesh"]})).map(|r| r["path"].as_str().unwrap().to_string())
+    };
+    let before = [send(&mut s), send(&mut s)];
+    // What Save As does to the session: the design now has a path.
+    s.path = Some("/designs/box.solidcraft".into());
+    let after = [send(&mut s), send(&mut s), send(&mut s)];
+    crate::slicers::set_chosen_programs(&[]);
+    let (before, after) = (before.map(Result::unwrap), after.map(Result::unwrap));
+    assert_eq!(before[0], before[1], "unsaved: one file");
+    assert_ne!(before[0], after[0], "Save As: the name changes");
+    assert!(after.iter().all(|p| *p == after[0]), "saved: the same name every time");
+    std::fs::remove_dir_all(std::path::Path::new(&after[0]).parent().unwrap()).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {

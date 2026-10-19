@@ -164,12 +164,18 @@ pub fn detect() -> Vec<Slicer> {
     if cfg!(target_arch = "wasm32") { Vec::new() } else { detect_in(&Env::current()) }
 }
 
-/// [`detect`] over the folders in `env`.
+/// [`detect`] over the folders in `env`. Every install of a slicer is listed: when there are
+/// several of one, each gets its own id (`prusa#<where it was found>`, the same on every run) and a
+/// name that says which it is (`PrusaSlicer (system)`, `PrusaSlicer (Flatpak, beta)`).
 pub fn detect_in(env: &Env) -> Vec<Slicer> {
-    let mut found: Vec<Slicer> = Vec::new();
-    let mut add = |s: Slicer| {
-        if !found.iter().any(|f| f.id == s.id) {
-            found.push(s);
+    // (slicer, which program it starts, where it was found)
+    let mut found: Vec<(Slicer, String, PathBuf)> = Vec::new();
+    let mut add = |s: Slicer, origin: &Path| {
+        let key = install_key(env, &s.command);
+        // The same program found twice (a desktop entry and PATH) is one install; so is an
+        // unknown program that a second desktop entry names the same.
+        if !found.iter().any(|(f, k, _)| *k == key || (f.id == s.id && known_by_id(&s.id).is_none())) {
+            found.push((s, key, origin.to_path_buf()));
         }
     };
     desktop_entries(env, &mut add);
@@ -177,9 +183,81 @@ pub fn detect_in(env: &Env) -> Vec<Slicer> {
     program_folders(env, &mut add);
     mac_apps(env, &mut add);
     windows_programs(env, &mut add);
-    let order = |s: &Slicer| (KNOWN.iter().position(|k| k.id == s.id).unwrap_or(usize::MAX), s.name.to_lowercase());
-    found.sort_by_key(order);
-    found
+    // Told apart by their program, so the result does not depend on the order they were found in.
+    found.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut out: Vec<Slicer> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+    for (s, _, origin) in &found {
+        let several = found.iter().filter(|(o, ..)| o.id == s.id).count() > 1;
+        let mut slicer = s.clone();
+        if several {
+            let slug = normalize(&origin.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            let mut id = format!("{}#{slug}", s.id);
+            let mut n = 2;
+            while out.iter().any(|o| o.id == id) {
+                id = format!("{}#{slug}-{n}", s.id);
+                n += 1;
+            }
+            let mut name = format!("{} ({})", s.name, install_label(env, &s.command, origin));
+            let mut n = 2;
+            while labels.contains(&name) {
+                name = format!("{} ({} {n})", s.name, install_label(env, &s.command, origin));
+                n += 1;
+            }
+            (slicer.id, slicer.name) = (id, name);
+        }
+        labels.push(slicer.name.clone());
+        out.push(slicer);
+    }
+    let order = |s: &Slicer| (KNOWN.iter().position(|k| k.id == s.base_id()).unwrap_or(usize::MAX), s.name.to_lowercase(), s.id.clone());
+    out.sort_by_key(order);
+    out
+}
+
+fn known_by_id(id: &str) -> Option<&'static Known> {
+    KNOWN.iter().find(|k| k.id == id.split('#').next().unwrap_or(id))
+}
+
+/// The program that `command` starts, as one string: a Flatpak or `open` command by itself, any
+/// other by where its program really is (found through `PATH`, symlinks followed).
+fn install_key(env: &Env, command: &[String]) -> String {
+    let Some(first) = command.first() else { return String::new() };
+    let program = Path::new(first);
+    if file_name(program) == "flatpak" || first == "open" {
+        return command.join("\u{0}");
+    }
+    let at = which(env, program).unwrap_or_else(|| program.to_path_buf());
+    s(&std::fs::canonicalize(&at).unwrap_or(at))
+}
+
+/// A program name or path as an absolute path, looking through `PATH`.
+fn which(env: &Env, program: &Path) -> Option<PathBuf> {
+    if program.is_absolute() {
+        return Some(program.to_path_buf());
+    }
+    (program.components().count() == 1).then(|| env.path_dirs.iter().map(|d| d.join(program)).find(|p| is_executable(p))).flatten()
+}
+
+/// What tells this install from another of the same slicer, worked out from its command and where
+/// it was found, without running anything.
+fn install_label(env: &Env, command: &[String], origin: &Path) -> String {
+    if command.first().is_some_and(|c| file_name(Path::new(c)) == "flatpak") {
+        let branch = command.iter().find_map(|a| a.strip_prefix("--branch=")).filter(|b| *b != "stable");
+        return branch.map_or_else(|| "Flatpak".to_string(), |b| format!("Flatpak, {b}"));
+    }
+    let program = command.first().and_then(|c| which(env, Path::new(c)));
+    let at = program.as_deref().unwrap_or(origin);
+    if at.extension().is_some_and(|e| e.eq_ignore_ascii_case("appimage")) {
+        return "AppImage".into();
+    }
+    let Some(rel) = env.home.as_deref().and_then(|h| at.strip_prefix(h).ok()) else { return "system".into() };
+    if rel.starts_with(".local") {
+        return "user".into();
+    }
+    match rel.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(dir) => format!("~/{}", dir.display()),
+        None => "~".into(),
+    }
 }
 
 fn entries(dir: &Path) -> Vec<PathBuf> {
@@ -267,7 +345,7 @@ pub fn parse_exec(exec: &str) -> Vec<String> {
     args
 }
 
-fn desktop_entries(env: &Env, add: &mut impl FnMut(Slicer)) {
+fn desktop_entries(env: &Env, add: &mut impl FnMut(Slicer, &Path)) {
     for data in &env.data_dirs {
         for file in entries(&data.join("applications")) {
             if file.extension().is_none_or(|e| e != "desktop") || std::fs::metadata(&file).map(|m| m.len() > MAX_DESKTOP_BYTES).unwrap_or(true) {
@@ -296,8 +374,8 @@ fn desktop_entries(env: &Env, add: &mut impl FnMut(Slicer)) {
             }
             let icon = entry.get("Icon").and_then(|i| theme_icon(env, i));
             match known {
-                Some(k) => add(known_slicer(k, command, icon)),
-                None => add(Slicer { id: format!("desktop-{}", normalize(name)), name: name.clone(), command, icon }),
+                Some(k) => add(known_slicer(k, command, icon), &file),
+                None => add(Slicer { id: format!("desktop-{}", normalize(name)), name: name.clone(), command, icon }, &file),
             }
         }
     }
@@ -329,14 +407,14 @@ fn theme_icon(env: &Env, name: &str) -> Option<IconSource> {
     None
 }
 
-fn path_programs(env: &Env, add: &mut impl FnMut(Slicer)) {
+fn path_programs(env: &Env, add: &mut impl FnMut(Slicer, &Path)) {
     for k in KNOWN {
         for dir in &env.path_dirs {
             for exe in k.exes {
                 let p = dir.join(exe);
                 if is_executable(&p) {
                     let icon = k.exes.iter().chain([&k.id]).find_map(|n| theme_icon(env, n.trim_end_matches(".exe")));
-                    add(known_slicer(k, vec![s(&p)], icon));
+                    add(known_slicer(k, vec![s(&p)], icon), &p);
                 }
             }
         }
@@ -344,7 +422,7 @@ fn path_programs(env: &Env, add: &mut impl FnMut(Slicer)) {
 }
 
 /// AppImages and per-slicer folders in the usual places.
-fn program_folders(env: &Env, add: &mut impl FnMut(Slicer)) {
+fn program_folders(env: &Env, add: &mut impl FnMut(Slicer, &Path)) {
     for dir in &env.program_dirs {
         for p in entries(dir) {
             let name = file_name(&p);
@@ -353,10 +431,10 @@ fn program_folders(env: &Env, add: &mut impl FnMut(Slicer)) {
                 let inside = known.exes.iter().flat_map(|e| [p.join(e), p.join("bin").join(e)]).find(|c| is_executable(c));
                 if let Some(exe) = inside {
                     let icon = theme_icon(env, known.id);
-                    add(known_slicer(known, vec![s(&exe)], icon));
+                    add(known_slicer(known, vec![s(&exe)], icon), &exe);
                 }
             } else if name.to_ascii_lowercase().ends_with(".appimage") && is_executable(&p) {
-                add(known_slicer(known, vec![s(&p)], None));
+                add(known_slicer(known, vec![s(&p)], None), &p);
             }
         }
     }
@@ -364,13 +442,13 @@ fn program_folders(env: &Env, add: &mut impl FnMut(Slicer)) {
 
 // --- macOS ---
 
-fn mac_apps(env: &Env, add: &mut impl FnMut(Slicer)) {
+fn mac_apps(env: &Env, add: &mut impl FnMut(Slicer, &Path)) {
     for dir in &env.app_dirs {
         for app in entries(dir) {
             let name = file_name(&app);
             let Some(stem) = name.strip_suffix(".app") else { continue };
             let Some(known) = known_for(stem) else { continue };
-            add(known_slicer(known, vec!["open".into(), "-a".into(), s(&app)], mac_icon(&app)));
+            add(known_slicer(known, vec!["open".into(), "-a".into(), s(&app)], mac_icon(&app)), &app);
         }
     }
 }
@@ -385,7 +463,7 @@ fn mac_icon(app: &Path) -> Option<IconSource> {
 
 // --- Windows ---
 
-fn windows_programs(env: &Env, add: &mut impl FnMut(Slicer)) {
+fn windows_programs(env: &Env, add: &mut impl FnMut(Slicer, &Path)) {
     for root in &env.install_dirs {
         let mut dirs: Vec<PathBuf> = entries(root).into_iter().filter(|p| p.is_dir()).collect();
         // PrusaSlicer installs one level down, in `Prusa3D\PrusaSlicer`.
@@ -396,7 +474,7 @@ fn windows_programs(env: &Env, add: &mut impl FnMut(Slicer)) {
             let Some(known) = known_for(&file_name(&dir)) else { continue };
             let exe = known.exes.iter().filter(|e| e.ends_with(".exe")).flat_map(|e| [dir.join(e), dir.join("bin").join(e)]).find(|c| c.is_file());
             if let Some(exe) = exe {
-                add(known_slicer(known, vec![s(&exe)], Some(IconSource::Exe(exe.clone()))));
+                add(known_slicer(known, vec![s(&exe)], Some(IconSource::Exe(exe.clone()))), &exe);
             }
         }
     }
@@ -456,10 +534,12 @@ pub fn resolve(spec: &str) -> Option<Slicer> {
 fn resolve_in(detected: Vec<Slicer>, chosen: &[String], spec: &str) -> Option<Slicer> {
     let wanted = normalize(spec);
     let named = |s: &Slicer| normalize(&s.name) == wanted;
+    // An exact id or name first; else the slicer without saying which install: the first one.
+    let plain = |d: &Slicer| normalize(d.base_id()) == wanted || known_by_id(d.base_id()).is_some_and(|k| normalize(k.name) == wanted);
     if !wanted.is_empty()
-        && let Some(found) = detected.into_iter().find(|d| normalize(&d.id) == wanted || named(d))
+        && let Some(i) = detected.iter().position(|d| normalize(&d.id) == wanted || named(d)).or_else(|| detected.iter().position(plain))
     {
-        return Some(found);
+        return detected.into_iter().nth(i);
     }
     let picked = chosen.iter().filter_map(|p| custom(p).map(|s| (p, s)));
     picked.into_iter().find(|(p, s)| p.as_str() == spec || (!wanted.is_empty() && named(s))).map(|(_, s)| s)
@@ -483,6 +563,12 @@ fn with_file(args: &[String], path: &str) -> Vec<String> {
 const SINGLE_INSTANCE: &[&str] = &["prusa", "superslicer", "bambu", "cura"];
 
 impl Slicer {
+    /// The id without the `#<where>` that tells installs of one slicer apart: `prusa` for
+    /// `prusa#comprusa3dprusaslicer`.
+    pub fn base_id(&self) -> &str {
+        self.id.split('#').next().unwrap_or(&self.id)
+    }
+
     /// The arguments after the program: the command's own, the single-instance flag when asked for
     /// and this slicer has one, and the file. A desktop entry that already carries a
     /// `--single-instance…` flag (PrusaSlicer 3.0's launcher has `--single-instance-on-url`) is
@@ -495,7 +581,7 @@ impl Slicer {
             args.retain(|a| !a.starts_with("--single-instance"));
         } else if self.command.first().is_some_and(|p| p != "open") && !has(&args) {
             // A custom program is recognised by its name, as for its icon.
-            let id = if self.id == "custom" { known_for(&self.name).map_or("", |k| k.id) } else { self.id.as_str() };
+            let id = if self.id == "custom" { known_for(&self.name).map_or("", |k| k.id) } else { self.base_id() };
             if SINGLE_INSTANCE.contains(&id) {
                 // Before a Flatpak command's file markers, which close the application's own arguments.
                 let at = args.iter().position(|a| a == "@@" || a == "@@u").unwrap_or(args.len());
@@ -733,6 +819,53 @@ mod tests {
         // Chosen, then uninstalled: gone.
         std::fs::remove_file(&program).unwrap();
         assert_eq!(found(path, &chosen), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_install_of_a_slicer_is_listed_on_its_own() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("installs");
+        let home = root.join("home");
+        let (system, user) = (root.join("usr/share"), home.join(".local/share"));
+        for dir in [&system, &user] {
+            std::fs::create_dir_all(dir.join("applications")).unwrap();
+        }
+        // The two entries of the real desktop: PrusaSlicer 2.9 from the system, 3.0 beta as a Flatpak.
+        std::fs::write(
+            system.join("applications/PrusaSlicer.desktop"),
+            "[Desktop Entry]\nType=Application\nName=PrusaSlicer\nExec=prusa-slicer %F\n",
+        )
+        .unwrap();
+        std::fs::write(
+            user.join("applications/com.prusa3d.PrusaSlicer.desktop"),
+            "[Desktop Entry]\nType=Application\nName=PrusaSlicer\nExec=flatpak run --branch=beta --arch=x86_64 --command=slic3r-app-launcher --file-forwarding com.prusa3d.PrusaSlicer --single-instance-on-url @@u %U @@\n",
+        )
+        .unwrap();
+        let bin = root.join("usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("prusa-slicer"), b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join("prusa-slicer"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The same program is also on PATH under its own name: still the one install.
+        let env = Env { home: Some(home), data_dirs: vec![user, system], path_dirs: vec![bin], ..Env::default() };
+        let found = detect_in(&env);
+        let listed: Vec<(&str, &str)> = found.iter().map(|f| (f.id.as_str(), f.name.as_str())).collect();
+        assert_eq!(listed, [("prusa#comprusa3dprusaslicer", "PrusaSlicer (Flatpak, beta)"), ("prusa#prusaslicer", "PrusaSlicer (system)")]);
+        // Both are still PrusaSlicer to everything that looks at the kind of slicer.
+        assert!(found.iter().all(|f| f.base_id() == "prusa"));
+        let flatpak = found[0].args("/t/a.3mf", true);
+        assert_eq!(flatpak.iter().filter(|a| a.starts_with("--single-instance")).collect::<Vec<_>>(), ["--single-instance-on-url"]);
+        assert_eq!(found[1].args("/t/a.3mf", true), ["--single-instance", "/t/a.3mf"]);
+        // The same on every run, whatever order the folders are read in.
+        let again = detect_in(&Env { data_dirs: env.data_dirs.iter().rev().cloned().collect(), ..env.clone() });
+        assert_eq!(found, again);
+        // `prusa` alone, as remembered or typed before there were two, is the first; a full id is that install.
+        let pick = |spec: &str| resolve_in(found.clone(), &[], spec).map(|s| s.id);
+        assert_eq!(pick("prusa").as_deref(), Some("prusa#comprusa3dprusaslicer"));
+        assert_eq!(pick("PrusaSlicer").as_deref(), Some("prusa#comprusa3dprusaslicer"));
+        assert_eq!(pick("prusa#prusaslicer").as_deref(), Some("prusa#prusaslicer"));
+        assert_eq!(pick("PrusaSlicer (system)").as_deref(), Some("prusa#prusaslicer"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -72,6 +72,14 @@ impl SlicerMenu {
         self.custom = paths.iter().filter_map(|p| slicers::custom(p).map(|s| (p.clone(), s))).collect();
     }
 
+    /// The list key for a remembered one: itself, or for a slicer remembered before it had
+    /// several installs (`prusa`), its first install.
+    fn key_for(&self, key: &str) -> Option<String> {
+        let entries = self.entries();
+        let hit = entries.iter().find(|e| e.key == key).or_else(|| entries.iter().find(|e| !e.user && e.slicer.base_id() == key));
+        hit.map(|e| e.key.clone())
+    }
+
     fn entries(&self) -> Vec<Entry> {
         let user = self.custom.iter().map(|(path, s)| Entry { key: path.clone(), slicer: s.clone(), user: true });
         let found = self.detected.iter().map(|s| Entry { key: s.id.clone(), slicer: s.clone(), user: false });
@@ -112,9 +120,7 @@ pub fn open_remembered(app: &mut SolveApp) -> bool {
         return false;
     }
     app.slicer_menu.refresh(&app.preferences.custom_slicers);
-    if !app.slicer_menu.entries().iter().any(|e| e.key == key) {
-        return false;
-    }
+    let Some(key) = app.slicer_menu.key_for(&key) else { return false };
     send_to_slicer(app, json!({ "slicer": key, "bodies": bodies }));
     true
 }
@@ -181,9 +187,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) -> bool {
         app.slicer_menu.picked = None;
         app.slicer_menu.refresh(&app.preferences.custom_slicers);
         let entries = app.slicer_menu.entries();
-        if !entries.iter().any(|e| e.key == k.slicer) {
-            k.slicer = entries.first().map(|e| e.key.clone()).unwrap_or_default();
-        }
+        k.slicer = app.slicer_menu.key_for(&k.slicer).or_else(|| entries.first().map(|e| e.key.clone())).unwrap_or_default();
         k.send &= !entries.is_empty() || k.open;
     }
     // A browser has no installed programs to send a file to.
