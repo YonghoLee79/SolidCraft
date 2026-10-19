@@ -2506,8 +2506,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         if let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p))
             && app.tool.is_some()
         {
-            crate::tools::on_hover(app, &proj, p);
-            crate::tools::on_click(app, &proj, p);
+            crate::tools::on_hover(app, &proj, p, mods.shift);
+            crate::tools::on_click(app, &proj, p, mods.shift);
         }
     }
     // A two-point shape being dragged out (#1630) follows the pointer and ends where it is let go,
@@ -2528,11 +2528,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     t.pts.clear();
                     crate::sketch_dims::reset(t);
                 }
-                crate::tools::on_hover(app, &proj, p);
-                crate::tools::on_click(app, &proj, p);
+                crate::tools::on_hover(app, &proj, p, mods.shift);
+                crate::tools::on_click(app, &proj, p, mods.shift);
             }
         } else if let Some(p) = at {
-            crate::tools::on_hover(app, &proj, p);
+            crate::tools::on_hover(app, &proj, p, mods.shift);
         }
     }
     // A Trim drag's path follows the pointer; letting go trims what it crossed. A path that
@@ -2545,8 +2545,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                 && let Some(p) = at
                 && app.tool.is_some()
             {
-                crate::tools::on_hover(app, &proj, p);
-                crate::tools::on_click(app, &proj, p);
+                crate::tools::on_hover(app, &proj, p, mods.shift);
+                crate::tools::on_click(app, &proj, p, mods.shift);
             }
         } else if let Some(p) = at {
             crate::sketch_tools::trim_drag_to(app, &proj, p);
@@ -2558,7 +2558,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::sketch_text::set_one_letter(mods.shift);
     if let Some(p) = hover.filter(|_| inside) {
         if app.tool.is_some() {
-            crate::tools::on_hover(app, &proj, p);
+            crate::tools::on_hover(app, &proj, p, mods.shift);
         }
         // Trim also trims by press and drag across the pieces to remove (its own release handling,
         // so not a click that moved on the way below).
@@ -2584,7 +2584,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             && resp.drag_started_by(egui::PointerButton::Primary)
             && let Some(a) = ui.input(|i| i.pointer.press_origin())
         {
-            crate::tools::on_click(app, &proj, a);
+            crate::tools::on_click(app, &proj, a, mods.shift);
             app.viewport.draw_drag = app.tool.as_ref().is_some_and(|t| t.pts.len() == 1).then_some(a);
         } else if app.tool.is_some()
             && !app.viewport.trim_drag
@@ -2603,7 +2603,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             && crate::dim_view::pick_reference(ui.ctx(), p, resp.double_clicked());
         if resp.clicked() && !held && !reference_pick {
             if app.tool.is_some() {
-                crate::tools::on_click(app, &proj, p);
+                crate::tools::on_click(app, &proj, p, mods.shift);
             } else if app.dialog.as_ref().is_some_and(|d| d.wants_picks()) {
                 if let Some((hit, Some(sel))) = cand {
                     dialog_pick(app, &hit, sel);

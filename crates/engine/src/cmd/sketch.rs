@@ -117,7 +117,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "CONSTRAINTS")
         .icon("c_hv")
         .enabled(in_sketch)
-        .params("line: id | points: [a, b]; mode?: horizontal|vertical"),
+        .params("line: id | points: [a, b] (point ids or {midpoint: line_id}; accepted midpoints reuse or create a point with a Midpoint constraint); mode?: horizontal|vertical"),
     CommandSpec::new("sketch.constraint.coincident", "Coincident", c_coincident)
         .at("SKETCH", "CONSTRAINTS")
         .icon("c_coincident")
@@ -1621,14 +1621,68 @@ pub(super) fn residual_of(sk: &Sketch, id: &str) -> Option<f64> {
     sk.constraints.iter().position(|c| c.id == id).and_then(|ci| solidcraft_sketch::constraint_residual(sk, ci))
 }
 
+/// Temporary pick intent. Saved sketches use ordinary points and constraints only.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AlignmentTarget {
+    Point(usize),
+    Midpoint(usize),
+}
+
+impl AlignmentTarget {
+    fn materialize(self, sk: &mut Sketch) -> Result<usize> {
+        match self {
+            Self::Point(p) => Ok(p),
+            Self::Midpoint(l) => {
+                // Reuse an existing associative midpoint, including one created by drawing.
+                // Coincident coordinates alone are insufficient: its relationship must exist.
+                if let Some(p) = sk.constraints.iter().find_map(|c| match c.kind {
+                    ConstraintKind::Midpoint { p, l: line } if line == l && !c.driven => Some(p),
+                    _ => None,
+                }) {
+                    return Ok(p);
+                }
+                let cmd = "sketch.constraint.horizontal_vertical";
+                let (a, b) = line_pts(sk, l).ok_or_else(|| bad(cmd, "a midpoint reference needs a line"))?;
+                let p = sk.add_point((a + b) * 0.5, None)?;
+                add_c(sk, ConstraintKind::Midpoint { p, l })?;
+                Ok(p)
+            }
+        }
+    }
+}
+
 fn c_horizontal_vertical(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.constraint.horizontal_vertical";
     let mode = str_(p, "mode").map(str::to_ascii_lowercase);
     constrain(s, p, cmd, |sk| {
         if let Some(pts) = p.get("points").and_then(Value::as_array) {
-            let a = point_ref(sk, pts.first(), cmd, "points[0]")?;
-            let b = point_ref(sk, pts.get(1), cmd, "points[1]")?;
-            let d = sk.point(b).unwrap_or_default() - sk.point(a).unwrap_or_default();
+            if pts.len() != 2 {
+                return Err(bad(cmd, "`points` needs exactly two point references"));
+            }
+            let target = |v: &Value| -> Result<AlignmentTarget> {
+                if let Some(line) = v.get("midpoint") {
+                    let l = curve_ref(sk, Some(line), cmd, "midpoint")?;
+                    if !matches!(sk.curves.get(l).map(|c| &c.kind), Some(CurveKind::Line { .. })) {
+                        return Err(bad(cmd, "a midpoint reference needs a line"));
+                    }
+                    Ok(AlignmentTarget::Midpoint(l))
+                } else {
+                    Ok(AlignmentTarget::Point(point_ref(sk, Some(v), cmd, "points")?))
+                }
+            };
+            // Validate both intents before materializing either. Hover and a pending first
+            // pick never change the sketch; this command accepts both in one undo step.
+            let a = target(pts.first().ok_or_else(|| bad(cmd, "missing first point"))?)?;
+            let b = target(pts.get(1).ok_or_else(|| bad(cmd, "missing second point"))?)?;
+            if a == b {
+                return Err(bad(cmd, "alignment needs two distinct point references"));
+            }
+            let a = a.materialize(sk)?;
+            let b = b.materialize(sk)?;
+            if a == b {
+                return Err(bad(cmd, "alignment needs two distinct points"));
+            }
+            let d = sk.point(b).ok_or_else(|| bad(cmd, "invalid second point"))? - sk.point(a).ok_or_else(|| bad(cmd, "invalid first point"))?;
             let horiz = match mode.as_deref() {
                 Some("horizontal") => true,
                 Some("vertical") => false,
