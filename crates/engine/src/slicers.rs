@@ -575,6 +575,18 @@ impl Slicer {
     /// never given a second one, and loses its own when `single_instance` is off.
     #[cfg(not(target_arch = "wasm32"))]
     fn args(&self, path: &str, single_instance: bool) -> Vec<String> {
+        with_file(&self.base_args(single_instance), path)
+    }
+
+    /// [`Self::args`] without a file, for starting the slicer on its own: a Flatpak command's file
+    /// markers go too.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_args(&self, single_instance: bool) -> Vec<String> {
+        self.base_args(single_instance).into_iter().filter(|a| a != "@@" && a != "@@u").collect()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn base_args(&self, single_instance: bool) -> Vec<String> {
         let mut args: Vec<String> = self.command.iter().skip(1).cloned().collect();
         let has = |args: &[String]| args.iter().any(|a| a.starts_with("--single-instance"));
         if !single_instance {
@@ -588,7 +600,7 @@ impl Slicer {
                 args.insert(at, "--single-instance".into());
             }
         }
-        with_file(&args, path)
+        args
     }
 
     /// Start the slicer with `path` loaded; does not wait for it to exit. With `single_instance`,
@@ -601,18 +613,109 @@ impl Slicer {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use std::process::{Command, Stdio};
-            let program = self.command.first().ok_or_else(|| format!("{} has no program to start", self.name))?;
-            Command::new(program)
-                .args(self.args(path, single_instance))
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map(drop)
-                .map_err(|e| format!("couldn't start {} ({e}); the file is saved at {path}", self.name))
+            self.spawn(self.args(path, single_instance)).map_err(|e| format!("couldn't start {} ({e}); the file is saved at {path}", self.name))
         }
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn(&self, args: Vec<String>) -> std::io::Result<()> {
+        use std::process::{Command, Stdio};
+        let program = self.command.first().ok_or_else(|| std::io::Error::other("no program to start"))?;
+        Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(drop)
+    }
+
+    /// Start the slicer on its own, with no file. Does not wait for it to exit or to be ready.
+    pub fn start(&self, single_instance: bool) -> std::result::Result<(), String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = single_instance;
+            Err(format!("{} can't be started from the browser", self.name))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.spawn(self.start_args(single_instance)).map_err(|e| format!("couldn't start {} ({e})", self.name))
+        }
+    }
+
+    /// Whether this slicer drops a file given at a cold start and so has to be started first and
+    /// sent the file once it can take one (see [`WAIT_FOR_READY`]).
+    pub fn waits_for_ready(&self) -> Option<&'static WaitRule> {
+        WAIT_FOR_READY.iter().find(|r| self.command.iter().any(|a| a.contains(r.command_has)))
+    }
+
+    /// Whether the slicer can take a file now: `Some(true)` or `Some(false)`, or `None` when that
+    /// can't be told (no `busctl`, or it failed), in which case nobody waits.
+    pub fn is_ready(&self) -> Option<bool> {
+        let rule = self.waits_for_ready()?;
+        Some(has_bus_name(&bus_list()?, rule.bus_prefix))
+    }
+}
+
+/// A slicer that ignores a file given at a cold start, found by its command, and the sign that it
+/// is up and can take one.
+pub struct WaitRule {
+    /// Part of an argument of the command.
+    pub command_has: &'static str,
+    /// A name on the session bus that exists while the slicer is ready. Its end changes with the
+    /// install, so only its start is matched.
+    pub bus_prefix: &'static str,
+}
+
+/// PrusaSlicer 3.0's launcher ignores the file on a cold start whatever the flag, and loads it
+/// over D-Bus when an instance is running. PrusaSlicer 2.9 and OrcaSlicer load it at launch, so
+/// they are not listed.
+pub const WAIT_FOR_READY: &[WaitRule] = &[WaitRule { command_has: "slic3r-app-launcher", bus_prefix: "com.prusa3d.prusaslicer.BroadcastListener." }];
+
+/// Longest wait for a started slicer to be ready, and how often it is looked at.
+pub const READY_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const READY_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The session bus's names, as `busctl --user --no-legend --no-pager list` prints them; `None`
+/// where that can't be run.
+fn bus_list() -> Option<String> {
+    #[cfg(any(target_arch = "wasm32", not(unix)))]
+    {
+        None
+    }
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    {
+        let out = std::process::Command::new("busctl")
+            .args(["--user", "--no-legend", "--no-pager", "list"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+/// The first column of each line: the bus names.
+fn bus_names(list: &str) -> impl Iterator<Item = &str> {
+    list.lines().filter_map(|l| l.split_whitespace().next())
+}
+
+/// Whether the list has a name that starts with `prefix`.
+fn has_bus_name(list: &str, prefix: &str) -> bool {
+    bus_names(list).any(|n| n.starts_with(prefix))
+}
+
+/// Look every `poll` until `ready` says so; false when `limit` runs out first. `ready` is asked at
+/// once, so a slicer that is already up costs no sleep.
+pub fn wait_until(mut ready: impl FnMut() -> bool, limit: std::time::Duration, poll: std::time::Duration) -> bool {
+    let end = std::time::Instant::now() + limit;
+    loop {
+        if ready() {
+            return true;
+        }
+        if std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Wait for `slicer` to be ready to take a file. True when it is, or when that can't be told.
+pub fn wait_for_ready(slicer: &Slicer) -> bool {
+    wait_until(|| slicer.is_ready() != Some(false), READY_LIMIT, READY_POLL)
 }
 
 #[cfg(test)]
@@ -867,5 +970,93 @@ mod tests {
         assert_eq!(pick("prusa#prusaslicer").as_deref(), Some("prusa#prusaslicer"));
         assert_eq!(pick("PrusaSlicer (system)").as_deref(), Some("prusa#prusaslicer"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_launcher_needs_a_start_and_a_wait_and_other_slicers_do_not() {
+        let slicer = |command: &[&str]| Slicer {
+            id: "prusa".into(),
+            name: "PrusaSlicer".into(),
+            command: command.iter().map(|s| s.to_string()).collect(),
+            icon: None,
+        };
+        // The command lines of this machine's desktop entries.
+        let flatpak = slicer(&[
+            "flatpak",
+            "run",
+            "--branch=beta",
+            "--arch=x86_64",
+            "--command=slic3r-app-launcher",
+            "--file-forwarding",
+            "com.prusa3d.PrusaSlicer",
+            "--single-instance-on-url",
+            "@@u",
+            "@@",
+        ]);
+        let launcher = slicer(&["slic3r-app-launcher", "--single-instance-on-url"]);
+        assert!(flatpak.waits_for_ready().is_some() && launcher.waits_for_ready().is_some());
+        for command in [
+            &["prusa-slicer"][..],
+            &["flatpak", "run", "com.prusa3d.PrusaSlicer", "@@u", "@@"],
+            &["/usr/bin/orca-slicer"],
+            &["open", "-a", "/Applications/PrusaSlicer.app"],
+        ] {
+            assert!(slicer(command).waits_for_ready().is_none(), "{command:?}");
+        }
+        // Starting on its own: no file, and none of the Flatpak file markers.
+        assert_eq!(
+            flatpak.start_args(true),
+            [
+                "run",
+                "--branch=beta",
+                "--arch=x86_64",
+                "--command=slic3r-app-launcher",
+                "--file-forwarding",
+                "com.prusa3d.PrusaSlicer",
+                "--single-instance-on-url"
+            ]
+        );
+        assert_eq!(launcher.start_args(false), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_bus_list_says_whether_the_slicer_is_up() {
+        let prefix = WAIT_FOR_READY[0].bus_prefix;
+        let without = ":1.5 1234 systemd :1.5 user@1000.service 1 -\norg.freedesktop.Notifications 99 dunst :1.40 u 1 -\ncom.prusa3d.PrusaSlicer 7 x :1.9 s 1 -\n";
+        let with = format!("{without}com.prusa3d.prusaslicer.BroadcastListener.3f9a1c 4321 xdg-dbus-proxy :1.77 u 1 -\n");
+        assert!(!has_bus_name(without, prefix));
+        assert!(has_bus_name(&with, prefix));
+        assert!(!has_bus_name("", prefix));
+        // The suffix changes with the install; only the start counts, and only at the start of a name.
+        assert!(!has_bus_name("x.com.prusa3d.prusaslicer.BroadcastListener.1 1 p :1.1 u 1 -", prefix));
+        assert_eq!(bus_names(&with).count(), 4);
+    }
+
+    #[test]
+    fn waiting_stops_at_once_when_ready_and_gives_up_at_the_limit() {
+        let tick = std::time::Duration::from_millis(5);
+        let mut asked = 0;
+        assert!(wait_until(
+            || {
+                asked += 1;
+                true
+            },
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(5)
+        ));
+        assert_eq!(asked, 1, "already up: no sleep");
+        let mut asked = 0;
+        assert!(wait_until(
+            || {
+                asked += 1;
+                asked == 3
+            },
+            std::time::Duration::from_secs(5),
+            tick
+        ));
+        assert_eq!(asked, 3);
+        let started = std::time::Instant::now();
+        assert!(!wait_until(|| false, std::time::Duration::from_millis(40), tick));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(40) && started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

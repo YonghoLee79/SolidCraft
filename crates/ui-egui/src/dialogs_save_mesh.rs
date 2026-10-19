@@ -125,13 +125,71 @@ pub fn open_remembered(app: &mut SolveApp) -> bool {
     true
 }
 
-/// Run `file.open_in_slicer` and report what happened.
+/// A slicer that was started alone and is being waited for, off the UI thread, until it can take
+/// the file (`slicers::WAIT_FOR_READY`). One at a time: a second send while it lasts does nothing.
+pub struct SlicerWait {
+    done: std::sync::mpsc::Receiver<bool>,
+    /// The `file.open_in_slicer` parameters, with the wait switched off, to send once it is ready.
+    params: Value,
+    slicer: String,
+    path: String,
+}
+
+/// Look at `ready` on another thread until it says so or `limit` runs out; the answer arrives on the
+/// channel.
+fn spawn_wait(
+    ready: impl FnMut() -> bool + Send + 'static,
+    limit: std::time::Duration,
+    poll: std::time::Duration,
+) -> std::sync::mpsc::Receiver<bool> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(slicers::wait_until(ready, limit, poll));
+    });
+    rx
+}
+
+/// Run `file.open_in_slicer` and report what happened. A slicer that has to be started first is
+/// started and waited for in the background.
 fn send_to_slicer(app: &mut SolveApp, params: Value) {
     let _language = crate::i18n::scope(&app.preferences.language);
+    if let Some(wait) = &app.slicer_wait {
+        let line = crate::i18n::format("ui.slicer_starting", &[("slicer", &wait.slicer)]);
+        app.set_status(line, false);
+        return;
+    }
     let mut params = params;
     params["single_instance"] = json!(app.preferences.slicer_single_instance);
-    let Ok(result) = app.run("file.open_in_slicer", params) else { return };
-    report(app, &result);
+    params["wait"] = json!("return");
+    let Ok(result) = app.run("file.open_in_slicer", params.clone()) else { return };
+    let Some(name) = result.get("starting").and_then(Value::as_str) else { return report(app, &result) };
+    let spec = params["slicer"].as_str().unwrap_or_default().to_string();
+    params["wait"] = json!("no");
+    let path = result.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
+    let Some(slicer) = slicers::resolve(&spec) else { return };
+    let done = spawn_wait(move || slicer.is_ready() != Some(false), slicers::READY_LIMIT, slicers::READY_POLL);
+    app.slicer_wait = Some(SlicerWait { done, params, slicer: name.to_string(), path });
+    app.set_status(crate::i18n::format("ui.slicer_starting", &[("slicer", name)]), false);
+}
+
+/// Per frame: when the slicer being waited for is ready, send the file; when the wait ran out, say so.
+pub fn tick_wait(app: &mut SolveApp, ctx: &egui::Context) {
+    use std::sync::mpsc::TryRecvError;
+    let Some(wait) = app.slicer_wait.as_ref() else { return };
+    let ready = match wait.done.try_recv() {
+        Err(TryRecvError::Empty) => return ctx.request_repaint_after(std::time::Duration::from_millis(200)),
+        Ok(ready) => ready,
+        Err(TryRecvError::Disconnected) => false,
+    };
+    let Some(wait) = app.slicer_wait.take() else { return };
+    let _language = crate::i18n::scope(&app.preferences.language);
+    if ready {
+        if let Ok(result) = app.run("file.open_in_slicer", wait.params) {
+            report(app, &result);
+        }
+    } else {
+        app.set_status(crate::i18n::format("ui.slicer_no_response", &[("slicer", &wait.slicer), ("path", &wait.path)]), true);
+    }
 }
 
 /// A popup with the slicer list is open (Delete belongs to it, not to the design's selection).
@@ -442,6 +500,90 @@ mod tests {
         assert!(matches!(&app.status, Some((_, _, true))));
         app.services.pick_program = Some(Box::new(|| Box::pin(async { None })));
         assert!(available(&app));
+    }
+
+    /// An app with a box in it, `fake-slicer` (a script that writes its arguments to `seen`) among the
+    /// user's programs, and the parameters Open in Slicer would send.
+    #[cfg(unix)]
+    fn app_with_fake_slicer(tag: &str) -> (SolveApp, std::path::PathBuf, Value) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("solidcraft-slicer-wait-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (script, seen) = (dir.join("fake-slicer"), dir.join("seen"));
+        std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" >> {}\n", seen.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.run("solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Part"})).unwrap();
+        app.preferences.custom_slicers = vec![script.to_string_lossy().into_owned()];
+        let params = json!({"slicer": script, "bodies": ["Part"], "wait": "no"});
+        (app, seen, params)
+    }
+
+    #[cfg(unix)]
+    fn sent(seen: &std::path::Path) -> usize {
+        for _ in 0..100 {
+            if seen.exists() && std::fs::metadata(seen).map(|m| m.len() > 0).unwrap_or(false) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        std::fs::read_to_string(seen).map(|t| t.lines().count()).unwrap_or(0)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_started_slicer_is_waited_for_and_then_sent_the_file_once() {
+        let ctx = egui::Context::default();
+        let (mut app, seen, params) = app_with_fake_slicer("ready");
+        // Ready on the third look; a second click while it waits starts and sends nothing.
+        let mut looks = 0;
+        let done = spawn_wait(
+            move || {
+                looks += 1;
+                looks == 3
+            },
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(5),
+        );
+        app.slicer_wait = Some(SlicerWait { done, params: params.clone(), slicer: "Fake".into(), path: "/p".into() });
+        send_to_slicer(&mut app, params);
+        assert!(app.slicer_wait.is_some(), "still the one wait");
+        assert!(app.status.as_ref().is_some_and(|(m, _, error)| !*error && m.contains("Fake")), "{:?}", app.status);
+        assert!(!seen.exists(), "the second click sent nothing");
+        for _ in 0..200 {
+            tick_wait(&mut app, &ctx);
+            if app.slicer_wait.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.slicer_wait.is_none());
+        assert_eq!(sent(&seen), 1, "one send");
+        assert!(app.status.as_ref().is_some_and(|(_, _, error)| !*error), "{:?}", app.status);
+        let _ = std::fs::remove_dir_all(seen.parent().unwrap());
+        solidcraft_engine::slicers::set_chosen_programs(&[]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_slicer_that_never_comes_up_is_reported_and_nothing_is_sent() {
+        let ctx = egui::Context::default();
+        let (mut app, seen, params) = app_with_fake_slicer("late");
+        let done = spawn_wait(|| false, std::time::Duration::from_millis(30), std::time::Duration::from_millis(5));
+        app.slicer_wait = Some(SlicerWait { done, params, slicer: "Fake".into(), path: "/tmp/part.3mf".into() });
+        for _ in 0..400 {
+            tick_wait(&mut app, &ctx);
+            if app.slicer_wait.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.slicer_wait.is_none());
+        let status = app.status.clone().unwrap();
+        assert!(status.2 && status.0.contains("/tmp/part.3mf"), "{status:?}");
+        assert!(!seen.exists());
+        let _ = std::fs::remove_dir_all(seen.parent().unwrap());
     }
 
     #[test]

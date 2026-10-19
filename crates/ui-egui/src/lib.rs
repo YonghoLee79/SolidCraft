@@ -311,6 +311,8 @@ pub struct SolveApp {
     pub pre_sketch_marker: Option<Option<usize>>,
     pub services: Services,
     file_picker: Option<file_picker::Pending>,
+    /// A slicer started alone and waited for before the file is sent (Open in Slicer).
+    pub(crate) slicer_wait: Option<dialogs_save_mesh::SlicerWait>,
     pub viewport: viewport::ViewportState,
     pub render_workspace: render_workspace::State,
     pub tool: Option<tools::Tool>,
@@ -452,6 +454,7 @@ impl SolveApp {
             pre_sketch_marker: None,
             services,
             file_picker: None,
+            slicer_wait: None,
             viewport: viewport::ViewportState::default(),
             render_workspace,
             tool: None,
@@ -1305,6 +1308,7 @@ impl SolveApp {
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
         file_picker::tick(self, ctx);
+        dialogs_save_mesh::tick_wait(self, ctx);
         render_workspace::sync_backend(self);
         render_workspace::tick(self, ctx);
         file_load::tick(self, ctx);
