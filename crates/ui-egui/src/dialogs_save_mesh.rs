@@ -72,11 +72,14 @@ impl SlicerMenu {
         self.custom = paths.iter().filter_map(|p| slicers::custom(p).map(|s| (p.clone(), s))).collect();
     }
 
-    /// The list key for a remembered one: itself, or for a slicer remembered before it had
-    /// several installs (`prusa`), its first install.
+    /// The list key for a remembered one: itself; or, for one remembered under another install
+    /// of the same slicer (`prusa` before it had several, `prusa#x` after an uninstall), the first
+    /// install of that slicer.
     fn key_for(&self, key: &str) -> Option<String> {
         let entries = self.entries();
-        let hit = entries.iter().find(|e| e.key == key).or_else(|| entries.iter().find(|e| !e.user && e.slicer.base_id() == key));
+        // `prusa#x` remembered while there were two installs, and one left: the plain `prusa`.
+        let base = key.split('#').next().unwrap_or(key);
+        let hit = entries.iter().find(|e| e.key == key).or_else(|| entries.iter().find(|e| !e.user && e.slicer.base_id() == base));
         hit.map(|e| e.key.clone())
     }
 
@@ -708,6 +711,23 @@ mod tests {
         assert!(status.2 && status.0.contains("/tmp/part.3mf"), "{status:?}");
         assert!(!seen.exists());
         let _ = std::fs::remove_dir_all(seen.parent().unwrap());
+    }
+
+    #[test]
+    fn a_remembered_install_that_is_gone_falls_back_to_the_same_slicer() {
+        let prusa = |id: &str| slicers::Slicer { id: id.into(), name: "PrusaSlicer".into(), command: vec!["prusa-slicer".into()], icon: None };
+        let orca = slicers::Slicer { id: "orca".into(), name: "OrcaSlicer".into(), command: vec!["orca-slicer".into()], icon: None };
+        let menu = |detected: Vec<slicers::Slicer>| SlicerMenu { detected, ..Default::default() };
+        // Two installs when it was remembered, one (now plain) left.
+        let lone = menu(vec![orca.clone(), prusa("prusa")]);
+        assert_eq!(lone.key_for("prusa#prusaslicer").as_deref(), Some("prusa"));
+        assert_eq!(lone.key_for("prusa").as_deref(), Some("prusa"));
+        // Remembered plain, now two: the first of them; an exact key is itself.
+        let two = menu(vec![prusa("prusa#a"), prusa("prusa#b")]);
+        assert_eq!(two.key_for("prusa").as_deref(), Some("prusa#a"));
+        assert_eq!(two.key_for("prusa#b").as_deref(), Some("prusa#b"));
+        // A different slicer is never picked for it.
+        assert_eq!(menu(vec![orca]).key_for("prusa#x"), None);
     }
 
     #[test]
