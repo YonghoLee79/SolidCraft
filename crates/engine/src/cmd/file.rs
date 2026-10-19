@@ -638,7 +638,7 @@ fn open_in_slicer(s: &mut Session, p: &Value) -> Result<Value> {
         let (file, numbered) = slicer_files::write(&dir, &stem, ext, &bytes).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
         let path = file.to_string_lossy().into_owned();
         let mut out = json!({"path": path, "bytes": bytes.len(), "format": ext, "numbered": numbered, "stl_fallback": fell_back});
-        let single = bool_(p, "single_instance").unwrap_or(true);
+        let mut single = bool_(p, "single_instance").unwrap_or(true);
         let wait = str_(p, "wait").unwrap_or("block");
         if !matches!(wait, "block" | "return" | "no") {
             return Err(bad(cmd, "`wait` is block, return or no"));
@@ -658,6 +658,9 @@ fn open_in_slicer(s: &mut Session, p: &Value) -> Result<Value> {
                     obj.insert("slicer_timeout".into(), json!(slicer.name));
                     return Ok(out);
                 }
+                // After a start the file has to reach the instance that is now running, so the
+                // flag goes on whatever `single_instance` says.
+                single = true;
             }
             match slicer.open(&path, single) {
                 Ok(()) => obj.insert("slicer".into(), json!(slicer.name)),
