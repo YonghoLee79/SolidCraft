@@ -245,7 +245,8 @@ fn install_label(env: &Env, command: &[String], origin: &Path) -> String {
         let branch = command.iter().find_map(|a| a.strip_prefix("--branch=")).filter(|b| *b != "stable");
         return branch.map_or_else(|| "Flatpak".to_string(), |b| format!("Flatpak, {b}"));
     }
-    let program = command.first().and_then(|c| which(env, Path::new(c)));
+    // `open -a <app>` starts `open`, wherever that is; the application is what tells installs apart.
+    let program = command.first().filter(|c| *c != "open").and_then(|c| which(env, Path::new(c)));
     let at = program.as_deref().unwrap_or(origin);
     if at.extension().is_some_and(|e| e.eq_ignore_ascii_case("appimage")) {
         return "AppImage".into();
@@ -1154,6 +1155,24 @@ mod tests {
         assert!(has_bus_name(&list, WAIT_FOR_READY[0].bus_prefix));
         assert_eq!(bus_list(&fake("fails", "exit 1"), std::time::Duration::from_secs(5)), None);
         assert_eq!(bus_list(&root.join("missing").to_string_lossy(), std::time::Duration::from_secs(1)), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mac_installs_are_labelled_by_their_application_not_by_open() {
+        let root = scratch("mac-labels");
+        let home = root.join("home");
+        let (system, user) = (root.join("Applications"), home.join("Applications"));
+        for dir in [&system, &user] {
+            std::fs::create_dir_all(dir.join("PrusaSlicer.app")).unwrap();
+        }
+        let env = Env { home: Some(home), app_dirs: vec![system, user], ..Env::default() };
+        let found = detect_in(&env);
+        let listed: Vec<(&str, &str)> = found.iter().map(|f| (f.id.as_str(), f.name.as_str())).collect();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|(_, n)| *n == "PrusaSlicer (system)"), "{listed:?}");
+        assert!(listed.iter().any(|(_, n)| *n == "PrusaSlicer (~/Applications)"), "{listed:?}");
+        assert_ne!(listed[0].0, listed[1].0, "own ids");
         std::fs::remove_dir_all(root).unwrap();
     }
 }
