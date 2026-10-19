@@ -788,27 +788,29 @@ impl ModelState {
 
 /// Evaluation results by cache key, shared by a model and its copies (previews, scratch
 /// sessions), so a result computed once is reused wherever the same inputs come back.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EvalCache {
-    map: std::collections::HashMap<u64, CachedEval>,
-    order: std::collections::VecDeque<u64>,
-    /// What the stored results cost together.
-    bytes: usize,
+    /// The model after a feature, by the whole model it started from ([`EvalKey::whole`]).
+    states: Lru<CachedEval<Arc<ModelState>>>,
+    /// What a feature changed, by what it read ([`EvalKey::reads`]): made again on the model as
+    /// it is now.
+    changes: Lru<CachedEval<Change>>,
     pub hits: usize,
-    /// Results keyed by the part of the model they read (see `eval_local`).
-    partial: local::PartialCache,
+}
+
+impl Default for EvalCache {
+    fn default() -> Self {
+        EvalCache { states: Lru::new(CACHE_BYTES), changes: Lru::new(CHANGE_BYTES), hits: 0 }
+    }
 }
 
 #[derive(Clone, Debug)]
-struct CachedEval {
+struct CachedEval<S> {
     error: Option<String>,
     warning: Option<String>,
     boolean_diagnostics: kernel::BooleanDiagnostics,
     ms: f64,
-    state: Arc<ModelState>,
-    /// What the state costs, worked out once when it was stored (see
-    /// [`ModelState::retained_bytes`]).
-    bytes: usize,
+    state: S,
 }
 
 /// Results kept (oldest dropped first).
@@ -820,79 +822,68 @@ const CACHE_ENTRIES: usize = 4096;
 /// budget drops.
 const CACHE_BYTES: usize = 64 << 20;
 
-impl EvalCache {
-    fn get(&mut self, key: u64) -> Option<CachedEval> {
-        let r = self.map.get(&key).cloned();
-        if r.is_some() {
-            self.hits += 1;
-        }
-        r
+/// Bytes of changes kept. A change holds only the bodies its feature made, so many more are
+/// kept than whole models: in a large design one model fills [`CACHE_BYTES`].
+const CHANGE_BYTES: usize = 256 << 20;
+
+/// Values by key, the oldest dropped first past [`CACHE_ENTRIES`] or `budget` bytes.
+#[derive(Debug)]
+struct Lru<V> {
+    map: std::collections::HashMap<u64, (V, usize)>,
+    order: std::collections::VecDeque<u64>,
+    /// What the values cost together.
+    bytes: usize,
+    budget: usize,
+}
+
+impl<V: Clone> Lru<V> {
+    fn new(budget: usize) -> Self {
+        Lru { map: Default::default(), order: Default::default(), bytes: 0, budget }
     }
-    fn get_partial(&mut self, key: u64) -> Option<local::Partial> {
-        let r = self.partial.get(key);
-        if r.is_some() {
-            self.hits += 1;
-        }
-        r
+    fn get(&self, key: u64) -> Option<V> {
+        self.map.get(&key).map(|(v, _)| v.clone())
     }
-    fn put(&mut self, key: u64, e: CachedEval) {
-        let bytes = e.bytes;
-        match self.map.insert(key, e) {
-            Some(old) => self.bytes = self.bytes.saturating_sub(old.bytes),
+    /// Keep `v`, which costs `bytes`. One value is always kept, so a single model larger than
+    /// the budget cannot empty the cache and force a full recompute on every undo.
+    fn put(&mut self, key: u64, v: V, bytes: usize) {
+        match self.map.insert(key, (v, bytes)) {
+            Some((_, old)) => self.bytes = self.bytes.saturating_sub(old),
             None => self.order.push_back(key),
         }
         self.bytes = self.bytes.saturating_add(bytes);
-        // One result is always kept, so a single state larger than the budget cannot empty the
-        // cache and force a full recompute on every undo.
-        while self.order.len() > CACHE_ENTRIES || (self.bytes > CACHE_BYTES && self.order.len() > 1) {
+        while self.order.len() > CACHE_ENTRIES || (self.bytes > self.budget && self.order.len() > 1) {
             if let Some(k) = self.order.pop_front()
-                && let Some(old) = self.map.remove(&k)
+                && let Some((_, old)) = self.map.remove(&k)
             {
-                self.bytes = self.bytes.saturating_sub(old.bytes);
+                self.bytes = self.bytes.saturating_sub(old);
             }
         }
     }
 }
 
-/// The results an evaluation ahead on a copy of a model computed or took from the cache, kept for
-/// the run that follows on the model itself (#1989). The evaluation cache is bounded by bytes and
-/// charges every entry its whole model, so on a design with large bodies it holds only the last
-/// few states: by the time the run came, the cache had dropped most of what was computed ahead,
-/// and the run computed it all again, on the window thread.
-#[derive(Debug, Default)]
-pub struct KeptResults(std::sync::Mutex<std::collections::HashMap<u64, CachedEval>>);
-
-impl KeptResults {
-    /// Results kept.
-    pub fn len(&self) -> usize {
-        self.0.lock().map_or(0, |m| m.len())
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    fn get(&self, key: u64) -> Option<CachedEval> {
-        self.0.lock().ok().and_then(|m| m.get(&key).cloned())
-    }
-
-    fn put(&self, key: u64, e: &CachedEval) {
-        if let Ok(mut m) = self.0.lock()
-            && (m.len() < CACHE_ENTRIES || m.contains_key(&key))
-        {
-            m.insert(key, e.clone());
+impl<S> CachedEval<S> {
+    /// The same evaluation, with `state` for its result.
+    fn with<T>(&self, state: T) -> CachedEval<T> {
+        CachedEval {
+            error: self.error.clone(),
+            warning: self.warning.clone(),
+            boolean_diagnostics: self.boolean_diagnostics.clone(),
+            ms: self.ms,
+            state,
         }
     }
 }
 
-/// Where a model keeps its results besides the cache ([`Model::keep`]). A copy of the model
-/// starts without: it keeps nothing it computes for someone else's run.
-#[derive(Debug, Default)]
-struct KeptSlot(Option<Arc<KeptResults>>);
-
-impl Clone for KeptSlot {
-    fn clone(&self) -> Self {
-        KeptSlot(None)
+impl EvalCache {
+    fn state(&mut self, key: u64) -> Option<CachedEval<Arc<ModelState>>> {
+        let r = self.states.get(key);
+        self.hits += usize::from(r.is_some());
+        r
+    }
+    fn change(&mut self, key: u64) -> Option<CachedEval<Change>> {
+        let r = self.changes.get(key);
+        self.hits += usize::from(r.is_some());
+        r
     }
 }
 
@@ -1238,6 +1229,249 @@ fn cache_key(f: &Feature, chain_fp: u64, local: u64, ctx: u64, state: &ModelStat
     h.finish()
 }
 
+/// The cache keys of a feature's evaluation.
+struct EvalKey {
+    /// From the whole model before it ([`cache_key`]).
+    whole: u64,
+    /// From what it reads alone, with that ([`Feature::reads`]); `None` when it may read
+    /// anything.
+    reads: Option<(u64, Reads)>,
+}
+
+impl EvalKey {
+    fn new(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, fp: u64, ctx: u64, st: &ModelState, steps: &StepDigests) -> EvalKey {
+        let local = fingerprint(0, f, vals, false, steps) ^ placement_digest(doc, f);
+        let whole = cache_key(f, fp, local, ctx, st);
+        let reads = f.reads(doc, st).map(|read| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            "reads".hash(&mut h);
+            local.hash(&mut h);
+            ctx.hash(&mut h);
+            f.id.hash(&mut h);
+            // A pattern replays its features' definitions.
+            if let FeatureKind::Pattern { features, .. } = &f.kind {
+                for n in crate::plain::<String, _>(features) {
+                    doc.replayed(&n).map(|src| fingerprint(0, src, vals, false, steps)).hash(&mut h);
+                }
+            }
+            // Every body's name and component: new names avoid the names, a cut's pieces are
+            // numbered past them, a tool's default targets are its component's bodies.
+            for b in &st.bodies {
+                b.name.hash(&mut h);
+                b.component.hash(&mut h);
+                b.transferred.hash(&mut h);
+            }
+            for &i in &read.bodies {
+                i.hash(&mut h);
+                st.bodies.get(i).map(|b| (b.key, b.feature)).hash(&mut h);
+            }
+            for id in &read.sketches {
+                id.hash(&mut h);
+                st.sketch_keys.get(id).hash(&mut h);
+            }
+            st.body_counter.hash(&mut h);
+            // A cut drops the threads of bodies it removes.
+            serde_json::to_string(&st.threads).unwrap_or_default().hash(&mut h);
+            (h.finish(), read)
+        });
+        EvalKey { whole, reads }
+    }
+}
+
+/// What a feature reads of the model besides every body's name and component: bodies by index,
+/// sketches by feature id.
+#[derive(Clone, Debug, Default)]
+struct Reads {
+    bodies: Vec<usize>,
+    sketches: Vec<u64>,
+}
+
+/// A primitive or a coil: tools from numbers alone.
+fn numeric_tool(kind: &FeatureKind) -> bool {
+    matches!(
+        kind,
+        FeatureKind::Box { .. } | FeatureKind::Cylinder { .. } | FeatureKind::Sphere { .. } | FeatureKind::Torus { .. } | FeatureKind::Coil { .. }
+    )
+}
+
+/// A plane given by numbers alone (no face, edge or construction to find).
+fn fixed_plane(plane: &PlaneRef) -> bool {
+    match plane {
+        PlaneRef::Origin { .. } | PlaneRef::Custom { .. } => true,
+        PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } | PlaneRef::Flipped { base, .. } => fixed_plane(base),
+        _ => false,
+    }
+}
+
+impl Document {
+    /// The feature a pattern or mirror replays under `name`: the one that makes geometry when a
+    /// sketch shares its name.
+    fn replayed(&self, name: &str) -> Option<&Feature> {
+        self.features
+            .iter()
+            .find(|x| x.name == name && !matches!(x.kind, FeatureKind::Sketch { .. } | FeatureKind::ConstructionPlane { .. }))
+            .or_else(|| self.find_feature(name))
+    }
+}
+
+impl Feature {
+    /// What this feature reads of `st`, when that is known to be all it reads: a primitive or a
+    /// coil (or a rectangular or circular pattern of them) on the bodies it names or its
+    /// component's bodies, a move or pattern of named bodies, a sketch on a fixed plane with no
+    /// projections, an extrude or revolve making new bodies from a sketch of its component (no
+    /// To / From Object, through all or taper). Never with a face or edge picked by name or sheet
+    /// metal around; everything else may read anything (faces, To Object, `*` for every body).
+    fn reads(&self, doc: &Document, st: &ModelState) -> Option<Reads> {
+        let by_name = |f: &Feature| f.face_names.iter().all(String::is_empty) && f.edge_names.iter().all(String::is_empty) && f.edge_refs.is_empty();
+        if !st.sheets.is_empty() || !by_name(self) {
+            return None;
+        }
+        let named = |names: &[String]| -> Option<Vec<usize>> {
+            if names.iter().any(|n| n == "*") {
+                return None;
+            }
+            names.iter().map(|n| st.bodies.iter().position(|b| &b.name == n)).collect()
+        };
+        // The bodies a tool operates on, as `apply_traced` picks them.
+        let operated = |(op, targets): (Operation, Vec<String>)| -> Option<Vec<usize>> {
+            let targets = if targets.is_empty() { &self.participants } else { &targets };
+            match op {
+                Operation::NewBody => Some(Vec::new()),
+                _ if targets.is_empty() => Some(
+                    st.bodies.iter().enumerate().filter(|(_, b)| b.component == self.component || b.feature == self.id).map(|(i, _)| i).collect(),
+                ),
+                _ => named(targets),
+            }
+        };
+        let bodies = |bodies| Some(Reads { bodies, sketches: Vec::new() });
+        let sketch = |s: &crate::SketchId| {
+            let own = doc.feature(s.0).is_some_and(|x| x.component == self.component);
+            own.then(|| Reads { bodies: Vec::new(), sketches: vec![s.0] })
+        };
+        match &self.kind {
+            k if numeric_tool(k) => bodies(operated(feature_op(self))?),
+            FeatureKind::Pattern { bodies: copied, .. } if !copied.is_empty() => bodies(named(&crate::plain::<String, _>(copied))?),
+            FeatureKind::Pattern { features, pattern: crate::PatternKind::Rectangular { .. } | crate::PatternKind::Circular { .. }, .. }
+                if !features.is_empty() =>
+            {
+                let mut read = Vec::new();
+                for n in crate::plain::<String, _>(features) {
+                    let src = doc.replayed(&n).filter(|src| numeric_tool(&src.kind) && by_name(src))?;
+                    read.extend(operated(feature_op(src))?);
+                }
+                read.sort_unstable();
+                read.dedup();
+                bodies(read)
+            }
+            FeatureKind::Move { bodies: moved, .. } => bodies(named(&crate::plain::<String, _>(moved))?),
+            FeatureKind::Sketch { plane, sketch } => (fixed_plane(plane) && sketch.links.is_empty()).then(Reads::default),
+            FeatureKind::Extrude { sketch: s, extent, operation: Operation::NewBody, .. }
+                if extent.to.is_none() && extent.from.is_none() && !extent.through_all && extent.taper.is_none() =>
+            {
+                sketch(s)
+            }
+            FeatureKind::Revolve { sketch: s, to: None, operation: Operation::NewBody, .. } => sketch(s),
+            _ => None,
+        }
+    }
+}
+
+/// What a feature changed of the model (see [`ModelState::change_from`]): the bodies after it,
+/// the sketch it solved and the body counter.
+#[derive(Clone, Debug)]
+struct Change {
+    bodies: Arc<[Changed]>,
+    sketch: Option<Arc<SolvedSketch>>,
+    body_counter: usize,
+}
+
+#[derive(Clone, Debug)]
+enum Changed {
+    /// The body at this index before the feature, as it was.
+    Kept(usize),
+    /// A body the feature made or changed.
+    Made(Box<ModelBody>),
+}
+
+impl Change {
+    /// What the bodies it made cost.
+    fn retained_bytes(&self) -> usize {
+        let made: usize = self
+            .bodies
+            .iter()
+            .map(|b| match b {
+                Changed::Made(b) => b.body.retained_bytes(),
+                Changed::Kept(_) => 0,
+            })
+            .sum();
+        made + self.bodies.len() * 64 + self.sketch.as_ref().map_or(0, |s| s.retained_bytes())
+    }
+}
+
+impl ModelState {
+    /// How feature `feature`, which read the bodies `read` of `before`, took it to this state
+    /// (not stamped yet); `None` when it changed anything else: a body it did not read, a sketch
+    /// other than its own, the construction, threads or blend records.
+    fn change_from(&self, before: &ModelState, feature: u64, read: &Reads) -> Option<Change> {
+        let (kept, sketch) = match self.sketches.split_last() {
+            Some((last, rest)) if last.feature == feature => (rest, Some(last.clone())),
+            _ => (self.sketches.as_slice(), None),
+        };
+        let others = before.sketches.iter().filter(|s| s.feature != feature);
+        let same_rest = self.sheets.is_empty()
+            && kept.len() == others.clone().count()
+            && kept.iter().zip(others).all(|(a, b)| Arc::ptr_eq(a, b))
+            && (sketch.is_some() || kept.len() == before.sketches.len())
+            && self.sketch_keys == before.sketch_keys
+            && self.construct.len() == before.construct.len()
+            && self.blend_edges == before.blend_edges
+            && self.fitted == before.fitted
+            && self.tapered.len() == before.tapered.len()
+            && serde_json::to_string(&self.threads).ok() == serde_json::to_string(&before.threads).ok();
+        if !same_rest {
+            return None;
+        }
+        // Bodies passed through keep their order: each is looked for after the last one found.
+        let mut from = 0;
+        let mut untouched = vec![false; before.bodies.len()];
+        let mut bodies = Vec::with_capacity(self.bodies.len());
+        for b in &self.bodies {
+            let at = before.bodies.iter().enumerate().skip(from).find(|(_, x)| x.name == b.name).map(|(j, _)| j);
+            match at.filter(|&j| before.bodies.get(j).is_some_and(|x| x.key == b.key && x.body.same(&b.body))) {
+                Some(j) => {
+                    bodies.push(Changed::Kept(j));
+                    if let Some(u) = untouched.get_mut(j) {
+                        *u = true;
+                    }
+                    from = j + 1;
+                }
+                None => bodies.push(Changed::Made(Box::new(b.clone()))),
+            }
+        }
+        let only_read = untouched.iter().enumerate().all(|(j, u)| *u || read.bodies.contains(&j));
+        only_read.then(|| Change { bodies: bodies.into(), sketch, body_counter: self.body_counter })
+    }
+
+    /// This state with `change` (feature `feature`'s) made to it: its bodies, those it kept taken
+    /// from here; `None` when this state does not line up with it.
+    fn with_change(&self, change: &Change, feature: u64) -> Option<ModelState> {
+        let bodies = change
+            .bodies
+            .iter()
+            .map(|b| match b {
+                Changed::Kept(j) => self.bodies.get(*j).map(|b| ModelBody { made: crate::lineage::Made::Before, ..b.clone() }),
+                Changed::Made(b) => Some((**b).clone()),
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let mut sketches = self.sketches.clone();
+        if let Some(s) = &change.sketch {
+            sketches.retain(|s| s.feature != feature);
+            sketches.push(s.clone());
+        }
+        Some(ModelState { bodies, sketches, body_counter: change.body_counter, ..self.clone() })
+    }
+}
+
 /// Where components are placed, for a sketch that sees other components' geometry (on a face,
 /// or with projections): it is resolved in its own component's view of them.
 fn placement_digest(doc: &Document, f: &Feature) -> u64 {
@@ -1513,10 +1747,9 @@ impl Model {
                 continue;
             }
             // The same feature on the same inputs: its earlier result.
-            let key = cache_key(f, fp, fingerprint(0, f, &vals, false, &self.step_digests) ^ placement_digest(doc, f), ctx, &state);
-            let kept = self.kept.0.as_ref().filter(|_| !self.no_cache);
+            let key = EvalKey::new(doc, &vals, f, fp, ctx, &state, &self.step_digests);
             if !self.no_cache
-                && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.get(key)).or_else(|| kept.and_then(|k| k.get(key)))
+                && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.state(key.whole))
             {
                 if let Some(k) = kept {
                     k.put(key, &c);
@@ -1539,17 +1772,12 @@ impl Model {
                 });
                 continue;
             }
-            // A feature that reads only some of the model: its result from when that part was as it
-            // is now, laid over the rest of the model as it is now.
-            let read = if self.no_cache || param_names(f).iter().any(|n| self.param_errors.contains_key(n)) {
-                None
-            } else {
-                local::key(doc, &vals, f, ctx, &state, &self.step_digests)
-            };
-            let partial_key = read.as_ref().map(|(k, _)| *k);
-            let reused = partial_key
-                .and_then(|k| self.cache.lock().ok().and_then(|mut m| m.get_partial(k)))
-                .and_then(|c| local::splice(&c, f.id, &state).map(|next| (next, c)));
+            // Or what it changed when what it reads was as it is now, made again on the rest of the
+            // model as it is now.
+            let reads = key.reads.as_ref().filter(|_| !self.no_cache && param_names(f).iter().all(|n| !self.param_errors.contains_key(n)));
+            let reused = reads
+                .and_then(|(k, _)| self.cache.lock().ok().and_then(|mut m| m.change(*k)))
+                .and_then(|c| state.with_change(&c.state, f.id).map(|next| (next, c)));
             let t0 = now();
             let (mut next, cached) = match reused {
                 Some((next, c)) => {
@@ -1652,15 +1880,16 @@ impl Model {
                 Some(c) => c.ms,
                 None => t0.elapsed().as_secs_f64() * 1000.0,
             };
-            // When it changed nothing but what it read, what it made is known by `partial_key`, and
-            // its result is kept for whatever the rest of the model holds.
-            let partial_result = match (&cached, &read) {
-                (None, Some((_, bodies))) if r.is_ok() => {
-                    local::Partial::of(f, bodies, &state, &next, warning.clone(), boolean_diagnostics.clone(), ms)
-                }
+            // What it changed, when that is only what it read: kept for whatever the rest of the
+            // model holds, and its bodies are known by what it read.
+            let change = match (&cached, reads) {
+                (None, Some((_, read))) if r.is_ok() => next.change_from(&state, f.id, read),
                 _ => None,
             };
-            let partial_key = partial_key.filter(|_| cached.is_some() || partial_result.is_some());
+            let stamp_key = match reads {
+                Some((k, _)) if cached.is_some() || change.is_some() => *k,
+                _ => key.whole,
+            };
             let error = match r {
                 Ok(()) => {
                     // Copies are named after their sources through the instance transforms.
@@ -1671,7 +1900,7 @@ impl Model {
                         }
                         _ => Vec::new(),
                     };
-                    next.stamp(&state, f, partial_key.unwrap_or(key), mats);
+                    next.stamp(&state, f, stamp_key, mats);
                     for b in &mut next.bodies {
                         if !b.transferred {
                             b.component = match doc.body_components.get(&b.name) {
@@ -1690,20 +1919,18 @@ impl Model {
             if !self.no_cache
                 && let Ok(mut m) = self.cache.lock()
             {
-                m.put(
-                    key,
-                    CachedEval {
-                        error: error.clone(),
-                        warning: warning.clone(),
-                        boolean_diagnostics: boolean_diagnostics.clone(),
-                        ms,
-                        bytes: state.retained_bytes(),
-                        state: state.clone(),
-                    },
-                );
-                if let (Some(k), Some(part)) = (partial_key, partial_result) {
-                    m.partial.put(k, part);
+                let whole = CachedEval {
+                    error: error.clone(),
+                    warning: warning.clone(),
+                    boolean_diagnostics: boolean_diagnostics.clone(),
+                    ms,
+                    state: state.clone(),
+                };
+                if let (Some((k, _)), Some(change)) = (reads, change) {
+                    let bytes = change.retained_bytes();
+                    m.changes.put(*k, whole.with(change), bytes);
                 }
+                m.states.put(key.whole, whole, state.retained_bytes());
             }
             out.push(FeatureResult {
                 id: f.id,
@@ -4976,7 +5203,7 @@ fn replay(
     }
     for name in features.iter().filter(|n| !suppressed.contains(n)) {
         // A sketch and its extrude often share a name; the feature that makes geometry wins.
-        let src = local::replayed(doc, name).ok_or_else(|| DocError::Unknown(format!("feature `{name}`")))?;
+        let src = doc.replayed(name).ok_or_else(|| DocError::Unknown(format!("feature `{name}`")))?;
         // A fillet or chamfer repeats at the copied edges.
         if let FeatureKind::Fillet { edges, radius, .. } | FeatureKind::Chamfer { edges, distance: radius, .. } = &src.kind {
             let r = val(vals, radius, Kind::Length)?;
@@ -5057,8 +5284,6 @@ fn replay(
     Ok(())
 }
 
-#[path = "eval_local.rs"]
-mod local;
 #[path = "model_cache.rs"]
 mod model_cache;
 #[path = "eval_more.rs"]
