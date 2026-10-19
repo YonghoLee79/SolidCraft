@@ -511,7 +511,7 @@ pub(super) fn rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: 
                 opts.tapped = tap == 1;
             });
             if opts.tapped {
-                enter |= crate::dialogs_thread::hole_rows(ui, &mut opts.thread);
+                enter |= crate::dialogs_thread::hole_rows(ui, &app.session.doc, &mut opts.thread, &mut opts.custom_thread);
             }
             if *kind == 0 {
                 form_row(ui, "Drill Point", |ui| {

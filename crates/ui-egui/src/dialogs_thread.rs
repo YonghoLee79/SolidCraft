@@ -1,7 +1,7 @@
 //! Metric thread choices use the document's sizing table and the existing designation
 //! parameter. Browsing choices does not edit the model or freeze an automatic feature.
 
-use solidcraft_engine::doc::{metric_thread_sizes, parse_metric_thread};
+use solidcraft_engine::doc::{Document, metric_thread_sizes, parse_metric_thread};
 
 use crate::dialogs::{combo, form_row};
 use crate::i18n::tr;
@@ -18,9 +18,47 @@ pub(crate) fn designation(diameter: f64, pitch: f64) -> String {
     if coarse { format!("M{diameter}") } else { format!("M{diameter}x{pitch}") }
 }
 
+/// Unsaved numeric inputs for a custom metric designation. The document still stores only
+/// the existing designation; an invalid draft must not apply its last valid value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoleThreadDraft {
+    source: String,
+    diameter: String,
+    pitch: String,
+    pub(crate) error: Option<String>,
+}
+
+impl HoleThreadDraft {
+    fn new(source: &str) -> Self {
+        let (diameter, pitch) = match parse_metric_thread(source) {
+            Some((d, p)) => (format!("{d} mm"), format!("{p} mm")),
+            None => (String::new(), String::new()),
+        };
+        Self { source: source.into(), diameter, pitch, error: None }
+    }
+
+    fn update(&mut self, doc: &Document, authored: &mut String) {
+        let candidate = || -> Result<String, String> {
+            let d = doc.eval(&self.diameter, solidcraft_engine::doc::expr::Kind::Length).map_err(|e| format!("nominal diameter: {e}"))?;
+            let p = doc.eval(&self.pitch, solidcraft_engine::doc::expr::Kind::Length).map_err(|e| format!("pitch: {e}"))?;
+            let text = designation(d, p);
+            parse_metric_thread(&text).ok_or("use a positive nominal diameter and a pitch smaller than it")?;
+            Ok(text)
+        };
+        match candidate() {
+            Ok(text) => {
+                *authored = text;
+                self.source = authored.clone();
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+    }
+}
+
 /// Tapped holes use the existing metric catalogue; the engine derives the tap drill.
-/// Explicit designations also allow pitches outside the coarse-size presets.
-pub(crate) fn hole_rows(ui: &mut egui::Ui, designation: &mut String) -> bool {
+/// Custom remains a dialog mode even when its current values match a catalogue size.
+pub(crate) fn hole_rows(ui: &mut egui::Ui, doc: &Document, designation: &mut String, custom: &mut Option<HoleThreadDraft>) -> bool {
     row_label(ui, "Profile");
     ui.label(tr("ISO metric"));
     ui.end_row();
@@ -28,25 +66,51 @@ pub(crate) fn hole_rows(ui: &mut egui::Ui, designation: &mut String) -> bool {
     row_label(ui, "Size");
     let sizes = metric_thread_sizes();
     let current = parse_metric_thread(designation);
-    let mut selected = current.and_then(|pair| sizes.iter().position(|s| *s == pair)).unwrap_or(sizes.len());
+    let catalogue = current.and_then(|pair| sizes.iter().position(|s| *s == pair));
+    if custom.as_ref().is_some_and(|draft| draft.source != *designation) || (custom.is_none() && catalogue.is_none()) {
+        *custom = Some(HoleThreadDraft::new(designation));
+    }
+    let mut selected = if custom.is_some() { sizes.len() } else { catalogue.unwrap_or(sizes.len()) };
     let before = selected;
     let mut labels: Vec<String> = sizes.iter().map(|(d, p)| self::designation(*d, *p)).collect();
-    labels.push(tr("Custom").to_string());
+    labels.push("Custom".to_string());
     let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
     combo(ui, "hole_thread_catalogue", &labels, &mut selected);
-    if selected != before
-        && let Some((d, p)) = sizes.get(selected)
-    {
-        *designation = self::designation(*d, *p);
+    if selected != before {
+        if let Some((d, p)) = sizes.get(selected) {
+            *designation = self::designation(*d, *p);
+            *custom = None;
+        } else {
+            *custom = Some(HoleThreadDraft::new(designation));
+        }
     }
     ui.end_row();
 
+    let mut enter = false;
+    if let Some(draft) = custom {
+        row_label(ui, "Nominal diameter");
+        let diameter = ui.add(egui::TextEdit::singleline(&mut draft.diameter).id_salt("hole_thread_nominal"));
+        crate::scenario::publish_handle("dialog:Nominal diameter", diameter.rect.center());
+        ui.end_row();
+        row_label(ui, "Pitch");
+        let pitch = ui.add(egui::TextEdit::singleline(&mut draft.pitch).id_salt("hole_thread_pitch"));
+        crate::scenario::publish_handle("dialog:Pitch", pitch.rect.center());
+        ui.end_row();
+        if diameter.changed() || pitch.changed() {
+            draft.update(doc, designation);
+        }
+        enter |= (diameter.lost_focus() || pitch.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    }
+
     row_label(ui, "Designation");
-    let r = ui.add(egui::TextEdit::singleline(designation).hint_text("M5 or M5x0.5"));
+    let r = ui.add(egui::TextEdit::singleline(designation).id_salt("hole_thread_designation").hint_text("M5 or M5x0.5"));
     crate::scenario::publish_handle("dialog:Designation", r.rect.center());
+    if r.changed() && custom.is_some() {
+        *custom = Some(HoleThreadDraft::new(designation));
+    }
     ui.end_row();
     row_label(ui, "Tap drill diameter");
-    match parse_metric_thread(designation) {
+    match parse_metric_thread(designation).filter(|_| custom.as_ref().is_none_or(|draft| draft.error.is_none())) {
         Some((d, p)) => {
             ui.label(format!("{:.3} mm", d - p));
         }
@@ -55,7 +119,7 @@ pub(crate) fn hole_rows(ui: &mut egui::Ui, designation: &mut String) -> bool {
         }
     }
     ui.end_row();
-    r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    enter || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
 }
 
 /// Returns (Enter pressed, automatic sizing requested).
@@ -159,6 +223,120 @@ mod contribution_tests {
         let d = Dialog::for_command(&app, "solid.hole").unwrap();
         (app, d)
     }
+    fn custom_hole_widget() -> crate::scenario::Harness {
+        let (app, dialog) = hole();
+        let mut h = crate::scenario::Harness::new();
+        h.app = app;
+        h.app.dialog = Some(dialog);
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"dialog:Hole Tap Type"}})).unwrap();
+        h.step(&json!({"click":{"handle":"dialog:Hole Tap Type:Tapped"}})).unwrap();
+        h.step(&json!({"click":{"handle":"dialog:Size"}})).unwrap();
+        let at = crate::scenario::handle_at("dialog:Size:M5").unwrap();
+        h.call("ui.scroll", json!({"x":at.x,"y":at.y,"delta":-2000}));
+        h.frames(20);
+        h.step(&json!({"widget":"Custom"})).unwrap();
+        h.frames(3);
+        h
+    }
+
+    fn replace_field(h: &mut crate::scenario::Harness, field: &str, value: &str) {
+        h.step(&json!({"click":{"handle":format!("dialog:{field}")}})).unwrap();
+        h.step(&json!({"key":"A","cmd":true})).unwrap();
+        h.step(&json!({"text":value})).unwrap();
+        h.frames(2);
+    }
+
+    #[test]
+    fn custom_tapped_size_keeps_its_choice_and_exposes_nominal_diameter() {
+        let h = custom_hole_widget();
+        assert!(h.widget("Custom").is_some(), "Custom must remain the selected size after the popup closes");
+        assert!(crate::scenario::handle_at("dialog:Nominal diameter").is_some(), "a custom tapped hole needs an editable nominal diameter");
+    }
+
+    #[test]
+    fn custom_nominal_diameter_and_pitch_change_the_real_hole_and_reopen() {
+        let mut h = custom_hole_widget();
+        replace_field(&mut h, "Nominal diameter", "8.5 mm");
+        replace_field(&mut h, "Pitch", "1 mm");
+        let commands = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+        assert_eq!(commands[0].1["thread"], "M8.5x1");
+        assert!(commands[0].1.get("diameter").is_none(), "the nominal size must reach the engine through the thread designation");
+        h.step(&json!({"click":{"handle":"dialog:OK"}})).unwrap();
+        h.frames(3);
+        assert!(h.app.dialog.is_none());
+        let faces = h.app.run("model.faces", json!({"body":"Plate"})).unwrap();
+        assert!(
+            faces["faces"].as_array().unwrap().iter().any(|face| { face["cylinder"]["radius"].as_f64().is_some_and(|r| (r - 3.75).abs() < 1e-9) }),
+            "the physical tap drill must be 8.5 - 1 = 7.5 mm"
+        );
+        let saved = h.app.session.doc.to_json();
+        let reopened = Session::new(Document::from_json(&saved).unwrap());
+        let world = reopened.world_state();
+        assert_eq!(world.threads.len(), 1);
+        assert_eq!(world.threads[0].designation, "M8.5x1");
+        assert!((world.threads[0].pitch - 1.).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_invalid_custom_pitch_blocks_the_old_valid_size_and_cancel_keeps_the_model() {
+        let mut h = custom_hole_widget();
+        let before = h.app.session.doc.to_json();
+        let history = (h.app.session.undo.len(), h.app.session.redo.len());
+        replace_field(&mut h, "Pitch", "5 mm");
+        assert!(apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).is_err());
+        assert_eq!(h.app.session.doc.to_json(), before);
+        h.step(&json!({"key":"Escape"})).unwrap();
+        assert!(h.app.dialog.is_none());
+        assert_eq!(h.app.session.doc.to_json(), before);
+        assert_eq!((h.app.session.undo.len(), h.app.session.redo.len()), history);
+    }
+
+    #[test]
+    fn manual_designation_keeps_keyboard_focus_when_custom_fields_appear() {
+        let (app, dialog) = hole();
+        let mut h = crate::scenario::Harness::new();
+        h.app = app;
+        h.app.dialog = Some(dialog);
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"dialog:Hole Tap Type"}})).unwrap();
+        h.step(&json!({"click":{"handle":"dialog:Hole Tap Type:Tapped"}})).unwrap();
+        h.step(&json!({"click":{"handle":"dialog:Designation"}})).unwrap();
+        h.step(&json!({"key":"A","cmd":true})).unwrap();
+        for text in ["M", "8", "x", "1"] {
+            h.step(&json!({"text":text})).unwrap();
+            h.frames(2);
+        }
+        assert_eq!(apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap()[0].1["thread"], "M8x1");
+        assert!(crate::scenario::handle_at("dialog:Nominal diameter").is_some());
+    }
+
+    #[test]
+    fn custom_lengths_use_explicit_units_and_invalid_drafts_never_apply_stale_values() {
+        let (mut app, mut dialog) = hole();
+        app.run("document.units", json!({"units":"in"})).unwrap();
+        let Kind::Hole { opts, .. } = &mut dialog.kind else { panic!("not a hole") };
+        opts.tapped = true;
+        opts.all = true;
+        let mut draft = HoleThreadDraft::new(&opts.thread);
+        draft.diameter = "0.25 in".into();
+        draft.pitch = "0.05 in".into();
+        draft.update(&app.session.doc, &mut opts.thread);
+        assert!(draft.error.is_none());
+        let (d, p) = parse_metric_thread(&opts.thread).unwrap();
+        assert!((d - 6.35).abs() < 1e-9 && (p - 1.27).abs() < 1e-9);
+        opts.custom_thread = Some(draft);
+        let commands = apply_commands(&app, &dialog).unwrap();
+        app.run(&commands[0].0, commands[0].1.clone()).unwrap();
+        let Kind::Hole { opts, .. } = &mut dialog.kind else { panic!("not a hole") };
+        for invalid in ["", "0", "-1 mm", "unknown_size", "NaN"] {
+            let draft = opts.custom_thread.as_mut().unwrap();
+            draft.diameter = invalid.into();
+            draft.update(&app.session.doc, &mut opts.thread);
+            assert!(draft.error.is_some(), "{invalid}");
+        }
+        assert!(apply_commands(&app, &dialog).is_err());
+    }
     #[test]
     fn contribution_tapped_holes_derive_the_drill_from_the_catalogue() {
         for (designation, expected) in [("M5", 4.2), ("M6x1", 5.0), ("M5x0.5", 4.5)] {
@@ -203,9 +381,11 @@ mod contribution_tests {
         let ctx = egui::Context::default();
         for original in ["M5", "M5x0.5", "M33x1", "invalid"] {
             let mut designation = original.to_string();
+            let mut custom = None;
+            let doc = Document::default();
             let _ = ctx.run_ui(Default::default(), |ui| {
                 egui::Grid::new("hole_catalogue").show(ui, |ui| {
-                    hole_rows(ui, &mut designation);
+                    hole_rows(ui, &doc, &mut designation, &mut custom);
                 });
             });
             assert_eq!(designation, original);
@@ -235,9 +415,11 @@ mod contribution_tests {
             let mut hole = original.to_string();
             let mut thread = original.to_string();
             let mut suggested = None;
+            let mut custom = None;
+            let doc = Document::default();
             let _ = context.run_ui(Default::default(), |ui| {
                 egui::Grid::new("authored_hole").show(ui, |ui| {
-                    hole_rows(ui, &mut hole);
+                    hole_rows(ui, &doc, &mut hole, &mut custom);
                 });
                 egui::Grid::new("authored_thread").show(ui, |ui| {
                     rows(ui, &mut thread, &mut suggested);
