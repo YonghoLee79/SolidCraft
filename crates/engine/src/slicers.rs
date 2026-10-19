@@ -231,9 +231,11 @@ fn known_by_id(id: &str) -> Option<&'static Known> {
 fn install_key(env: &Env, command: &[String]) -> String {
     let Some(first) = command.first() else { return String::new() };
     let program = Path::new(first);
-    // `flatpak run …` and `/usr/bin/flatpak run …` are one invocation: the launcher by its name.
+    // `flatpak run …` and `/usr/bin/flatpak run …` are one invocation when they start the same
+    // launcher: it is found as any program is, and its name stands in where it can't be.
     if file_name(program) == "flatpak" {
-        return std::iter::once("flatpak").chain(command[1..].iter().map(String::as_str)).collect::<Vec<_>>().join("\u{0}");
+        let launcher = which(env, program).map(|at| s(&std::fs::canonicalize(&at).unwrap_or(at))).unwrap_or_else(|| "flatpak".into());
+        return std::iter::once(launcher.as_str()).chain(command[1..].iter().map(String::as_str)).collect::<Vec<_>>().join("\u{0}");
     }
     if first == "open" {
         return command.join("\u{0}");
@@ -1268,17 +1270,19 @@ mod tests {
         assert_eq!(system.command, ["prusa-slicer"]);
         std::fs::remove_dir_all(root).unwrap();
     }
-
     #[cfg(unix)]
     #[test]
     fn the_same_flatpak_invocation_is_one_install_however_flatpak_is_spelled() {
         use std::os::unix::fs::PermissionsExt;
         let root = scratch("flatpak-key");
-        // A launcher that exists, so an entry that spells its whole path is not taken for a stale one.
-        let flatpak = root.join("bin/flatpak");
-        std::fs::create_dir_all(flatpak.parent().unwrap()).unwrap();
-        std::fs::write(&flatpak, b"#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&flatpak, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launcher = |dir: &str| {
+            let p = root.join(dir).join("flatpak");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, dir.as_bytes()).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let (on_path, other) = (launcher("bin"), launcher("opt/tool-b"));
         let (a, b) = (root.join("share-a"), root.join("share-b"));
         let entry = |dir: &Path, file: &str, exec: &str| {
             std::fs::create_dir_all(dir.join("applications")).unwrap();
@@ -1286,14 +1290,22 @@ mod tests {
                 .unwrap();
         };
         let app = "--branch=beta com.prusa3d.PrusaSlicer @@u %U @@";
+        let env = |dirs: Vec<PathBuf>| Env { data_dirs: dirs, path_dirs: vec![root.join("bin")], ..Env::default() };
         entry(&a, "one.desktop", &format!("flatpak run {app}"));
-        entry(&b, "two.desktop", &format!("{} run {app}", flatpak.display()));
-        let found = detect_in(&Env { data_dirs: vec![a.clone(), b.clone()], ..Env::default() });
+        entry(&b, "two.desktop", &format!("{} run {app}", on_path.display()));
+        // `flatpak` found on PATH and the same file by its path: one install.
+        let found = detect_in(&env(vec![a.clone(), b.clone()]));
         assert_eq!(found.len(), 1, "{found:?}");
-        // A different branch is a different install.
-        entry(&b, "three.desktop", "flatpak run --branch=stable com.prusa3d.PrusaSlicer @@u %U @@");
-        let found = detect_in(&Env { data_dirs: vec![a, b], ..Env::default() });
+        // A different executable of the same name, with the same arguments: another install.
+        entry(&b, "three.desktop", &format!("{} run {app}", other.display()));
+        let found = detect_in(&env(vec![a.clone(), b.clone()]));
         assert_eq!(found.len(), 2, "{found:?}");
+        // A different branch is another install too.
+        entry(&b, "four.desktop", "flatpak run --branch=stable com.prusa3d.PrusaSlicer @@u %U @@");
+        assert_eq!(detect_in(&env(vec![a, b])).len(), 3);
+        // Where `flatpak` can't be found, its name stands in.
+        let none = Env { data_dirs: vec![root.join("share-a")], ..Env::default() };
+        assert_eq!(detect_in(&none).len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
