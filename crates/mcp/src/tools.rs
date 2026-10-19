@@ -182,13 +182,65 @@ pub fn tool_definitions() -> Vec<Value> {
                     "position": {"type": "array", "items": {"type": "number"}, "description": "[x, y, z] point on the face to drill"},
                     "direction": {"type": "array", "items": {"type": "number"}, "description": "Drill direction (default [0, 0, -1])"},
                     "standard": {"type": "string", "enum": ["M2", "M3", "M4", "M5", "M6"], "description": "Metric screw size"},
-                    "depth": {"type": "number", "description": "Hole depth (mm)"},
+                    "depth": {"type": "number", "description": "Hole depth (mm) from the face, the counterbore included"},
                     "counterbore": {"type": "boolean", "description": "Counterbore for a DIN 912 screw head (default false)"},
                     "body_name": string("Body expected to be drilled; checked to exist"),
                 }),
                 &["position", "standard", "depth"],
             ),
             Effect::Edits,
+        ),
+        tool(
+            "fastener_hole_pattern",
+            "Fastener Hole Pattern (bolt circle or grid)",
+            "Cut DIN 912 fastener holes (as fastener_metric_hole) on a bolt circle or a rectangular grid in one call: one \
+             hole, then a circular or rectangular pattern of it, so the timeline stays editable. Circular: `center` on the \
+             face, `radius`, `count`, `start_angle_deg?`, `axis?` (the face's outward normal, default [0, 0, 1]; holes drill \
+             along −axis). Rectangular: `origin` (the first hole), `count_x`, `spacing_x`, `count_y?`, `spacing_y?`, \
+             `dir_x?` [1,0,0], `dir_y?` [0,1,0], `direction?` (drill, default [0, 0, -1]). Nothing is left behind on failure.",
+            obj(
+                json!({
+                    "pattern": {"type": "string", "enum": ["circular", "rectangular"], "description": "Bolt circle or grid"},
+                    "standard": {"type": "string", "enum": ["M2", "M3", "M4", "M5", "M6"], "description": "Metric screw size"},
+                    "depth": {"type": "number", "description": "Hole depth (mm) from the face, the counterbore included"},
+                    "counterbore": {"type": "boolean", "description": "Counterbore for a DIN 912 screw head (default false)"},
+                    "center": {"type": "array", "items": {"type": "number"}, "description": "Circular: bolt circle centre [x, y, z] on the face"},
+                    "radius": {"type": "number", "description": "Circular: bolt circle radius (mm)"},
+                    "count": {"type": "integer", "description": "Circular: number of holes (2 to 360)"},
+                    "start_angle_deg": {"type": "number", "description": "Circular: angle of the first hole (default 0)"},
+                    "axis": {"type": "array", "items": {"type": "number"}, "description": "Circular: the face's outward normal (default [0, 0, 1])"},
+                    "origin": {"type": "array", "items": {"type": "number"}, "description": "Rectangular: first hole [x, y, z] on the face"},
+                    "count_x": {"type": "integer", "description": "Rectangular: holes along dir_x (1 to 100)"},
+                    "spacing_x": {"type": "number", "description": "Rectangular: spacing along dir_x (mm)"},
+                    "count_y": {"type": "integer", "description": "Rectangular: holes along dir_y (default 1, at most 100)"},
+                    "spacing_y": {"type": "number", "description": "Rectangular: spacing along dir_y (mm)"},
+                    "dir_x": {"type": "array", "items": {"type": "number"}, "description": "Rectangular: first direction (default [1, 0, 0])"},
+                    "dir_y": {"type": "array", "items": {"type": "number"}, "description": "Rectangular: second direction (default [0, 1, 0])"},
+                    "direction": {"type": "array", "items": {"type": "number"}, "description": "Rectangular: drill direction (default [0, 0, -1])"},
+                }),
+                &["pattern", "standard", "depth"],
+            ),
+            Effect::Edits,
+        ),
+        tool(
+            "fdm_print_estimate",
+            "FDM Print Estimate (filament and build volume)",
+            "Estimate the plastic an FDM print of bodies takes (a shell of `wall_mm` plus `infill_percent` of the inside; \
+             supports, brims and top/bottom layers are not counted, so a slicer's figure differs) as volume, grams and \
+             metres of filament, and check that each body fits the printer's build volume as placed or turned by 90°.",
+            obj(
+                json!({
+                    "bodies": {"type": "array", "items": {"type": "string"}, "description": "Body names (default: all bodies)"},
+                    "material": {"type": "string", "enum": ["PLA", "PETG", "ABS", "ASA", "TPU", "PA"], "description": "Filament (default PLA)"},
+                    "density_g_cm3": {"type": "number", "description": "Filament density instead of `material`"},
+                    "infill_percent": {"type": "number", "description": "Infill density, 0 to 100 (default 15)"},
+                    "wall_mm": {"type": "number", "description": "Shell thickness (default 1.2: three 0.4 mm perimeters)"},
+                    "filament_diameter_mm": {"type": "number", "description": "Filament diameter (default 1.75)"},
+                    "build_volume_mm": {"type": "array", "items": {"type": "number"}, "description": "Printer build volume [x, y, z] (default [220, 220, 250])"},
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
         ),
         tool(
             "dfm_clearance_check",
@@ -495,6 +547,8 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
         "save" => exec(b, "file.save", pick(a, &["path", "format"])),
         "fastener_metric_hole" => fastener_metric_hole(b, a),
         "dfm_clearance_check" => dfm_clearance_check(b, a),
+        "fastener_hole_pattern" => fastener_hole_pattern(b, a),
+        "fdm_print_estimate" => fdm_print_estimate(b, a),
         other => Err(format!("unknown tool `{other}`")),
     }
 }
@@ -537,13 +591,21 @@ fn fastener_metric_hole(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<V
     if let Some(body) = str_arg(a, "body_name") {
         exec(b, "inspect.measure", json!({"bodies": [body]}))?;
     }
-    let mut p = json!({"position": position, "direction": direction, "diameter": drill, "depth": depth});
+    let mut p = json!({"position": position.clone(), "direction": direction, "diameter": drill, "depth": depth});
     if counterbore {
         p["type"] = json!("counterbore");
         p["cb_diameter"] = json!(cb_dia);
         p["cb_depth"] = json!(cb_depth);
     }
     let applied = exec(b, "solid.hole", p)?;
+    // `solid.hole` accepts a point off every face and cuts nothing: that is no fastener hole.
+    if applied.get("changed_bodies").and_then(Value::as_array).is_some_and(Vec::is_empty) {
+        let undone = exec(b, "edit.undo", json!({})).is_ok();
+        return Err(format!(
+            "the hole at {position} cuts no body: `position` must be a point on a face{}",
+            if undone { "" } else { " (an empty Hole feature was left: undo it)" }
+        ));
+    }
     Ok(json!({
         "status": "applied",
         "standard": standard,
@@ -554,6 +616,258 @@ fn fastener_metric_hole(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<V
         "counterbore_depth_mm": counterbore.then_some(cb_depth),
         "result": applied,
     }))
+}
+
+/// Largest coordinate or length (mm) the pattern tools take.
+const MAX_MM: f64 = 1e6;
+
+/// A finite `[x, y, z]` argument within ±[`MAX_MM`].
+fn vec3_arg(a: &Map<String, Value>, k: &str) -> Result<Option<[f64; 3]>, String> {
+    let Some(v) = a.get(k) else { return Ok(None) };
+    let xs: Vec<f64> = v.as_array().map(|l| l.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+    match xs.as_slice() {
+        [x, y, z] if xs.iter().all(|c| c.is_finite() && c.abs() <= MAX_MM) => Ok(Some([*x, *y, *z])),
+        _ => Err(format!("`{k}` must be [x, y, z] (finite numbers)")),
+    }
+}
+
+/// A finite number argument in `lo..=hi`.
+fn num_arg(a: &Map<String, Value>, k: &str, lo: f64, hi: f64) -> Result<Option<f64>, String> {
+    match a.get(k) {
+        None => Ok(None),
+        Some(v) => {
+            v.as_f64().filter(|x| x.is_finite() && (lo..=hi).contains(x)).map(Some).ok_or_else(|| format!("`{k}` must be a number from {lo} to {hi}"))
+        }
+    }
+}
+
+/// A whole-number argument in `lo..=hi`.
+fn count_arg(a: &Map<String, Value>, k: &str, lo: u64, hi: u64) -> Result<Option<u64>, String> {
+    match a.get(k) {
+        None => Ok(None),
+        Some(v) => v.as_u64().filter(|n| (lo..=hi).contains(n)).map(Some).ok_or_else(|| format!("`{k}` must be a whole number from {lo} to {hi}")),
+    }
+}
+
+fn unit(v: [f64; 3], k: &str) -> Result<[f64; 3], String> {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n.is_nan() || n <= 1e-12 {
+        return Err(format!("`{k}` must not be the zero vector"));
+    }
+    Ok([v[0] / n, v[1] / n, v[2] / n])
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+fn fastener_hole_pattern(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    let kind = str_arg(a, "pattern").ok_or("`pattern` is required (circular or rectangular)")?;
+    let standard = str_arg(a, "standard").ok_or("`standard` is required")?;
+    din912(standard).ok_or_else(|| format!("unsupported standard `{standard}` (M2, M3, M4, M5 or M6)"))?;
+    let mut hole = Map::new();
+    for k in ["standard", "depth", "counterbore"] {
+        if let Some(v) = a.get(k) {
+            hole.insert(k.into(), v.clone());
+        }
+    }
+    // The first hole, the pattern's parameters and every hole's centre (for the agent to check).
+    let (first, pattern_cmd, mut params, centres) = match kind {
+        "circular" => {
+            let c = vec3_arg(a, "center")?.ok_or("`center` is required for a circular pattern")?;
+            let r = num_arg(a, "radius", 1e-3, MAX_MM)?.ok_or("`radius` is required for a circular pattern")?;
+            let n = count_arg(a, "count", 2, 360)?.ok_or("`count` is required for a circular pattern")?;
+            let start = num_arg(a, "start_angle_deg", -360.0, 360.0)?.unwrap_or(0.0).to_radians();
+            let axis = unit(vec3_arg(a, "axis")?.unwrap_or([0.0, 0.0, 1.0]), "axis")?;
+            // Two directions across the axis: the first from X (Y when the axis is along X).
+            let seed = if axis[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+            let u = unit(cross(cross(axis, seed), axis), "axis")?;
+            let v = cross(axis, u);
+            let at = |t: f64| [0, 1, 2].map(|i| c[i] + r * (u[i] * t.cos() + v[i] * t.sin()));
+            let step = std::f64::consts::TAU / n as f64;
+            let centres: Vec<[f64; 3]> = (0..n).map(|i| at(start + step * i as f64)).collect();
+            hole.insert("direction".into(), json!([-axis[0], -axis[1], -axis[2]]));
+            (at(start), "solid.pattern.circular", json!({"axis": {"origin": c, "dir": axis}, "count": n}), centres)
+        }
+        "rectangular" => {
+            let o = vec3_arg(a, "origin")?.ok_or("`origin` is required for a rectangular pattern")?;
+            let nx = count_arg(a, "count_x", 1, 100)?.ok_or("`count_x` is required for a rectangular pattern")?;
+            let ny = count_arg(a, "count_y", 1, 100)?.unwrap_or(1);
+            if nx * ny < 2 {
+                return Err("a rectangular pattern needs at least two holes (`count_x` × `count_y`)".into());
+            }
+            let sx = num_arg(a, "spacing_x", 1e-3, MAX_MM)?;
+            let sy = num_arg(a, "spacing_y", 1e-3, MAX_MM)?;
+            let sx = if nx > 1 { sx.ok_or("`spacing_x` is required when `count_x` > 1")? } else { sx.unwrap_or(1.0) };
+            let sy = if ny > 1 { sy.ok_or("`spacing_y` is required when `count_y` > 1")? } else { sy.unwrap_or(1.0) };
+            let dx = unit(vec3_arg(a, "dir_x")?.unwrap_or([1.0, 0.0, 0.0]), "dir_x")?;
+            let dy = unit(vec3_arg(a, "dir_y")?.unwrap_or([0.0, 1.0, 0.0]), "dir_y")?;
+            let dir = unit(vec3_arg(a, "direction")?.unwrap_or([0.0, 0.0, -1.0]), "direction")?;
+            let centres: Vec<[f64; 3]> =
+                (0..ny).flat_map(|j| (0..nx).map(move |i| [0, 1, 2].map(|k| o[k] + dx[k] * sx * i as f64 + dy[k] * sy * j as f64))).collect();
+            hole.insert("direction".into(), json!(dir));
+            let mut p = json!({"dir1": dx, "count1": nx, "spacing1": sx});
+            if ny > 1 {
+                p["dir2"] = json!(dy);
+                p["count2"] = json!(ny);
+                p["spacing2"] = json!(sy);
+            }
+            (o, "solid.pattern.rectangular", p, centres)
+        }
+        other => return Err(format!("unknown pattern `{other}` (circular or rectangular)")),
+    };
+    hole.insert("position".into(), json!(first));
+    let before = total_volume(b)?;
+    let drilled = fastener_metric_hole(b, &hole)?;
+    let feature = drilled["result"]["name"].as_str().map(str::to_owned).ok_or("the hole did not report its feature name")?;
+    params["features"] = json!([feature]);
+    // Leave the design as it was: take back what this call added.
+    let take_back = |b: &mut dyn Backend, steps: usize, why: String| {
+        let undone = (0..steps).all(|_| exec(b, "edit.undo", json!({})).is_ok());
+        format!("{why} ({})", if undone { "nothing was changed" } else { "undo the hole and pattern left behind" })
+    };
+    let one = total_volume(b).map(|v| before - v);
+    let patterned = match exec(b, pattern_cmd, params) {
+        Ok(v) => v,
+        Err(e) => return Err(take_back(b, 1, e)),
+    };
+    // A pattern reports no per-instance result: every hole must cut as much as the first one. Less
+    // means holes off the part, breaking out of an edge or running into each other.
+    let n = centres.len() as f64;
+    let removed = total_volume(b).map(|v| before - v);
+    if let (Ok(one), Ok(removed)) = (one, removed) {
+        let short = n - removed / one.max(1e-12);
+        if one > 0.0 && short > 1e-3 {
+            return Err(take_back(
+                b,
+                2,
+                format!(
+                    "the pattern's holes cut {removed:.3} mm³, {:.1} holes' worth less than {n} full holes of {one:.3} mm³: some are off the part, break out of an edge or overlap",
+                    short
+                ),
+            ));
+        }
+    }
+    Ok(json!({
+        "status": "applied",
+        "pattern": kind,
+        "holes": centres.len(),
+        "centres": centres,
+        "hole_feature": feature,
+        "pattern_feature": patterned.get("name"),
+        "standard": standard,
+        "drill_diameter_mm": drilled["drill_diameter_mm"],
+        "counterbore_diameter_mm": drilled["counterbore_diameter_mm"],
+        "counterbore_depth_mm": drilled["counterbore_depth_mm"],
+        "drill_depth_mm": drilled["drill_depth_mm"],
+    }))
+}
+
+/// The volume of every body together (mm³).
+fn total_volume(b: &mut dyn Backend) -> Result<f64, String> {
+    exec(b, "inspect.measure", json!({}))?
+        .get("total")
+        .and_then(|t| t.get("volume_mm3"))
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| "the design's volume could not be measured".to_string())
+}
+
+/// Typical filament densities (g/cm³).
+fn filament_density(material: &str) -> Option<f64> {
+    Some(match material {
+        "PLA" => 1.24,
+        "PETG" => 1.27,
+        "ABS" => 1.04,
+        "ASA" => 1.07,
+        "TPU" => 1.21,
+        "PA" => 1.14,
+        _ => return None,
+    })
+}
+
+fn fdm_print_estimate(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    let material = str_arg(a, "material").unwrap_or("PLA");
+    let density = match num_arg(a, "density_g_cm3", 0.1, 30.0)? {
+        Some(d) => d,
+        None => filament_density(material).ok_or_else(|| format!("unknown material `{material}` (PLA, PETG, ABS, ASA, TPU or PA)"))?,
+    };
+    let infill = num_arg(a, "infill_percent", 0.0, 100.0)?.unwrap_or(15.0) / 100.0;
+    let wall = num_arg(a, "wall_mm", 0.0, 100.0)?.unwrap_or(1.2);
+    let dia = num_arg(a, "filament_diameter_mm", 0.1, 10.0)?.unwrap_or(1.75);
+    let build = vec3_arg(a, "build_volume_mm")?.unwrap_or([220.0, 220.0, 250.0]);
+    if build.iter().any(|d| *d <= 0.0) {
+        return Err("`build_volume_mm` must be three positive sizes".into());
+    }
+    let p = match a.get("bodies") {
+        Some(v) => json!({"bodies": v}),
+        None => json!({}),
+    };
+    let m = exec(b, "inspect.measure", p)?;
+    let bodies = m.get("bodies").and_then(Value::as_array).cloned().unwrap_or_default();
+    if bodies.is_empty() {
+        return Err("no bodies to print".into());
+    }
+    let mut sorted_build = build;
+    sorted_build.sort_by(f64::total_cmp);
+    let filament_area = std::f64::consts::PI * (dia / 2.0).powi(2);
+    let (mut total_mm3, mut all_fit) = (0.0, true);
+    let mut rows = Vec::new();
+    for body in &bodies {
+        let name = body.get("name").cloned().unwrap_or(Value::Null);
+        let volume = body.get("volume_mm3").and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0).max(0.0);
+        let area = body.get("area_mm2").and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0).max(0.0);
+        let corner = |k: &str| body.get("bbox").and_then(|bb| vec3_value(bb.get(k)?));
+        let size = match (corner("min"), corner("max")) {
+            (Some(lo), Some(hi)) => [0, 1, 2].map(|i| (hi[i] - lo[i]).max(0.0)),
+            _ => return Err(format!("body {name} has no bounding box")),
+        };
+        // The shell can't hold more than the whole part (thin parts are all shell).
+        let shell = (area * wall).min(volume);
+        let printed = shell + (volume - shell) * infill;
+        total_mm3 += printed;
+        let as_placed = (0..3).all(|i| size[i] <= build[i]);
+        let mut sorted = size;
+        sorted.sort_by(f64::total_cmp);
+        let turned = (0..3).all(|i| sorted[i] <= sorted_build[i]);
+        all_fit &= turned;
+        rows.push(json!({
+            "body": name,
+            "size_mm": size,
+            "solid_volume_mm3": volume,
+            "printed_volume_mm3": printed,
+            "mass_g": printed / 1000.0 * density,
+            "filament_m": printed / filament_area / 1000.0,
+            "fits_as_placed": as_placed,
+            "fits_turned": turned,
+        }));
+    }
+    Ok(json!({
+        "material": if a.contains_key("density_g_cm3") { "custom" } else { material },
+        "density_g_cm3": density,
+        "infill_percent": infill * 100.0,
+        "wall_mm": wall,
+        "build_volume_mm": build,
+        "bodies": rows,
+        "total": {
+            "printed_volume_mm3": total_mm3,
+            "mass_g": total_mm3 / 1000.0 * density,
+            "filament_m": total_mm3 / filament_area / 1000.0,
+            "all_fit": all_fit,
+        },
+        "note": "Estimate: shell + infill only; supports, brims, top/bottom layers and purge are not counted.",
+    }))
+}
+
+/// A finite `[x, y, z]` value.
+fn vec3_value(v: &Value) -> Option<[f64; 3]> {
+    match v.as_array()?.as_slice() {
+        [x, y, z] => {
+            let p = [x.as_f64()?, y.as_f64()?, z.as_f64()?];
+            p.iter().all(|c| c.is_finite()).then_some(p)
+        }
+        _ => None,
+    }
 }
 
 fn dfm_clearance_check(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {

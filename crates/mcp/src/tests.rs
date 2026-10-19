@@ -1505,11 +1505,11 @@ fn tool_annotations_tell_the_whole_truth() {
     for name in ["execute", "batch", "save", "export", "open", "screenshot"] {
         assert_eq!(hints(name), (false, true, true), "{name}");
     }
-    for name in ["list_commands", "describe_command", "inspect_design", "measure", "body_topology", "crash_reports", "dfm_clearance_check"] {
+    for name in ["list_commands", "describe_command", "inspect_design", "measure", "body_topology", "crash_reports", "dfm_clearance_check", "fdm_print_estimate"] {
         assert_eq!(hints(name), (true, false, false), "{name}");
     }
     assert_eq!(hints("new_design"), (false, true, false));
-    for name in ["set_parameter", "undo", "redo", "fastener_metric_hole"] {
+    for name in ["set_parameter", "undo", "redo", "fastener_metric_hole", "fastener_hole_pattern"] {
         assert_eq!(hints(name), (false, false, false), "{name}");
     }
     assert!(tools.iter().all(|t| t["annotations"]["readOnlyHint"].is_boolean()), "every tool is annotated");
@@ -1621,6 +1621,14 @@ fn fastener_metric_hole_uses_din912_dimensions() {
     assert_eq!(r["result"]["isError"], json!(true), "{r}");
     let r = raw_tool(&mut s, "fastener_metric_hole", json!({"position": [20, 20, 20], "standard": "M8", "depth": 5}));
     assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{r}");
+    // A point off the part is no hole: an error, and no empty Hole feature is left behind.
+    let v = volume(&mut s);
+    let steps = tool(&mut s, "inspect_design", json!({}))["timeline"].as_array().unwrap().len();
+    let r = raw_tool(&mut s, "fastener_metric_hole", json!({"position": [500, 500, 20], "standard": "M3", "depth": 5}));
+    assert_eq!(r["result"]["isError"], json!(true), "{r}");
+    assert!(r.to_string().contains("cuts no body"), "{r}");
+    assert_eq!(tool(&mut s, "inspect_design", json!({}))["timeline"].as_array().unwrap().len(), steps);
+    assert!(rel(volume(&mut s), v) < 1e-12);
 }
 
 /// `dfm_clearance_check` measures a 0.15 mm gap, fails it against 0.25 mm and reports a collision.
@@ -1651,4 +1659,103 @@ fn dfm_clearance_check_gap_and_collision() {
     assert_eq!(res["is_colliding"], true, "{res}");
     assert_eq!(res["passed"], false, "{res}");
 }
+
+/// `fastener_hole_pattern`: six counterbored M5 holes on a bolt circle and a 3 × 2 grid of M3
+/// holes remove exactly the holes' volume, and stay a hole plus a pattern on the timeline.
+#[test]
+fn fastener_hole_pattern_bolt_circle_and_grid() {
+    let mut s = server();
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "solid.box", "params": {"length": 80, "width": 80, "height": 10, "center": [0, 0, 5], "body_name": "Flange"}}),
+    );
+    let r = tool(
+        &mut s,
+        "fastener_hole_pattern",
+        json!({"pattern": "circular", "standard": "M5", "depth": 10, "counterbore": true, "center": [0, 0, 10], "radius": 30, "count": 6}),
+    );
+    assert_eq!(r["holes"], 6, "{r}");
+    assert!((r["centres"][0][0].as_f64().unwrap() - 30.0).abs() < 1e-9, "{r}");
+    let one = PI * (4.5f64.powi(2) * 5.5 + 2.75f64.powi(2) * 4.5);
+    let v = volume(&mut s);
+    assert!(rel(v, 64000.0 - 6.0 * one) < 1e-4, "{v} vs {}", 64000.0 - 6.0 * one);
+    let d = tool(&mut s, "inspect_design", json!({}));
+    // The box, one hole and its pattern.
+    assert_eq!(d["timeline"].as_array().unwrap().len(), 3, "{}", d["timeline"]);
+    assert_eq!(r["pattern_feature"].as_str().map(|n| n.contains("Pattern")), Some(true), "{r}");
+
+    tool(&mut s, "new_design", json!({}));
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "solid.box", "params": {"length": 60, "width": 40, "height": 5, "corner": [0, 0, 0], "body_name": "Plate"}}),
+    );
+    let r = tool(
+        &mut s,
+        "fastener_hole_pattern",
+        json!({"pattern": "rectangular", "standard": "M3", "depth": 5, "origin": [10, 10, 5], "count_x": 3, "spacing_x": 20, "count_y": 2, "spacing_y": 20}),
+    );
+    assert_eq!(r["holes"], 6, "{r}");
+    let v = volume(&mut s);
+    assert!(rel(v, 12000.0 - 6.0 * PI * 1.7 * 1.7 * 5.0) < 1e-4, "{v}");
+
+    // Bad patterns are clean errors that leave the design alone.
+    let undo = tool(&mut s, "inspect_design", json!({}))["undo"].clone();
+    for bad in [
+        json!({"pattern": "circular", "standard": "M3", "depth": 5, "center": [30, 20, 5], "radius": 10, "count": 1}),
+        json!({"pattern": "circular", "standard": "M3", "depth": 5, "center": [30, 20, 5], "radius": 10, "count": 4, "axis": [0, 0, 0]}),
+        json!({"pattern": "rectangular", "standard": "M3", "depth": 5, "origin": [5, 5, 5], "count_x": 1}),
+        json!({"pattern": "rectangular", "standard": "M3", "depth": 5, "origin": [500, 500, 5], "count_x": 2, "spacing_x": 5}),
+        // The first hole is on the plate, the other two run off its edge (x 70, 90 of 60).
+        json!({"pattern": "rectangular", "standard": "M3", "depth": 5, "origin": [50, 30, 5], "count_x": 3, "spacing_x": 20}),
+        // Holes 2 mm apart overlap.
+        json!({"pattern": "rectangular", "standard": "M3", "depth": 5, "origin": [30, 30, 5], "count_x": 2, "spacing_x": 2}),
+        json!({"pattern": "hexagonal", "standard": "M3", "depth": 5}),
+    ] {
+        let r = raw_tool(&mut s, "fastener_hole_pattern", bad.clone());
+        assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{bad} -> {r}");
+    }
+    assert_eq!(tool(&mut s, "inspect_design", json!({}))["undo"], undo, "a failed pattern left something behind");
+    assert!(rel(volume(&mut s), 12000.0 - 6.0 * PI * 1.7 * 1.7 * 5.0) < 1e-4);
+}
+
+/// `fdm_print_estimate`: a 20 mm cube at 20 % infill with a 1.2 mm shell, and the build volume check.
+#[test]
+fn fdm_print_estimate_shell_infill_and_build_volume() {
+    let mut s = server();
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "solid.box", "params": {"length": 20, "width": 20, "height": 20, "corner": [0, 0, 0], "body_name": "Cube"}}),
+    );
+    let r = tool(&mut s, "fdm_print_estimate", json!({"infill_percent": 20}));
+    // Shell 2400 mm² × 1.2 mm = 2880 mm³, plus 20 % of the other 5120 mm³.
+    let printed = 2880.0 + 5120.0 * 0.2;
+    let body = &r["bodies"][0];
+    assert!(rel(body["printed_volume_mm3"].as_f64().unwrap(), printed) < 1e-9, "{r}");
+    assert!(rel(body["mass_g"].as_f64().unwrap(), printed / 1000.0 * 1.24) < 1e-9, "{r}");
+    let metres = printed / (PI * 0.875 * 0.875) / 1000.0;
+    assert!(rel(r["total"]["filament_m"].as_f64().unwrap(), metres) < 1e-9, "{r}");
+    assert_eq!(body["fits_as_placed"], true, "{r}");
+
+    // A 240 mm bar doesn't fit a 220 × 220 × 250 bed lying down, but does standing up.
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "solid.box", "params": {"length": 240, "width": 10, "height": 10, "corner": [0, 50, 0], "operation": "new", "body_name": "Bar"}}),
+    );
+    let r = tool(&mut s, "fdm_print_estimate", json!({"bodies": ["Bar"], "material": "PETG"}));
+    assert_eq!(r["bodies"][0]["fits_as_placed"], false, "{r}");
+    assert_eq!(r["bodies"][0]["fits_turned"], true, "{r}");
+    assert_eq!(r["density_g_cm3"], 1.27, "{r}");
+    let r = tool(&mut s, "fdm_print_estimate", json!({"bodies": ["Bar"], "build_volume_mm": [200, 200, 200]}));
+    assert_eq!(r["total"]["all_fit"], false, "{r}");
+
+    for bad in
+        [json!({"infill_percent": 150}), json!({"material": "Unobtainium"}), json!({"build_volume_mm": [0, 10, 10]}), json!({"bodies": ["Nope"]})]
+    {
+        let r = raw_tool(&mut s, "fdm_print_estimate", bad.clone());
+        assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{bad} -> {r}");
+    }
 }
