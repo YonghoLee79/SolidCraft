@@ -744,10 +744,15 @@ fn has_bus_name(list: &str, prefix: &str) -> bool {
     bus_names(list).any(|n| n.starts_with(prefix))
 }
 
-/// Look every `poll` until `ready` says so; false when `limit` runs out first. `ready` is given the
-/// time that is left, so a probe that can block (`busctl`) can be cut short, and is asked at once,
-/// so a slicer that is already up costs no sleep. Once the limit has passed it is not asked again:
-/// a slow probe can not make the wait run over, or accept a yes that came too late.
+/// Look every `poll` until `ready` says so; false when `limit` runs out first. `ready` is asked at
+/// once, so a slicer that is already up costs no sleep, and is given the time that is left, so a
+/// probe that can block (`busctl`) can be cut short.
+///
+/// No probe is started after the limit has passed. A probe that is already running when it passes
+/// may finish, and a yes from it is accepted on purpose: the file should still go. So the wait takes
+/// `limit` plus at most that last probe's own time; the production probe is given the time left and
+/// ends by the limit (and never takes longer than `PROBE_LIMIT`), so there it is `limit` and a
+/// sleep step.
 pub fn wait_until(mut ready: impl FnMut(std::time::Duration) -> bool, limit: std::time::Duration, poll: std::time::Duration) -> bool {
     let end = std::time::Instant::now() + limit;
     let mut first = true;
@@ -1117,7 +1122,41 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_probe_can_not_stretch_the_wait_or_win_after_the_limit() {
+    fn a_probe_that_says_yes_after_the_limit_is_accepted_and_the_wait_stays_bounded() {
+        let started = std::time::Instant::now();
+        let mut asked = 0;
+        let ok = wait_until(
+            |_| {
+                asked += 1;
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                true
+            },
+            std::time::Duration::from_millis(30),
+            std::time::Duration::from_millis(5),
+        );
+        // The look began inside the limit, ran past it, and its yes is taken: the file still goes.
+        assert!(ok);
+        assert_eq!(asked, 1);
+        // Limit plus the probe's own time, nothing more.
+        assert!(started.elapsed() < std::time::Duration::from_millis(80 + 30 + 400), "{:?}", started.elapsed());
+        // A probe that began before the limit and says no, then is never followed by another.
+        let mut asked = 0;
+        let started = std::time::Instant::now();
+        assert!(!wait_until(
+            |_| {
+                asked += 1;
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                false
+            },
+            std::time::Duration::from_millis(30),
+            std::time::Duration::from_millis(5)
+        ));
+        assert_eq!(asked, 1, "no probe is started after the limit");
+        assert!(started.elapsed() < std::time::Duration::from_millis(80 + 30 + 400), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_slow_probe_can_not_start_another_after_the_limit() {
         // The first look takes longer than the whole limit and says no; the second would say yes,
         // but the limit has passed, so it is never asked.
         let mut asked = 0;
