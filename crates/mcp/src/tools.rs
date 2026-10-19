@@ -223,6 +223,36 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Edits,
         ),
         tool(
+            "find_faces",
+            "Find faces or edges by their geometry",
+            "Select a body's faces or edges by what they are instead of by index: planar faces facing a direction, \
+             cylinders of a radius or axis, straight edges along a direction, the edges of one face, whatever lies \
+             furthest along a direction (`extreme`: the top face, the bottom edges) or nearest a point. Each match's \
+             `pick` is the [x, y, z] point the commands take (a face's point lies on it; an edge's is its midpoint, as \
+             `solid.fillet` and `solid.chamfer` take it), with its `name` for the face commands. `distinct_cylinders` \
+             counts cylindrical matches by axis and radius (a hole wall may be split into two faces).",
+            obj(query_schema(), &["body"]),
+            Effect::ReadOnly,
+        ),
+        tool(
+            "verify_design",
+            "Verify the design against expectations",
+            "Check many expectations in one call and get each one's verdict, measured value and expected value: \
+             `{\"check\": \"volume\" | \"mass\", \"body\"?, \"equals\"? (with \"tol_rel\"?, default 1e-3), \"min\"?, \"max\"?}`, \
+             `{\"check\": \"body_count\", \"equals\"?, \"min\"?, \"max\"?}`, `{\"check\": \"bbox\", \"body\"?, \"size\"?: [x,y,z] \
+             (\"tol\"? mm, default 0.01), \"fits\"?: [x,y,z]}`, `{\"check\": \"timeline_ok\"}` (no feature fails), \
+             `{\"check\": \"clearance\", \"a\", \"b\", \"min_mm\"}`, `{\"check\": \"no_interference\", \"bodies\"?}` and \
+             `{\"check\": \"count\", \"query\": {find_faces arguments}, \"of\"?: \"matches\" | \"cylinders\", \"equals\"?, \"min\"?, \"max\"?}`. \
+             A check that cannot be measured fails with its error; the others still run.",
+            obj(
+                json!({
+                    "checks": {"type": "array", "items": {"type": "object"}, "description": "The expectations (at most 100), as described above"},
+                }),
+                &["checks"],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "fdm_print_estimate",
             "FDM Print Estimate (filament and build volume)",
             "Estimate the plastic an FDM print of bodies takes (a shell of `wall_mm` plus `infill_percent` of the inside; \
@@ -549,6 +579,8 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
         "dfm_clearance_check" => dfm_clearance_check(b, a),
         "fastener_hole_pattern" => fastener_hole_pattern(b, a),
         "fdm_print_estimate" => fdm_print_estimate(b, a),
+        "find_faces" => find_faces(b, a),
+        "verify_design" => verify_design(b, a),
         other => Err(format!("unknown tool `{other}`")),
     }
 }
@@ -761,6 +793,356 @@ fn fastener_hole_pattern(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<
         "counterbore_depth_mm": drilled["counterbore_depth_mm"],
         "drill_depth_mm": drilled["drill_depth_mm"],
     }))
+}
+
+/// The arguments of `find_faces`, also the `query` of a `verify_design` count.
+fn query_schema() -> Value {
+    let v3 = |d: &str| json!({"type": "array", "items": {"type": "number"}, "description": d});
+    let n = |d: &str| json!({"type": "number", "description": d});
+    json!({
+        "body": string("Body name"),
+        "kind": {"type": "string", "enum": ["face", "edge"], "description": "What to find (default face)"},
+        "surface": {"type": "string", "enum": ["plane", "cylinder", "other"], "description": "Faces: surface type"},
+        "normal": v3("Faces: planar faces whose outward normal is within `angle_tol_deg` of this direction"),
+        "axis": v3("Faces: cylinders whose axis is parallel to this direction (either way)"),
+        "radius": n("Faces: cylinders of this radius (± `tol`)"),
+        "radius_min": n("Faces: cylinders of at least this radius"),
+        "radius_max": n("Faces: cylinders of at most this radius"),
+        "area_min": n("Faces: area at least (mm²; areas are model.faces', a few percent low on faces bounded by circles)"),
+        "area_max": n("Faces: area at most (mm²)"),
+        "curve": {"type": "string", "enum": ["line", "arc", "circle"], "description": "Edges: curve type (circle: closed)"},
+        "direction": v3("Edges: straight edges parallel to this direction (either way)"),
+        "length": n("Edges: this length (± `tol`)"),
+        "length_min": n("Edges: length at least"),
+        "length_max": n("Edges: length at most"),
+        "of_face": string("Edges: only the edges bounding this face (a face name from find_faces or body_topology)"),
+        "extreme": {"type": "object", "description": "Keep what lies furthest along a direction: {\"direction\": [x,y,z], \"side\"?: \"max\" (default) | \"min\"}, within `tol`"},
+        "near": v3("Sort by distance from this point, nearest first"),
+        "tol": n("Length tolerance in mm (default 0.001)"),
+        "angle_tol_deg": n("Direction tolerance in degrees (default 1)"),
+        "limit": {"type": "integer", "description": "Most matches returned (default 50, at most 1000)"},
+    })
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    dot(d, d).sqrt()
+}
+
+/// One face or edge with what the filters look at.
+struct Item {
+    raw: Value,
+    /// Where it is for `extreme` and `near` (a face's centroid, an edge's midpoint).
+    at: [f64; 3],
+    /// What a command takes to pick it.
+    pick: [f64; 3],
+    kind: &'static str,
+    /// Plane normal, cylinder axis or line direction.
+    dir: Option<[f64; 3]>,
+    radius: Option<f64>,
+    /// Area (faces) or length (edges).
+    size: f64,
+}
+
+/// The matching faces or edges, after `limit`, the number before it and the distinct cylinders.
+fn query_items(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<(Vec<Item>, usize, usize), String> {
+    let allowed = query_schema();
+    if let Some(k) = a.keys().find(|k| allowed.get(k.as_str()).is_none()) {
+        return Err(format!("unknown query argument `{k}`"));
+    }
+    let body = str_arg(a, "body").ok_or("`body` is required")?;
+    let edges = match str_arg(a, "kind").unwrap_or("face") {
+        "face" => false,
+        "edge" => true,
+        other => return Err(format!("unknown kind `{other}` (face or edge)")),
+    };
+    let tol = num_arg(a, "tol", 0.0, MAX_MM)?.unwrap_or(1e-3);
+    let cos_tol = num_arg(a, "angle_tol_deg", 0.0, 90.0)?.unwrap_or(1.0).to_radians().cos();
+    let limit = count_arg(a, "limit", 1, 1000)?.unwrap_or(50) as usize;
+    let unit_arg = |k: &str| vec3_arg(a, k)?.map(|v| unit(v, k)).transpose();
+    let (normal, axis, direction, near) = (unit_arg("normal")?, unit_arg("axis")?, unit_arg("direction")?, vec3_arg(a, "near")?);
+    let range = |k: &str| num_arg(a, k, 0.0, MAX_MM * MAX_MM);
+    let (r, r_min, r_max) = (range("radius")?, range("radius_min")?, range("radius_max")?);
+    let (len, len_min, len_max) = (range("length")?, range("length_min")?, range("length_max")?);
+    let (area_min, area_max) = (range("area_min")?, range("area_max")?);
+    let extreme = match a.get("extreme") {
+        None => None,
+        Some(e) => {
+            let d = e.get("direction").and_then(vec3_value).ok_or("`extreme.direction` must be [x, y, z]")?;
+            let max = match e.get("side").and_then(Value::as_str).unwrap_or("max") {
+                "max" => true,
+                "min" => false,
+                other => return Err(format!("unknown `extreme.side` `{other}` (max or min)")),
+            };
+            Some((unit(d, "extreme.direction")?, max))
+        }
+    };
+
+    let (cmd, key) = if edges { ("model.edges", "edges") } else { ("model.faces", "faces") };
+    let list = exec(b, cmd, json!({"body": body}))?.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut items: Vec<Item> = list
+        .into_iter()
+        .filter_map(|raw| {
+            if edges {
+                let (s, e, m) = (vec3_value(raw.get("start")?)?, vec3_value(raw.get("end")?)?, vec3_value(raw.get("mid")?)?);
+                let length = raw.get("length").and_then(Value::as_f64)?;
+                let chord = dist(s, e);
+                let kind = if (length - chord).abs() <= 1e-6 * length.max(1.0) {
+                    "line"
+                } else if chord <= 1e-9 * length.max(1.0) {
+                    "circle"
+                } else {
+                    "arc"
+                };
+                let dir = (kind == "line").then(|| unit([e[0] - s[0], e[1] - s[1], e[2] - s[2]], "edge").ok()).flatten();
+                Some(Item { raw, at: m, pick: m, kind, dir, radius: None, size: length })
+            } else {
+                let at = vec3_value(raw.get("centroid")?)?;
+                let pick = raw.get("point").and_then(vec3_value).unwrap_or(at);
+                let area = raw.get("area").and_then(Value::as_f64)?;
+                let normal = raw.get("plane_normal").and_then(vec3_value);
+                let cyl = raw.get("cylinder");
+                let (kind, dir, radius) = match (normal, cyl) {
+                    (Some(n), _) => ("plane", Some(n), None),
+                    (None, Some(c)) => ("cylinder", c.get("axis").and_then(vec3_value), c.get("radius").and_then(Value::as_f64)),
+                    _ => ("other", None, None),
+                };
+                Some(Item { raw, at, pick, kind, dir, radius, size: area })
+            }
+        })
+        .collect();
+
+    let parallel = |d: Option<[f64; 3]>, want: [f64; 3], signed: bool| {
+        d.and_then(|d| unit(d, "").ok()).is_some_and(|d| if signed { dot(d, want) >= cos_tol } else { dot(d, want).abs() >= cos_tol })
+    };
+    let in_range = |v: Option<f64>, eq: Option<f64>, lo: Option<f64>, hi: Option<f64>| {
+        eq.is_none_or(|x| v.is_some_and(|v| (v - x).abs() <= tol))
+            && lo.is_none_or(|x| v.is_some_and(|v| v >= x - tol))
+            && hi.is_none_or(|x| v.is_some_and(|v| v <= x + tol))
+    };
+    let surface = str_arg(a, "surface");
+    let curve = str_arg(a, "curve");
+    let of_face = str_arg(a, "of_face");
+    items.retain(|it| {
+        let name = it.raw.get("name").and_then(Value::as_str).unwrap_or("");
+        if edges {
+            curve.is_none_or(|c| c == it.kind)
+                && direction.is_none_or(|d| parallel(it.dir, d, false))
+                && in_range(Some(it.size), len, len_min, len_max)
+                && of_face.is_none_or(|f| name.starts_with(&format!("{f}|")) || name.ends_with(&format!("|{f}")))
+        } else {
+            surface.is_none_or(|s| s == it.kind)
+                && normal.is_none_or(|n| it.kind == "plane" && parallel(it.dir, n, true))
+                && axis.is_none_or(|x| it.kind == "cylinder" && parallel(it.dir, x, false))
+                && in_range(it.radius, r, r_min, r_max)
+                && in_range(Some(it.size), None, area_min, area_max)
+        }
+    });
+    if let Some((d, max)) = extreme {
+        let key = |it: &Item| if max { dot(it.at, d) } else { -dot(it.at, d) };
+        if let Some(best) = items.iter().map(key).reduce(f64::max) {
+            items.retain(|it| best - key(it) <= tol);
+        }
+    }
+    if let Some(p) = near {
+        items.sort_by(|x, y| dist(x.pick, p).total_cmp(&dist(y.pick, p)));
+    }
+    // Cylinders by axis line and radius: one hole is one, whatever faces its wall is split into.
+    let mut cylinders: Vec<([f64; 3], [f64; 3], f64)> = Vec::new();
+    for it in items.iter().filter(|it| it.kind == "cylinder") {
+        let c = it.raw.get("cylinder");
+        let (Some(o), Some(d), Some(r)) = (c.and_then(|c| c.get("origin")).and_then(vec3_value), it.dir.and_then(|d| unit(d, "").ok()), it.radius)
+        else {
+            continue;
+        };
+        let same = |(o2, d2, r2): &([f64; 3], [f64; 3], f64)| {
+            let off = [o[0] - o2[0], o[1] - o2[1], o[2] - o2[2]];
+            let along = dot(off, *d2);
+            let across = (dot(off, off) - along * along).max(0.0).sqrt();
+            (r - r2).abs() <= tol && dot(d, *d2).abs() >= cos_tol && across <= tol.max(1e-6)
+        };
+        if !cylinders.iter().any(same) {
+            cylinders.push((o, d, r));
+        }
+    }
+    let total = items.len();
+    items.truncate(limit);
+    Ok((items, total, cylinders.len()))
+}
+
+fn find_faces(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    let (items, total, cylinders) = query_items(b, a)?;
+    let matches: Vec<Value> = items
+        .iter()
+        .map(|it| {
+            let mut m = json!({"index": it.raw.get("index"), "name": it.raw.get("name"), "type": it.kind, "pick": it.pick});
+            if it.kind == "line" || it.kind == "arc" || it.kind == "circle" {
+                m["length"] = json!(it.size);
+                m["start"] = it.raw.get("start").cloned().unwrap_or(Value::Null);
+                m["end"] = it.raw.get("end").cloned().unwrap_or(Value::Null);
+            } else {
+                m["area"] = json!(it.size);
+                m["centroid"] = json!(it.at);
+            }
+            if let Some(d) = it.dir {
+                m[if it.kind == "plane" {
+                    "normal"
+                } else if it.kind == "cylinder" {
+                    "axis"
+                } else {
+                    "direction"
+                }] = json!(d);
+            }
+            if let Some(r) = it.radius {
+                m["radius"] = json!(r);
+            }
+            m
+        })
+        .collect();
+    Ok(json!({
+        "body": str_arg(a, "body"),
+        "kind": str_arg(a, "kind").unwrap_or("face"),
+        "count": total,
+        "returned": matches.len(),
+        "distinct_cylinders": cylinders,
+        "matches": matches,
+    }))
+}
+
+/// Most checks one `verify_design` call runs.
+const MAX_CHECKS: usize = 100;
+
+fn verify_design(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    let checks = a.get("checks").and_then(Value::as_array).ok_or("`checks` must be an array")?;
+    if checks.is_empty() || checks.len() > MAX_CHECKS {
+        return Err(format!("`checks` must hold 1 to {MAX_CHECKS} checks"));
+    }
+    let results: Vec<Value> = checks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let kind = c.get("check").and_then(Value::as_str).unwrap_or("").to_owned();
+            let mut row = match c.as_object() {
+                Some(c) => verify_one(b, &kind, c).unwrap_or_else(|e| json!({"passed": false, "error": e})),
+                None => json!({"passed": false, "error": "a check must be an object"}),
+            };
+            row["index"] = json!(i);
+            row["check"] = json!(kind);
+            row
+        })
+        .collect();
+    let failed = results.iter().filter(|r| r["passed"] != json!(true)).count();
+    Ok(json!({"passed": failed == 0, "failed": failed, "total": results.len(), "checks": results}))
+}
+
+/// `equals` (with relative `tol_rel` or absolute `tol`), `min` and `max` against `v`.
+fn compare(c: &Map<String, Value>, v: f64, default_rel: f64) -> Result<Value, String> {
+    let num = |k: &str| match c.get(k) {
+        None => Ok(None),
+        Some(x) => x.as_f64().filter(|x| x.is_finite()).map(Some).ok_or_else(|| format!("`{k}` must be a finite number")),
+    };
+    let (eq, lo, hi) = (num("equals")?, num("min")?, num("max")?);
+    if eq.is_none() && lo.is_none() && hi.is_none() {
+        return Err("give `equals`, `min` or `max`".into());
+    }
+    let rel = num("tol_rel")?.unwrap_or(default_rel).abs();
+    let abs = num("tol")?.unwrap_or(0.0).abs();
+    let passed =
+        eq.is_none_or(|x| (v - x).abs() <= abs.max(rel * x.abs().max(1e-12))) && lo.is_none_or(|x| v >= x - abs) && hi.is_none_or(|x| v <= x + abs);
+    Ok(json!({"passed": passed, "measured": v, "expected": {"equals": eq, "min": lo, "max": hi}}))
+}
+
+fn measured_body(b: &mut dyn Backend, body: Option<&str>) -> Result<Value, String> {
+    let m = exec(b, "inspect.measure", body.map_or(json!({}), |n| json!({"bodies": [n]})))?;
+    match body {
+        Some(_) => m.get("bodies").and_then(Value::as_array).and_then(|l| l.first()).cloned().ok_or_else(|| "no such body".to_string()),
+        None => Ok(m),
+    }
+}
+
+fn verify_one(b: &mut dyn Backend, kind: &str, c: &Map<String, Value>) -> Result<Value, String> {
+    let body = str_arg(c, "body");
+    match kind {
+        "volume" | "mass" => {
+            let m = measured_body(b, body)?;
+            let src = if body.is_some() { &m } else { m.get("total").unwrap_or(&Value::Null) };
+            let key = if kind == "volume" { "volume_mm3" } else { "mass_g" };
+            let v = src.get(key).and_then(Value::as_f64).ok_or_else(|| format!("no {key} measured"))?;
+            compare(c, v, 1e-3)
+        }
+        "body_count" => {
+            let n = exec(b, "inspect.measure", json!({}))?.get("body_count").and_then(Value::as_f64).ok_or("no body count")?;
+            compare(c, n, 0.0)
+        }
+        "bbox" => {
+            let m = measured_body(b, body)?;
+            // One body's box, or the box around every body.
+            let boxes: Vec<Value> = if body.is_some() { vec![m] } else { m.get("bodies").and_then(Value::as_array).cloned().unwrap_or_default() };
+            let corners = |k: &str| boxes.iter().filter_map(|x| x.get("bbox").and_then(|bb| bb.get(k)).and_then(vec3_value)).collect::<Vec<_>>();
+            let fold = |l: Vec<[f64; 3]>, pick: fn(f64, f64) -> f64| l.into_iter().reduce(|p, q| [0, 1, 2].map(|i| pick(p[i], q[i])));
+            let (Some(lo), Some(hi)) = (fold(corners("min"), f64::min), fold(corners("max"), f64::max)) else {
+                return Err("no bounding box".into());
+            };
+            let size = [0, 1, 2].map(|i| hi[i] - lo[i]);
+            let tol = num_arg(c, "tol", 0.0, MAX_MM)?.unwrap_or(0.01);
+            let want = vec3_arg(c, "size")?;
+            let fits = vec3_arg(c, "fits")?;
+            if want.is_none() && fits.is_none() {
+                return Err("give `size` or `fits`".into());
+            }
+            let passed =
+                want.is_none_or(|w| (0..3).all(|i| (size[i] - w[i]).abs() <= tol)) && fits.is_none_or(|f| (0..3).all(|i| size[i] <= f[i] + tol));
+            Ok(json!({"passed": passed, "measured": size, "expected": {"size": want, "fits": fits}}))
+        }
+        "timeline_ok" => {
+            let d = b.call("document.inspect", json!({"measure": false}))?;
+            let failing: Vec<Value> = d
+                .get("timeline")
+                .and_then(Value::as_array)
+                .map(|t| {
+                    t.iter()
+                        .filter(|f| f.get("error").is_some_and(|e| !e.is_null()))
+                        .map(|f| json!({"name": f.get("name"), "error": f.get("error")}))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(json!({"passed": failing.is_empty(), "measured": failing}))
+        }
+        "clearance" => {
+            let mut args = Map::new();
+            args.insert("body_a".into(), c.get("a").cloned().ok_or("`a` is required")?);
+            args.insert("body_b".into(), c.get("b").cloned().ok_or("`b` is required")?);
+            if let Some(m) = c.get("min_mm") {
+                args.insert("min_clearance_mm".into(), m.clone());
+            }
+            let r = dfm_clearance_check(b, &args)?;
+            Ok(json!({"passed": r["passed"], "measured": r["measured_gap_mm"], "expected": {"min": r["required_gap_mm"]}, "message": r["advice"]}))
+        }
+        "no_interference" => {
+            let p = c.get("bodies").map_or(json!({}), |v| json!({"bodies": v}));
+            let r = exec(b, "inspect.interference", p)?;
+            let hits = r.get("interferences").cloned().unwrap_or(Value::Null);
+            let unchecked = r.get("unchecked").and_then(Value::as_array).is_some_and(|u| !u.is_empty());
+            let clear = hits.as_array().is_some_and(Vec::is_empty);
+            Ok(json!({"passed": clear && !unchecked, "measured": hits, "unchecked": r.get("unchecked")}))
+        }
+        "count" => {
+            let q = c.get("query").and_then(Value::as_object).ok_or("`query` must be an object of find_faces arguments")?;
+            let (_, total, cylinders) = query_items(b, q)?;
+            let n = match c.get("of").and_then(Value::as_str).unwrap_or("matches") {
+                "matches" => total,
+                "cylinders" => cylinders,
+                other => return Err(format!("unknown `of` `{other}` (matches or cylinders)")),
+            };
+            compare(c, n as f64, 0.0)
+        }
+        "" => Err("`check` is required".into()),
+        other => Err(format!("unknown check `{other}`")),
+    }
 }
 
 /// The volume of every body together (mm³).

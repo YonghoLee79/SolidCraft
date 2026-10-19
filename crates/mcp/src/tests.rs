@@ -1505,7 +1505,18 @@ fn tool_annotations_tell_the_whole_truth() {
     for name in ["execute", "batch", "save", "export", "open", "screenshot"] {
         assert_eq!(hints(name), (false, true, true), "{name}");
     }
-    for name in ["list_commands", "describe_command", "inspect_design", "measure", "body_topology", "crash_reports", "dfm_clearance_check", "fdm_print_estimate"] {
+    for name in [
+        "list_commands",
+        "describe_command",
+        "inspect_design",
+        "measure",
+        "body_topology",
+        "crash_reports",
+        "dfm_clearance_check",
+        "fdm_print_estimate",
+        "find_faces",
+        "verify_design",
+    ] {
         assert_eq!(hints(name), (true, false, false), "{name}");
     }
     assert_eq!(hints("new_design"), (false, true, false));
@@ -1756,6 +1767,154 @@ fn fdm_print_estimate_shell_infill_and_build_volume() {
         [json!({"infill_percent": 150}), json!({"material": "Unobtainium"}), json!({"build_volume_mm": [0, 10, 10]}), json!({"bodies": ["Nope"]})]
     {
         let r = raw_tool(&mut s, "fdm_print_estimate", bad.clone());
+        assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{bad} -> {r}");
+    }
+}
+
+/// A 40 × 30 × 20 block with a r3 rounded vertical edge and a counterbored M4 hole in the top.
+fn grounding_part(s: &mut Server) {
+    tool(
+        s,
+        "batch",
+        json!({"commands": [
+            {"command": "solid.box", "params": {"length": 40, "width": 30, "height": 20, "corner": [0, 0, 0], "body_name": "Block"}},
+            {"command": "solid.fillet", "params": {"edges": [[0, 0, 10]], "radius": 3}},
+        ]}),
+    );
+    tool(s, "fastener_metric_hole", json!({"position": [20, 15, 20], "standard": "M4", "depth": 10, "counterbore": true}));
+}
+
+/// `find_faces` picks faces and edges by their geometry, and its picks drive commands.
+#[test]
+fn find_faces_selects_by_geometry_and_its_picks_drive_commands() {
+    let mut s = server();
+    grounding_part(&mut s);
+    let names = |r: &Value| r["matches"].as_array().unwrap().iter().map(|m| m["name"].as_str().unwrap_or("").to_owned()).collect::<Vec<_>>();
+
+    // Facing up: the top, the counterbore's floor and the blind drill's floor (z 10); the topmost is the top.
+    let up = tool(&mut s, "find_faces", json!({"body": "Block", "surface": "plane", "normal": [0, 0, 1]}));
+    assert_eq!(up["count"], 3, "{up}");
+    let top = tool(&mut s, "find_faces", json!({"body": "Block", "normal": [0, 0, 1], "extreme": {"direction": [0, 0, 1]}}));
+    assert_eq!(top["count"], 1, "{top}");
+    assert!((top["matches"][0]["pick"][2].as_f64().unwrap() - 20.0).abs() < 1e-6, "{top}");
+    let floor = tool(&mut s, "find_faces", json!({"body": "Block", "normal": [0, 0, 1], "extreme": {"direction": [0, 0, 1], "side": "min"}}));
+    assert!((floor["matches"][0]["pick"][2].as_f64().unwrap() - 10.0).abs() < 1e-6, "{floor}");
+    // Between them, by area: the counterbore's floor (a ring of 7.5 and 4.5 mm diameters). Face
+    // areas come from model.faces, a few percent low on faces bounded by circles: a ±5 % window.
+    let ring = PI * (3.75f64.powi(2) - 2.25f64.powi(2));
+    let cb = tool(&mut s, "find_faces", json!({"body": "Block", "normal": [0, 0, 1], "area_min": ring * 0.95, "area_max": ring * 1.05}));
+    assert_eq!(cb["count"], 1, "{cb}");
+    assert!((cb["matches"][0]["pick"][2].as_f64().unwrap() - 15.5).abs() < 1e-6, "{cb}");
+
+    // Cylinders: the drill and the counterbore are one each, whatever their walls are split into.
+    let drill = tool(&mut s, "find_faces", json!({"body": "Block", "surface": "cylinder", "radius": 2.25}));
+    assert_eq!(drill["distinct_cylinders"], 1, "{drill}");
+    let round = tool(&mut s, "find_faces", json!({"body": "Block", "radius": 3, "axis": [0, 0, -1]}));
+    assert_eq!(round["distinct_cylinders"], 1, "{round}");
+    let all = tool(&mut s, "find_faces", json!({"body": "Block", "surface": "cylinder", "radius_min": 2, "radius_max": 4}));
+    assert_eq!(all["distinct_cylinders"], 3, "{all}");
+
+    // The top face's edges: four straight sides, the fillet's arc and the counterbore's rim.
+    let top_name = names(&top).first().cloned().unwrap();
+    let rim = tool(&mut s, "find_faces", json!({"body": "Block", "kind": "edge", "of_face": top_name}));
+    let kinds: Vec<&str> = rim["matches"].as_array().unwrap().iter().filter_map(|m| m["type"].as_str()).collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "line").count(), 4, "{rim}");
+    assert!(kinds.contains(&"arc"), "{rim}");
+    assert!(kinds.iter().any(|k| *k == "circle" || *k == "arc"), "{rim}");
+
+    // The vertical straight edges furthest along +X are the two at x = 40: round them with their picks.
+    let right = tool(
+        &mut s,
+        "find_faces",
+        json!({"body": "Block", "kind": "edge", "curve": "line", "direction": [0, 0, 1], "extreme": {"direction": [1, 0, 0]}}),
+    );
+    assert_eq!(right["count"], 2, "{right}");
+    let picks: Vec<Value> = right["matches"].as_array().unwrap().iter().map(|m| m["pick"].clone()).collect();
+    assert!(picks.iter().all(|p| (p[0].as_f64().unwrap() - 40.0).abs() < 1e-6), "{right}");
+    let before = volume(&mut s);
+    tool(&mut s, "execute", json!({"command": "solid.fillet", "params": {"edges": picks, "radius": 2}}));
+    assert!(rel(before - volume(&mut s), 2.0 * (4.0 - PI) * 20.0) < 1e-3);
+
+    // `near` sorts; `limit` caps what comes back but not the count.
+    let near = tool(&mut s, "find_faces", json!({"body": "Block", "near": [20, 15, 20], "limit": 1}));
+    assert_eq!(near["returned"], 1, "{near}");
+    assert!(near["count"].as_u64().unwrap() > 1, "{near}");
+
+    for bad in [
+        json!({"body": "Nope"}),
+        json!({"body": "Block", "normal": [0, 0, 0]}),
+        json!({"body": "Block", "kind": "vertex"}),
+        json!({"body": "Block", "extreme": {"direction": [0, 0, 1], "side": "up"}}),
+        json!({"body": "Block", "limit": 0}),
+    ] {
+        let r = raw_tool(&mut s, "find_faces", bad.clone());
+        assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{bad} -> {r}");
+    }
+}
+
+/// `verify_design` reports every check's verdict; a failing or broken check doesn't stop the others.
+#[test]
+fn verify_design_checks_many_expectations_at_once() {
+    let mut s = server();
+    grounding_part(&mut s);
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "solid.box", "params": {"length": 5, "width": 5, "height": 5, "corner": [40.5, 0, 0], "operation": "new", "body_name": "Peg"}}),
+    );
+    let fillet = (9.0 - 9.0 * PI / 4.0) * 20.0;
+    let hole = PI * (3.75f64.powi(2) * 4.5 + 2.25f64.powi(2) * 5.5);
+    let r = tool(
+        &mut s,
+        "verify_design",
+        json!({"checks": [
+            {"check": "volume", "body": "Block", "equals": 24000.0 - fillet - hole},
+            {"check": "mass", "body": "Block", "min": 1.0},
+            {"check": "body_count", "equals": 2},
+            {"check": "bbox", "body": "Block", "size": [40, 30, 20], "fits": [220, 220, 250]},
+            {"check": "bbox", "size": [45.5, 30, 20]},
+            {"check": "timeline_ok"},
+            {"check": "clearance", "a": "Block", "b": "Peg", "min_mm": 0.25},
+            {"check": "no_interference"},
+            {"check": "count", "query": {"body": "Block", "surface": "cylinder", "radius": 2.25}, "of": "cylinders", "equals": 1},
+            {"check": "count", "query": {"body": "Block", "normal": [0, 0, 1]}, "equals": 3},
+        ]}),
+    );
+    assert_eq!(r["passed"], true, "{r}");
+    assert_eq!(r["total"], 10, "{r}");
+
+    let r = tool(
+        &mut s,
+        "verify_design",
+        json!({"checks": [
+            {"check": "volume", "body": "Block", "equals": 1000},
+            {"check": "clearance", "a": "Block", "b": "Peg", "min_mm": 1.0},
+            {"check": "teleport"},
+            {"check": "count", "query": {"body": "Block", "colour": "red"}, "equals": 1},
+            {"check": "volume", "body": "Nope", "min": 0},
+            {"check": "body_count", "min": 1},
+        ]}),
+    );
+    assert_eq!(r["passed"], false, "{r}");
+    assert_eq!(r["failed"], 5, "{r}");
+    let rows = r["checks"].as_array().unwrap();
+    assert!(rel(rows[0]["measured"].as_f64().unwrap(), 24000.0 - fillet - hole) < 1e-3, "{r}");
+    assert!((rows[1]["measured"].as_f64().unwrap() - 0.5).abs() < 1e-6, "{r}");
+    assert!(rows[2]["error"].as_str().unwrap().contains("unknown check"), "{r}");
+    assert!(rows[3]["error"].as_str().unwrap().contains("unknown query argument"), "{r}");
+    assert!(rows[4]["error"].is_string(), "{r}");
+    assert_eq!(rows[5]["passed"], true, "{r}");
+
+    // A collision fails no_interference.
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "solid.box", "params": {"length": 5, "width": 5, "height": 5, "corner": [38, 10, 0], "operation": "new", "body_name": "Clash"}}),
+    );
+    let r = tool(&mut s, "verify_design", json!({"checks": [{"check": "no_interference"}]}));
+    assert_eq!(r["passed"], false, "{r}");
+    for bad in [json!({"checks": []}), json!({"checks": "volume"})] {
+        let r = raw_tool(&mut s, "verify_design", bad.clone());
         assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{bad} -> {r}");
     }
 }
