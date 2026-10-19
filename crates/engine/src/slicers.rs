@@ -231,7 +231,11 @@ fn known_by_id(id: &str) -> Option<&'static Known> {
 fn install_key(env: &Env, command: &[String]) -> String {
     let Some(first) = command.first() else { return String::new() };
     let program = Path::new(first);
-    if file_name(program) == "flatpak" || first == "open" {
+    // `flatpak run …` and `/usr/bin/flatpak run …` are one invocation: the launcher by its name.
+    if file_name(program) == "flatpak" {
+        return std::iter::once("flatpak").chain(command[1..].iter().map(String::as_str)).collect::<Vec<_>>().join("\u{0}");
+    }
+    if first == "open" {
         return command.join("\u{0}");
     }
     let at = which(env, program).unwrap_or_else(|| program.to_path_buf());
@@ -1213,6 +1217,34 @@ mod tests {
         let system = forward.iter().find(|s| s.name.contains("system")).unwrap();
         assert_eq!(system.id, "prusa#prusaslicer");
         assert_eq!(system.command, ["prusa-slicer"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_same_flatpak_invocation_is_one_install_however_flatpak_is_spelled() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("flatpak-key");
+        // A launcher that exists, so an entry that spells its whole path is not taken for a stale one.
+        let flatpak = root.join("bin/flatpak");
+        std::fs::create_dir_all(flatpak.parent().unwrap()).unwrap();
+        std::fs::write(&flatpak, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&flatpak, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (a, b) = (root.join("share-a"), root.join("share-b"));
+        let entry = |dir: &Path, file: &str, exec: &str| {
+            std::fs::create_dir_all(dir.join("applications")).unwrap();
+            std::fs::write(dir.join("applications").join(file), format!("[Desktop Entry]\nType=Application\nName=PrusaSlicer\nExec={exec}\n"))
+                .unwrap();
+        };
+        let app = "--branch=beta com.prusa3d.PrusaSlicer @@u %U @@";
+        entry(&a, "one.desktop", &format!("flatpak run {app}"));
+        entry(&b, "two.desktop", &format!("{} run {app}", flatpak.display()));
+        let found = detect_in(&Env { data_dirs: vec![a.clone(), b.clone()], ..Env::default() });
+        assert_eq!(found.len(), 1, "{found:?}");
+        // A different branch is a different install.
+        entry(&b, "three.desktop", "flatpak run --branch=stable com.prusa3d.PrusaSlicer @@u %U @@");
+        let found = detect_in(&Env { data_dirs: vec![a, b], ..Env::default() });
+        assert_eq!(found.len(), 2, "{found:?}");
         std::fs::remove_dir_all(root).unwrap();
     }
 }
