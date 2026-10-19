@@ -1,5 +1,6 @@
-//! Simulation studies: Airflow (steady, low-speed flow through ducts, fans and cooling paths)
-//! and Gas Dynamics (transient compressible flow with shocks: pressure pulses, blast, nozzles).
+//! Simulation studies: Airflow (steady, low-speed flow through ducts, fans and cooling paths),
+//! Aerodynamics (external flow around a body: drag and lift forces) and Gas Dynamics (transient
+//! compressible flow with shocks: pressure pulses, blast, nozzles).
 //! They are registered so the toolbar, palette, scripts, CLI and MCP all reach them, and they
 //! check their inputs; the solvers are not built yet, so a valid request is refused with
 //! "not supported yet". Nothing is saved in the design.
@@ -13,12 +14,18 @@ use crate::{EngineError, Result, Session};
 pub static COMMANDS: &[CommandSpec] = &[
 CommandSpec::new("sim.flow.new", "Airflow Study", flow_new).noundo().at("SIMULATION", "STUDY").icon("sim_flow")
     .params("body: the solid body the air flows through or around. Steady, low-speed flow (ducts, fans, cooling). Not supported yet: the solver is not built, so a valid request returns an error and the design is unchanged."),
+CommandSpec::new("sim.aero.new", "Aerodynamics Study", aero_new).noundo().at("SIMULATION", "STUDY").icon("sim_aero")
+    .params("body: the solid body the air flows around. External flow at a wind speed, reporting drag and lift forces. Not supported yet: the solver is not built, so a valid request returns an error and the design is unchanged."),
 CommandSpec::new("sim.gas.new", "Gas Dynamics Study", gas_new).noundo().at("SIMULATION", "STUDY").icon("sim_gas")
     .params("body: the solid body the gas flows through or around. Transient compressible flow with shocks (pressure pulses, blast, nozzles). Not supported yet: the solver is not built, so a valid request returns an error and the design is unchanged."),
 ];
 
 fn flow_new(s: &mut Session, params: &Value) -> Result<Value> {
     new_study(s, params, "sim.flow.new", "airflow")
+}
+
+fn aero_new(s: &mut Session, params: &Value) -> Result<Value> {
+    new_study(s, params, "sim.aero.new", "aerodynamics")
 }
 
 fn gas_new(s: &mut Session, params: &Value) -> Result<Value> {
@@ -42,7 +49,7 @@ mod tests {
 
     #[test]
     fn studies_are_registered_on_the_simulation_tab() {
-        for (id, label) in [("sim.flow.new", "Airflow Study"), ("sim.gas.new", "Gas Dynamics Study")] {
+        for (id, label) in [("sim.flow.new", "Airflow Study"), ("sim.aero.new", "Aerodynamics Study"), ("sim.gas.new", "Gas Dynamics Study")] {
             let spec = crate::find_command(id).unwrap();
             assert_eq!((spec.label, spec.tab, spec.panel), (label, "SIMULATION", "STUDY"));
             assert!(!spec.undoable, "{id}");
@@ -56,7 +63,7 @@ mod tests {
         s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10, "body_name": "Duct"})).unwrap();
         let before = serde_json::to_string(&*s.doc).unwrap();
         let undo = s.undo.len();
-        for id in ["sim.flow.new", "sim.gas.new"] {
+        for id in ["sim.flow.new", "sim.aero.new", "sim.gas.new"] {
             let missing = s.execute(id, &json!({})).unwrap_err().to_string();
             assert!(missing.contains("`body` is required"), "{id}: {missing}");
             let wrong = s.execute(id, &json!({"body": "Nope"})).unwrap_err().to_string();

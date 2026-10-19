@@ -1,6 +1,7 @@
-//! The study setup dialogs of the Simulation workspace: Airflow Study (`sim.flow.new`) and Gas
-//! Dynamics Study (`sim.gas.new`). Each picks the body the study runs on. The solvers are not
-//! built yet: the dialog says so, and OK runs the command, which checks the body and refuses.
+//! The study setup dialogs of the Simulation workspace: Airflow Study (`sim.flow.new`),
+//! Aerodynamics Study (`sim.aero.new`) and Gas Dynamics Study (`sim.gas.new`). Each picks the body
+//! the study runs on. The solvers are not built yet: the dialog says so, and OK runs the command,
+//! which checks the body and refuses.
 
 use egui::RichText;
 use serde_json::{Value, json};
@@ -15,6 +16,8 @@ use crate::theme::Tokens;
 pub enum Study {
     /// Steady, low-speed flow: ducts, fans, cooling.
     Flow,
+    /// External flow around a body: drag and lift forces.
+    Aero,
     /// Transient compressible flow with shocks: pressure pulses, blast, nozzles.
     Gas,
 }
@@ -23,6 +26,7 @@ impl Study {
     pub fn command(self) -> &'static str {
         match self {
             Study::Flow => "sim.flow.new",
+            Study::Aero => "sim.aero.new",
             Study::Gas => "sim.gas.new",
         }
     }
@@ -30,6 +34,7 @@ impl Study {
     pub fn title(self) -> &'static str {
         match self {
             Study::Flow => "AIRFLOW STUDY",
+            Study::Aero => "AERODYNAMICS STUDY",
             Study::Gas => "GAS DYNAMICS STUDY",
         }
     }
@@ -38,6 +43,7 @@ impl Study {
     fn summary(self) -> &'static str {
         match self {
             Study::Flow => "sim.flow_summary",
+            Study::Aero => "sim.aero_summary",
             Study::Gas => "sim.gas_summary",
         }
     }
@@ -46,6 +52,7 @@ impl Study {
 pub fn start(_app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
     let study = match id {
         "sim.flow.new" => Study::Flow,
+        "sim.aero.new" => Study::Aero,
         "sim.gas.new" => Study::Gas,
         _ => return None,
     };

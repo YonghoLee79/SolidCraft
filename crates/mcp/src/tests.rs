@@ -538,11 +538,11 @@ fn simulation_studies_are_listed_and_report_the_missing_solver() {
     let mut s = server();
     let cmds = tool(&mut s, "list_commands", json!({"filter": "SIMULATION"}));
     let ids: Vec<&str> = cmds.as_array().unwrap().iter().filter_map(|c| c["id"].as_str()).collect();
-    for id in ["sim.flow.new", "sim.gas.new"] {
+    for id in ["sim.flow.new", "sim.aero.new", "sim.gas.new"] {
         assert!(ids.contains(&id), "{id} not in {ids:?}");
     }
     tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10, "body_name": "Duct"}}));
-    for id in ["sim.flow.new", "sim.gas.new"] {
+    for id in ["sim.flow.new", "sim.aero.new", "sim.gas.new"] {
         let r = raw_tool(&mut s, "execute", json!({"command": id, "params": {"body": "Duct"}}));
         assert_eq!(r["result"]["isError"], json!(true), "{r}");
         assert!(r["result"]["content"][0]["text"].as_str().is_some_and(|t| t.contains("not supported yet")), "{r}");

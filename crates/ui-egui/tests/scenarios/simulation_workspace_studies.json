@@ -17,7 +17,11 @@
   {"key": "Escape"},
   {"expect": {"dialog": null}},
 
-  {"note": "Gas Dynamics Study, the same way."},
+  {"note": "Aerodynamics Study and Gas Dynamics Study, the same way."},
+  {"start": "sim.aero.new"},
+  {"expect": {"dialog": "Sim(Aero)", "dialog_docked": {}}},
+  {"key": "Escape"},
+  {"expect": {"dialog": null}},
   {"start": "sim.gas.new"},
   {"expect": {"dialog": "Sim(Gas)", "dialog_docked": {}}},
   {"key": "Escape"},

@@ -99,7 +99,7 @@ fn both_studies_open_their_docked_dialog_and_ok_reports_the_missing_solver() {
     let before = design_of(&h);
     enter(&mut h.app, Workspace::Simulation).unwrap();
     h.frames(2);
-    for (id, title) in [("sim.flow.new", "AIRFLOW STUDY"), ("sim.gas.new", "GAS DYNAMICS STUDY")] {
+    for (id, title) in [("sim.flow.new", "AIRFLOW STUDY"), ("sim.aero.new", "AERODYNAMICS STUDY"), ("sim.gas.new", "GAS DYNAMICS STUDY")] {
         h.step(&json!({"start": id})).unwrap();
         h.frames(3);
         let d = h.app.dialog.as_ref().unwrap_or_else(|| panic!("{id} opens a dialog"));
