@@ -164,7 +164,8 @@ fn begin_wait(app: &mut SolveApp, params: Value, result: &Value) {
         app.set_status(crate::i18n::format("ui.slicer_lost", &[("slicer", &name), ("path", &path)]), true);
         return;
     };
-    // Same reading as `slicers::wait_for_ready`: when readiness can't be told, send.
+    // Same reading as `slicers::wait_for_ready`: when `busctl` is missing or fails, send; when it is
+    // only slow, keep waiting.
     let probe = slicer.clone();
     let done =
         spawn_wait(move |left| probe.is_ready_within(left.min(slicers::PROBE_LIMIT)) != Some(false), slicers::READY_LIMIT, slicers::READY_POLL);

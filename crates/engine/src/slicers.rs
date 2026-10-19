@@ -660,15 +660,24 @@ impl Slicer {
     }
 
     /// Whether the slicer can take a file now: `Some(true)` or `Some(false)`, or `None` when that
-    /// can't be told (no `busctl`, or it failed), in which case nobody waits.
+    /// can't be told (no `busctl`, or it failed), in which case nobody waits. A `busctl` that is
+    /// only slow is `Some(false)`: nothing says it is up yet.
     pub fn is_ready(&self) -> Option<bool> {
         self.is_ready_within(PROBE_LIMIT)
     }
 
-    /// [`Self::is_ready`], giving `busctl` at most `limit` to answer (`None` when it doesn't).
+    /// [`Self::is_ready`], giving `busctl` at most `limit` to answer.
     pub fn is_ready_within(&self, limit: std::time::Duration) -> Option<bool> {
+        self.ready_via("busctl", limit)
+    }
+
+    fn ready_via(&self, busctl: &str, limit: std::time::Duration) -> Option<bool> {
         let rule = self.waits_for_ready()?;
-        Some(has_bus_name(&bus_list("busctl", limit)?, rule.bus_prefix))
+        match bus_list(busctl, limit) {
+            Bus::Names(list) => Some(has_bus_name(&list, rule.bus_prefix)),
+            Bus::Slow => Some(false),
+            Bus::Unknown => None,
+        }
     }
 }
 
@@ -694,31 +703,44 @@ pub const READY_POLL: std::time::Duration = std::time::Duration::from_millis(200
 /// The longest one look at the session bus may take.
 pub const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// What one look at the session bus came to.
+#[derive(Debug, PartialEq, Eq)]
+enum Bus {
+    /// The names, one line each.
+    Names(String),
+    /// `busctl` did not answer in time: nothing is known yet, which is not the same as "not up".
+    Slow,
+    /// `busctl` is missing, failed, or this is not a system that has it: it can't be told.
+    Unknown,
+}
+
 /// The session bus's names, as `busctl --user --no-legend --no-pager list` (`program` is
-/// `busctl`) prints them; `None` where that can't be run, fails, or takes longer than `limit`.
-fn bus_list(program: &str, limit: std::time::Duration) -> Option<String> {
+/// `busctl`) prints them, or why they could not be had.
+fn bus_list(program: &str, limit: std::time::Duration) -> Bus {
     #[cfg(any(target_arch = "wasm32", not(unix)))]
     {
         let _ = (program, limit);
-        None
+        Bus::Unknown
     }
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
         use std::io::Read;
         use std::process::Stdio;
-        let mut child = std::process::Command::new(program)
+        let Ok(mut child) = std::process::Command::new(program)
             .args(["--user", "--no-legend", "--no-pager", "list"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .ok()?;
+        else {
+            return Bus::Unknown;
+        };
         let end = std::time::Instant::now() + limit;
         let left = || end.saturating_duration_since(std::time::Instant::now());
         // Read on another thread so a long list can't fill the pipe while this one waits, and hand
         // the text back over a channel so that waiting for it has the same deadline: a process
         // the program left running may keep the pipe open long after the program is gone.
-        let mut stdout = child.stdout.take()?;
+        let Some(mut stdout) = child.stdout.take() else { return Bus::Unknown };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut text = String::new();
@@ -728,16 +750,20 @@ fn bus_list(program: &str, limit: std::time::Duration) -> Option<String> {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) if !left().is_zero() => std::thread::sleep(std::time::Duration::from_millis(10).min(left())),
-                _ => {
+                Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return None;
+                    return Bus::Slow;
                 }
+                Err(_) => return Bus::Unknown,
             }
         };
         // A reader that is still waiting when this gives up ends when the pipe closes.
-        let text = rx.recv_timeout(left()).ok()??;
-        status.success().then_some(text)
+        match rx.recv_timeout(left()) {
+            Ok(Some(text)) if status.success() => Bus::Names(text),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Bus::Slow,
+            _ => Bus::Unknown,
+        }
     }
 }
 
@@ -776,11 +802,17 @@ pub fn wait_until(mut ready: impl FnMut(std::time::Duration) -> bool, limit: std
     }
 }
 
-/// Wait for `slicer` to be ready to take a file. True when it is, or when that can't be told.
+/// Wait for `slicer` to be ready to take a file. True when it is, or when that can't be told; false
+/// when the limit passes first, a slow `busctl` included.
 pub fn wait_for_ready(slicer: &Slicer) -> bool {
-    // On purpose: if busctl fails partway through, stop waiting and send, which is what happens
-    // when it can't be run at all; a file sent too early is dropped quietly and costs one re-send.
-    wait_until(|left| slicer.is_ready_within(left.min(PROBE_LIMIT)) != Some(false), READY_LIMIT, READY_POLL)
+    wait_for_ready_via(slicer, "busctl", READY_LIMIT, READY_POLL)
+}
+
+fn wait_for_ready_via(slicer: &Slicer, busctl: &str, limit: std::time::Duration, poll: std::time::Duration) -> bool {
+    // On purpose: if busctl is missing, or fails partway through, stop waiting and send; a file sent
+    // too early is dropped quietly and costs one re-send. A busctl that is only slow is not that:
+    // it keeps the wait going to the limit.
+    wait_until(|left| slicer.ready_via(busctl, left.min(PROBE_LIMIT)) != Some(false), limit, poll)
 }
 
 #[cfg(test)]
@@ -1206,18 +1238,18 @@ mod tests {
         };
         let hang = fake("hang", "sleep 30");
         let started = std::time::Instant::now();
-        assert_eq!(bus_list(&hang, std::time::Duration::from_millis(100)), None);
+        assert_eq!(bus_list(&hang, std::time::Duration::from_millis(100)), Bus::Slow);
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "cut off, not waited for");
         let answers = fake("answers", "echo ':1.5 1 x'; echo 'com.prusa3d.prusaslicer.BroadcastListener.ab 2 y'");
-        let list = bus_list(&answers, std::time::Duration::from_secs(5)).unwrap();
+        let Bus::Names(list) = bus_list(&answers, std::time::Duration::from_secs(5)) else { panic!("no names") };
         assert!(has_bus_name(&list, WAIT_FOR_READY[0].bus_prefix));
-        assert_eq!(bus_list(&fake("fails", "exit 1"), std::time::Duration::from_secs(5)), None);
+        assert_eq!(bus_list(&fake("fails", "exit 1"), std::time::Duration::from_secs(5)), Bus::Unknown);
         // It exits at once but leaves a process running that keeps its output open.
         let lingers = fake("lingers", "echo ':1.5 1 x'; sleep 5 &\nexit 0");
         let started = std::time::Instant::now();
-        assert_eq!(bus_list(&lingers, std::time::Duration::from_millis(200)), None);
+        assert_eq!(bus_list(&lingers, std::time::Duration::from_millis(200)), Bus::Slow);
         assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
-        assert_eq!(bus_list(&root.join("missing").to_string_lossy(), std::time::Duration::from_secs(1)), None);
+        assert_eq!(bus_list(&root.join("missing").to_string_lossy(), std::time::Duration::from_secs(1)), Bus::Unknown);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1306,6 +1338,45 @@ mod tests {
         // Where `flatpak` can't be found, its name stands in.
         let none = Env { data_dirs: vec![root.join("share-a")], ..Env::default() };
         assert_eq!(detect_in(&none).len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_busctl_is_not_up_yet_and_a_missing_or_failing_one_is_send_now() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("busctl-wait");
+        let fake = |name: &str, body: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let launcher = Slicer { id: "prusa".into(), name: "PrusaSlicer".into(), command: vec!["slic3r-app-launcher".into()], icon: None };
+        let (limit, poll) = (std::time::Duration::from_millis(300), std::time::Duration::from_millis(20));
+        // Hangs: not ready, the wait keeps going to its limit and then times out (does not send).
+        let hang = fake("hang", "sleep 30");
+        assert_eq!(launcher.ready_via(&hang, std::time::Duration::from_millis(50)), Some(false));
+        let started = std::time::Instant::now();
+        assert!(!wait_for_ready_via(&launcher, &hang, limit, poll));
+        assert!(started.elapsed() >= limit && started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        // Missing: it can't be told, so no waiting.
+        let missing = root.join("missing").to_string_lossy().into_owned();
+        assert_eq!(launcher.ready_via(&missing, limit), None);
+        let started = std::time::Instant::now();
+        assert!(wait_for_ready_via(&launcher, &missing, limit, poll));
+        assert!(started.elapsed() < limit);
+        // Answers "not up" once, then fails: the wait stops and sends.
+        let count = root.join("count");
+        let flaky = fake(
+            "flaky",
+            &format!("n=$(cat {c} 2>/dev/null || echo 0); echo $((n+1)) > {c}; [ $n -ge 1 ] && exit 1; echo ':1.5 1 x'", c = count.display()),
+        );
+        assert!(wait_for_ready_via(&launcher, &flaky, std::time::Duration::from_secs(5), poll));
+        assert_eq!(std::fs::read_to_string(&count).unwrap().trim(), "2", "looked twice: not up, then failed");
+        // And one that names the slicer is ready at once.
+        let up = fake("up", "echo 'com.prusa3d.prusaslicer.BroadcastListener.ab 1 x'");
+        assert_eq!(launcher.ready_via(&up, limit), Some(true));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
