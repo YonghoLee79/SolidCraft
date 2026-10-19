@@ -432,6 +432,9 @@ preference_settings! {
     /// Decimals shown for lengths and angles.
     length_decimals: u8 = 2, 0 => number("ui.length_decimals", 0..=6);
     angle_decimals: u8 = 1, 0 => number("ui.angle_decimals", 0..=6);
+    /// Up/Down and the wheel over a focused value field step its plain number (`value_step`,
+    /// #2320). Off by default: the keys move the text cursor and the wheel scrolls, as before.
+    step_values: bool = false, 0 => check_id("ui.step_values");
     /// `dark`, `light` or `system` (follow the operating system), or a theme file's id: a
     /// built-in one (`gruvbox-dark`, …) or one of `custom_themes` (#2255).
     theme: String = "dark".into(), 0;
@@ -1172,6 +1175,9 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             ui_kit::text(ui, crate::i18n::tr_label("0 turns it off"), ui_kit::Text::Note("autosave"));
             setting::length_decimals(app, ui);
             setting::angle_decimals(app, ui);
+            let tip = app.tr("ui.step_values_tip").to_string();
+            let step = setting::step_values(app, ui).on_hover_text(tip);
+            crate::scenario::publish_handle("prefs:step_values", step.rect.center());
             ui_kit::row(ui, app.tr("ui.agent_cursor"), |ui| {
                 ui_kit::checkbox(ui, crate::i18n::tr_label("Show the pointer an AI agent moves (#35)"), &mut app.ui.agent_cursor.show);
             });

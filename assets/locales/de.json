@@ -1796,6 +1796,8 @@
   "ui.start": "Start",
   "ui.start_over": "Von vorn beginnen",
   "ui.start_page": "Startseite",
+  "ui.step_values": "Werte mit Pfeiltasten und Mausrad ändern",
+  "ui.step_values_tip": "In einem Wertefeld, in dem Sie tippen, ändern Pfeil hoch/runter und das Mausrad über dem Feld eine Zahl um 1 (Umschalt: 10, Alt: 0,1). Ausdrücke bleiben, wie sie getippt sind.",
   "ui.stretch": "Strecken",
   "ui.supersampling": "Supersampling (SSAA)",
   "ui.supersampling_adaptive": "Nur bei ruhender Ansicht",
