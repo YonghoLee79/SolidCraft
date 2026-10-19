@@ -239,6 +239,47 @@ fn a_cut_of_another_components_body_follows_it() {
     assert_eq!(summary(&m.state()), from_scratch(&doc));
 }
 
+/// A cut of several bodies cuts again only those that changed: the rod, which `w` does not
+/// move, keeps the very body its earlier cut gave, while the cap `w` sizes is cut again.
+#[test]
+fn a_cut_of_several_bodies_cuts_again_only_those_that_changed() {
+    let mut doc = Document::new("rod and cap");
+    doc.set_param("w", "6 mm", None, None).unwrap();
+    let rod = doc.add_component(Some("Rod"), 0).unwrap();
+    add_in(
+        &mut doc,
+        rod,
+        "Rod",
+        serde_json::json!({"type": "cylinder", "base": ["0", "0", "0"], "axis": [0.0, 0.0, 1.0], "radius": "4", "height": "20", "operation": "new_body"}),
+    );
+    add_in(
+        &mut doc,
+        rod,
+        "Cap",
+        serde_json::json!({"type": "box", "corner": ["-5", "-5", "20"], "length": "10", "width": "10", "height": "w", "operation": "new_body"}),
+    );
+    for f in doc.features.iter_mut().filter(|f| f.name == "Rod" || f.name == "Cap") {
+        f.body_names = vec![f.name.clone()];
+    }
+    // The slot runs through both: the component's bodies are its targets.
+    add_in(
+        &mut doc,
+        rod,
+        "Slot",
+        serde_json::json!({"type": "box", "corner": ["3", "-0.5", "2"], "length": "4", "width": "1", "height": "30", "operation": "cut"}),
+    );
+    let mut m = Model::new();
+    m.evaluate(&doc);
+    assert!(m.results.iter().all(|r| r.error.is_none()), "{:?}", m.results.iter().map(|r| &r.error).collect::<Vec<_>>());
+    let cut_rod = m.state().body("Rod").unwrap().body.clone();
+    doc.set_param("w", "8 mm", None, None).unwrap();
+    m.evaluate(&doc);
+    assert_eq!(m.last_recomputed, 2, "the cap and the slot");
+    let st = m.state();
+    assert!(st.body("Rod").unwrap().body.same(&cut_rod), "the rod's cut is the one made before");
+    assert_eq!(summary(&st), from_scratch(&doc));
+}
+
 #[test]
 fn box_fillet_cut_timeline() {
     let (mut doc, _) = plate_doc();
