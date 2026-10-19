@@ -172,9 +172,17 @@ pub fn detect_in(env: &Env) -> Vec<Slicer> {
     let mut found: Vec<(Slicer, String, PathBuf)> = Vec::new();
     let mut add = |s: Slicer, origin: &Path| {
         let key = install_key(env, &s.command);
-        // The same program found twice (a desktop entry and PATH) is one install; so is an
-        // unknown program that a second desktop entry names the same.
-        if !found.iter().any(|(f, k, _)| *k == key || (f.id == s.id && known_by_id(&s.id).is_none())) {
+        // The same program found twice (a desktop entry and PATH) is one install, and which of the
+        // places it was found in speaks for it must not depend on which was read first: the one
+        // that sorts first does, so its file name, and so the id, is the same on every run.
+        if let Some(at) = found.iter().position(|(_, k, _)| *k == key) {
+            if origin < found[at].2.as_path() {
+                found[at] = (s, key, origin.to_path_buf());
+            }
+            return;
+        }
+        // An unknown program that a second desktop entry names the same is the one too.
+        if !found.iter().any(|(f, ..)| f.id == s.id && known_by_id(&s.id).is_none()) {
             found.push((s, key, origin.to_path_buf()));
         }
     };
@@ -1173,6 +1181,38 @@ mod tests {
         assert!(listed.iter().any(|(_, n)| *n == "PrusaSlicer (system)"), "{listed:?}");
         assert!(listed.iter().any(|(_, n)| *n == "PrusaSlicer (~/Applications)"), "{listed:?}");
         assert_ne!(listed[0].0, listed[1].0, "own ids");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_names_for_one_program_give_the_same_ids_whichever_is_read_first() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("aliases");
+        let home = root.join("home");
+        let bin = root.join("usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("prusa-slicer"), b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join("prusa-slicer"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let entry = |dir: &Path, file: &str, exec: &str| {
+            std::fs::create_dir_all(dir.join("applications")).unwrap();
+            std::fs::write(dir.join("applications").join(file), format!("[Desktop Entry]\nType=Application\nName=PrusaSlicer\nExec={exec}\n"))
+                .unwrap();
+        };
+        // Two desktop files, different names, one program; and a second, real install.
+        let (a, b, user) = (root.join("share-a"), root.join("share-b"), home.join(".local/share"));
+        entry(&a, "PrusaSlicer.desktop", "prusa-slicer %F");
+        entry(&b, "prusa-alias.desktop", &format!("{} %U", bin.join("prusa-slicer").display()));
+        entry(&user, "com.prusa3d.PrusaSlicer.desktop", "flatpak run --branch=beta com.prusa3d.PrusaSlicer @@u %U @@");
+        let env = |dirs: Vec<PathBuf>| Env { home: Some(home.clone()), data_dirs: dirs, path_dirs: vec![bin.clone()], ..Env::default() };
+        let forward = detect_in(&env(vec![a.clone(), b.clone(), user.clone()]));
+        let reversed = detect_in(&env(vec![user.clone(), b.clone(), a.clone()]));
+        assert_eq!(forward.len(), 2, "{forward:?}");
+        assert_eq!(forward, reversed);
+        // The place that sorts first speaks for the program: its command, its file name in the id.
+        let system = forward.iter().find(|s| s.name.contains("system")).unwrap();
+        assert_eq!(system.id, "prusa#prusaslicer");
+        assert_eq!(system.command, ["prusa-slicer"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
