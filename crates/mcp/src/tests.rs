@@ -497,17 +497,21 @@ fn hostile_arguments_never_panic() {
     tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}));
     let defs = tool_definitions();
     let mut n = 0;
+    // A required path of a tool that writes points here, never into the crate.
+    let scratch = std::env::temp_dir().join(format!("solidcraft-mcp-hostile-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
     for def in &defs {
         let name = def["name"].as_str().unwrap();
         // Hostile strings are relative paths: don't let the sweep write files into the crate.
-        let writes = matches!(name, "save" | "screenshot" | "export");
+        let writes = matches!(name, "save" | "screenshot" | "export" | "export_views");
         let keys: Vec<String> = def["inputSchema"]["properties"].as_object().unwrap().keys().filter(|k| !(writes && *k == "path")).cloned().collect();
         for k in &keys {
             for v in hostile_values() {
                 let mut args = json!({});
                 // Fill the other required arguments with something plausible.
                 for r in def["inputSchema"]["required"].as_array().into_iter().flatten() {
-                    args[r.as_str().unwrap()] = json!("Body1");
+                    let r = r.as_str().unwrap();
+                    args[r] = if writes && r == "path" { json!(scratch.join("hostile.dxf").to_string_lossy()) } else { json!("Body1") };
                 }
                 args[k.as_str()] = v;
                 if name == "screenshot" && (k == "width" || k == "height") {
@@ -520,6 +524,7 @@ fn hostile_arguments_never_panic() {
         }
     }
     assert!(n > 100);
+    let _ = std::fs::remove_dir_all(&scratch);
     // Execute every command with hostile params through MCP too.
     let cmds = tool(&mut s, "list_commands", json!({}));
     for c in cmds.as_array().unwrap() {
