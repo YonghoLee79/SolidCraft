@@ -18,7 +18,9 @@ pub const MAX_OPEN: usize = 32;
 
 /// A design that is not the active one: everything that belongs to it alone.
 pub struct DocSlot {
-    session: Session,
+    pub(crate) session: Session,
+    pub(crate) autosave: Option<solidcraft_engine::recovery::Autosaver>,
+    pub(crate) big_operation: bool,
     cam: Camera,
     pre_sketch_cam: Option<Camera>,
     pre_sketch_marker: Option<Option<usize>>,
@@ -38,7 +40,16 @@ struct DocView {
 
 impl DocSlot {
     fn new(session: Session) -> DocSlot {
-        DocSlot { session, cam: Camera::default(), pre_sketch_cam: None, pre_sketch_marker: None, view: DocView::default(), occurrence_move: None }
+        DocSlot {
+            session,
+            autosave: None,
+            big_operation: false,
+            cam: Camera::default(),
+            pre_sketch_cam: None,
+            pre_sketch_marker: None,
+            view: DocView::default(),
+            occurrence_move: None,
+        }
     }
 }
 
@@ -58,6 +69,10 @@ pub struct Documents {
 }
 
 impl Documents {
+    pub(crate) fn background_mut(&mut self) -> impl Iterator<Item = &mut DocSlot> {
+        self.slots.iter_mut().filter_map(Option::as_mut)
+    }
+
     /// Number of open designs (at least the active one).
     pub fn count(&self) -> usize {
         self.slots.len().max(1)
@@ -107,14 +122,19 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
     app.menu.props = None;
     crate::sketch_attachment_ui::clear(app);
     let out_rev = app.session.revision;
-    let out = DocSlot {
+    let mut out = DocSlot {
         session: std::mem::replace(&mut app.session, slot.session),
+        autosave: app.autosave.as_mut().and_then(|a| std::mem::replace(&mut a.active, slot.autosave)),
+        big_operation: std::mem::replace(&mut app.big_operation, slot.big_operation),
         cam: std::mem::replace(&mut app.cam, slot.cam),
         pre_sketch_cam: std::mem::replace(&mut app.pre_sketch_cam, slot.pre_sketch_cam),
         pre_sketch_marker: std::mem::replace(&mut app.pre_sketch_marker, slot.pre_sketch_marker),
         view: take_view(app),
         occurrence_move: std::mem::replace(&mut app.tree.occurrence_move, slot.occurrence_move),
     };
+    // Only the displayed design owns the process-wide crash replay journal.
+    app.session.crash_journal = out.session.crash_journal;
+    out.session.crash_journal = false;
     put_view(app, slot.view);
     // Preferences the session holds go with the user, not the tab (#680).
     app.session.auto_project = out.session.auto_project;
@@ -254,6 +274,10 @@ pub fn close(app: &mut SolveApp, i: usize, force: bool) {
     app.docs.closing = None;
     if n <= 1 {
         // The last design: a blank one takes its place.
+        if let Some(a) = app.autosave.as_mut().and_then(|a| a.active.take()) {
+            a.discard();
+        }
+        app.big_operation = false;
         crate::sketch_text_move::cancel_drag(app);
         let rev = app.session.revision;
         crate::dialogs::cancel(app);
@@ -273,7 +297,11 @@ pub fn close(app: &mut SolveApp, i: usize, force: bool) {
         let next = if i + 1 < n { i + 1 } else { i - 1 };
         switch(app, next);
     }
-    app.docs.slots.remove(i);
+    if let Some(slot) = app.docs.slots.remove(i)
+        && let Some(a) = slot.autosave
+    {
+        a.discard();
+    }
     if app.docs.active > i {
         app.docs.active -= 1;
     }

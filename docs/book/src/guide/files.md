@@ -61,8 +61,9 @@ written as STL files next to the `.urdf`. See [`docs/urdf.md`](https://github.co
 Saves are atomic: a crash at any moment leaves either the old file or the new one, and the
 replaced version is kept as `<file>.bak`. A save keeps the file's permissions, and a design
 opened through a symbolic link (a synced folder linked into a project) is saved into the file the
-link points to, so the link stays. Unsaved changes are autosaved to a recovery folder,
-and the next launch offers to recover them. Older design files are upgraded on open, and files
+link points to, so the link stays. Unsaved changes in every open tab are autosaved to separate
+entries in a recovery folder, and the next launch offers to recover each design. Saving or
+closing one tab removes only its recovery entry. Older design files are upgraded on open, and files
 from a newer version are refused with a message.
 
 **Save** writes a container by default; files named `.json` keep JSON on subsequent saves.
