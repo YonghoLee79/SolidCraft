@@ -716,6 +716,8 @@ pub fn wait_until(mut ready: impl FnMut() -> bool, limit: std::time::Duration, p
 
 /// Wait for `slicer` to be ready to take a file. True when it is, or when that can't be told.
 pub fn wait_for_ready(slicer: &Slicer) -> bool {
+    // On purpose: if busctl fails partway through, stop waiting and send, which is what happens
+    // when it can't be run at all; a file sent too early is dropped quietly and costs one re-send.
     wait_until(|| slicer.is_ready() != Some(false), READY_LIMIT, READY_POLL)
 }
 
