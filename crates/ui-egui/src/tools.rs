@@ -247,9 +247,13 @@ pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
         Kind::Ext => crate::sketch_tools::on_click(app, &mut tool, proj, pos),
         Kind::Dimension => {
             let hits = pick(app, proj, pos);
+            // After a first pick, an origin axis lying along the sketch's own x or y measures
+            // from that axis (`x` / `y`, #3137).
+            let axis_ok = !tool.picks.is_empty();
             let hit = hits.iter().find_map(|h| match h {
                 Hit::SketchPoint { id, .. } => Some((id.clone(), false)),
                 Hit::SketchCurve { id, .. } => Some((id.clone(), true)),
+                Hit::Axis { name } if axis_ok => sketch_axis_of(app, name).map(|a| (a.to_string(), true)),
                 _ => None,
             });
             let fresh = |tool: &Tool, id: &String| !tool.picks.contains(id) && tool.picks.len() < 2;

@@ -677,3 +677,30 @@ fn type_first_keeps_the_place_first_flow() {
     assert!((new[0].kind.value().unwrap() - 21.).abs() < 1e-6);
     crate::dim_view::cancel();
 }
+
+/// #3137: the Dimension tool takes the origin axis along the sketch's x or y as its second
+/// pick: a circle's centre, or the circle itself, is then dimensioned from that axis.
+#[test]
+fn a_circle_centre_is_dimensioned_from_a_sketch_axis() {
+    for (picks, typed, centre) in [(vec![[30., 20.], [0., 3.]], "40 mm", [40., 20.]), (vec![[35., 20.], [3., 0.]], "12 mm", [30., 12.])] {
+        crate::dim_view::cancel();
+        let mut h = Harness::new();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.app.run("sketch.circle.center", json!({"center":[30,20],"radius":5})).unwrap();
+        h.call("ui.view", json!({"view":"top"}));
+        h.app.cam.distance = 80.0;
+        h.app.cam.target = solidcraft_engine::geom::Vec3::new(15., 10., 0.);
+        h.settle();
+        h.step(&json!({"start":"sketch.dimension"})).unwrap();
+        for p in &picks {
+            h.step(&json!({"move":{"world":[p[0],p[1],0]}})).unwrap();
+            h.step(&json!({"click":{"world":[p[0],p[1],0]}})).unwrap();
+        }
+        type_value(&mut h, typed);
+        h.step(&json!({"key":"Enter"})).unwrap();
+        let state = h.app.session.world_state();
+        let sk = &state.sketch(h.app.session.active_sketch.unwrap()).unwrap().sketch;
+        let o = sk.point(sk.resolve_point("c1.center").unwrap()).unwrap();
+        assert!((o.x - centre[0]).abs() < 1e-6 && (o.y - centre[1]).abs() < 1e-6, "{picks:?}: {o:?} {:?}", h.app.status);
+    }
+}

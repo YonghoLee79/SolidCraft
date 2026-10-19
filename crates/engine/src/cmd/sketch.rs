@@ -1937,6 +1937,14 @@ pub(super) fn line_pts(sk: &Sketch, l: usize) -> Option<(Vec2, Vec2)> {
     }
 }
 
+/// The centre point of circle or arc `c`.
+fn centre_point(sk: &Sketch, c: usize) -> Option<usize> {
+    match sk.curves.get(c).map(|x| &x.kind) {
+        Some(CurveKind::Circle { c, .. } | CurveKind::Arc { c, .. }) => Some(*c),
+        _ => None,
+    }
+}
+
 fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.dimension";
     let ents = string_list(p, "entities");
@@ -1960,14 +1968,18 @@ fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
     let start = s.doc.clone();
     let ((param, kind_name, current), info) = edit(s, p, cmd, true, |sk, doc| {
         before = Some(dof_now(sk));
-        let ent = |r: &str| -> Result<(Option<usize>, Option<usize>)> {
+        let mut ent = |r: &str| -> Result<(Option<usize>, Option<usize>)> {
             if let Some(c) = sk.curve_index(r) {
                 return Ok((None, Some(c)));
             }
             if let Some(q) = sk.resolve_point(r) {
                 return Ok((Some(q), None));
             }
-            Err(bad(cmd, format!("unknown sketch entity `{r}`")))
+            // `x` / `y`: the sketch's own axes, as the constraints take them (#3137).
+            if let Some(c) = sk.sketch_axis_line(r)? {
+                return Ok((None, Some(c)));
+            }
+            Err(bad(cmd, format!("unknown sketch entity `{r}` (x and y name the sketch's own axes)")))
         };
         let e0 = ent(ents.first().map(String::as_str).unwrap_or(""))?;
         let e1 = match ents.get(1) {
@@ -2029,6 +2041,14 @@ fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
                     "vertical" => (ConstraintKind::DistanceY { p: a, q: b, value: (pb.y - pa.y).abs() }, (pb.y - pa.y).abs()),
                     _ => (ConstraintKind::Distance { p: a, q: b, value: pa.dist(pb) }, pa.dist(pb)),
                 }
+            }
+            // A circle or arc and a line: from its centre (#3137).
+            ((None, Some(c)), Some((None, Some(l)))) | ((None, Some(l)), Some((None, Some(c)))) if is_line(l) && centre_point(sk, c).is_some() => {
+                let q = centre_point(sk, c).unwrap_or_default();
+                let (a, b) = line_pts(sk, l).unwrap_or_default();
+                let pq = sk.point(q).unwrap_or_default();
+                let d = (b - a).normalized().map(|d| d.cross(pq - a).abs()).unwrap_or(0.0);
+                (ConstraintKind::PointLineDistance { p: q, l, value: d }, d)
             }
             ((Some(q), None), Some((None, Some(l)))) | ((None, Some(l)), Some((Some(q), None))) if is_line(l) => {
                 let (a, b) = line_pts(sk, l).unwrap_or_default();
