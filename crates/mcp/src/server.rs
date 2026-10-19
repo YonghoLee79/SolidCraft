@@ -9,7 +9,8 @@ use solidcraft_engine::MAX_LINE;
 use solidcraft_engine::io::vfs::{self, PathScope};
 
 use crate::backend::Backend;
-use crate::tools::{call_tool, check_arguments, tool_definitions};
+use crate::options::Options;
+use crate::tools::{call_tool_with, check_arguments_with, tool_definitions_with};
 
 /// The newest protocol revision we speak; offered when the client asks for one we don't know.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -39,6 +40,7 @@ pub struct Server {
     backend: Box<dyn Backend>,
     initialized: bool,
     scope: Option<PathScope>,
+    options: Options,
 }
 
 fn response(id: Value, result: Value) -> Value {
@@ -50,12 +52,18 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
 
 impl Server {
     pub fn new(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false, scope: None }
+        Self { backend, initialized: false, scope: None, options: Options::default() }
     }
     /// Confine the files tool calls may reach to `scope` (`None`: anywhere). `solidcraft-cli mcp`
     /// always sets one unless started with `--allow-any-path` (docs/mcp.md).
     pub fn with_path_scope(mut self, scope: Option<PathScope>) -> Self {
         self.scope = scope;
+        self
+    }
+    /// Shape tool output with `options` (default: as always; `solidcraft-cli mcp --compact` or
+    /// `SOLIDCRAFT_MCP_COMPACT=1` turn on compact output, docs/mcp.md).
+    pub fn with_options(mut self, options: Options) -> Self {
+        self.options = options;
         self
     }
     pub fn backend(&mut self) -> &mut dyn Backend {
@@ -148,18 +156,18 @@ impl Server {
                 }))
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tool_definitions()})),
+            "tools/list" => Ok(json!({"tools": tool_definitions_with(self.options)})),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "missing tool `name`".to_string()))?;
                 let args = match params.get("arguments") {
                     None | Some(Value::Null) => json!({}),
                     Some(a) => a.clone(),
                 };
-                check_arguments(name, &args).map_err(|e| (INVALID_PARAMS, e))?;
+                check_arguments_with(name, &args, self.options).map_err(|e| (INVALID_PARAMS, e))?;
                 // The open design's folder counts as it is now (a save-as or open moves it).
                 let scope = self.scope.clone().map(|s| s.with_design(self.backend.design_path().as_deref()));
-                let backend = self.backend.as_mut();
-                Ok(vfs::scoped(scope, || call_tool(backend, name, &args)))
+                let (backend, options) = (self.backend.as_mut(), self.options);
+                Ok(vfs::scoped(scope, || call_tool_with(backend, name, &args, options)))
             }
             "resources/list" => Ok(json!({"resources": [
                 {"uri": "solidcraft://design", "name": "Active design", "description": "document.inspect with measurements", "mimeType": "application/json"},
