@@ -3,7 +3,8 @@
 //! application).
 //!
 //! Detection reads desktop entries and Flatpak exports (Linux), `.app` bundles (macOS) and the
-//! program folders (Windows), plus `PATH` and the usual AppImage folders. Nothing here runs a
+//! program folders (Windows), plus `PATH` and the usual AppImage folders. On Linux a desktop entry
+//! that claims 3MF or STL files is listed too, even when it is not a slicer we know by name. Nothing here runs a
 //! program except [`Slicer::open`].
 
 use std::path::{Path, PathBuf};
@@ -14,6 +15,9 @@ use crate::slicer_icon;
 const MAX_ENTRIES: usize = 5_000;
 /// Largest desktop entry read.
 const MAX_DESKTOP_BYTES: u64 = 64 * 1024;
+/// The file types (`MimeType=`) that make a desktop entry a program to send a mesh to: 3MF (and
+/// the name Windows software gave it) and STL.
+const MESH_TYPES: &[&str] = &["model/3mf", "application/vnd.ms-3mfdocument", "model/stl", "application/sla"];
 
 /// A slicer the user can send a mesh to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,7 +177,7 @@ pub fn detect_in(env: &Env) -> Vec<Slicer> {
     program_folders(env, &mut add);
     mac_apps(env, &mut add);
     windows_programs(env, &mut add);
-    let order = |s: &Slicer| KNOWN.iter().position(|k| k.id == s.id).unwrap_or(usize::MAX);
+    let order = |s: &Slicer| (KNOWN.iter().position(|k| k.id == s.id).unwrap_or(usize::MAX), s.name.to_lowercase());
     found.sort_by_key(order);
     found
 }
@@ -271,8 +275,17 @@ fn desktop_entries(env: &Env, add: &mut impl FnMut(Slicer)) {
             }
             let Ok(text) = std::fs::read_to_string(&file) else { continue };
             let entry = parse_desktop(&text);
-            let Some(known) = entry.get("Name").and_then(|n| known_for(n)) else { continue };
-            if entry.get("Type").is_some_and(|t| t != "Application") {
+            let Some(name) = entry.get("Name") else { continue };
+            let flag = |key: &str| entry.get(key).is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            if entry.get("Type").is_some_and(|t| t != "Application") || flag("NoDisplay") || flag("Hidden") {
+                continue;
+            }
+            let known = known_for(name);
+            // A program we don't know by name counts when it says it opens 3MF or STL files.
+            let claims_meshes =
+                entry.get("MimeType").is_some_and(|m| m.split(';').any(|t| MESH_TYPES.iter().any(|w| t.trim().eq_ignore_ascii_case(w))));
+            let ours = normalize(name).starts_with("solidcraft");
+            if known.is_none() && (!claims_meshes || ours || flag("Terminal")) {
                 continue;
             }
             let command = entry.get("Exec").map(|e| parse_exec(e)).unwrap_or_default();
@@ -282,7 +295,10 @@ fn desktop_entries(env: &Env, add: &mut impl FnMut(Slicer)) {
                 continue;
             }
             let icon = entry.get("Icon").and_then(|i| theme_icon(env, i));
-            add(known_slicer(known, command, icon));
+            match known {
+                Some(k) => add(known_slicer(k, command, icon)),
+                None => add(Slicer { id: format!("desktop-{}", normalize(name)), name: name.clone(), command, icon }),
+            }
         }
     }
 }
@@ -371,7 +387,12 @@ fn mac_icon(app: &Path) -> Option<IconSource> {
 
 fn windows_programs(env: &Env, add: &mut impl FnMut(Slicer)) {
     for root in &env.install_dirs {
-        for dir in entries(root).into_iter().filter(|p| p.is_dir()) {
+        let mut dirs: Vec<PathBuf> = entries(root).into_iter().filter(|p| p.is_dir()).collect();
+        // PrusaSlicer installs one level down, in `Prusa3D\PrusaSlicer`.
+        let nested: Vec<PathBuf> =
+            dirs.iter().filter(|d| normalize(&file_name(d)) == "prusa3d").flat_map(|d| entries(d)).filter(|p| p.is_dir()).collect();
+        dirs.extend(nested);
+        for dir in dirs {
             let Some(known) = known_for(&file_name(&dir)) else { continue };
             let exe = known.exes.iter().filter(|e| e.ends_with(".exe")).flat_map(|e| [dir.join(e), dir.join("bin").join(e)]).find(|c| c.is_file());
             if let Some(exe) = exe {
@@ -553,6 +574,40 @@ mod tests {
     }
 
     #[test]
+    fn programs_that_claim_3mf_or_stl_are_candidates_too() {
+        let root = scratch("mime");
+        let data = root.join("share");
+        std::fs::create_dir_all(data.join("applications")).unwrap();
+        let entry = |file: &str, body: &str| {
+            std::fs::write(data.join("applications").join(file), format!("[Desktop Entry]\nType=Application\n{body}\n")).unwrap()
+        };
+        entry("fancy.desktop", "Name=Fancy Slicer\nExec=fancy %f\nMimeType=text/plain;MODEL/3MF;");
+        entry("viewer.desktop", "Name=Mesh Viewer\nExec=meshview --open %F\nMimeType=image/png;application/sla;");
+        // Known by name: the table still gives the name and id, and the file type is not needed.
+        entry("prusa.desktop", "Name=PrusaSlicer\nExec=prusa-slicer %F");
+        entry("hidden.desktop", "Name=Hidden Slicer\nExec=h\nMimeType=model/stl;\nNoDisplay=true");
+        entry("gone.desktop", "Name=Gone Slicer\nExec=g\nMimeType=model/stl;\nHidden=true");
+        entry("terminal.desktop", "Name=Console Mesher\nExec=cm\nMimeType=model/stl;\nTerminal=true");
+        entry("noclaim.desktop", "Name=Text Editor\nExec=edit %f\nMimeType=text/plain;application/vnd.ms-3mfdocumentation;");
+        entry("hiddenprusa.desktop", "Name=PrusaSlicer Beta\nExec=prusa-beta\nNoDisplay=true");
+        entry("ours.desktop", "Name=SolidCraft\nExec=solidcraft %f\nMimeType=model/3mf;model/stl;");
+        entry("alias.desktop", "Name=Windows Mesher\nExec=wm\nMimeType=application/vnd.ms-3mfdocument;");
+        let found = detect_in(&Env { data_dirs: vec![data], ..Env::default() });
+        let listed: Vec<(&str, &str)> = found.iter().map(|f| (f.id.as_str(), f.name.as_str())).collect();
+        assert_eq!(
+            listed,
+            [
+                ("prusa", "PrusaSlicer"),
+                ("desktop-fancyslicer", "Fancy Slicer"),
+                ("desktop-meshviewer", "Mesh Viewer"),
+                ("desktop-windowsmesher", "Windows Mesher")
+            ]
+        );
+        assert_eq!(found[1].command, ["fancy"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn finds_mac_bundles_and_windows_folders() {
         let root = scratch("mac-win");
         let apps = root.join("Applications");
@@ -560,15 +615,17 @@ mod tests {
         std::fs::write(apps.join("BambuStudio.app/Contents/Resources/BambuStudio.icns"), b"x").unwrap();
         std::fs::create_dir_all(apps.join("Safari.app")).unwrap();
         let prog = root.join("Program Files");
-        std::fs::create_dir_all(prog.join("Prusa3D")).unwrap();
+        std::fs::create_dir_all(prog.join("Prusa3D/PrusaSlicer")).unwrap();
+        std::fs::write(prog.join("Prusa3D/PrusaSlicer/prusa-slicer.exe"), b"x").unwrap();
         std::fs::create_dir_all(prog.join("OrcaSlicer")).unwrap();
         std::fs::write(prog.join("OrcaSlicer/orca-slicer.exe"), b"x").unwrap();
         let found = detect_in(&Env { app_dirs: vec![apps.clone()], install_dirs: vec![prog.clone()], ..Env::default() });
         let ids: Vec<&str> = found.iter().map(|f| f.id.as_str()).collect();
-        assert_eq!(ids, ["bambu", "orca"]);
-        assert_eq!(found[0].command, ["open", "-a", apps.join("BambuStudio.app").to_str().unwrap()]);
-        assert!(matches!(found[0].icon, Some(IconSource::Icns(_))));
-        assert_eq!(found[1].icon, Some(IconSource::Exe(prog.join("OrcaSlicer/orca-slicer.exe"))));
+        assert_eq!(ids, ["prusa", "bambu", "orca"]);
+        assert_eq!(found[0].icon, Some(IconSource::Exe(prog.join("Prusa3D/PrusaSlicer/prusa-slicer.exe"))));
+        assert_eq!(found[1].command, ["open", "-a", apps.join("BambuStudio.app").to_str().unwrap()]);
+        assert!(matches!(found[1].icon, Some(IconSource::Icns(_))));
+        assert_eq!(found[2].icon, Some(IconSource::Exe(prog.join("OrcaSlicer/orca-slicer.exe"))));
         std::fs::remove_dir_all(root).unwrap();
     }
 
