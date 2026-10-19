@@ -155,6 +155,9 @@ impl Painter {
         }
 
         let device = &render_state.device;
+        // SolidCraft: let in-flight frames finish before the surface is reconfigured (a resize,
+        // or Windows moving the window between GPUs); a failed wait still tries the configure.
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
         let ((), failed) = crate::capture_errors(device, || {
             surface_state.surface.configure(device, &surf_config)
         });

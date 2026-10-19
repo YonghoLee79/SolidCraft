@@ -1505,11 +1505,11 @@ fn tool_annotations_tell_the_whole_truth() {
     for name in ["execute", "batch", "save", "export", "open", "screenshot"] {
         assert_eq!(hints(name), (false, true, true), "{name}");
     }
-    for name in ["list_commands", "describe_command", "inspect_design", "measure", "body_topology", "crash_reports"] {
+    for name in ["list_commands", "describe_command", "inspect_design", "measure", "body_topology", "crash_reports", "dfm_clearance_check"] {
         assert_eq!(hints(name), (true, false, false), "{name}");
     }
     assert_eq!(hints("new_design"), (false, true, false));
-    for name in ["set_parameter", "undo", "redo"] {
+    for name in ["set_parameter", "undo", "redo", "fastener_metric_hole"] {
         assert_eq!(hints(name), (false, false, false), "{name}");
     }
     assert!(tools.iter().all(|t| t["annotations"]["readOnlyHint"].is_boolean()), "every tool is annotated");
@@ -1593,4 +1593,62 @@ fn describe_command_and_strict_parameter_checking() {
     assert!(text.contains("unknown key `operaton`; did you mean `operation`?"), "{text}");
     let m = tool(&mut s, "measure", json!({}));
     assert_eq!(m["body_count"], json!(0), "{m}");
+}
+
+/// `fastener_metric_hole` cuts a DIN 912 M3 counterbored hole with the standard's sizes.
+#[test]
+fn fastener_metric_hole_uses_din912_dimensions() {
+    let mut s = server();
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "solid.box", "params": {"length": 40, "width": 40, "height": 20, "corner": [0, 0, 0], "body_name": "TestBlock"}}),
+    );
+    let before = volume(&mut s);
+    let res = tool(
+        &mut s,
+        "fastener_metric_hole",
+        json!({"position": [20.0, 20.0, 20.0], "standard": "M3", "depth": 10.0, "counterbore": true, "body_name": "TestBlock"}),
+    );
+    assert_eq!(res["standard"], "M3", "{res}");
+    assert_eq!(res["drill_diameter_mm"], 3.4);
+    assert_eq!(res["counterbore_diameter_mm"], 6.0);
+    assert_eq!(res["counterbore_depth_mm"], 3.5);
+    assert_eq!(res["status"], "applied");
+    assert!(volume(&mut s) < before - PI * 1.7 * 1.7 * 6.5, "the hole removed material");
+    // An unknown size and an unknown body are clean errors.
+    let r = raw_tool(&mut s, "fastener_metric_hole", json!({"position": [20, 20, 20], "standard": "M3", "depth": 5, "body_name": "Nope"}));
+    assert_eq!(r["result"]["isError"], json!(true), "{r}");
+    let r = raw_tool(&mut s, "fastener_metric_hole", json!({"position": [20, 20, 20], "standard": "M8", "depth": 5}));
+    assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{r}");
+}
+
+/// `dfm_clearance_check` measures a 0.15 mm gap, fails it against 0.25 mm and reports a collision.
+#[test]
+fn dfm_clearance_check_gap_and_collision() {
+    let mut s = server();
+    let make = |s: &mut Server, x: f64, name: &str| {
+        tool(
+            s,
+            "execute",
+            json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10, "corner": [x, 0, 0], "operation": "new", "body_name": name}}),
+        );
+    };
+    make(&mut s, 0.0, "PartA");
+    make(&mut s, 10.15, "PartB");
+    let res = tool(&mut s, "dfm_clearance_check", json!({"body_a": "PartA", "body_b": "PartB", "min_clearance_mm": 0.25}));
+    assert_eq!(res["passed"], false, "{res}");
+    assert_eq!(res["is_colliding"], false, "{res}");
+    assert!((res["measured_gap_mm"].as_f64().unwrap() - 0.15).abs() < 1e-3, "{res}");
+    assert!(res["advice"].as_str().unwrap().contains("Widen gap"), "{res}");
+    // The default 0.25 mm passes a 1 mm gap.
+    make(&mut s, 21.15, "PartC");
+    let res = tool(&mut s, "dfm_clearance_check", json!({"body_a": "PartB", "body_b": "PartC"}));
+    assert_eq!(res["passed"], true, "{res}");
+    // Overlapping bodies collide.
+    make(&mut s, 25.0, "PartD");
+    let res = tool(&mut s, "dfm_clearance_check", json!({"body_a": "PartC", "body_b": "PartD"}));
+    assert_eq!(res["is_colliding"], true, "{res}");
+    assert_eq!(res["passed"], false, "{res}");
+}
 }

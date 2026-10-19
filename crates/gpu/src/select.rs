@@ -178,8 +178,20 @@ fn instance() -> wgpu::Instance {
 #[cfg(not(target_arch = "wasm32"))]
 fn adapters(instance: &wgpu::Instance) -> Vec<wgpu::Adapter> {
     let mut all = pollster::block_on(instance.enumerate_adapters(native_backends()));
-    all.sort_by_key(|a| std::cmp::Reverse(rank(a.get_info().device_type)));
+    all.sort_by_key(|a| {
+        let info = a.get_info();
+        (std::cmp::Reverse(rank(info.device_type)), std::cmp::Reverse(backend_rank(info.backend)))
+    });
     all
+}
+
+/// Among adapters of one device type, Vulkan before DX12 (less draw-call overhead on Windows).
+fn backend_rank(b: wgpu::Backend) -> u8 {
+    match b {
+        wgpu::Backend::Vulkan => 2,
+        wgpu::Backend::Dx12 => 1,
+        _ => 0,
+    }
 }
 
 /// What a survey found, which adapter the policy picks (`chosen` indexes `adapters`) and where

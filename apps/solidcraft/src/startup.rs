@@ -116,11 +116,11 @@ pub const WGPU_BACKEND_ENV: &str = "WGPU_BACKEND";
 /// The graphics backends to start with, or `None` to leave it to wgpu (`WGPU_BACKEND`, or all
 /// the backends it was built with).
 ///
-/// On Windows, D3D12 comes first, then Vulkan, then OpenGL, and only the first one with a
-/// hardware adapter is started at all. wgpu would otherwise start Vulkan, D3D12 and OpenGL
-/// together and prefer Vulkan, and starting Vulkan loads every installed Vulkan driver: Intel's
-/// (`igvk64.dll`) crashed SolidCraft at startup that way, inside the driver, before anything
-/// could be reported. D3D12 is Windows' own graphics API, the one its drivers are tested with.
+/// On Windows, Vulkan comes first (less draw-call overhead on hybrid laptops), then D3D12, then
+/// OpenGL, and only the first one with a hardware adapter is started at all. Caution: starting
+/// Vulkan loads every installed Vulkan driver, and Intel's (`igvk64.dll`) has crashed SolidCraft
+/// at startup that way, inside the driver; after repeated failed starts safe mode falls back to
+/// D3D12's software renderer, and `graphics.json`'s `backend: "dx12"` restores the D3D12 order.
 /// `has_hardware(backends)` says whether those backends have an adapter that isn't software
 /// (it is only asked about the backends being tried, one at a time).
 ///
@@ -175,7 +175,7 @@ pub fn float_depth_everywhere(options: &eframe::egui_wgpu::WgpuConfiguration) ->
 }
 
 /// The order backends are tried in on Windows.
-pub const WINDOWS_ORDER: [eframe::wgpu::Backends; 3] = [eframe::wgpu::Backends::DX12, eframe::wgpu::Backends::VULKAN, eframe::wgpu::Backends::GL];
+pub const WINDOWS_ORDER: [eframe::wgpu::Backends; 3] = [eframe::wgpu::Backends::VULKAN, eframe::wgpu::Backends::DX12, eframe::wgpu::Backends::GL];
 
 /// Whether `backends` (started on their own, nothing else) have a hardware adapter.
 pub fn has_hardware_adapter(backends: eframe::wgpu::Backends) -> bool {
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_starts_d3d12_first_and_vulkan_only_when_d3d12_has_no_gpu() {
+    fn windows_starts_vulkan_first_and_d3d12_only_when_vulkan_has_no_gpu() {
         use eframe::wgpu::Backends;
         let probe = |with: &'static [Backends]| {
             move |b: Backends| {
@@ -270,19 +270,18 @@ mod tests {
                 with.contains(&b)
             }
         };
-        // D3D12 works: Vulkan and OpenGL are never even asked about (starting Vulkan loads
-        // its drivers, which is what crashed).
+        // Vulkan works: D3D12 and OpenGL are never even asked about.
         let mut asked = Vec::new();
         let chosen = choose_backends(true, false, false, None, |b| {
             asked.push(b);
-            b == Backends::DX12
+            b == Backends::VULKAN
         });
-        assert_eq!(chosen, Some(Backends::DX12));
-        assert_eq!(asked, [Backends::DX12]);
-        // Everything works: still D3D12 alone.
-        assert_eq!(choose_backends(true, false, false, None, probe(&[Backends::DX12, Backends::VULKAN, Backends::GL])), Some(Backends::DX12));
-        // No D3D12 hardware adapter: Vulkan, else OpenGL, else D3D12's software adapter (WARP).
-        assert_eq!(choose_backends(true, false, false, None, probe(&[Backends::VULKAN, Backends::GL])), Some(Backends::VULKAN));
+        assert_eq!(chosen, Some(Backends::VULKAN));
+        assert_eq!(asked, [Backends::VULKAN]);
+        // Everything works: still Vulkan alone.
+        assert_eq!(choose_backends(true, false, false, None, probe(&[Backends::DX12, Backends::VULKAN, Backends::GL])), Some(Backends::VULKAN));
+        // No Vulkan hardware adapter: D3D12, else OpenGL, else D3D12's software adapter (WARP).
+        assert_eq!(choose_backends(true, false, false, None, probe(&[Backends::DX12, Backends::GL])), Some(Backends::DX12));
         assert_eq!(choose_backends(true, false, false, None, probe(&[Backends::GL])), Some(Backends::GL));
         assert_eq!(choose_backends(true, false, false, None, probe(&[])), Some(Backends::DX12));
         // `auto` and blanks are the default order.

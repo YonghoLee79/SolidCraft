@@ -172,6 +172,40 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "fastener_metric_hole",
+            "Fastener Metric Hole (DIN 912)",
+            "Cut a metric clearance hole, optionally with a counterbore for a DIN 912 socket head cap screw. The drill \
+             diameter, counterbore diameter and counterbore depth come from the standard size. `position` is a point on \
+             the face to drill; the hole goes into the body that face belongs to.",
+            obj(
+                json!({
+                    "position": {"type": "array", "items": {"type": "number"}, "description": "[x, y, z] point on the face to drill"},
+                    "direction": {"type": "array", "items": {"type": "number"}, "description": "Drill direction (default [0, 0, -1])"},
+                    "standard": {"type": "string", "enum": ["M2", "M3", "M4", "M5", "M6"], "description": "Metric screw size"},
+                    "depth": {"type": "number", "description": "Hole depth (mm)"},
+                    "counterbore": {"type": "boolean", "description": "Counterbore for a DIN 912 screw head (default false)"},
+                    "body_name": string("Body expected to be drilled; checked to exist"),
+                }),
+                &["position", "standard", "depth"],
+            ),
+            Effect::Edits,
+        ),
+        tool(
+            "dfm_clearance_check",
+            "DFM Clearance Check for 3D Print / CNC",
+            "Measure the smallest gap between two bodies, compare it with a safe clearance (default 0.25 mm for FDM), \
+             report a collision and say how much to widen the gap.",
+            obj(
+                json!({
+                    "body_a": string("First body name"),
+                    "body_b": string("Second body name"),
+                    "min_clearance_mm": {"type": "number", "description": "Smallest safe gap (mm, default 0.25 for FDM 3D printing)"},
+                }),
+                &["body_a", "body_b"],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "set_parameter",
             "Set a parameter",
             "Create or change a user parameter and re-evaluate the timeline. `value` is a number (mm) or an expression \
@@ -459,6 +493,8 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
         "new_design" => exec(b, "file.new", pick(a, &["name"])),
         "open" => exec(b, "doc.open", pick(a, &["path", "up", "names"])),
         "save" => exec(b, "file.save", pick(a, &["path", "format"])),
+        "fastener_metric_hole" => fastener_metric_hole(b, a),
+        "dfm_clearance_check" => dfm_clearance_check(b, a),
         other => Err(format!("unknown tool `{other}`")),
     }
 }
@@ -476,6 +512,92 @@ fn parameter_value(a: &Map<String, Value>) -> Result<Value, String> {
         (Some(_), Some(_)) => Err("set_parameter: `value` and `expression` disagree; give one of them".into()),
         (None, None) => Err("set_parameter: give the new value as `value` (or `expression`): a number (mm) or an expression".into()),
     }
+}
+
+/// Drill, counterbore diameter and counterbore depth (mm) for a DIN 912 screw size.
+fn din912(standard: &str) -> Option<(f64, f64, f64)> {
+    Some(match standard {
+        "M2" => (2.4, 3.8, 2.0),
+        "M3" => (3.4, 6.0, 3.5),
+        "M4" => (4.5, 7.5, 4.5),
+        "M5" => (5.5, 9.0, 5.5),
+        "M6" => (6.6, 10.5, 6.5),
+        _ => return None,
+    })
+}
+
+fn fastener_metric_hole(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    let standard = str_arg(a, "standard").ok_or("`standard` is required")?;
+    let (drill, cb_dia, cb_depth) = din912(standard).ok_or_else(|| format!("unsupported standard `{standard}` (M2, M3, M4, M5 or M6)"))?;
+    let depth = a.get("depth").and_then(Value::as_f64).filter(|d| d.is_finite() && *d > 0.0).ok_or("`depth` must be a positive number")?;
+    let position = a.get("position").cloned().ok_or("`position` is required")?;
+    let direction = a.get("direction").cloned().unwrap_or_else(|| json!([0.0, 0.0, -1.0]));
+    let counterbore = a.get("counterbore").and_then(Value::as_bool).unwrap_or(false);
+    // `solid.hole` drills the body whose face is at `position`; a named body is checked to exist.
+    if let Some(body) = str_arg(a, "body_name") {
+        exec(b, "inspect.measure", json!({"bodies": [body]}))?;
+    }
+    let mut p = json!({"position": position, "direction": direction, "diameter": drill, "depth": depth});
+    if counterbore {
+        p["type"] = json!("counterbore");
+        p["cb_diameter"] = json!(cb_dia);
+        p["cb_depth"] = json!(cb_depth);
+    }
+    let applied = exec(b, "solid.hole", p)?;
+    Ok(json!({
+        "status": "applied",
+        "standard": standard,
+        "drill_diameter_mm": drill,
+        "drill_depth_mm": depth,
+        "counterbore": counterbore,
+        "counterbore_diameter_mm": counterbore.then_some(cb_dia),
+        "counterbore_depth_mm": counterbore.then_some(cb_depth),
+        "result": applied,
+    }))
+}
+
+fn dfm_clearance_check(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    let body_a = str_arg(a, "body_a").ok_or("`body_a` is required")?;
+    let body_b = str_arg(a, "body_b").ok_or("`body_b` is required")?;
+    let min = a.get("min_clearance_mm").and_then(Value::as_f64).unwrap_or(0.25);
+    if !min.is_finite() || !(0.0..=1e6).contains(&min) {
+        return Err("`min_clearance_mm` must be a number from 0 to 1e6".into());
+    }
+    // Search at least 10 mm out, so a passing gap is still measured.
+    let res = exec(b, "inspect.clearance", json!({"bodies": [body_a], "against": [body_b], "clearance": min.max(10.0), "nearest": 1}))?;
+    if let Some(u) = res.get("unchecked").and_then(Value::as_array).and_then(|l| l.first()) {
+        return Err(format!("the clearance between `{body_a}` and `{body_b}` could not be worked out: {}", u["reason"]));
+    }
+    if let Some(o) = res.get("overlaps").and_then(Value::as_array).and_then(|l| l.first()) {
+        let vol = o.get("volume_mm3").and_then(Value::as_f64).unwrap_or(0.0);
+        return Ok(json!({
+            "passed": false,
+            "measured_gap_mm": 0.0,
+            "required_gap_mm": min,
+            "is_colliding": true,
+            "advice": format!("Bodies '{body_a}' and '{body_b}' collide with overlap volume {vol:.4} mm³. Add clearance/offset of at least {min:.3} mm to separate them."),
+        }));
+    }
+    let near = res.get("near").and_then(Value::as_array).and_then(|l| l.first()).and_then(|n| n.get("distance_mm")).and_then(Value::as_f64);
+    let nearest = || {
+        res.get("nearest")
+            .and_then(|m| m.get(body_a))
+            .and_then(Value::as_array)
+            .and_then(|l| l.iter().find(|n| n.get("body").and_then(Value::as_str) == Some(body_b)))
+            .and_then(|n| n.get("distance_mm"))
+            .and_then(Value::as_f64)
+    };
+    let gap = near.or_else(nearest).ok_or_else(|| format!("no distance between `{body_a}` and `{body_b}` was measured"))?;
+    let passed = gap >= min;
+    let advice = if passed {
+        format!("Clearance test PASSED: measured gap {gap:.3} mm meets or exceeds the required {min:.3} mm.")
+    } else {
+        format!(
+            "Clearance test FAILED: measured gap {gap:.3} mm is below required {min:.3} mm. Widen gap by at least {:.3} mm to prevent binding when 3D printing (FDM).",
+            min - gap
+        )
+    };
+    Ok(json!({"passed": passed, "measured_gap_mm": gap, "required_gap_mm": min, "is_colliding": false, "advice": advice}))
 }
 
 fn undo_depth(b: &mut dyn Backend) -> Option<u64> {

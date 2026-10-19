@@ -138,7 +138,9 @@ debug = false
 [profile.release]
 opt-level = 3
 lto = "thin"
-codegen-units = 16
+codegen-units = 1
+# panic stays "unwind": Session::execute and kernel::guard catch panics so a kernel failure
+# doesn't take the open design down with it.
 # Line tables only: crash reports name file:line in their backtraces (no runtime cost; a larger
 # binary). See docs/crash-reports.md.
 debug = "line-tables-only"
