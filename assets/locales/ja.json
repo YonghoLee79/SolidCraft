@@ -1516,6 +1516,7 @@
   "ui.slicer_single_instance": "すでに起動しているスライサーでファイルを開く",
   "ui.slicer_single_instance_tip": "PrusaSlicer、SuperSlicer、Cura は、別のウィンドウを起動せず、開いているウィンドウでファイルを読み込みます。ほかのスライサーはそのまま起動します。",
   "ui.slicer_starting": "{slicer} を起動しています…",
+  "ui.slicer_still_starting": "まだ {slicer} の起動を待っています。ほかには何も送信していません。",
   "ui.slicer_stl_fallback": "3MF を書き込めなかったため、STL で送信しました。",
   "ui.slot": "スロット",
   "ui.smooth": "スムーズ",

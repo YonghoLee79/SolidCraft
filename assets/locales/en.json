@@ -1516,6 +1516,7 @@
   "ui.slicer_single_instance": "Open files in a slicer that is already running",
   "ui.slicer_single_instance_tip": "PrusaSlicer, SuperSlicer and Cura load the file in the window that is open instead of starting another. Other slicers are started as they are.",
   "ui.slicer_starting": "Starting {slicer}…",
+  "ui.slicer_still_starting": "Still waiting for {slicer} to start. Nothing else was sent.",
   "ui.slicer_stl_fallback": "The 3MF could not be written, so this is an STL.",
   "ui.slot": "Slot",
   "ui.smooth": "Smooth",

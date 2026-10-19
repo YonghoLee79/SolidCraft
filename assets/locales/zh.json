@@ -1516,6 +1516,7 @@
   "ui.slicer_single_instance": "在已运行的切片软件中打开文件",
   "ui.slicer_single_instance_tip": "PrusaSlicer、SuperSlicer 和 Cura 会在已打开的窗口中加载文件，而不是再启动一个。其他切片软件按原样启动。",
   "ui.slicer_starting": "正在启动 {slicer}…",
+  "ui.slicer_still_starting": "仍在等待 {slicer} 启动。没有发送其他内容。",
   "ui.slicer_stl_fallback": "无法写入 3MF，因此发送的是 STL。",
   "ui.slot": "槽",
   "ui.smooth": "平滑",

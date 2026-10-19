@@ -139,7 +139,8 @@ fn spawn_wait(
 fn send_to_slicer(app: &mut SolveApp, params: Value) {
     let _language = crate::i18n::scope(&app.preferences.language);
     if let Some(wait) = &app.slicer_wait {
-        let line = crate::i18n::format("ui.slicer_starting", &[("slicer", &wait.slicer.name)]);
+        // Whatever was picked this time (another slicer, other bodies): nothing else is sent.
+        let line = crate::i18n::format("ui.slicer_still_starting", &[("slicer", &wait.slicer.name)]);
         app.set_status(line, false);
         return;
     }
@@ -583,7 +584,9 @@ mod tests {
         app.slicer_wait = Some(SlicerWait { done, slicer, result: json!({"path": "/p"}) });
         send_to_slicer(&mut app, params);
         assert!(app.slicer_wait.is_some(), "still the one wait");
-        assert!(app.status.as_ref().is_some_and(|(m, _, error)| !*error && m.contains("Fake")), "{:?}", app.status);
+        let status = app.status.clone().unwrap();
+        assert!(!status.2 && status.0.contains("Still waiting") && status.0.contains("Nothing else was sent"), "{status:?}");
+        assert!(status.0.contains(&app.slicer_wait.as_ref().unwrap().slicer.name), "names the slicer being waited for: {status:?}");
         assert!(!seen.exists(), "the second click sent nothing");
         for _ in 0..200 {
             tick_wait(&mut app, &ctx);
