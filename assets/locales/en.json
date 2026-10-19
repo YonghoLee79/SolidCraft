@@ -1511,6 +1511,7 @@
   "ui.slicer": "Slicer",
   "ui.slicer_delete_tip": "{program}\nPress Delete to remove it from the list",
   "ui.slicer_lost": "{slicer} was started but can't be found again to send it the file. The file is saved at {path}: open it from there.",
+  "ui.slicer_no_file": "{slicer} is ready, but there is no file to send to it.",
   "ui.slicer_no_response": "{slicer} didn't respond in time. The file is already saved at {path}: send it again once the slicer has started.",
   "ui.slicer_resend_hint": "Sending again replaces the file the slicer has open.",
   "ui.slicer_single_instance": "Open files in a slicer that is already running",

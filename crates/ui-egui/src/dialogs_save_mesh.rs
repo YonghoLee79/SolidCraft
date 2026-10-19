@@ -185,7 +185,10 @@ pub fn tick_wait(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(wait) = app.slicer_wait.take() else { return };
     let _language = crate::i18n::scope(&app.preferences.language);
     let path = wait.result.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
-    if ready {
+    if ready && path.is_empty() {
+        // Nothing was written to send (the answer had no path): say so, rather than open "".
+        app.set_status(crate::i18n::format("ui.slicer_no_file", &[("slicer", &wait.slicer.name)]), true);
+    } else if ready {
         // The file is already written: open that one, rather than export the design again.
         let mut result = wait.result;
         if let Some(obj) = result.as_object_mut() {
@@ -692,6 +695,30 @@ mod tests {
         let second = std::fs::read_to_string(&seen).unwrap().lines().nth(1).unwrap().to_string();
         assert_eq!(second, "--single-instance /tmp/part.3mf");
         let _ = std::fs::remove_dir_all(dir);
+        solidcraft_engine::slicers::set_chosen_programs(&[]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ready_slicer_with_no_file_to_send_is_reported_and_nothing_is_started() {
+        let ctx = egui::Context::default();
+        let (mut app, seen, params) = app_with_fake_slicer("nofile");
+        let slicer = slicers::custom(params["slicer"].as_str().unwrap()).unwrap();
+        let done = spawn_wait(|_| true, std::time::Duration::from_secs(5), std::time::Duration::from_millis(5));
+        app.slicer_wait = Some(SlicerWait { done, slicer, result: json!({"starting": "Fake"}) });
+        for _ in 0..200 {
+            tick_wait(&mut app, &ctx);
+            if app.slicer_wait.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.slicer_wait.is_none());
+        let status = app.status.clone().unwrap();
+        assert!(status.2 && status.0.contains("no file"), "{status:?}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!seen.exists(), "the slicer was not started with an empty path");
+        let _ = std::fs::remove_dir_all(seen.parent().unwrap());
         solidcraft_engine::slicers::set_chosen_programs(&[]);
     }
 
