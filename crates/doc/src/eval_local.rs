@@ -170,8 +170,6 @@ pub(super) fn key(
         st.sketch_keys.get(id).hash(&mut h);
     }
     st.body_counter.hash(&mut h);
-    // How deep the naming history runs (names are not traced past a depth).
-    st.bodies.iter().filter_map(|b| b.names.origin.as_ref().map(|o| o.depth)).max().hash(&mut h);
     // A cut drops the threads of bodies it removes.
     serde_json::to_string(&st.threads).unwrap_or_default().hash(&mut h);
     Some((h.finish(), read.bodies.into()))
