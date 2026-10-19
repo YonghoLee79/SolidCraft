@@ -205,10 +205,10 @@ impl WorldCache {
     }
 }
 
-/// An editing session on one design.
 /// Source of [`Session::uid`].
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// An editing session on one design.
 pub struct Session {
     pub doc: Arc<Document>,
     pub model: Model,
