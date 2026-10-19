@@ -36,6 +36,7 @@ pub mod dialogs_parts;
 pub mod dialogs_plastic;
 pub mod dialogs_save_mesh;
 pub mod dialogs_sheet;
+pub mod dialogs_sim;
 pub mod dialogs_surface;
 pub mod dialogs_sweep;
 mod dialogs_thread;
@@ -151,6 +152,7 @@ pub mod selection;
 #[cfg(test)]
 mod shell_face_sketch_ui_tests;
 pub mod shortcut_box;
+pub mod simulation_workspace;
 pub mod sketch3d;
 #[cfg(test)]
 mod sketch3d_frame_ui_tests;
@@ -204,6 +206,7 @@ pub mod update;
 pub mod viewport;
 mod viewport_layout;
 pub mod workspace;
+pub mod workspace_switch;
 
 use std::sync::mpsc::Receiver;
 
@@ -211,6 +214,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use solidcraft_engine::Session;
 use solidcraft_engine::render::{Camera, CameraAnim, StandardView};
+use workspace_switch::Workspace;
 
 pub use control::{ControlRequest, ControlResponse};
 
@@ -718,6 +722,7 @@ impl SolveApp {
                 }
                 if matches!(id, "file.new" | "doc.open" | "doc.recover") {
                     render_workspace::reset_document(self);
+                    simulation_workspace::reset_document(self);
                     self.sketch_choices = sketch_families::Choices::default();
                     dim_view::cancel();
                     self.menu.props = None;
@@ -1113,7 +1118,7 @@ impl SolveApp {
             self.flat_view.fitted = false;
             return;
         }
-        if render_workspace::active(self) {
+        if workspace_switch::current(self) == Workspace::Render {
             self.cancel_view_animation();
             match solidcraft_engine::product_scene::extract(&self.session) {
                 Ok(scene) if !scene.bounds.is_empty() => self.cam.fit(&scene.bounds),
@@ -1204,7 +1209,7 @@ impl SolveApp {
             self.animate_view("fit");
             return;
         }
-        if render_workspace::active(self) {
+        if workspace_switch::current(self) == Workspace::Render {
             // The Render preview frames its product scene (see `fit_view`).
             self.fit_view();
             return;
@@ -1223,7 +1228,7 @@ impl SolveApp {
             self.flat_view.fitted = false;
             return;
         }
-        if render_workspace::active(self) && matches!(v, "fit" | "home") {
+        if workspace_switch::current(self) == Workspace::Render && matches!(v, "fit" | "home") {
             if v == "home" {
                 self.cam.set_view(StandardView::Iso);
             }
@@ -1263,7 +1268,7 @@ impl SolveApp {
     /// change, or at once (control requests, so a screenshot right after shows it).
     pub fn follow_view_request(&mut self, animate: bool) {
         let Some(mut to) = self.session.camera.take() else { return };
-        if render_workspace::active(self) {
+        if workspace_switch::current(self) == Workspace::Render {
             self.ui.up_axis = to.up;
         } else {
             to.up = self.cam.up;
@@ -1443,7 +1448,8 @@ impl SolveApp {
             }
         }
         toolbar::toolbar(self, ui);
-        let show_timeline = self.ui.show_timeline && !render_workspace::active(self);
+        // The timeline edits the model, which is Design's job.
+        let show_timeline = self.ui.show_timeline && workspace_switch::current(self) == Workspace::Design;
         let left_timeline = show_timeline && self.preferences.timeline_left;
         if show_timeline && !left_timeline {
             timeline::timeline(self, ui);
@@ -1460,7 +1466,7 @@ impl SolveApp {
         } else if left_timeline {
             timeline_left::left_panel(self, ui);
         }
-        if render_workspace::active(self) {
+        if workspace_switch::current(self) == Workspace::Render {
             render_workspace::panel(self, ui);
         }
         agent_chat::show(self, ui);
@@ -1471,10 +1477,10 @@ impl SolveApp {
             browser::floating(self, ui, viewport);
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            if render_workspace::active(self) {
-                render_workspace::show(self, ui);
-            } else {
-                viewport::show(self, ui);
+            match workspace_switch::current(self) {
+                Workspace::Render => render_workspace::show(self, ui),
+                // Simulation studies are set up on the modelling view.
+                Workspace::Design | Workspace::Simulation => viewport::show(self, ui),
             }
         });
         dialogs::show(self, ui.ctx());

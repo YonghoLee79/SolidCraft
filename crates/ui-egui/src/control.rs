@@ -47,6 +47,7 @@ use solidcraft_engine::render::StandardView;
 use solidcraft_engine::timing;
 
 use crate::SolveApp;
+use crate::workspace_switch::Workspace;
 
 pub type ControlResponse = Value;
 
@@ -247,14 +248,12 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
     match method {
         "ui.workspace" => {
             if let Some(workspace) = s("workspace") {
-                if !matches!(workspace, "design" | "render") {
-                    return err("workspace must be design or render");
-                }
-                if let Err(e) = crate::render_workspace::enter(app, workspace == "render") {
+                let Some(to) = Workspace::from_id(workspace) else { return err("workspace must be design, render or simulation") };
+                if let Err(e) = crate::workspace_switch::enter(app, to) {
                     return err(e);
                 }
             }
-            ok(json!({"workspace":if crate::render_workspace::active(app) {"render"} else {"design"}}))
+            ok(json!({"workspace":crate::workspace_switch::current(app).id()}))
         }
         "engine.execute" | "command" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
@@ -355,8 +354,9 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             }
             match (serde_json::from_value::<crate::UiState>(cur), serde_json::from_value::<solidcraft_engine::Visibility>(vis)) {
                 (Ok(u), Ok(v)) => {
-                    if (u.tab == "RENDER") != crate::render_workspace::active(app)
-                        && let Err(e) = crate::render_workspace::enter(app, u.tab == "RENDER")
+                    let to = Workspace::of_tab(&u.tab);
+                    if to != crate::workspace_switch::current(app)
+                        && let Err(e) = crate::workspace_switch::enter(app, to)
                     {
                         return err(e);
                     }
@@ -829,7 +829,7 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
     }
     let fit = match o.get("fit") {
         None | Some(Value::Bool(false)) => None,
-        Some(Value::Bool(true)) if !crate::render_workspace::active(app) && crate::viewport::view_bounds(app).is_empty() => {
+        Some(Value::Bool(true)) if crate::workspace_switch::current(app) != Workspace::Render && crate::viewport::view_bounds(app).is_empty() => {
             return Err("nothing is shown to fit".into());
         }
         Some(Value::Bool(true)) => Some(None),

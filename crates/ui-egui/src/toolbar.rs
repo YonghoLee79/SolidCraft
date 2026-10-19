@@ -6,6 +6,7 @@ use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
 
 use crate::theme::Tokens;
+use crate::workspace_switch::Workspace;
 use crate::{SolveApp, icons};
 
 pub const TABS: &[&str] = &["SOLID", "SURFACE", "MESH", "SHEET METAL", "PLASTIC", "UTILITIES"];
@@ -29,6 +30,7 @@ pub fn panels(tab: &str) -> &'static [&'static str] {
         "SHEET METAL" => &["CREATE", "MODIFY", "ASSEMBLE", "CONSTRUCT", "INSPECT", "INSERT", "SELECT"],
         "PLASTIC" => &["CREATE", "MODIFY", "ASSEMBLE", "CONSTRUCT", "INSPECT", "INSERT", "SELECT"],
         "RENDER" => &["SCENE"],
+        "SIMULATION" => &["STUDY"],
         _ => &["MAKE", "ADD-INS", "UTILITY", "INSPECT", "SELECT"],
     }
 }
@@ -657,7 +659,8 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         let ws = Rect::from_min_max(pos2(r.left() + 6.0, r.top() + 4.0), pos2(r.left() + 104.0, r.bottom() - 5.0));
         let wresp = ui.interact(ws, ui.id().with("workspace_switcher"), Sense::click());
         painter.rect(ws, 4.0, if wresp.hovered() { t.hover } else { t.field }, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-        let workspace_icon = if crate::render_workspace::active(app) { "ws_render" } else { "ws_design" };
+        let workspace = crate::workspace_switch::current(app);
+        let workspace_icon = workspace.icon();
         icons::paint(
             &painter,
             Rect::from_center_size(pos2(ws.center().x, ws.top() + 24.0), vec2(26.0, 26.0)),
@@ -666,13 +669,14 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             t.icon_fill,
             t.accent,
         );
-        painter.text(
-            pos2(ws.center().x - 5.0, ws.top() + 52.0),
-            Align2::CENTER_CENTER,
-            app.tr_label(if crate::render_workspace::active(app) { "RENDER" } else { crate::toolbar_custom::WORKSPACE }),
-            FontId::proportional(12.0),
-            t.text,
-        );
+        // The name sits left of the caret: a long one (SIMULATION, or a translation) moves left
+        // and, past the switcher's width, shrinks rather than running under the caret.
+        let name = app.tr_label(if workspace == Workspace::Design { crate::toolbar_custom::WORKSPACE } else { workspace.tab() }).to_string();
+        let (left, right) = (ws.left() + 5.0, ws.center().x + 21.0);
+        let width = painter.layout_no_wrap(name.clone(), FontId::proportional(12.0), t.text).size().x;
+        let size = if width > right - left { (12.0 * (right - left) / width).max(8.0) } else { 12.0 };
+        let x = (ws.center().x - 5.0).min(right - width * size / 24.0);
+        painter.text(pos2(x, ws.top() + 52.0), Align2::CENTER_CENTER, name, FontId::proportional(size), t.text);
         caret(&painter, pos2(ws.center().x + 27.0, ws.top() + 52.0), t.text);
         painter.text(pos2(ws.center().x, ws.top() + 69.0), Align2::CENTER_CENTER, app.tr("ui.workspace"), FontId::proportional(10.0), t.text_dim);
         if wresp.on_hover_text(app.tr("ui.change_workspace")).clicked() {
@@ -685,10 +689,9 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         if sketching {
             tabs.push("SKETCH");
         }
-        if crate::render_workspace::active(app) {
-            tabs.push("RENDER");
-        } else {
-            tabs.extend(TABS.iter());
+        match workspace {
+            Workspace::Design => tabs.extend(TABS.iter()),
+            Workspace::Render | Workspace::Simulation => tabs.push(workspace.tab()),
         }
         for tab in tabs {
             let display_tab = app.tr_label(tab);

@@ -352,15 +352,21 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::ToolbarCommand { id } => crate::toolbar_custom::command_items(app, id),
         Target::Toolbar => crate::toolbar_custom::toolbar_items(app),
         Target::Workspace => {
-            let rendering = crate::render_workspace::active(app);
-            let mut v = vec![
-                act("ui.workspace.design", "Design", "ws_design").with(json!({"workspace":"design"})).key(if rendering { "" } else { "current" }),
-                act("ui.workspace.render", "Render", "ws_render")
-                    .with(json!({"workspace":"render"}))
-                    .key(if rendering { "current" } else { "" })
-                    .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none() && !app.file_load.busy()),
-            ];
-            for w in ["Animation", "Simulation", "Manufacture", "Drawing"] {
+            use crate::workspace_switch::{Workspace, can_leave_design, current};
+            let now = current(app);
+            let mut v: Vec<Item> = Workspace::ALL
+                .into_iter()
+                .map(|w| {
+                    let item = act(&format!("ui.workspace.{}", w.id()), w.label(), w.icon()).with(json!({"workspace":w.id()})).key(if w == now {
+                        "current"
+                    } else {
+                        ""
+                    });
+                    // Design is always reachable; the others wait for the modelling operation to finish.
+                    if w == Workspace::Design { item } else { item.on(can_leave_design(app)) }
+                })
+                .collect();
+            for w in ["Animation", "Manufacture", "Drawing"] {
                 v.push(act("ui.workspace", w, "").key("coming later").on(false));
             }
             v
@@ -1126,9 +1132,9 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.toolbarPin" | "ui.toolbarRemove" | "ui.toolbarReset" | "ui.toolbarCustomize" | "ui.shortcutPin" => {
             crate::toolbar_custom::run(app, &item.id, &p)
         }
-        "ui.workspace" | "ui.workspace.design" | "ui.workspace.render" => {
-            if let Some(workspace) = p.get("workspace").and_then(Value::as_str)
-                && let Err(e) = crate::render_workspace::enter(app, workspace == "render")
+        "ui.workspace" | "ui.workspace.design" | "ui.workspace.render" | "ui.workspace.simulation" => {
+            if let Some(to) = p.get("workspace").and_then(Value::as_str).and_then(crate::workspace_switch::Workspace::from_id)
+                && let Err(e) = crate::workspace_switch::enter(app, to)
             {
                 app.set_status(e, true);
             }

@@ -1,0 +1,34 @@
+[
+  {"note": "The Simulation workspace: switch to it, open each study's setup dialog, and come back to Design with the design untouched. The solvers are not built yet, so OK on a picked body is refused and nothing changes."},
+  {"call": "engine.execute", "params": {"command": "solid.box", "params": {"length": 40, "width": 20, "height": 10, "body_name": "Duct"}}},
+  {"call": "ui.view", "params": {"view": "iso"}},
+  {"expect": {"workspace": "design", "bodies": 1, "volume": 8000}},
+
+  {"note": "Into Simulation through the control channel, as an agent would."},
+  {"call": "ui.workspace", "params": {"workspace": "simulation"}},
+  {"expect": {"workspace": "simulation", "bodies": 1, "volume": 8000}},
+
+  {"note": "Airflow Study: a docked dialog with the body picker."},
+  {"start": "sim.flow.new"},
+  {"expect": {"dialog": "Sim(Flow)", "dialog_docked": {}}},
+  {"click": {"world": [20, 10, 10]}},
+  {"widget": "OK"},
+  {"expect": {"dialog": "Sim(Flow)", "bodies": 1, "volume": 8000}},
+  {"key": "Escape"},
+  {"expect": {"dialog": null}},
+
+  {"note": "Gas Dynamics Study, the same way."},
+  {"start": "sim.gas.new"},
+  {"expect": {"dialog": "Sim(Gas)", "dialog_docked": {}}},
+  {"key": "Escape"},
+  {"expect": {"dialog": null}},
+
+  {"note": "The engine refuses a study run directly too, after checking its body."},
+  {"call": "engine.execute", "params": {"command": "sim.flow.new", "params": {"body": "Duct"}}, "fail": true},
+  {"call": "engine.execute", "params": {"command": "sim.gas.new", "params": {"body": "Nope"}}, "fail": true},
+
+  {"note": "Back to Design: same body, same volume, nothing to undo."},
+  {"call": "ui.workspace", "params": {"workspace": "design"}},
+  {"expect": {"workspace": "design", "bodies": 1, "volume": 8000, "errors": 0}},
+  {"shot": "simulation_workspace_studies"}
+]
