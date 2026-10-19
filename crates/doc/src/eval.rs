@@ -795,6 +795,8 @@ pub struct EvalCache {
     /// What the stored results cost together.
     bytes: usize,
     pub hits: usize,
+    /// Results keyed by the part of the model they read (see `eval_local`).
+    partial: local::PartialCache,
 }
 
 #[derive(Clone, Debug)]
@@ -821,6 +823,13 @@ const CACHE_BYTES: usize = 64 << 20;
 impl EvalCache {
     fn get(&mut self, key: u64) -> Option<CachedEval> {
         let r = self.map.get(&key).cloned();
+        if r.is_some() {
+            self.hits += 1;
+        }
+        r
+    }
+    fn get_partial(&mut self, key: u64) -> Option<local::Partial> {
+        let r = self.partial.get(key);
         if r.is_some() {
             self.hits += 1;
         }
@@ -1530,13 +1539,33 @@ impl Model {
                 });
                 continue;
             }
-            recomputed += 1;
+            // A feature that reads only some of the model: its result from when that part was as it
+            // is now, laid over the rest of the model as it is now.
+            let read = if self.no_cache || param_names(f).iter().any(|n| self.param_errors.contains_key(n)) {
+                None
+            } else {
+                local::key(doc, &vals, f, ctx, &state, &self.step_digests)
+            };
+            let partial_key = read.as_ref().map(|(k, _)| *k);
+            let reused = partial_key
+                .and_then(|k| self.cache.lock().ok().and_then(|mut m| m.get_partial(k)))
+                .and_then(|c| local::splice(&c, f.id, &state).map(|next| (next, c)));
             let t0 = now();
-            let mut next = (*state).clone();
-            for b in &mut next.bodies {
-                b.made = crate::lineage::Made::Before;
-            }
-            let mut warning = None;
+            let (mut next, cached) = match reused {
+                Some((next, c)) => {
+                    restored += 1;
+                    (next, Some(c))
+                }
+                None => {
+                    recomputed += 1;
+                    let mut next = (*state).clone();
+                    for b in &mut next.bodies {
+                        b.made = crate::lineage::Made::Before;
+                    }
+                    (next, None)
+                }
+            };
+            let mut warning = cached.as_ref().and_then(|c| c.warning.clone());
             // Face references by name: move each face point onto its named face (on the body the
             // feature names, when it names one and the face is there).
             let renamed;
@@ -1589,31 +1618,49 @@ impl Model {
             };
             // A parameter with an error fails the features using it, with that error.
             let bad_param = param_names(f).into_iter().find_map(|n| self.param_errors.get(&n).map(|e| format!("parameter `{n}`: {e}")));
-            let (r, mut boolean_diagnostics) = kernel::capture_boolean_diagnostics(|| match bad_param {
-                Some(e) => Err(kernel::KernelError::Failed(e)),
-                None => kernel::guard(&f.name, || {
-                    eval_feature(doc, &vals, f, &mut next, &mut warning).map_err(|e| kernel::KernelError::Failed(e.to_string()))
-                }),
-            });
-            if r.is_ok() {
-                // Profiles picked by curves that no longer bound a profile exactly were found
-                // by their best match: say which.
-                let thin = matches!(&f.kind, FeatureKind::Extrude { thin: Some(_), .. });
-                for (sketch, sel) in f.kind.profile_sels() {
-                    if let (false, Some(ss)) = (thin, state.sketch(sketch)) {
-                        for note in crate::profile_fallback_notes(ss, sel) {
+            let (r, boolean_diagnostics) = match &cached {
+                Some(c) => (Ok(()), c.boolean_diagnostics.clone()),
+                None => {
+                    let (r, boolean_diagnostics) = kernel::capture_boolean_diagnostics(|| match bad_param {
+                        Some(e) => Err(kernel::KernelError::Failed(e)),
+                        None => kernel::guard(&f.name, || {
+                            eval_feature(doc, &vals, f, &mut next, &mut warning).map_err(|e| kernel::KernelError::Failed(e.to_string()))
+                        }),
+                    });
+                    if r.is_ok() {
+                        // Profiles picked by curves that no longer bound a profile exactly were found
+                        // by their best match: say which.
+                        let thin = matches!(&f.kind, FeatureKind::Extrude { thin: Some(_), .. });
+                        for (sketch, sel) in f.kind.profile_sels() {
+                            if let (false, Some(ss)) = (thin, state.sketch(sketch)) {
+                                for note in crate::profile_fallback_notes(ss, sel) {
+                                    append_warning(&mut warning, note);
+                                }
+                            }
+                        }
+                        if let Some(note) = boolean_diagnostics.warning() {
                             append_warning(&mut warning, note);
                         }
+                        track_altered_sheets(&state, &mut next, f, &mut warning);
+                        (r, boolean_diagnostics)
+                    } else {
+                        (r, Default::default())
                     }
                 }
-                if let Some(note) = boolean_diagnostics.warning() {
-                    append_warning(&mut warning, note);
+            };
+            let ms = match &cached {
+                Some(c) => c.ms,
+                None => t0.elapsed().as_secs_f64() * 1000.0,
+            };
+            // When it changed nothing but what it read, what it made is known by `partial_key`, and
+            // its result is kept for whatever the rest of the model holds.
+            let partial_result = match (&cached, &read) {
+                (None, Some((_, bodies))) if r.is_ok() => {
+                    local::Partial::of(f, bodies, &state, &next, warning.clone(), boolean_diagnostics.clone(), ms)
                 }
-                track_altered_sheets(&state, &mut next, f, &mut warning);
-            } else {
-                boolean_diagnostics = Default::default();
-            }
-            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                _ => None,
+            };
+            let partial_key = partial_key.filter(|_| cached.is_some() || partial_result.is_some());
             let error = match r {
                 Ok(()) => {
                     // Copies are named after their sources through the instance transforms.
@@ -1624,7 +1671,7 @@ impl Model {
                         }
                         _ => Vec::new(),
                     };
-                    next.stamp(&state, f, key, mats);
+                    next.stamp(&state, f, partial_key.unwrap_or(key), mats);
                     for b in &mut next.bodies {
                         if !b.transferred {
                             b.component = match doc.body_components.get(&b.name) {
@@ -1640,20 +1687,22 @@ impl Model {
                 }
                 Err(e) => Some(e.to_string().trim_start_matches("the operation failed: ").to_string()),
             };
-            if !self.no_cache {
-                let e = CachedEval {
-                    error: error.clone(),
-                    warning: warning.clone(),
-                    boolean_diagnostics: boolean_diagnostics.clone(),
-                    ms,
-                    bytes: state.retained_bytes(),
-                    state: state.clone(),
-                };
-                if let Some(k) = &self.kept.0 {
-                    k.put(key, &e);
-                }
-                if let Ok(mut m) = self.cache.lock() {
-                    m.put(key, e);
+            if !self.no_cache
+                && let Ok(mut m) = self.cache.lock()
+            {
+                m.put(
+                    key,
+                    CachedEval {
+                        error: error.clone(),
+                        warning: warning.clone(),
+                        boolean_diagnostics: boolean_diagnostics.clone(),
+                        ms,
+                        bytes: state.retained_bytes(),
+                        state: state.clone(),
+                    },
+                );
+                if let (Some(k), Some(part)) = (partial_key, partial_result) {
+                    m.partial.put(k, part);
                 }
             }
             out.push(FeatureResult {
@@ -4927,12 +4976,7 @@ fn replay(
     }
     for name in features.iter().filter(|n| !suppressed.contains(n)) {
         // A sketch and its extrude often share a name; the feature that makes geometry wins.
-        let src = doc
-            .features
-            .iter()
-            .find(|x| &x.name == name && !matches!(x.kind, FeatureKind::Sketch { .. } | FeatureKind::ConstructionPlane { .. }))
-            .or_else(|| doc.find_feature(name))
-            .ok_or_else(|| DocError::Unknown(format!("feature `{name}`")))?;
+        let src = local::replayed(doc, name).ok_or_else(|| DocError::Unknown(format!("feature `{name}`")))?;
         // A fillet or chamfer repeats at the copied edges.
         if let FeatureKind::Fillet { edges, radius, .. } | FeatureKind::Chamfer { edges, distance: radius, .. } = &src.kind {
             let r = val(vals, radius, Kind::Length)?;
@@ -5013,6 +5057,8 @@ fn replay(
     Ok(())
 }
 
+#[path = "eval_local.rs"]
+mod local;
 #[path = "model_cache.rs"]
 mod model_cache;
 #[path = "eval_more.rs"]
