@@ -1502,7 +1502,7 @@ fn tool_annotations_tell_the_whole_truth() {
         let a = &t["annotations"];
         (a["readOnlyHint"].as_bool().unwrap(), a["destructiveHint"].as_bool().unwrap(), a["openWorldHint"].as_bool().unwrap())
     };
-    for name in ["execute", "batch", "save", "export", "open", "screenshot"] {
+    for name in ["execute", "batch", "save", "export", "open", "screenshot", "export_views"] {
         assert_eq!(hints(name), (false, true, true), "{name}");
     }
     for name in [
@@ -1917,4 +1917,99 @@ fn verify_design_checks_many_expectations_at_once() {
         let r = raw_tool(&mut s, "verify_design", bad.clone());
         assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{bad} -> {r}");
     }
+}
+
+/// Entities per layer and the extent (width, height) of a 2D DXF's coordinates.
+fn dxf_layers_and_extent(text: &str) -> (std::collections::BTreeMap<String, usize>, [f64; 2]) {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let (mut layers, mut entity_layer) = (std::collections::BTreeMap::new(), None::<String>);
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    let mut in_entities = false;
+    for pair in lines.chunks(2) {
+        let [code, value] = pair else { continue };
+        match *code {
+            "0" => {
+                if let Some(l) = entity_layer.take() {
+                    *layers.entry(l).or_insert(0) += 1;
+                }
+                in_entities |= *value == "LINE" || *value == "LWPOLYLINE";
+                if *value == "LINE" || *value == "LWPOLYLINE" {
+                    entity_layer = Some(String::new());
+                }
+            }
+            "8" if entity_layer.is_some() => entity_layer = Some(value.to_string()),
+            "10" | "11" if entity_layer.is_some() => {
+                let x: f64 = value.parse().unwrap();
+                lo[0] = lo[0].min(x);
+                hi[0] = hi[0].max(x);
+            }
+            "20" | "21" if entity_layer.is_some() => {
+                let y: f64 = value.parse().unwrap();
+                lo[1] = lo[1].min(y);
+                hi[1] = hi[1].max(y);
+            }
+            _ => {}
+        }
+    }
+    assert!(in_entities, "no LINE or LWPOLYLINE entities");
+    (layers, [hi[0] - lo[0], hi[1] - lo[1]])
+}
+
+/// `export_views` writes the standard orthographic views; each DXF spans the bounding box as that view
+/// sees it, and the through hole shows as hidden lines from the front.
+#[test]
+fn export_views_writes_orthographic_dxfs_with_hidden_lines() {
+    use solidcraft_engine::io::vfs::PathScope;
+    let top = std::env::temp_dir().join(format!("solidcraft-mcp-views-{}", std::process::id()));
+    let (dir, outside) = (top.join("root"), top.join("outside"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    // Only `dir` is the agent's, as `solidcraft-cli mcp` confines its agent.
+    let mut s = Server::new(Box::new(Headless::default())).with_path_scope(Some(PathScope::new([dir.clone()])));
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "solid.box", "params": {"length": 40, "width": 30, "height": 20, "corner": [0, 0, 0], "body_name": "Block"}}),
+    );
+    tool(&mut s, "fastener_metric_hole", json!({"position": [20, 15, 20], "standard": "M4", "depth": 20}));
+    let base = dir.join("block.dxf");
+    let r = tool(&mut s, "export_views", json!({"path": base.to_string_lossy()}));
+    let views = r["views"].as_array().unwrap();
+    assert_eq!(views.iter().map(|v| v["view"].as_str().unwrap()).collect::<Vec<_>>(), ["front", "top", "right", "iso"], "{r}");
+    for (view, want) in [("front", [40.0, 20.0]), ("top", [40.0, 30.0]), ("right", [30.0, 20.0])] {
+        let file = dir.join(format!("block_{view}.dxf"));
+        let (layers, extent) = dxf_layers_and_extent(&std::fs::read_to_string(&file).unwrap());
+        assert!((extent[0] - want[0]).abs() < 0.02 && (extent[1] - want[1]).abs() < 0.02, "{view}: {extent:?} vs {want:?}");
+        let reported = views.iter().find(|v| v["view"] == view).unwrap()["size_mm"].clone();
+        assert!((reported[0].as_f64().unwrap() - want[0]).abs() < 1e-6, "{view}: {reported}");
+        assert!(layers.get("VISIBLE").copied().unwrap_or(0) >= 4, "{view}: {layers:?}");
+        if view != "top" {
+            // From the side the hole is behind the material: its walls are dashed.
+            assert!(layers.get("HIDDEN").copied().unwrap_or(0) >= 2, "{view}: {layers:?}");
+        }
+    }
+    assert!(dir.join("block_iso.dxf").exists());
+
+    // Hidden edges left out, one view.
+    let r = tool(&mut s, "export_views", json!({"path": dir.join("plain").to_string_lossy(), "views": ["front"], "hidden": "omit"}));
+    assert_eq!(r["views"].as_array().unwrap().len(), 1, "{r}");
+    let (layers, _) = dxf_layers_and_extent(&std::fs::read_to_string(dir.join("plain_front.dxf")).unwrap());
+    assert!(!layers.contains_key("HIDDEN"), "{layers:?}");
+
+    // Outside the agent's folders nothing is written.
+    let r = raw_tool(&mut s, "export_views", json!({"path": outside.join("x.dxf").to_string_lossy(), "views": ["top"]}));
+    assert_eq!(r["result"]["isError"], json!(true), "{r}");
+    assert!(!outside.join("x_top.dxf").exists());
+    for bad in [
+        json!({"path": base.to_string_lossy(), "views": []}),
+        json!({"path": base.to_string_lossy(), "views": ["top", "top"]}),
+        json!({"path": base.to_string_lossy(), "tolerance": 5}),
+    ] {
+        let r = raw_tool(&mut s, "export_views", bad.clone());
+        assert!(r.get("error").is_some() || r["result"]["isError"] == json!(true), "{bad} -> {r}");
+    }
+    tool(&mut s, "new_design", json!({}));
+    let r = raw_tool(&mut s, "export_views", json!({"path": base.to_string_lossy()}));
+    assert_eq!(r["result"]["isError"], json!(true), "no bodies: {r}");
+    let _ = std::fs::remove_dir_all(&top);
 }

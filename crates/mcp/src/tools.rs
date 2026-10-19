@@ -253,6 +253,25 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "export_views",
+            "Export standard drawing views as DXF",
+            "Write orthographic (parallel) views of the shown bodies as one 2D DXF each, in mm, with hidden-line removal: \
+             visible edges on layer VISIBLE and, with `hidden: dashed` (the default), hidden edges on layer HIDDEN. Views \
+             are the app's standard views (front, back, left, right, top, bottom, iso), framed on the bodies' bounding \
+             box. Files are `<path stem>_<view>.dxf`. Curves are approximated within `tolerance`; there is no sheet, \
+             title block or dimensions yet: each view's `size_mm` (the bounding box seen from it) helps lay them out.",
+            obj(
+                json!({
+                    "path": string("Base path, e.g. \"out/bracket.dxf\" writes out/bracket_front.dxf, out/bracket_top.dxf, …"),
+                    "views": {"type": "array", "items": {"type": "string", "enum": ["front", "back", "left", "right", "top", "bottom", "iso"]}, "description": "Views to write (default front, top, right, iso)"},
+                    "hidden": {"type": "string", "enum": ["dashed", "omit"], "description": "Hidden edges on layer HIDDEN, or left out (default dashed)"},
+                    "tolerance": {"type": "number", "description": "Curve chord tolerance in mm, 0.0001 to 1 (default 0.01)"},
+                }),
+                &["path"],
+            ),
+            Effect::Files,
+        ),
+        tool(
             "fdm_print_estimate",
             "FDM Print Estimate (filament and build volume)",
             "Estimate the plastic an FDM print of bodies takes (a shell of `wall_mm` plus `infill_percent` of the inside; \
@@ -579,6 +598,7 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
         "dfm_clearance_check" => dfm_clearance_check(b, a),
         "fastener_hole_pattern" => fastener_hole_pattern(b, a),
         "fdm_print_estimate" => fdm_print_estimate(b, a),
+        "export_views" => export_views(b, a),
         "find_faces" => find_faces(b, a),
         "verify_design" => verify_design(b, a),
         other => Err(format!("unknown tool `{other}`")),
@@ -1143,6 +1163,71 @@ fn verify_one(b: &mut dyn Backend, kind: &str, c: &Map<String, Value>) -> Result
         "" => Err("`check` is required".into()),
         other => Err(format!("unknown check `{other}`")),
     }
+}
+
+/// The box around every body: (min, max).
+fn design_box(b: &mut dyn Backend) -> Result<([f64; 3], [f64; 3]), String> {
+    let m = exec(b, "inspect.measure", json!({}))?;
+    let bodies = m.get("bodies").and_then(Value::as_array).cloned().unwrap_or_default();
+    let corner = |k: &str| -> Vec<[f64; 3]> { bodies.iter().filter_map(|x| x.get("bbox").and_then(|bb| bb.get(k)).and_then(vec3_value)).collect() };
+    let fold = |l: Vec<[f64; 3]>, pick: fn(f64, f64) -> f64| l.into_iter().reduce(|p, q| [0, 1, 2].map(|i| pick(p[i], q[i])));
+    match (fold(corner("min"), f64::min), fold(corner("max"), f64::max)) {
+        (Some(lo), Some(hi)) => Ok((lo, hi)),
+        _ => Err("there are no bodies to draw".into()),
+    }
+}
+
+fn export_views(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<Value, String> {
+    use solidcraft_engine::render::StandardView;
+    let path = str_arg(a, "path").map(str::trim).filter(|p| !p.is_empty()).ok_or("`path` is required")?;
+    let stem = path.strip_suffix(".dxf").or_else(|| path.strip_suffix(".DXF")).unwrap_or(path);
+    let views: Vec<String> = match a.get("views") {
+        None => ["front", "top", "right", "iso"].map(String::from).to_vec(),
+        Some(v) => v.as_array().map(|l| l.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
+    };
+    if views.is_empty() || views.len() > 7 {
+        return Err("`views` must name 1 to 7 views".into());
+    }
+    let hidden = str_arg(a, "hidden").unwrap_or("dashed");
+    let hidden = match hidden {
+        "dashed" | "omit" => hidden,
+        other => return Err(format!("unknown `hidden` `{other}` (dashed or omit)")),
+    };
+    let tolerance = num_arg(a, "tolerance", 0.0001, 1.0)?.unwrap_or(0.01);
+    let (lo, hi) = design_box(b)?;
+    let target = [0, 1, 2].map(|i| (lo[i] + hi[i]) / 2.0);
+    let size = [0, 1, 2].map(|i| hi[i] - lo[i]);
+    // Far enough to be outside the bodies; a parallel view looks the same from any distance.
+    let distance = 10.0 + 3.0 * dot(size, size).sqrt();
+    let mut written = Vec::new();
+    for (i, name) in views.iter().enumerate() {
+        if views[..i].contains(name) {
+            return Err(format!("`views` names `{name}` twice"));
+        }
+        let view = StandardView::parse(name).ok_or_else(|| format!("unknown view `{name}`"))?;
+        let (yaw, pitch) = view.angles();
+        let file = format!("{stem}_{name}.dxf");
+        let camera = json!({"target": target, "yaw": yaw, "pitch": pitch, "distance": distance, "fov": 0.0});
+        let r = exec(b, "file.export_view_dxf", json!({"camera": camera, "path": file, "hidden": hidden, "tolerance": tolerance}))
+            .map_err(|e| if written.is_empty() { e } else { format!("{e} (already written: {})", Value::Array(written.clone())) })?;
+        // The bounding box as this view sees it (width, height); the iso view's isn't axis-aligned.
+        let seen = match name.as_str() {
+            "front" | "back" => Some([size[0], size[2]]),
+            "left" | "right" => Some([size[1], size[2]]),
+            "top" | "bottom" => Some([size[0], size[1]]),
+            _ => None,
+        };
+        written.push(json!({
+            "view": name,
+            "path": r.get("path").cloned().unwrap_or(json!(file)),
+            "size_mm": seen,
+            "hidden_edges": r.get("hidden"),
+            "segments": r.get("stats").and_then(|s| s.get("segments")),
+        }));
+    }
+    Ok(
+        json!({"views": written, "units": "mm", "projection": "orthographic", "hidden": hidden, "tolerance": tolerance, "bbox": {"min": lo, "max": hi}}),
+    )
 }
 
 /// The volume of every body together (mm³).
