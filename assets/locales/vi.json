@@ -1429,7 +1429,6 @@
   "ui.save_as_ellipsis": "Lưu thành...",
   "ui.save_mesh_no_slicer": "Không tìm thấy phần mềm cắt lớp (slicer): hãy chọn Tùy chỉnh… và chỉ định chương trình cắt lớp, hoặc tắt tùy chọn Gửi đến slicer",
   "ui.save_mesh_pick_bodies": "Chọn các thân khối cần lưu",
-  "ui.save_mesh_temp_failed": "Không thể tạo thư mục {folder}: {error}",
   "ui.saved_to": "Đã lưu {path}",
   "ui.sbox_pin": "Ghim lên đầu hộp tìm kiếm phím S",
   "ui.sbox_unpin": "Bỏ ghim",
