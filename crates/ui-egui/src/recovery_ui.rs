@@ -126,7 +126,6 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     if app.recoverable.is_empty() {
         return;
     }
-    let dir = app.autosave.as_ref().map(|a| a.dir.clone()).or_else(recovery::default_dir);
     let mut act: Option<(Entry, bool)> = None;
     let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_recover_prompt"), "restore", crate::i18n::tr_label("Recover unsaved design?"))
         .actions("", crate::i18n::tr_label("Later"), None)
@@ -153,25 +152,69 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             }
         });
     let later = closed || action != ui_kit::Action::None;
-    let dir_s = dir.map(|d| d.to_string_lossy().to_string());
     if let Some((e, recover)) = act {
-        app.recoverable.retain(|x| x.id != e.id);
-        if recover {
-            if app.session.is_dirty() {
-                app.set_status("save or discard the open design's changes before recovering another", true);
-                app.recoverable.insert(0, e);
-                return;
-            }
-            // Rebuilt off the window thread like any other file; once it is in, it is
-            // autosaved under this app's entry before the old entry goes.
-            let kind = crate::file_load::Kind::Recover { id: e.id.clone(), dir: dir_s };
-            let _ = crate::file_load::begin_request(app, crate::file_load::Request::new(&e.name, kind));
-        } else {
-            let _ = app.run("doc.recovery_discard", json!({"id": e.id, "dir": dir_s}));
+        let action = if recover { "recover" } else { "discard" };
+        if let Err(msg) = answer(app, action, Some(&e.id)) {
+            app.set_status(msg, true);
         }
     }
     if later {
+        let _ = answer(app, "later", None);
+    }
+}
+
+/// The prompt as the control channel's `ui.inspect` reports it (`dialog`), or `None` when
+/// nothing waits to be recovered.
+pub fn describe(app: &SolveApp) -> Option<serde_json::Value> {
+    if app.recoverable.is_empty() {
+        return None;
+    }
+    let designs: Vec<_> = app
+        .recoverable
+        .iter()
+        .take(20)
+        .map(|e| json!({"id": e.id, "name": e.name, "path": e.path, "features": e.features, "saved_at": e.saved_at, "autosaved": ago(e.saved_at)}))
+        .collect();
+    Some(json!({
+        "kind": "recover_unsaved",
+        "title": "Recover unsaved design?",
+        "designs": designs,
+        "actions": ["recover", "discard", "later"],
+    }))
+}
+
+/// What the prompt's buttons do: `recover` or `discard` the design `id` (default: the first one
+/// listed), or `later` (keep them all for the next launch). The control channel's
+/// `ui.recover` answers through here too.
+pub fn answer(app: &mut SolveApp, action: &str, id: Option<&str>) -> std::result::Result<(), String> {
+    if app.recoverable.is_empty() {
+        return Err("no Recover unsaved design? prompt is open".into());
+    }
+    if action == "later" {
         app.recoverable.clear();
+        return Ok(());
+    }
+    if action != "recover" && action != "discard" {
+        return Err(format!("unknown action `{action}` (recover, discard or later)"));
+    }
+    let e = match id {
+        Some(id) => app.recoverable.iter().find(|e| e.id == id).cloned().ok_or_else(|| format!("no recovered design `{id}` is offered"))?,
+        None => app.recoverable.first().cloned().ok_or("no recovered design is offered")?,
+    };
+    if action == "recover" && app.session.is_dirty() {
+        return Err("save or discard the open design's changes before recovering another".into());
+    }
+    app.recoverable.retain(|x| x.id != e.id);
+    let dir = app.autosave.as_ref().map(|a| a.dir.clone()).or_else(recovery::default_dir);
+    let dir_s = dir.map(|d| d.to_string_lossy().to_string());
+    if action == "recover" {
+        // Rebuilt off the window thread like any other file; once it is in, it is
+        // autosaved under this app's entry before the old entry goes.
+        let kind = crate::file_load::Kind::Recover { id: e.id.clone(), dir: dir_s };
+        let _ = crate::file_load::begin_request(app, crate::file_load::Request::new(&e.name, kind));
+        Ok(())
+    } else {
+        app.run("doc.recovery_discard", json!({"id": e.id, "dir": dir_s})).map(|_| ()).map_err(|e| e.to_string())
     }
 }
 
