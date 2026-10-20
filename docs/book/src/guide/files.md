@@ -38,8 +38,10 @@ A 3MF project saved by a slicer comes in too, also when it keeps its objects in 
 their own inside the file (the 3MF Production extension): each object on the build plate becomes
 a mesh body, with its parts where the slicer placed them.
 
-**File → Save as mesh…** (also on the Mesh tab under Modify, and in the right-click menu of a
-body) saves the selected bodies as STL, 3MF or 3MF with face tags (below), to a file you name.
+**File → Export STL…** and **File → Export 3MF…** (also on the Mesh tab under Modify as Save as
+mesh, and in the right-click menu of a body) open the same dialog with that format chosen; it saves
+the selected bodies as STL, 3MF or 3MF with face tags (below) to a file you name, and you can change
+the format there.
 
 **File → Send to Slicer** (also on the Mesh tab under Modify, and in the right-click menu of a
 body) is the short way: it saves the selected bodies as a 3MF in millimetres, without face tags,
@@ -79,7 +81,7 @@ treated as PrusaSlicer 3, and any other entry is left as it is.
 Closed mechanical meshes with a constant cross-section can be rebuilt as solids with the
 `mesh.convert` command (command palette, scripts and the control channel).
 
-**File → Save as mesh…** with the format **3MF with face tags** (`file.export` or `file.save_mesh` with `format: "3mf-tagged"`) writes an
+**File → Export 3MF…** with the format changed to **3MF with face tags** (`file.export` or `file.save_mesh` with `format: "3mf-tagged"`) writes an
 ordinary 3MF in which every triangle also names the B-rep face it lies on and every coordinate
 is the tessellation's own double-precision value. Meshing and analysis tools can use the tags to
 keep a model's faces (for loads, boundary conditions or feature edges); other 3MF readers ignore

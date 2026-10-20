@@ -105,6 +105,24 @@ pub fn score(q: &str, s: &str) -> u32 {
     300u32.saturating_sub(gaps * 20).max(10)
 }
 
+/// Words people look for a command by that its name doesn't hold (file formats, what it is for).
+fn keywords(id: &str) -> &'static str {
+    match id {
+        "file.save_mesh" => "export stl 3mf mesh 3d print printing slicer",
+        "file.export" => "export stl 3mf obj step urdf mesh 3d print",
+        _ => "",
+    }
+}
+
+/// How well `q` matches a command's `keywords`: every word of the query starts a keyword.
+fn keyword_score(q: &str, keywords: &str) -> u32 {
+    if keywords.is_empty() || q.is_empty() {
+        return 0;
+    }
+    let words = || keywords.split_whitespace();
+    if q.split_whitespace().all(|w| words().any(|k| k.starts_with(w))) { 700 } else { 0 }
+}
+
 /// A row of the box: the command id, its label, its icon, and where it lives on the toolbar
 /// (tab, panel; `None` off the toolbar), in the current language.
 pub type Row = (&'static str, &'static str, &'static str, Option<(&'static str, &'static str)>);
@@ -125,6 +143,7 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<Row> {
             let s = score(&q, label)
                 .max(score(&q, c.label))
                 .max(score(&q, c.id) * 9 / 10)
+                .max(keyword_score(&q, keywords(c.id)))
                 .max(score(&q, tab).max(score(&q, home_tab)) / 3)
                 .max(score(&q, panel).max(score(&q, home_panel)) / 3);
             let recent = app.sbox.recent.iter().position(|r| r == c.id).map_or(0, |i| 2000u32.saturating_sub(i.min(2000) as u32));

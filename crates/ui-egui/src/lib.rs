@@ -332,6 +332,12 @@ pub struct Services {
     /// Hand a design's bytes to the user as a downloaded file (name, bytes); the browser build's
     /// File > Download design. None: the host saves real files, so there is nothing to offer.
     pub download_design: Option<Box<dyn Fn(&str, &[u8]) -> Result<(), String>>>,
+    /// Whether a recent design that is not in memory can be brought back by the host (the browser
+    /// build remembers files it saved to the disk); None: it can't.
+    pub can_restore: Option<Box<dyn Fn(&str) -> bool>>,
+    /// Bring such a design back and open it when it arrives (asks the user for access, so call it
+    /// in the click that chose it).
+    pub restore_file: Option<Box<dyn Fn(&str)>>,
     /// Show the designs the browser keeps for itself; None: the host has no such store.
     pub browser_files: Option<Box<dyn Fn()>>,
     /// HTTP for the agent chat's API agents (OpenAI-compatible endpoints); None: no API agents.
