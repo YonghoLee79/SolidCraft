@@ -74,11 +74,13 @@ pub struct Limits {
     /// Settled once the openings' flows and pressures change by less than this fraction over
     /// the last few measurements.
     pub tolerance: f64,
+    /// Ramp the inlets up from rest (off for a warm start from an earlier flow).
+    pub soft_start: bool,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_steps: 200_000, check_every: 500, tolerance: 0.005 }
+        Limits { max_steps: 200_000, check_every: 500, tolerance: 0.005, soft_start: true }
     }
 }
 
@@ -133,7 +135,7 @@ impl Run {
         let stepper = backend.stepper(&prepared.lattice)?;
         let longest = prepared.grid.dims.iter().copied().max().unwrap_or(1) as f64;
         let crossing = (longest / LATTICE_SPEED).ceil() as u64;
-        let ramp = crossing;
+        let ramp = if limits.soft_start { crossing } else { 0 };
         let mut run = Run {
             prepared,
             stepper,
@@ -393,6 +395,57 @@ impl Fields {
         (weight > 1e-6).then(|| (u / weight, pr / weight))
     }
 
+    /// Over the air cells whose centres lie in the box `min`..`max` (mm): mean speed, top speed
+    /// (m/s), mean pressure (Pa) and how many cells; None when the box holds no air.
+    pub fn box_stats(&self, min: Vec3, max: Vec3) -> Option<(f64, f64, f64, usize)> {
+        let s = self.cell;
+        let lo = |v: f64, o: f64| (((v - o) / s) - 0.5).ceil().max(0.0) as usize;
+        let hi = |v: f64, o: f64, n: usize| ((((v - o) / s) - 0.5).floor().max(-1.0) + 1.0).min(n as f64) as usize;
+        let (mut speed, mut top, mut pressure, mut n) = (0.0, 0.0f64, 0.0, 0usize);
+        for k in lo(min.z, self.origin.z)..hi(max.z, self.origin.z, self.dims[2]) {
+            for j in lo(min.y, self.origin.y)..hi(max.y, self.origin.y, self.dims[1]) {
+                for i in lo(min.x, self.origin.x)..hi(max.x, self.origin.x, self.dims[0]) {
+                    let Some(idx) = self.index(i, j, k) else { continue };
+                    let (Some(v), Some(p)) = (self.value(idx, Quantity::Speed), self.value(idx, Quantity::Pressure)) else { continue };
+                    speed += v;
+                    top = top.max(v);
+                    pressure += p;
+                    n += 1;
+                }
+            }
+        }
+        (n > 0).then(|| (speed / n as f64, top, pressure / n as f64, n))
+    }
+
+    /// Through the disc at `centre` (mm) facing `normal`, of `radius` (mm), sampled about every
+    /// half cell: flow along the normal (m³/s), mean pressure (Pa) and the area found in the air
+    /// (m²); None when none of it is in the air.
+    pub fn disc_flow(&self, centre: Vec3, normal: Vec3, radius: f64) -> Option<(f64, f64, f64)> {
+        let n = normal.normalized()?;
+        if !(radius.is_finite() && radius > 0.0) {
+            return None;
+        }
+        let u = n.any_perp();
+        let v = n.cross(u);
+        let h = (0.5 * self.cell).max(radius / 400.0);
+        let steps = (radius / h).ceil() as i64;
+        let da = (h * 1e-3) * (h * 1e-3);
+        let (mut flow, mut pressure, mut area) = (0.0, 0.0, 0.0);
+        for a in -steps..=steps {
+            for b in -steps..=steps {
+                let (x, y) = (a as f64 * h, b as f64 * h);
+                if x * x + y * y > radius * radius {
+                    continue;
+                }
+                let Some((vel, p)) = self.sample(centre + u * x + v * y) else { continue };
+                flow += vel.dot(n) * da;
+                pressure += p * da;
+                area += da;
+            }
+        }
+        (area > 0.0).then(|| (flow, pressure / area, area))
+    }
+
     /// A streamline from `seed` (mm) along the flow: points and the speed there (m/s), stepping
     /// about half a cell at a time (midpoint rule), until it leaves the air, stalls, or has
     /// `max_points`.
@@ -430,7 +483,7 @@ mod tests {
         let (a, w, len) = (8.0, 2.0, 24.0);
         let mesh = duct(a, w, len, 0.0);
         let prepared = prepare(&[&mesh], &setup(a, w, len, Source::Speed(0.05))).unwrap();
-        let mut run = Run::new(prepared, &Cpu, Limits { max_steps: 30_000, check_every: 250, tolerance: 0.005 }).unwrap();
+        let mut run = Run::new(prepared, &Cpu, Limits { max_steps: 30_000, check_every: 250, tolerance: 0.005, soft_start: true }).unwrap();
         let mut calls = 0;
         assert_eq!(
             run.finish(|_| {

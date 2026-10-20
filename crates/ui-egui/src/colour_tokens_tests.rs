@@ -81,6 +81,7 @@ const ALLOWED_LITERALS: &[(&str, usize, &str)] = &[
     ("icons.rs", 1, "the white tint that carries an icon image's opacity"),
     ("home.rs", 4, "white ink on accent buttons, and thumbnail tints"),
     ("ref_images.rs", 1, "a reference image's opacity tint"),
+    ("simulation_workspace.rs", 2, "the flow colour map's legend (the colour is the value shown) and the best cycle's dot on a Goal Seek plot"),
     ("sketch_palette.rs", 1, "white text on the accent button"),
     ("sketch_text.rs", 1, "white text on the selection chip"),
     ("theme_files.rs", 1, "a colour read from a theme file, which sets tokens"),

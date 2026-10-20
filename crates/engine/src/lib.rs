@@ -21,6 +21,7 @@ pub mod product_scene;
 pub mod recovery;
 pub mod render_jobs;
 pub mod sample;
+pub mod seek;
 mod slicer_icon;
 pub mod slicers;
 pub mod timing;
@@ -409,6 +410,10 @@ impl Session {
         self.render_viewport = render_viewport;
         self.render_jobs = render_jobs;
         self.flow = flow;
+        // A design with a file brings back the studies saved beside it.
+        for note in flow::load_sidecar(self) {
+            log::warn!("airflow studies: {note}");
+        }
     }
 
     /// The solver Airflow studies run on (the app's GPU); `None`: the CPU reference.
@@ -444,7 +449,106 @@ impl Session {
                 changed = true;
             }
         }
+        for i in 0..self.flow.seeks.len() {
+            changed |= self.advance_seek(i);
+        }
         changed
+    }
+
+    /// Move goal seek `i` on: take in its finished cycle, then start the next one (or finish).
+    /// True when it changed.
+    fn advance_seek(&mut self, i: usize) -> bool {
+        use crate::seek::SeekState;
+        let Some(seek) = self.flow.seeks.get_mut(i) else { return false };
+        if seek.state != SeekState::Running {
+            return false;
+        }
+        let mut changed = false;
+        // A finished cycle.
+        let finished = seek.running.as_ref().and_then(|(_, job)| job.progress.lock().ok().and_then(|p| p.done.clone()));
+        if let Some(done) = finished
+            && let Some((values, _)) = seek.running.take()
+        {
+            let cycle = match done {
+                Ok(r) => {
+                    let measures = crate::seek::measures(&r, &seek.spec.regions);
+                    let (score, feasible) = crate::seek::score(&seek.spec.goals, &measures, &mut seek.scales);
+                    let c = crate::seek::Cycle { values, measures, score, feasible, error: None, steps: r.steps, seconds: r.seconds };
+                    let better = feasible && seek.best_cycle().is_none_or(|(_, b)| score < b.score);
+                    if better {
+                        seek.best = Some((seek.cycles.len(), r.clone()));
+                    }
+                    seek.last = Some(r);
+                    c
+                }
+                Err(e) => crate::seek::Cycle {
+                    values,
+                    measures: Default::default(),
+                    score: f64::INFINITY,
+                    feasible: false,
+                    error: Some(e),
+                    steps: 0,
+                    seconds: 0.0,
+                },
+            };
+            let penalized = if cycle.feasible && cycle.error.is_none() { cycle.score } else { 1e9 + cycle.score.min(1e9) };
+            seek.plan.tell(penalized);
+            seek.cycles.push(cycle);
+            seek.revision += 1;
+            changed = true;
+        }
+        if seek.running.is_some() {
+            return changed;
+        }
+        // The next cycle, or the end.
+        let next = if seek.cancel || seek.cycles.len() >= crate::seek::MAX_CYCLES { None } else { seek.plan.ask(&seek.spec, seek.cycles.len()) };
+        let Some(values) = next else {
+            seek.state = if seek.cancel { SeekState::Cancelled } else { SeekState::Done };
+            seek.revision += 1;
+            return true;
+        };
+        let changes: serde_json::Map<String, serde_json::Value> = seek
+            .spec
+            .vary
+            .iter()
+            .zip(&values)
+            .map(|(v, x)| (v.parameter.clone(), serde_json::json!(format!("{x} {}", v.unit).trim().to_string())))
+            .collect();
+        let study = seek.spec.study.clone();
+        let warm = seek.last.clone();
+        let wait = seek.wait;
+        let Some(spec) = self.flow.get(&study).map(|st| st.spec.clone()) else {
+            if let Some(seek) = self.flow.seeks.get_mut(i) {
+                seek.state = SeekState::Done;
+            }
+            return true;
+        };
+        let backend: flow::FlowBackend = self.flow.backend.clone().unwrap_or_else(|| Arc::new(solidcraft_sim::Cpu));
+        let max_cells = if self.flow.backend.is_some() { flow::MAX_CELLS } else { flow::CPU_MAX_CELLS };
+        // The design itself stays as it is: the cycle's parameters go on a scratch copy.
+        let mut scratch = self.scratch();
+        let started = scratch
+            .execute("parameters.change", &serde_json::json!({"changes": changes}))
+            .map_err(|e| e.to_string())
+            .and_then(|_| flow::launch(&scratch.world_state(), &spec, backend, max_cells, warm.as_deref(), spec.max_steps, 0.005, wait));
+        let Some(seek) = self.flow.seeks.get_mut(i) else { return true };
+        match started {
+            Ok((job, _)) => seek.running = Some((values, job)),
+            Err(e) => {
+                seek.plan.tell(2e9);
+                seek.cycles.push(crate::seek::Cycle {
+                    values,
+                    measures: Default::default(),
+                    score: f64::INFINITY,
+                    feasible: false,
+                    error: Some(e),
+                    steps: 0,
+                    seconds: 0.0,
+                });
+            }
+        }
+        seek.revision += 1;
+        true
     }
 
     /// The design has changes not in its file: in the document, or in what is hidden.

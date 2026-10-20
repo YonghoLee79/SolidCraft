@@ -235,7 +235,7 @@ fn a_study_runs_on_the_gpu_as_on_the_cpu() {
             turbulence: 0.0,
             max_cells: 200_000,
         };
-        let limits = Limits { max_steps: 30_000, check_every: 250, tolerance: 0.005 };
+        let limits = Limits { max_steps: 30_000, check_every: 250, tolerance: 0.005, soft_start: true };
         let mut cpu = ok(Run::new(ok(solidcraft_sim::prepare(&[&mesh], &setup)), &solidcraft_sim::Cpu, limits));
         let mut on_gpu = ok(Run::new(ok(solidcraft_sim::prepare(&[&mesh], &setup)), &backend, limits));
         assert_eq!(ok(on_gpu.finish(|_| true)), State::Settled, "{source:?}");
@@ -294,7 +294,7 @@ fn the_default_pipe_case_runs_stably() {
         prepared.warnings
     );
     let t = std::time::Instant::now();
-    let mut run = ok(Run::new(prepared, &backend, Limits { max_steps: 60_000, check_every: 1_000, tolerance: 0.01 }));
+    let mut run = ok(Run::new(prepared, &backend, Limits { max_steps: 60_000, check_every: 1_000, tolerance: 0.01, soft_start: true }));
     let state = ok(run.finish(|r| {
         if let Some(s) = r.last() {
             eprintln!(

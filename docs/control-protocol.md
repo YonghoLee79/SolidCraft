@@ -165,8 +165,9 @@ labels; `prefs:measure_axis_distances` identifies the checkbox.
 `ui.workspace {workspace?: "design" | "render" | "simulation"}` reads or changes the active
 workspace. Entering Render or Simulation requires finishing the current modelling operation;
 returning from Render restores the Design camera. See [the integrated Render workspace](render-workspace.md).
-Simulation keeps the modelling view and offers the Airflow and Gas Dynamics studies
-(`sim.flow.new`, `sim.gas.new`); their solvers are not built yet.
+Simulation keeps the modelling view and offers the Airflow, Aerodynamics and Gas Dynamics
+studies (`sim.flow.new`, `sim.aero.new`, `sim.gas.new`). Airflow runs (`sim.flow.*`, Goal Seek
+`sim.seek.*`, its view `ui.simulation`); the other two solvers are not built yet.
 
 ### Continuous camera motion
 

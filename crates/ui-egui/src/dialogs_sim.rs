@@ -241,7 +241,9 @@ pub fn commands(app: &SolveApp, k: &Sim, inputs: &[SelInput]) -> Result<Vec<(Str
     }
     let drive = match f.drive {
         Drive::Speed => json!({"speed": number(&f.speed, "speed")?}),
-        Drive::Fan => json!({"fan": {"type": f.fan.id(), "free_flow_cfm": number(&f.free_flow, "free-air flow")?, "max_pressure_pa": number(&f.max_pressure, "maximum pressure")?}}),
+        Drive::Fan => {
+            json!({"fan": {"type": f.fan.id(), "free_flow_cfm": number(&f.free_flow, "free-air flow")?, "max_pressure_pa": number(&f.max_pressure, "maximum pressure")?}})
+        }
     };
     for (i, o) in inlets.iter_mut().enumerate() {
         if let (Some(o), Some(d)) = (o.as_object_mut(), drive.as_object()) {
@@ -256,7 +258,8 @@ pub fn commands(app: &SolveApp, k: &Sim, inputs: &[SelInput]) -> Result<Vec<(Str
         }
     }
     let name = (1..).map(|i| format!("Airflow {i}")).find(|n| app.session.flow_studies().get(n).is_none()).unwrap_or_else(|| "Airflow".into());
-    let mut params = json!({"body": body, "name": name, "inlets": inlets, "outlets": outlets, "pad": number(&f.pad, "open air")?, "turbulence": f.turbulence});
+    let mut params =
+        json!({"body": body, "name": name, "inlets": inlets, "outlets": outlets, "pad": number(&f.pad, "open air")?, "turbulence": f.turbulence});
     if !f.cell.trim().is_empty() {
         params["cell"] = json!(number(&f.cell, "cell size")?);
     }

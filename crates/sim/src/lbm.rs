@@ -270,6 +270,22 @@ impl Lattice {
         Ok(())
     }
 
+    /// Set fluid cell `cell` to the equilibrium of density `rho` and velocity `u` (lattice units):
+    /// a warm start from an earlier flow. Solid cells and values out of reason are left alone.
+    pub fn set_equilibrium(&mut self, cell: usize, rho: f64, u: [f64; 3]) {
+        if self.solid.get(cell).copied().unwrap_or(true)
+            || !(rho.is_finite() && rho > 0.5 && rho < 2.0)
+            || u.iter().any(|v| !v.is_finite() || v.abs() > 0.3)
+        {
+            return;
+        }
+        if let Some(dist) = self.f.get_mut(cell * Q..(cell + 1) * Q) {
+            for (q, v) in dist.iter_mut().enumerate() {
+                *v = equilibrium(q, rho, u);
+            }
+        }
+    }
+
     /// Impose `kind` on the openings `range` (indices into [`Lattice::openings`]), for example a
     /// fan inlet's new speed.
     pub fn set_openings(&mut self, range: std::ops::Range<usize>, kind: Opening) -> Result<()> {

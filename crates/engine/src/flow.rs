@@ -27,12 +27,14 @@ pub const MAX_CELLS: u64 = 40_000_000;
 pub struct Studies {
     pub(crate) backend: Option<FlowBackend>,
     pub list: Vec<Study>,
+    /// Goal seeks over the studies' design parameters.
+    pub seeks: Vec<crate::seek::Seek>,
 }
 
 impl Studies {
     /// For a scratch session: the same backend, no studies.
     pub(crate) fn scratch(&self) -> Studies {
-        Studies { backend: self.backend.clone(), list: Vec::new() }
+        Studies { backend: self.backend.clone(), list: Vec::new(), seeks: Vec::new() }
     }
 
     pub fn get(&self, name: &str) -> Option<&Study> {
@@ -314,6 +316,32 @@ pub fn setup(st: &ModelState, spec: &Spec, max_cells: u64) -> std::result::Resul
     Ok((setup, meshes))
 }
 
+/// Set `spec` up on the model `st` and start it: warm from `warm`'s flow where given (no soft
+/// start then). Returns the job and the grid's cell count.
+#[allow(clippy::too_many_arguments)]
+pub fn launch(
+    st: &ModelState,
+    spec: &Spec,
+    backend: FlowBackend,
+    max_cells: u64,
+    warm: Option<&FlowResult>,
+    max_steps: u64,
+    tolerance: f64,
+    wait: bool,
+) -> std::result::Result<(Job, usize), String> {
+    let (setup, meshes) = setup(st, spec, max_cells)?;
+    let refs: Vec<&Mesh> = meshes.iter().map(|m| m.as_ref()).collect();
+    let mut prepared = sim::prepare(&refs, &setup).map_err(|e| e.to_string())?;
+    let warmed = warm.map(|w| prepared.warm_from(&w.fields)).unwrap_or(0) > 0;
+    // Measure about sixteen times per crossing of the box, at least every 50 steps.
+    let longest = prepared.grid.dims.iter().copied().max().unwrap_or(1) as f64;
+    let check_every = ((longest / sim::study::LATTICE_SPEED) / 16.0).clamp(50.0, 2000.0) as u32;
+    let limits = sim::Limits { max_steps, check_every, tolerance, soft_start: !warmed };
+    let names = (spec.inlets.iter().map(|o| o.name.clone()).collect(), spec.outlets.iter().map(|o| o.name.clone()).collect());
+    let cells = prepared.grid.len();
+    Ok((start(prepared, backend, limits, names, wait), cells))
+}
+
 /// Run `prepared` to the end on `backend`, reporting into `progress`.
 fn run_to_end(
     prepared: sim::Prepared,
@@ -494,4 +522,128 @@ pub fn results(name: &str, r: &FlowResult) -> Value {
         "pressure_range_pa": [pressure.0, pressure.1],
         "warnings": r.warnings.iter().map(warning_text).collect::<Vec<_>>(),
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sidecar: `<design>.sim.json` beside the design file holds its studies and goal seeks (their
+// setups and the seeks' cycles; never the flow fields), so the design file itself never changes.
+
+/// The sidecar of the design saved at `design`: `duct.solidcraft` → `duct.sim.json`.
+pub fn sidecar_path(design: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(design);
+    let stem = p.file_stem().map_or_else(|| "design".into(), |s| s.to_string_lossy().to_string());
+    p.with_file_name(format!("{stem}.sim.json"))
+}
+
+fn source_json(o: &OpeningSpec) -> Value {
+    let mut v = json!({"name": o.name, "body": o.body, "face": [o.point.x, o.point.y, o.point.z]});
+    if let Some(r) = o.region {
+        v["region"] = json!(if r == Region::Hole { "hole" } else { "face" });
+    }
+    match &o.source {
+        Some(sim::Source::Speed(u)) => v["speed"] = json!(u),
+        Some(sim::Source::Fan(c)) => {
+            v["fan"] = json!({"curve": c.points().iter().map(|(q, pa)| [q * sim::study::CFM_PER_M3S, *pa]).collect::<Vec<_>>()})
+        }
+        None => {}
+    }
+    v
+}
+
+/// A study's setup as `sim.flow.new` takes it.
+pub fn spec_params(name: &str, spec: &Spec) -> Value {
+    json!({
+        "name": name,
+        "body": spec.body,
+        "bodies": spec.bodies,
+        "inlets": spec.inlets.iter().map(source_json).collect::<Vec<_>>(),
+        "outlets": spec.outlets.iter().map(source_json).collect::<Vec<_>>(),
+        "cell": spec.cell,
+        "pad": spec.pad,
+        "turbulence": spec.turbulence,
+        "max_steps": spec.max_steps,
+    })
+}
+
+/// Write the sidecar of the session's design (when it has a file and studies or seeks; a design
+/// without either leaves any sidecar there alone).
+pub fn save_sidecar(s: &crate::Session) -> std::result::Result<(), String> {
+    let Some(path) = s.path.as_deref() else { return Ok(()) };
+    let studies = s.flow_studies();
+    if studies.list.is_empty() && studies.seeks.is_empty() {
+        return Ok(());
+    }
+    let seeks: Vec<Value> = studies
+        .seeks
+        .iter()
+        .map(|k| {
+            let mut spec = crate::seek::spec_json(&k.spec);
+            spec["name"] = json!(k.name);
+            json!({"setup": spec, "cycles": k.cycles.iter().enumerate().map(|(i, c)| crate::seek::cycle_json(&k.spec, i, c)).collect::<Vec<_>>()})
+        })
+        .collect();
+    let doc = json!({
+        "solidcraft_sim": 1,
+        "design": std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()),
+        "studies": studies.list.iter().map(|st| spec_params(&st.name, &st.spec)).collect::<Vec<_>>(),
+        "seeks": seeks,
+    });
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    let out = sidecar_path(path);
+    solidcraft_io::vfs::write(&out.to_string_lossy(), text.as_bytes()).map_err(|e| format!("{}: {e}", out.display()))
+}
+
+fn cycle_from(spec: &crate::seek::SeekSpec, v: &Value) -> Option<crate::seek::Cycle> {
+    let values = spec.vary.iter().map(|x| v.get("values")?.get(&x.parameter)?.as_f64()).collect::<Option<Vec<f64>>>()?;
+    let mut measures = std::collections::BTreeMap::new();
+    for (k, m) in v.get("measures")?.as_object()? {
+        let f = |key: &str| m.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+        measures.insert(
+            k.clone(),
+            crate::seek::Measured { flow: f("flow_m3s"), pressure: f("pressure_pa"), speed: f("speed_ms"), max_speed: f("max_speed_ms") },
+        );
+    }
+    Some(crate::seek::Cycle {
+        values,
+        measures,
+        score: v.get("score").and_then(Value::as_f64).unwrap_or(f64::INFINITY),
+        feasible: v.get("feasible").and_then(Value::as_bool).unwrap_or(false),
+        error: v.get("error").and_then(Value::as_str).map(str::to_string),
+        steps: v.get("steps").and_then(Value::as_u64).unwrap_or(0),
+        seconds: v.get("seconds").and_then(Value::as_f64).unwrap_or(0.0),
+    })
+}
+
+/// Read the sidecar of the session's design back: its studies set up again on the design as it is,
+/// its seeks with their cycles. What no longer fits the design (a body gone, a parameter renamed)
+/// is left out, and said so in the returned notes.
+pub fn load_sidecar(s: &mut crate::Session) -> Vec<String> {
+    let Some(path) = s.path.clone() else { return Vec::new() };
+    let file = sidecar_path(&path);
+    let Ok(bytes) = solidcraft_io::vfs::read(&file.to_string_lossy(), 64 * 1024 * 1024) else { return Vec::new() };
+    let Ok(doc) = serde_json::from_slice::<Value>(&bytes) else { return vec![format!("{}: not a study file", file.display())] };
+    let mut notes = Vec::new();
+    for st in doc.get("studies").and_then(Value::as_array).into_iter().flatten().take(64) {
+        if let Err(e) = s.execute("sim.flow.new", st) {
+            notes.push(format!("study {}: {e}", st.get("name").and_then(Value::as_str).unwrap_or("?")));
+        }
+    }
+    for k in doc.get("seeks").and_then(Value::as_array).into_iter().flatten().take(64) {
+        let Some(setup) = k.get("setup") else { continue };
+        let name = setup.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
+        match s.execute("sim.seek.new", setup) {
+            Ok(_) => {
+                if let Some(seek) = s.flow.seeks.iter_mut().find(|x| x.name == name) {
+                    let cycles: Vec<crate::seek::Cycle> =
+                        k.get("cycles").and_then(Value::as_array).into_iter().flatten().filter_map(|c| cycle_from(&seek.spec, c)).collect();
+                    if !cycles.is_empty() {
+                        seek.cycles = cycles;
+                        seek.state = crate::seek::SeekState::Done;
+                    }
+                }
+            }
+            Err(e) => notes.push(format!("goal seek {name}: {e}")),
+        }
+    }
+    notes
 }

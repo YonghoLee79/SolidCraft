@@ -688,6 +688,24 @@ impl Prepared {
         Through { flow, pressure: mean(pressure), speed: if area > 0.0 { flow / area } else { 0.0 }, max_speed: self.units.speed(max_speed), area }
     }
 
+    /// Start from an earlier result instead of still air: each air cell takes the flow found at its
+    /// centre in `from` (another grid's, in physical units), as its equilibrium. Cells `from` has
+    /// no air at keep still air. Returns how many cells took a value.
+    pub fn warm_from(&mut self, from: &crate::Fields) -> usize {
+        let mut n = 0;
+        for idx in 0..self.grid.len() {
+            if self.lattice.solid().get(idx).copied().unwrap_or(true) {
+                continue;
+            }
+            let [i, j, k] = self.grid.coords(idx);
+            let Some((u, p)) = from.sample(self.grid.center(i, j, k)) else { continue };
+            let lu = [self.units.lattice_speed(u.x), self.units.lattice_speed(u.y), self.units.lattice_speed(u.z)];
+            self.lattice.set_equilibrium(idx, self.units.lattice_density(p), lu);
+            n += 1;
+        }
+        n
+    }
+
     /// Write inlet `i`'s opening from its speed, share and reference density.
     fn write_inlet(&mut self, i: usize) -> Result<()> {
         let (Some(layer), Some(speed), Some(scale), Some(density)) =
