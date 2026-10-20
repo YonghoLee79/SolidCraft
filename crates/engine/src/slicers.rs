@@ -613,24 +613,28 @@ impl Slicer {
         self.base_args(single_instance).into_iter().filter(|a| a != "@@" && a != "@@u").collect()
     }
 
+    /// Which known slicer this is, by identity: its id without the install part, or for a program
+    /// the user picked, the one its name says (as for its icon). Empty for any other program.
+    fn kind(&self) -> &str {
+        if self.id == "custom" { known_for(&self.name).map_or("", |k| k.id) } else { self.base_id() }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn base_args(&self, single_instance: bool) -> Vec<String> {
         let mut args: Vec<String> = self.command.iter().skip(1).cloned().collect();
         let has = |args: &[String]| args.iter().any(|a| a.starts_with("--single-instance"));
         if !single_instance {
             args.retain(|a| !a.starts_with("--single-instance"));
-        } else if self.waits_for_ready().is_none() && args.iter().any(|a| a == "--single-instance-on-url") {
+        } else if self.kind() == "prusa" && self.waits_for_ready().is_none() && args.iter().any(|a| a == "--single-instance-on-url") {
+            // PrusaSlicer only, found by what it is and not by its version: another program that
+            // happens to have the flag keeps its own meaning for it.
             for a in args.iter_mut().filter(|a| *a == "--single-instance-on-url") {
                 *a = "--single-instance".into();
             }
-        } else if self.command.first().is_some_and(|p| p != "open") && !has(&args) {
-            // A custom program is recognised by its name, as for its icon.
-            let id = if self.id == "custom" { known_for(&self.name).map_or("", |k| k.id) } else { self.base_id() };
-            if SINGLE_INSTANCE.contains(&id) {
-                // Before a Flatpak command's file markers, which close the application's own arguments.
-                let at = args.iter().position(|a| a == "@@" || a == "@@u").unwrap_or(args.len());
-                args.insert(at, "--single-instance".into());
-            }
+        } else if self.command.first().is_some_and(|p| p != "open") && !has(&args) && SINGLE_INSTANCE.contains(&self.kind()) {
+            // Before a Flatpak command's file markers, which close the application's own arguments.
+            let at = args.iter().position(|a| a == "@@" || a == "@@u").unwrap_or(args.len());
+            args.insert(at, "--single-instance".into());
         }
         args
     }
@@ -1435,6 +1439,24 @@ mod tests {
         assert!(kept.contains(&"--single-instance-on-url".to_string()) && !kept.contains(&"--single-instance".to_string()), "{kept:?}");
         let off = v30.args("/t/a.3mf", false);
         assert!(off.contains(&"--single-instance-on-url".to_string()) && !off.contains(&"--single-instance".to_string()), "{off:?}");
+        // A program that is not PrusaSlicer keeps its own `--single-instance-on-url`, and loses it with
+        // the preference off like any other flag of this kind; one the user picked and named PrusaSlicer is PrusaSlicer.
+        let viewer = Slicer {
+            id: "desktop-meshviewer".into(),
+            name: "Mesh Viewer".into(),
+            command: vec!["mesh-viewer".into(), "--single-instance-on-url".into()],
+            icon: None,
+        };
+        assert_eq!(viewer.args("/t/a.3mf", true), ["--single-instance-on-url", "/t/a.3mf"]);
+        assert_eq!(viewer.args("/t/a.3mf", false), ["/t/a.3mf"]);
+        let picked = |name: &str| Slicer {
+            id: "custom".into(),
+            name: name.into(),
+            command: vec!["/x/prog".into(), "--single-instance-on-url".into()],
+            icon: None,
+        };
+        assert_eq!(picked("PrusaSlicer").args("/t/a.3mf", true), ["--single-instance", "/t/a.3mf"]);
+        assert_eq!(picked("Mesh Viewer").args("/t/a.3mf", true), ["--single-instance-on-url", "/t/a.3mf"]);
         // Starting 3.0 on its own keeps it whatever the preference says (the earlier rule).
         assert!(v30.start_args(false).contains(&"--single-instance-on-url".to_string()));
     }
