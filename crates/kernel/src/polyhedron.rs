@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Plane, Polyline, Vec3};
+use solidcraft_geom::{Plane, Polyline, Ring, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3, v3};
@@ -26,7 +26,7 @@ fn det3(a: Vec3, b: Vec3, c: Vec3) -> f64 {
 
 /// Vertices, and per half-space with a face its vertex loop (counter-clockwise about the
 /// outward normal), of the convex polyhedron bounded by the half-spaces.
-fn combinatorics(hs: &[HalfSpace]) -> Result<(Vec<Vec3>, Vec<(usize, Vec<usize>)>)> {
+fn combinatorics(hs: &[HalfSpace]) -> Result<(Vec<Vec3>, Vec<(usize, Ring<usize>)>)> {
     if hs.len() < 4 || hs.len() > 200 {
         return Err(KernelError::Invalid("a polyhedron needs 4…200 planes".into()));
     }
@@ -56,7 +56,7 @@ fn combinatorics(hs: &[HalfSpace]) -> Result<(Vec<Vec3>, Vec<(usize, Vec<usize>)
         return Err(KernelError::Invalid("the planes don't enclose a solid".into()));
     }
     // Faces: the vertices on each plane, ordered counter-clockwise about its outward normal.
-    let mut faces_idx: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut faces_idx: Vec<(usize, Ring<usize>)> = Vec::new();
     for (hi, h) in hs.iter().enumerate() {
         let on: Vec<usize> = (0..verts.len()).filter(|i| verts.get(*i).is_some_and(|v| (h.n.dot(*v) - h.d).abs() < scale * 1e-7)).collect();
         if on.len() < 3 {
@@ -70,7 +70,7 @@ fn combinatorics(hs: &[HalfSpace]) -> Result<(Vec<Vec3>, Vec<(usize, Vec<usize>)
             let ang = |i: usize| verts.get(i).map(|v| (*v - c).dot(w).atan2((*v - c).dot(u))).unwrap_or(0.0);
             ang(*a).total_cmp(&ang(*b))
         });
-        faces_idx.push((hi, ordered));
+        faces_idx.push((hi, Ring::new(ordered)));
     }
     Ok((verts, faces_idx))
 }
@@ -89,10 +89,8 @@ fn polyhedron(hs: &[HalfSpace]) -> Result<(Body, Vec<usize>)> {
         let mut edges: HashMap<(usize, usize), mt::Edge> = HashMap::new();
         let mut faces: Vec<mt::Face> = Vec::new();
         for (_, f) in &faces_idx {
-            let n = f.len();
-            let mut wire: Vec<mt::Edge> = Vec::with_capacity(n);
-            for k in 0..n {
-                let (Some(&a), Some(&b)) = (f.get(k), f.get((k + 1) % n)) else { continue };
+            let mut wire: Vec<mt::Edge> = Vec::with_capacity(f.len());
+            for (&a, &b) in f.edges() {
                 let key = (a.min(b), a.max(b));
                 let e = match edges.get(&key) {
                     Some(e) => e.clone(),
@@ -333,9 +331,7 @@ pub fn round_all_edges(b: &Body, r: f64) -> Result<Body> {
     // Edges of the inner polyhedron: (vertex a, vertex b) → (face left, face right).
     let mut edge_faces: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
     for (hi, lp) in &faces {
-        let n = lp.len();
-        for k in 0..n {
-            let (Some(&a), Some(&bb)) = (lp.get(k), lp.get((k + 1) % n)) else { continue };
+        for (&a, &bb) in lp.edges() {
             edge_faces.entry((a.min(bb), a.max(bb))).or_default().push(*hi);
         }
     }
@@ -374,12 +370,7 @@ pub fn round_all_edges(b: &Body, r: f64) -> Result<Body> {
         let mut made: Vec<FaceProv> = Vec::new();
         // Planar faces.
         for (hi, lp) in &faces {
-            let n = lp.len();
-            let mut w: Vec<mt::Edge> = Vec::new();
-            for k in 0..n {
-                let (Some(&a), Some(&bb)) = (lp.get(k), lp.get((k + 1) % n)) else { continue };
-                w.push(line(*hi, a, bb, &mut vert));
-            }
+            let w: Vec<mt::Edge> = lp.edges().map(|(&a, &bb)| line(*hi, a, bb, &mut vert)).collect();
             out.push(builder::try_attach_plane(&[w.into()]).map_err(|e| KernelError::Failed(format!("rounded face: {e}")))?);
             made.push(on_plane(groups.get(*hi).map_or(&[], Vec::as_slice)));
         }
@@ -398,12 +389,7 @@ pub fn round_all_edges(b: &Body, r: f64) -> Result<Body> {
         for ((a, bb), fs) in &edge_faces {
             let (Some(&f0), Some(&f1)) = (fs.first(), fs.get(1)) else { continue };
             // Which face runs a → b?
-            let runs = |hi: usize| {
-                faces.iter().find(|(h, _)| *h == hi).is_some_and(|(_, lp)| {
-                    let n = lp.len();
-                    (0..n).any(|k| lp.get(k) == Some(a) && lp.get((k + 1) % n) == Some(bb))
-                })
-            };
+            let runs = |hi: usize| faces.iter().find(|(h, _)| *h == hi).is_some_and(|(_, lp)| lp.edges().any(|e| e == (a, bb)));
             let (f, g) = if runs(f0) { (f0, f1) } else { (f1, f0) };
             let w: Vec<mt::Edge> =
                 vec![line(f, *bb, *a, &mut vert), arc(*a, f, g, &mut vert), line(g, *a, *bb, &mut vert), arc(*bb, g, f, &mut vert)];
@@ -426,8 +412,8 @@ pub fn round_all_edges(b: &Body, r: f64) -> Result<Body> {
                 let ang = |h: usize| normal(h).dot(w2).atan2(normal(h).dot(u));
                 ang(*x).total_cmp(&ang(*y))
             });
-            let k = around.len();
-            let w: Vec<mt::Edge> = (0..k).filter_map(|i| Some(arc(qi, *around.get(i)?, *around.get((i + 1) % k)?, &mut vert))).collect();
+            let around = Ring::new(around);
+            let w: Vec<mt::Edge> = around.edges().map(|(&f, &g)| arc(qi, f, g, &mut vert)).collect();
             // A sphere surface whose poles and seam are away from this patch.
             let side = axis.any_perp();
             let (np, sp, back) = (*c + side * r, *c - side * r, *c - axis * r);
@@ -436,8 +422,7 @@ pub fn round_all_edges(b: &Body, r: f64) -> Result<Body> {
                 mt::Surface::RevolutedCurve(mt::Processor::new(mt::RevolutedCurve::by_revolution(meridian.oriented_curve(), p3(*c), v3(side))));
             let surf = orient(surf, *c + axis * r, axis);
             out.push(mt::Face::try_new(vec![w.into()], surf).map_err(|e| KernelError::Failed(format!("rounded corner: {e}")))?);
-            let mut corner: Vec<FaceOrigin> =
-                (0..k).filter_map(|i| Some((*around.get(i)?, *around.get((i + 1) % k)?))).flat_map(|(f, g)| along(f, g)).collect();
+            let mut corner: Vec<FaceOrigin> = around.edges().flat_map(|(&f, &g)| along(f, g)).collect();
             corner.sort();
             corner.dedup();
             made.push(record::generated(corner));
