@@ -52,6 +52,14 @@
   Wireframe retains its edge presentation, and hiding a join does not remove its CAD
   identity or change the exported solid. Unsupported or uncertain wall geometry
   keeps its existing edge presentation.
+- **Selection measurements.** Select one solid edge to see its length, or two solid edges,
+  faces or vertices to see their minimum-distance estimate near the viewport's bottom right.
+  Values use the design's units and display precision. **≈ means an estimate:** this uses
+  Measure's sampled geometry, which can miss contact or intersections; displayed decimal
+  places do not guarantee accuracy. Hover the readout for this explanation. It clears with
+  the selection and hides during commands, for unsupported selections, or when it cannot fit
+  around the view controls. The Measure tool (**I**) keeps its existing dialog and options.
+  Complex selections can take longer; the previous value clears while the next is computed.
 - **Dialogs** dock on the right with a live preview. Most features also show drag handles and a
   value box in the viewport.
 - **Timeline** (bottom). Every feature in order. Double-click to edit, drag the marker to roll

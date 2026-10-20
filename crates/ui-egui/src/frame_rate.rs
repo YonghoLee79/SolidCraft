@@ -12,9 +12,14 @@ const NEWEST: f64 = 0.05;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameRate {
     mean_dt: f64,
+    rect: Option<Rect>,
 }
 
 impl FrameRate {
+    pub(crate) fn rect(&self) -> Option<Rect> {
+        self.rect
+    }
+
     /// Takes the time since the previous frame, in seconds. A gap over a second (the app idle
     /// before the readout was turned on, a window being moved) is not a frame of a running view
     /// and is left out, as is anything that isn't a positive finite time.
@@ -52,8 +57,10 @@ pub(crate) fn paint(app: &mut SolveApp, ctx: &egui::Context, painter: &egui::Pai
     let galley = painter.layout_no_wrap(text, font, t.text);
     let size = galley.size() + vec2(16.0, 8.0);
     let r = Rect::from_min_size(pos2(rect.right() - 12.0 - size.x, rect.bottom() - 12.0 - size.y), size);
+    app.frame_rate.rect = Some(r);
     painter.rect(r, 4.0, t.overlay, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     crate::scenario::publish_handle("viewport:frame_rate", r.center());
+    crate::scenario::publish_rect("viewport:frame_rate", r);
     painter.galley(r.center() - galley.size() / 2.0, galley, t.text);
 }
 

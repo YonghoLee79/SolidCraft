@@ -38,6 +38,40 @@ fn free_rect(view: Rect, obstacles: &[Rect]) -> Rect {
     best
 }
 
+/// Bottom-right readouts share the viewport's reserved controls without moving the camera.
+/// Hide when no complete rectangle fits, rather than clipping text or covering a control.
+pub(crate) fn place_overlay(view: Rect, size: egui::Vec2, obstacles: &[Rect]) -> Option<Rect> {
+    let view = view.shrink(12.0);
+    if !view.is_finite()
+        || !view.is_positive()
+        || !size.is_finite()
+        || size.x <= 0.0
+        || size.y <= 0.0
+        || size.x > view.width()
+        || size.y > view.height()
+    {
+        return None;
+    }
+    let obstacles: Vec<_> = obstacles.iter().take(12).filter(|r| r.is_finite() && r.is_positive()).map(|r| r.expand(6.0)).collect();
+    let mut xs = vec![view.right() - size.x];
+    let mut ys = vec![view.bottom() - size.y];
+    for r in &obstacles {
+        xs.extend([r.left() - size.x, r.right()]);
+        ys.extend([r.top() - size.y, r.bottom()]);
+    }
+    xs.sort_by(f32::total_cmp);
+    ys.sort_by(f32::total_cmp);
+    for &y in ys.iter().rev() {
+        for &x in xs.iter().rev() {
+            let r = Rect::from_min_size(pos2(x, y), size);
+            if view.contains(r.min) && view.contains(r.max) && !obstacles.iter().any(|o| o.intersect(r).is_positive()) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
 impl Layout {
     pub fn new(viewport: Rect, docks: &[Rect], scale: f32, style: crate::prefs::NavigatorStyle) -> Self {
         let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };

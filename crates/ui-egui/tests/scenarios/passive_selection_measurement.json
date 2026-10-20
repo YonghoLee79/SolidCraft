@@ -1,0 +1,12 @@
+[
+  {"note":"Passive estimates use current selection, without opening Measure or consuming pointer input."},
+  {"call":"engine.execute","params":{"command":"solid.box","params":{"length":40,"width":30,"height":20,"body_name":"Box"}}},
+  {"call":"ui.view","params":{"view":"iso"}},
+  {"click":{"world":[20,0,20]}},
+  {"expect":{"selection":1,"shown":"Length: ≈ 40.00 mm","dialog":null}},
+  {"expect":{"disjoint":["viewport:quick_measure","nav:outer"]}},
+  {"click":{"world":[40,15,20]},"shift":true},
+  {"expect":{"selection":2,"shown":"Minimum distance: ≈ 0.00 mm","dialog":null}},
+  {"call":"engine.execute","params":{"command":"select.set","params":{"items":[]}}},
+  {"expect":{"selection":0,"hidden_handles":["viewport:quick_measure"],"errors":0}}
+]

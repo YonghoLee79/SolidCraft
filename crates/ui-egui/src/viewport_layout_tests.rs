@@ -293,3 +293,22 @@ fn tiny_viewports_never_overlap_navigation_and_axis_view() {
         }
     }
 }
+
+#[test]
+fn passive_readout_placement_avoids_every_reserved_control_and_rejects_bad_bounds() {
+    for (width, height, scale) in [(1400.0, 900.0, 1.0), (700.0, 450.0, 2.0), (480.0, 300.0, 1.0), (320.0, 160.0, 3.0)] {
+        let view = Rect::from_min_size(egui::Pos2::ZERO, vec2(width, height));
+        let dock = Rect::from_min_size(pos2(width - 150.0, 0.0), vec2(150.0, height * 0.6));
+        let layout = Layout::new(view, &[dock], scale, crate::prefs::NavigatorStyle::Axes);
+        let fps = Rect::from_min_size(pos2(width - 150.0, height - 40.0), vec2(138.0, 28.0));
+        let obstacles = [layout.axis_view, layout.navigation, dock, fps];
+        if let Some(r) = crate::viewport_layout::place_overlay(view, vec2(210.0, 26.0), &obstacles) {
+            assert!(view.contains(r.min) && view.contains(r.max));
+            assert!(obstacles.iter().all(|o| !o.intersect(r).is_positive()));
+        }
+    }
+    let view = Rect::from_min_size(egui::Pos2::ZERO, vec2(100.0, 100.0));
+    assert!(crate::viewport_layout::place_overlay(view, vec2(90.0, 20.0), &[]).is_none());
+    assert!(crate::viewport_layout::place_overlay(view, vec2(f32::NAN, 20.0), &[]).is_none());
+    assert!(crate::viewport_layout::place_overlay(view, vec2(20.0, 20.0), &[view]).is_none());
+}
