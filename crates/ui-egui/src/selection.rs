@@ -4,7 +4,7 @@
 
 use egui::{Pos2, Rect};
 use solidcraft_engine::Sel;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Ray, Vec3};
 
 use crate::viewport::Hit;
 
@@ -176,20 +176,20 @@ pub fn origin_quads(size: f64) -> [(&'static str, Vec3, [Vec3; 4]); 3] {
     ]
 }
 
-/// Ray parameter where the ray (o, d) hits the planar quad (corners in order), if it does.
-pub fn ray_quad(o: Vec3, d: Vec3, q: &[Vec3; 4]) -> Option<f64> {
+/// The distance along `ray` to the planar quad (corners in order), if it hits it.
+pub fn ray_quad(ray: &Ray, q: &[Vec3; 4]) -> Option<f64> {
     let [a, b, _, dd] = *q;
     let (u, v) = (b - a, dd - a);
     let n = u.cross(v);
-    let den = n.dot(d);
+    let den = n.dot(ray.dir);
     if den.abs() < 1e-12 {
         return None;
     }
-    let t = n.dot(a - o) / den;
+    let t = n.dot(a - ray.origin) / den;
     if !(t.is_finite() && t >= 0.0) {
         return None;
     }
-    let p = o + d * t - a;
+    let p = ray.at(t) - a;
     // Coordinates in the (u, v) frame (the quad is a parallelogram).
     let (uu, uv, vv) = (u.dot(u), u.dot(v), v.dot(v));
     let det = uu * vv - uv * uv;
@@ -246,6 +246,7 @@ fn segments_cross(p: Pos2, q: Pos2, r: Pos2, s: Pos2) -> bool {
 mod tests {
     use super::*;
     use egui::pos2;
+    use solidcraft_engine::geom::UnitVec3;
     use solidcraft_engine::render::{Camera, StandardView};
 
     #[test]
@@ -267,16 +268,17 @@ mod tests {
     fn rays_hit_origin_quads() {
         let q = origin_quads(10.0);
         // Straight down onto XY at (3, 4).
-        let t = ray_quad(Vec3::new(3.0, 4.0, 50.0), Vec3::new(0.0, 0.0, -1.0), &q[0].2).unwrap();
+        let down = |x: f64, y: f64, z: f64| Ray::new(Vec3::new(x, y, z), -UnitVec3::Z);
+        let t = ray_quad(&down(3.0, 4.0, 50.0), &q[0].2).unwrap();
         assert!((t - 50.0).abs() < 1e-12);
         // Outside the quadrant: misses.
-        assert!(ray_quad(Vec3::new(-3.0, 4.0, 50.0), Vec3::new(0.0, 0.0, -1.0), &q[0].2).is_none());
+        assert!(ray_quad(&down(-3.0, 4.0, 50.0), &q[0].2).is_none());
         // Parallel: misses.
-        assert!(ray_quad(Vec3::new(3.0, 4.0, 50.0), Vec3::X, &q[0].2).is_none());
+        assert!(ray_quad(&Ray::new(Vec3::new(3.0, 4.0, 50.0), UnitVec3::X), &q[0].2).is_none());
         // From the front onto XZ.
-        assert!(ray_quad(Vec3::new(5.0, -100.0, 5.0), Vec3::Y, &q[1].2).is_some());
+        assert!(ray_quad(&Ray::new(Vec3::new(5.0, -100.0, 5.0), UnitVec3::Y), &q[1].2).is_some());
         // Behind the ray origin: misses.
-        assert!(ray_quad(Vec3::new(3.0, 4.0, -50.0), Vec3::new(0.0, 0.0, -1.0), &q[0].2).is_none());
+        assert!(ray_quad(&down(3.0, 4.0, -50.0), &q[0].2).is_none());
     }
 
     #[test]

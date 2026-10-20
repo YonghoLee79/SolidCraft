@@ -4,7 +4,7 @@
 //! rather than the product of the triangle counts.
 
 use crate::compare::closest_on_triangle;
-use crate::{Aabb3, Bvh, Mesh, Vec3};
+use crate::{Aabb3, Bvh, Mesh, Ray, Vec3};
 
 /// A mesh's triangles with their B-rep faces, indexed for distance queries.
 #[derive(Clone, Debug, Default)]
@@ -160,6 +160,24 @@ pub fn closest_on_segments(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3) -> (Vec3, Vec
     (p0 + d1 * s, q0 + d2 * t)
 }
 
+/// The point of segment `a`–`b` nearest the line along `ray`: `a` where they are parallel, the
+/// segment has no length or the input is not finite.
+pub fn closest_on_segment_to_ray(a: Vec3, b: Vec3, ray: &Ray) -> Vec3 {
+    let u = b - a;
+    let w = a - ray.origin;
+    // The ray's direction has length 1.
+    let (du, uu) = (ray.dir.dot(u), u.dot(u));
+    let den = uu - du * du;
+    if !(den.is_finite() && den > 1e-12 * uu) {
+        return a;
+    }
+    let s = (du * ray.dir.dot(w) - u.dot(w)) / den;
+    if !s.is_finite() {
+        return a;
+    }
+    a + u * s.clamp(0.0, 1.0)
+}
+
 /// Where segment `p`–`q` passes through triangle `t` (not when it lies in its plane).
 fn segment_through(p: Vec3, q: Vec3, t: &[Vec3; 3]) -> Option<Vec3> {
     let [a, b, c] = *t;
@@ -211,6 +229,21 @@ pub fn triangle_distance(s: &[Vec3; 3], t: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::UnitVec3;
+
+    #[test]
+    fn the_segment_point_under_a_ray() {
+        let ray = Ray::new(Vec3::new(0.0, 0.0, 10.0), -UnitVec3::Z);
+        let x = |a: Vec3, b: Vec3| closest_on_segment_to_ray(a, b, &ray);
+        assert!(x(Vec3::new(-5.0, 0.0, 0.0), Vec3::new(5.0, 0.0, -4.0)).dist(Vec3::new(0.0, 0.0, -2.0)) < 1e-9);
+        // Beyond an end: the end.
+        assert!(x(Vec3::new(1.0, 0.0, 0.0), Vec3::new(3.0, 0.0, 0.0)).dist(Vec3::new(1.0, 0.0, 0.0)) < 1e-9);
+        // Parallel, degenerate and non-finite input: the start, no panic.
+        assert_eq!(x(Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 5.0)), Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(x(Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)), Vec3::new(2.0, 0.0, 0.0));
+        let nan = Vec3::new(f64::NAN, 0.0, 0.0);
+        let _ = x(nan, Vec3::ZERO);
+    }
 
     fn tri(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [Vec3; 3] {
         [Vec3::from(a), Vec3::from(b), Vec3::from(c)]

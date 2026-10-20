@@ -5,7 +5,7 @@
 use egui::Pos2;
 use serde_json::json;
 use solidcraft_engine::doc::{apply_point, joints, mat_inverse};
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Plane, Vec3};
 
 use crate::SolveApp;
 use crate::viewport::{Hit, Proj};
@@ -47,7 +47,7 @@ pub fn start(app: &mut SolveApp, proj: &Proj, p: Pos2) -> bool {
         return false;
     }
     let Some(local) = mat_inverse(&joints::occurrence_world(&s.doc, occurrence)).map(|inv| apply_point(&inv, at)) else { return false };
-    let normal = proj.ray(p).1;
+    let normal = proj.ray(p).dir.vec();
     app.viewport.joint_drag = Some(Drag { occurrence, local, origin: at, normal, pushed: false });
     true
 }
@@ -59,15 +59,7 @@ pub fn active(app: &SolveApp) -> bool {
 /// Reach for the point under `p`.
 pub fn to(app: &mut SolveApp, proj: &Proj, p: Pos2) {
     let Some(d) = app.viewport.joint_drag.clone() else { return };
-    let (o, dir) = proj.ray(p);
-    let facing = dir.dot(d.normal);
-    if facing.abs() < 1e-9 {
-        return;
-    }
-    let target = o + dir * ((d.origin - o).dot(d.normal) / facing);
-    if !target.is_finite() {
-        return;
-    }
+    let Some(target) = Plane::from_normal(d.origin, d.normal).and_then(|plane| plane.intersect_ray(&proj.ray(p))) else { return };
     let at = apply_point(&joints::occurrence_world(&app.session.doc, d.occurrence), d.local);
     let params =
         json!({"occurrence": d.occurrence, "at": [at.x, at.y, at.z], "point": [target.x, target.y, target.z], "quiet": true, "continuous": true});

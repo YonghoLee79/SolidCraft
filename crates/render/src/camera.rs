@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Ray, UnitVec3, Vec3};
 
 /// Column-major 4×4 matrix.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -316,19 +316,21 @@ impl Camera {
         let (x, y, z) = (c[0] / c[3], c[1] / c[3], c[2] / c[3]);
         (c[3] > 0.0).then_some(((x + 1.0) * 0.5 * w, (1.0 - y) * 0.5 * h, z))
     }
-    /// Picking ray through pixel (x, y): origin and unit direction.
-    pub fn ray(&self, x: f64, y: f64, w: f64, h: f64) -> (Vec3, Vec3) {
+    /// Picking ray through pixel (x, y).
+    pub fn ray(&self, x: f64, y: f64, w: f64, h: f64) -> Ray {
         let (r, u, b) = self.basis();
+        // `back` is a unit vector; Z only for a camera with angles that are not finite.
+        let forward = (-b).unit().unwrap_or(-UnitVec3::Z);
         let hh = self.half_height();
         let aspect = w / h.max(1.0);
         let nx = (x / w.max(1.0)) * 2.0 - 1.0;
         let ny = 1.0 - (y / h.max(1.0)) * 2.0;
         if self.fov > 0.0 {
-            let d = (r * (nx * hh * aspect) + u * (ny * hh) - b * self.distance).normalized().unwrap_or(-b);
-            (self.eye(), d)
+            let d = (r * (nx * hh * aspect) + u * (ny * hh) - b * self.distance).unit().unwrap_or(forward);
+            Ray::new(self.eye(), d)
         } else {
             let o = self.target + r * (nx * hh * aspect) + u * (ny * hh) + b * (self.distance * 4.0);
-            (o, -b)
+            Ray::new(o, forward)
         }
     }
     /// Zoom by `factor` (< 1 zooms in) toward a world point that stays put on screen.
@@ -479,9 +481,9 @@ mod tests {
         let (xr, _, _) = c.to_screen(c.target + Vec3::X, 800.0, 600.0, 10.0).unwrap();
         let (_, yu, _) = c.to_screen(c.target + Vec3::Z, 800.0, 600.0, 10.0).unwrap();
         assert!(xr > 400.0 && yu < 300.0);
-        let (o, d) = c.ray(400.0, 300.0, 800.0, 600.0);
-        assert!(d.dist(Vec3::Y) < 1e-9, "{d:?}");
-        assert!((o - c.target).cross(d).len() < 1e-6);
+        let ray = c.ray(400.0, 300.0, 800.0, 600.0);
+        assert!(ray.dir.dist(Vec3::Y) < 1e-9, "{ray:?}");
+        assert!((ray.origin - c.target).cross(ray.dir).len() < 1e-6);
     }
 
     #[test]
@@ -555,8 +557,8 @@ mod tests {
         let near = c.to_screen(Vec3::new(0.0, 0.0, 10.0), 800.0, 600.0, 20.0).unwrap().2;
         let far = c.to_screen(Vec3::new(0.0, 0.0, -10.0), 800.0, 600.0, 20.0).unwrap().2;
         assert!(near < far);
-        let (o, d) = c.ray(600.0, 300.0, 800.0, 600.0);
-        let hit = o + d * (o.z / -d.z);
+        let ray = c.ray(600.0, 300.0, 800.0, 600.0);
+        let hit = ray.at(ray.origin.z / -ray.dir.z);
         let (sx, sy, _) = c.to_screen(hit, 800.0, 600.0, 20.0).unwrap();
         assert!((sx - 600.0).abs() < 1e-6 && (sy - 300.0).abs() < 1e-6);
     }

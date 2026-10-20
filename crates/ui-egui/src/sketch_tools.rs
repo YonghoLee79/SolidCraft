@@ -810,8 +810,7 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
             let target = target.or_else(|| {
                 let st = app.session.world_state();
                 let ss = st.sketch(app.session.active_sketch?)?;
-                let (o, d) = proj.ray(pos);
-                let w = ss.plane.intersect_ray(o, d)?;
+                let w = ss.plane.intersect_ray(&proj.ray(pos))?;
                 let pl = &ss.plane;
                 Some((
                     json!({"origin": [pl.origin.x, pl.origin.y, pl.origin.z], "x_dir": [pl.x.x, pl.x.y, pl.x.z], "y_dir": [pl.y.x, pl.y.y, pl.y.z]}),

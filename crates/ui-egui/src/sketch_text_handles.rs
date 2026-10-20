@@ -180,8 +180,7 @@ pub(crate) fn over(app: &SolveApp, proj: &Proj, pos: Pos2) -> bool {
 fn on_plane(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<Vec2> {
     let state = app.session.world_state();
     let ss = state.sketch(app.session.active_sketch?)?;
-    let (o, d) = proj.ray(pos);
-    ss.plane.intersect_ray(o, d).map(|w| ss.plane.to_local(w))
+    ss.plane.intersect_ray(&proj.ray(pos)).map(|w| ss.plane.to_local(w))
 }
 
 /// A drag starting on a handle (true: the handles took it).

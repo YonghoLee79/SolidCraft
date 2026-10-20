@@ -175,7 +175,10 @@ pub fn paste(app: &mut SolveApp, at: Option<Pos2>) -> bool {
 /// Place the copied design's origin on the pointed solid surface, otherwise its parent's
 /// XY plane. With no viewport point or a parallel/behind-camera ray, use the parent origin.
 fn paste_placement(app: &SolveApp, at: Option<Pos2>) -> (Vec<u64>, [f64; 3]) {
-    use solidcraft_engine::{doc, geom::Vec3};
+    use solidcraft_engine::{
+        doc,
+        geom::{Plane, Vec3},
+    };
     let path = app.session.active_occurrence_path.clone().unwrap_or_else(|| app.session.doc.first_path(app.session.active_component));
     let frame = app.session.occurrence_placement(&path).map(|p| p.world).unwrap_or(doc::IDENTITY);
     let origin = doc::apply_point(&frame, Vec3::ZERO);
@@ -189,15 +192,10 @@ fn paste_placement(app: &SolveApp, at: Option<Pos2>) -> (Vec<u64>, [f64; 3]) {
             }) {
                 return point.is_finite().then_some(point);
             }
-            let (ray_origin, ray_direction) = projection.ray(at);
-            let normal = doc::apply_vector(&frame, Vec3::Z);
-            let denominator = ray_direction.dot(normal);
-            if denominator.abs() < 1e-9 {
-                return None;
-            }
-            let distance = (origin - ray_origin).dot(normal) / denominator;
-            let point = ray_origin + ray_direction * distance;
-            (distance >= 0.0 && point.is_finite()).then_some(point)
+            let ray = projection.ray(at);
+            let point = Plane::from_normal(origin, doc::apply_vector(&frame, Vec3::Z))?.intersect_ray(&ray)?;
+            // In front of the view only.
+            ((point - ray.origin).dot(ray.dir) >= 0.0).then_some(point)
         })
         .unwrap_or(origin);
     let local = doc::mat_inverse(&frame).map(|inverse| doc::apply_point(&inverse, point)).filter(|p| p.is_finite()).unwrap_or(Vec3::ZERO);

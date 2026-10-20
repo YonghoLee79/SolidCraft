@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Plane, Vec3};
+use solidcraft_geom::{Plane, Ray, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3, v3};
@@ -269,8 +269,9 @@ pub fn draft(b: &Body, faces: &[Vec3], neutral: &Plane, pull: Vec3, angle: f64) 
         }
         // Hinge: the face's line on the neutral plane; rotate the normal toward the pull.
         let n2 = (h.n * angle.cos() + pull * angle.sin()).normalized().ok_or_else(|| KernelError::Failed("draft".into()))?;
-        let hinge_pt =
-            neutral.intersect_ray(*c, pull).ok_or_else(|| KernelError::Failed("the neutral plane is parallel to the pull direction".into()))?;
+        let hinge_pt = Ray::towards(*c, pull)
+            .and_then(|r| neutral.intersect_ray(&r))
+            .ok_or_else(|| KernelError::Failed("the neutral plane is parallel to the pull direction".into()))?;
         out.push(HalfSpace { n: n2, d: n2.dot(hinge_pt) });
         moved += 1;
     }

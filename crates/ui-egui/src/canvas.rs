@@ -348,19 +348,6 @@ pub fn snap_step(half_height: f64) -> f64 {
     }
 }
 
-/// Parameter along the line `base + dir * t` closest to the view ray through `pos`.
-fn along(proj: &Proj, pos: Pos2, base: Vec3, dir: Vec3) -> Option<f64> {
-    let (o, r) = proj.ray(pos);
-    let w0 = base - o;
-    let (b, d, e) = (dir.dot(r), dir.dot(w0), r.dot(w0));
-    let den = 1.0 - b * b;
-    // Looking straight along the line: nothing to drag.
-    if den.abs() < 1e-6 {
-        return None;
-    }
-    Some((b * e - d) / den)
-}
-
 fn format_len(v: f64) -> String {
     let s = format!("{v:.3}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -629,7 +616,7 @@ fn drag_arrow(
     // How far along the arrow the press was short of its end: the drag keeps that gap.
     let grab = id.with("stem grab");
     if r.drag_started() {
-        let gap = on_stem.zip(r.interact_pointer_pos()).and_then(|(_, p)| along(proj, p, base, n)).map(|v| v - l);
+        let gap = on_stem.zip(r.interact_pointer_pos()).and_then(|(_, p)| crate::gizmo::along(proj, p, base, n)).map(|v| v - l);
         ui.data_mut(|d| {
             if let Some(g) = gap.filter(|g| g.is_finite()) {
                 d.insert_temp(grab, g);
@@ -640,7 +627,7 @@ fn drag_arrow(
     }
     if r.dragged()
         && let Some(p) = r.interact_pointer_pos()
-        && let Some(v) = along(proj, p, base, n)
+        && let Some(v) = crate::gizmo::along(proj, p, base, n)
     {
         crate::tool_modifiers::set_manipulator_dragging(true);
         let v = v - ui.data(|d| d.get_temp::<f64>(grab)).unwrap_or(0.0);
@@ -815,7 +802,7 @@ fn radius_spline_handles(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Pain
                 edit = Some(Edit::Remove(k));
             } else if r.dragged()
                 && let Some(p) = r.interact_pointer_pos()
-                && let Some(v) = along(proj, p, at(*u), e.n)
+                && let Some(v) = crate::gizmo::along(proj, p, at(*u), e.n)
             {
                 crate::tool_modifiers::set_manipulator_dragging(true);
                 let free = crate::tool_modifiers::manipulator_free();
@@ -1008,7 +995,7 @@ fn taper_handle(
     }
     if r.dragged()
         && let Some(p) = r.interact_pointer_pos()
-        && let Some(s) = along(proj, p, foot + span, e)
+        && let Some(s) = crate::gizmo::along(proj, p, foot + span, e)
     {
         crate::tool_modifiers::set_manipulator_dragging(true);
         let mut deg = s.atan2(l).to_degrees();
@@ -1277,13 +1264,13 @@ fn rotation_handle(
     if response.dragged()
         && let Some(pointer) = response.interact_pointer_pos()
     {
-        let (origin, direction) = proj.ray(pointer);
-        let den = direction.dot(axis);
+        let ray = proj.ray(pointer);
+        let den = ray.dir.dot(axis);
         let (a, b) = ((range.0 - offset) / scale, (range.1 - offset) / scale);
         let bounds = (a.min(b), a.max(b));
         // Near edge-on, a plane intersection magnifies subpixel pointer error.
         let raw = if den.abs() > 0.05 {
-            let point = origin + direction * ((centre - origin).dot(axis) / den) - centre;
+            let point = ray.at((centre - ray.origin).dot(axis) / den) - centre;
             Some(point.dot(e2).atan2(point.dot(e1)))
         } else {
             projected_rotation_angle(proj, pointer, centre, e1, e2, radius, boundary, bounds)

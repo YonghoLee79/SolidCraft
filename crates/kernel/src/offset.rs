@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Ray, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3};
@@ -1276,7 +1276,7 @@ pub(crate) fn draft_walls(b: &Body, chosen: &[usize], neutral: &solidcraft_geom:
             Surf::Plane { n, d } => {
                 let n2 = (n * angle.cos() + pull * angle.sin()).normalized().ok_or_else(|| fail("draft"))?;
                 // A point of the old plane on the neutral plane: the hinge.
-                let o = neutral.intersect_ray(n * d, pull).ok_or_else(|| fail("draft: hinge"))?;
+                let o = Ray::towards(n * d, pull).and_then(|r| neutral.intersect_ray(&r)).ok_or_else(|| fail("draft: hinge"))?;
                 let u = n2.cross(pull).normalized().ok_or_else(|| fail("draft"))?;
                 let w = n2.cross(u);
                 mt::Surface::Plane(mt::Plane::new(p3(o), p3(o + u), p3(o + w)))

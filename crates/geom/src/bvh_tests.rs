@@ -1,4 +1,5 @@
 use super::*;
+use crate::UnitVec3;
 
 /// A small deterministic generator (the tests need no crate for randomness).
 struct Lcg(u64);
@@ -56,8 +57,9 @@ fn indexed_raycast_answers_as_the_scan_does() {
             let Some(d) = (target - o).normalized() else { continue };
             (o, d)
         };
-        let want = m.raycast(o, d);
-        assert_eq!(index.raycast(&m, o, d), want, "ray {k} from {o:?} along {d:?}");
+        let Some(ray) = Ray::towards(o, d) else { continue };
+        let want = m.raycast(&ray);
+        assert_eq!(index.raycast(&m, &ray), want, "ray {k} from {o:?} along {d:?}");
         hits += usize::from(want.is_some());
     }
     assert!(hits > 1000, "the rays should mostly hit ({hits})");
@@ -68,13 +70,13 @@ fn indexed_raycast_of_another_mesh_falls_back_to_the_scan() {
     let mut rng = Lcg(3);
     let (a, b) = (mesh(2, 0, &mut rng), mesh(5, 0, &mut rng));
     let index = MeshIndex::new(&a);
-    let (o, d) = (Vec3::new(4.5, 4.2, 9.0), Vec3::new(0.0, 0.0, -1.0));
-    assert!(b.raycast(o, d).is_some());
-    assert_eq!(index.raycast(&b, o, d), b.raycast(o, d));
+    let ray = Ray::new(Vec3::new(4.5, 4.2, 9.0), -UnitVec3::Z);
+    assert!(b.raycast(&ray).is_some());
+    assert_eq!(index.raycast(&b, &ray), b.raycast(&ray));
 }
 
-/// Distance from point `p` to the ray from `o` along unit `d` (from its start on), and how far along.
-fn ray_point(o: Vec3, d: Vec3, p: Vec3) -> (f64, f64) {
+/// Distance from point `p` to the ray from `o` along `d` (from its start on), and how far along.
+fn ray_point(o: Vec3, d: UnitVec3, p: Vec3) -> (f64, f64) {
     let t = (p - o).dot(d).max(0.0);
     ((o + d * t).dist(p), t)
 }
@@ -87,10 +89,10 @@ fn segments_near_the_ray_are_all_reported() {
     for k in 0..500 {
         let o = rng.vec(30.0) + Vec3::new(8.0, 8.0, 30.0);
         let target = Vec3::new(rng.range(0.0, 16.0), rng.range(0.0, 16.0), 0.0);
-        let Some(d) = (target - o).normalized() else { continue };
+        let Some(d) = (target - o).unit() else { continue };
         let (a, b) = if k % 2 == 0 { (0.3, 0.0) } else { (0.0, 0.01) };
         let mut got = std::collections::HashSet::new();
-        index.segments_near(o, d, a, b, |e, s| {
+        index.segments_near(&Ray::new(o, d), a, b, |e, s| {
             assert!(got.insert((e, s)), "segment {e}/{s} reported twice");
         });
         for (ei, e) in m.edges.iter().enumerate() {
@@ -119,12 +121,12 @@ fn hostile_boxes_never_panic() {
     let nan = Vec3::new(f64::NAN, 0.0, 0.0);
     let boxes = [Aabb3::EMPTY, Aabb3 { min: nan, max: nan }, Aabb3 { min: Vec3::ZERO, max: Vec3::new(1.0, 1.0, 1.0) }];
     let bvh = Bvh::new(&boxes);
-    assert_eq!(bvh.nearest(Vec3::new(0.5, 0.5, 5.0), Vec3::new(0.0, 0.0, -1.0), |i| Some(f64::from(i))), Some((2.0, 2)));
-    assert_eq!(bvh.nearest(Vec3::ZERO, Vec3::new(f64::NAN, 0.0, 0.0), |_| Some(1.0)), None);
+    assert_eq!(bvh.nearest(&Ray::new(Vec3::new(0.5, 0.5, 5.0), -UnitVec3::Z), |i| Some(f64::from(i))), Some((2.0, 2)));
+    assert_eq!(bvh.nearest(&Ray::new(nan, UnitVec3::X), |_| Some(1.0)), None);
     let empty = Bvh::new(&[]);
-    assert!(empty.nearest(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), |_| Some(1.0)).is_none());
+    assert!(empty.nearest(&Ray::new(Vec3::ZERO, UnitVec3::Z), |_| Some(1.0)).is_none());
     empty.visit(|_| true, |_| panic!("an empty hierarchy has no items"));
     let m = Mesh { positions: vec![Vec3::ZERO], triangles: vec![[0, 5, 9]], ..Default::default() };
-    assert!(MeshIndex::new(&m).raycast(&m, Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -1.0)).is_none());
-    MeshIndex::new(&m).segments_near(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), f64::NAN, 0.0, |_, _| panic!("no segments"));
+    assert!(MeshIndex::new(&m).raycast(&m, &Ray::new(Vec3::new(0.0, 0.0, 1.0), -UnitVec3::Z)).is_none());
+    MeshIndex::new(&m).segments_near(&Ray::new(Vec3::ZERO, UnitVec3::Z), f64::NAN, 0.0, |_, _| panic!("no segments"));
 }

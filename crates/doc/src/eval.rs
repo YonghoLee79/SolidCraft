@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
-use solidcraft_geom::{Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
+use solidcraft_geom::{Mesh, Plane, Ray, Region2, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
 use solidcraft_sketch::{CurveKind, Profile, SolveReport, find_profiles};
 
@@ -2619,18 +2619,23 @@ fn body_at(st: &ModelState, body: &Option<crate::BodyName>, points: &[Vec3]) -> 
 /// A hole stays on its face when the model changes: a position now inside a body moves back
 /// against the drilling direction to the surface, one now above it moves down onto it.
 fn hole_on_surface(st: &ModelState, p: Vec3, dir: Vec3) -> Vec3 {
+    let Some(dir) = dir.unit() else { return p };
     let size = st.bodies.iter().map(|b| b.body.size()).fold(1.0, f64::max);
     let eps = size * 1e-6;
     let mut best: Option<Vec3> = None;
     for b in &st.bodies {
         let m = b.mesh();
         // Already on the surface: the drill enters right here.
-        if let Some((t, _)) = m.raycast(p - dir * eps, dir)
+        if let Some((t, _)) = m.raycast(&Ray::new(p - dir * eps, dir))
             && t < eps * 4.0
         {
             return p;
         }
-        let q = if m.contains(p) { m.raycast(p, -dir).map(|(t, _)| p - dir * t) } else { m.raycast(p, dir).map(|(t, _)| p + dir * t) };
+        let q = if m.contains(p) {
+            m.raycast(&Ray::new(p, -dir)).map(|(t, _)| p - dir * t)
+        } else {
+            m.raycast(&Ray::new(p, dir)).map(|(t, _)| p + dir * t)
+        };
         if let Some(q) = q
             && best.is_none_or(|bq| q.dist(p) < bq.dist(p))
         {
@@ -2910,7 +2915,7 @@ fn hole_reaches(st: &ModelState, p: Vec3, d: Vec3, ahead: bool) -> bool {
     let q = p + d * eps;
     st.bodies.iter().any(|b| {
         let m = b.mesh();
-        m.contains(q) || (ahead && m.raycast(q, d).is_some())
+        m.contains(q) || (ahead && Ray::towards(q, d).is_some_and(|r| m.raycast(&r).is_some()))
     })
 }
 
@@ -2983,7 +2988,7 @@ fn hole_depth_to(st: &ModelState, at: &Vec3, dir: Vec3, to: &Option<Vec3>, depth
     for b in st.bodies.iter().filter(|b| !b.body.is_mesh()) {
         let Some(fi) = crate::appearance::face_index_at(b, *t) else { continue };
         let m = b.mesh();
-        if let Some((h, tri)) = m.raycast(*at + dir * 1e-6, dir)
+        if let Some((h, tri)) = Ray::towards(*at + dir * 1e-6, dir).and_then(|r| m.raycast(&r))
             && m.tri_face.get(tri).is_some_and(|x| *x as usize == fi)
         {
             d = h + 1e-6;
@@ -4761,8 +4766,8 @@ fn height_at(st: &ModelState, face: Option<(usize, usize)>, plane: &Plane, centr
     }
     // A curved or slanted face: where the profile's middle meets it.
     let m = b.mesh();
-    for dir in [n, n * -1.0] {
-        if let Some((t, tri)) = m.raycast(centre, dir)
+    for dir in [n, n * -1.0].into_iter().filter_map(Vec3::unit) {
+        if let Some((t, tri)) = m.raycast(&Ray::new(centre, dir))
             && m.tri_face.get(tri).is_some_and(|x| *x as usize == fi)
         {
             return h(centre + dir * t);

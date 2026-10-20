@@ -12,7 +12,7 @@
 
 use egui::{Pos2, Rect, pos2, vec2};
 use serde_json::json;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Plane, Vec3};
 use solidcraft_engine::render::Camera;
 
 use crate::SolveApp;
@@ -137,10 +137,7 @@ pub(crate) fn zoom_anchor(app: &mut SolveApp, rect: egui::Rect, hover: Option<eg
         {
             return q;
         }
-        let (o, d) = proj.ray(p);
-        let n = app.cam.back();
-        let den = d.dot(n);
-        if den.abs() > 1e-9 { o + d * ((app.cam.target - o).dot(n) / den) } else { app.cam.target }
+        Plane::from_normal(app.cam.target, app.cam.back()).and_then(|plane| plane.intersect_ray(&proj.ray(p))).unwrap_or(app.cam.target)
     })
 }
 
