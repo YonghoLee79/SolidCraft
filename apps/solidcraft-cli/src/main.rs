@@ -75,8 +75,9 @@ const USAGE: &str = "usage:
   solidcraft-cli fuzz [--from N] [--count N] [--jobs J] [--timeout S] [--steps N] [--minimise] [--out DIR] [--report FILE]
   solidcraft-cli mcp [--in design.solidcraft|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
                      [--param-check off|warn|strict] [--compact]
-      (--compact, or SOLIDCRAFT_MCP_COMPACT=1: compact tool output for agents: inspect_design summarises sketches
-       and takes `sketches` by name and a `bodies` filter, and tool JSON is not pretty-printed; off by default)
+      (--compact, SOLIDCRAFT_MCP_COMPACT=1 or the app's Preferences › AI (with --connect): compact tool output for
+       agents: inspect_design summarises sketches and takes `sketches` by name and a `bodies` filter, and tool JSON
+       is not pretty-printed; off by default)
   solidcraft-cli crashes [list [--json] | show <id> | replay <id> | dir | clear [<id>]]
   solidcraft-cli licences
   solidcraft-cli gpu [--policy auto|hardware|software|cpu]
