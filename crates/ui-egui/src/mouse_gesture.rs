@@ -344,12 +344,20 @@ pub(crate) fn paint(painter: &Painter, c: Pos2, scale: f32, studio: Studio, item
         }
     }
     match hot.and_then(|k| items.get(k)).filter(|i| i.enabled) {
-        Some(item) => {
-            painter.text(c, Align2::CENTER_CENTER, crate::i18n::tr_label(&item.label), FontId::proportional((20.0 * scale).max(9.0)), t.text)
-        }
-        None => {
-            painter.text(c, Align2::CENTER_CENTER, crate::i18n::tr_label(studio.label()), FontId::proportional((16.0 * scale).max(9.0)), t.text_dim)
-        }
+        Some(item) => painter.text(
+            c,
+            Align2::CENTER_CENTER,
+            crate::i18n::tr_label(&item.label),
+            FontId::proportional((t.font_title * scale).max(t.font_badge)),
+            t.text,
+        ),
+        None => painter.text(
+            c,
+            Align2::CENTER_CENTER,
+            crate::i18n::tr_label(studio.label()),
+            FontId::proportional((t.font_intro * scale).max(t.font_badge)),
+            t.text_dim,
+        ),
     };
 }
 
@@ -565,13 +573,13 @@ fn apply(list: &mut Vec<String>, op: Op) -> bool {
 pub(crate) fn nav_rows(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
     let note = |ui: &mut egui::Ui, s: &str| {
         ui.label("");
-        ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr_label(s)).size(11.0).color(t.text_dim)).wrap());
+        ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr_label(s)).size(t.font_small).color(t.text_dim)).wrap());
         ui.end_row();
     };
     ui.label(crate::i18n::tr_label("Mouse gestures"));
     ui.horizontal(|ui| {
-        ui.checkbox(&mut app.preferences.mouse_gestures.enabled, crate::i18n::tr_label("Ring of tools on the right button"));
-        if ui.button(crate::i18n::tr_label("Customize…")).clicked() {
+        crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Ring of tools on the right button"), &mut app.preferences.mouse_gestures.enabled);
+        if crate::ui_kit::button(ui, crate::i18n::tr_label("Customize…"), crate::ui_kit::Button::Normal).clicked() {
             app.gesture.editor.open = true;
             app.gesture.editor.studio = Studio::of(app);
         }
@@ -584,7 +592,7 @@ pub(crate) fn nav_rows(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 t.warning,
                 crate::i18n::tr_label("Mouse gestures only work with the SolidWorks mouse mode (the wheel orbits, Ctrl + wheel pans)."),
             );
-            if ui.button(crate::i18n::tr_label("Use the SolidWorks mouse mode")).clicked() {
+            if crate::ui_kit::button(ui, crate::i18n::tr_label("Use the SolidWorks mouse mode"), crate::ui_kit::Button::Normal).clicked() {
                 app.preferences.nav = MOUSE_MODE.to_string();
                 app.preferences.zoom_reverse = crate::prefs::nav_preset(MOUSE_MODE).reverse_zoom;
             }
@@ -612,7 +620,7 @@ fn editor(app: &mut SolveApp, ctx: &egui::Context) {
         .id(egui::Id::new("sc_gesture_editor"))
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.checkbox(&mut config.enabled, crate::i18n::tr_label("Ring of tools on the right button"));
+            crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Ring of tools on the right button"), &mut config.enabled);
             if app.preferences.nav != MOUSE_MODE {
                 ui.colored_label(
                     t.warning,
@@ -621,12 +629,23 @@ fn editor(app: &mut SolveApp, ctx: &egui::Context) {
             }
             ui.horizontal(|ui| {
                 ui.label(crate::i18n::tr_label("Studio"));
-                egui::ComboBox::from_id_salt("gesture_studio").selected_text(crate::i18n::tr_label(studio.label())).show_ui(ui, |ui| {
-                    for s in Studio::ALL {
-                        ui.selectable_value(&mut studio, s, crate::i18n::tr_label(s.label()));
-                    }
+                ui.scope(|ui| {
+                    ui.set_max_width(200.0);
+                    crate::ui_kit::dropdown_menu(ui, "gesture_studio", crate::i18n::tr_label(studio.label()), |ui| {
+                        for s in Studio::ALL {
+                            if crate::ui_kit::list_picker(ui, s.label(), crate::i18n::tr_label(s.label()), studio == s).clicked() {
+                                studio = s;
+                            }
+                        }
+                    });
                 });
-                if ui.add_enabled(config.is_custom(studio), egui::Button::new(crate::i18n::tr_label("Restore this studio's tools"))).clicked() {
+                if crate::ui_kit::button(
+                    ui,
+                    crate::i18n::tr_label("Restore this studio's tools"),
+                    crate::ui_kit::Button::Enabled(config.is_custom(studio)),
+                )
+                .clicked()
+                {
                     config.reset(studio);
                 }
             });
@@ -639,45 +658,50 @@ fn editor(app: &mut SolveApp, ctx: &egui::Context) {
                     ui.set_min_width(330.0);
                     ui.label(
                         egui::RichText::new(format!("{} {}/{}", crate::i18n::tr_label("Tools, clockwise from the top"), list.len(), MAX_TOOLS))
-                            .size(11.0)
+                            .size(t.font_small)
                             .color(t.text_dim),
                     );
                     for i in 0..list.len() {
                         ui.horizontal(|ui| {
                             ui.label(format!("{}", i + 1));
                             let shown = label_of(&list[i]).unwrap_or_default();
-                            egui::ComboBox::from_id_salt(("gesture_tool", i)).selected_text(shown).width(200.0).show_ui(ui, |ui| {
-                                let filter_id = ui.id().with("filter");
-                                let mut filter: String = ui.data_mut(|d| d.get_temp(filter_id).unwrap_or_default());
-                                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(crate::i18n::tr_label("Filter…")));
-                                ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
-                                let needle = filter.trim().to_lowercase();
-                                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                                    for (id, label) in &catalog {
-                                        if !needle.is_empty() && !label.to_lowercase().contains(&needle) && !id.to_lowercase().contains(&needle) {
-                                            continue;
+                            ui.scope(|ui| {
+                                ui.set_max_width(200.0);
+                                crate::ui_kit::dropdown_menu(ui, ("gesture_tool", i), &shown, |ui| {
+                                    let filter_id = ui.id().with("filter");
+                                    let mut filter: String = ui.data_mut(|d| d.get_temp(filter_id).unwrap_or_default());
+                                    crate::ui_kit::text_field(ui, &mut filter, crate::i18n::tr_label("Filter…"));
+                                    ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+                                    let needle = filter.trim().to_lowercase();
+                                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                                        for (id, label) in &catalog {
+                                            if !needle.is_empty() && !label.to_lowercase().contains(&needle) && !id.to_lowercase().contains(&needle) {
+                                                continue;
+                                            }
+                                            let taken = list.contains(id) && *id != list[i];
+                                            let r = ui.add_enabled_ui(!taken, |ui| crate::ui_kit::list_picker(ui, id, label, *id == list[i])).inner;
+                                            if r.clicked() {
+                                                op = Some(Op::Set(i, id.clone()));
+                                                ui.close();
+                                            }
                                         }
-                                        let taken = list.contains(id) && *id != list[i];
-                                        let r = ui.add_enabled(!taken, egui::Button::selectable(*id == list[i], label.as_str()));
-                                        if r.clicked() {
-                                            op = Some(Op::Set(i, id.clone()));
-                                            ui.close();
-                                        }
-                                    }
+                                    });
                                 });
                             });
-                            if ui.add_enabled(i > 0, egui::Button::new("↑")).clicked() {
+                            if crate::ui_kit::button(ui, "↑", crate::ui_kit::Button::Enabled(i > 0)).clicked() {
                                 op = Some(Op::Up(i));
                             }
-                            if ui.add_enabled(i + 1 < list.len(), egui::Button::new("↓")).clicked() {
+                            if crate::ui_kit::button(ui, "↓", crate::ui_kit::Button::Enabled(i + 1 < list.len())).clicked() {
                                 op = Some(Op::Down(i));
                             }
-                            if ui.add_enabled(list.len() > 1, egui::Button::new("×")).clicked() {
+                            if crate::ui_kit::button(ui, "×", crate::ui_kit::Button::Enabled(list.len() > 1)).clicked() {
                                 op = Some(Op::Remove(i));
                             }
                         });
                     }
-                    if ui.add_enabled(list.len() < MAX_TOOLS, egui::Button::new(crate::i18n::tr_label("Add a tool"))).clicked() {
+                    if crate::ui_kit::button(ui, crate::i18n::tr_label("Add a tool"), crate::ui_kit::Button::Enabled(list.len() < MAX_TOOLS))
+                        .clicked()
+                    {
                         op = Some(Op::Add);
                     }
                 });

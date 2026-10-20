@@ -8,15 +8,16 @@
 //! for a program and adds it at the top; "Custom…" itself is never the selection. Pressing Delete
 //! over a program the user added removes it.
 
+use crate::selection::SelectionExt as _;
+use crate::ui_kit::choice_row;
 use std::collections::HashMap;
 
 use egui::{Color32, Sense, vec2};
 use serde_json::{Value, json};
-use solidcraft_engine::Sel;
 use solidcraft_engine::slicers::{self, Slicer};
 
 use crate::SolveApp;
-use crate::dialogs::{Kind, combo, row_label};
+use crate::dialogs::{Kind, form_row};
 use crate::selection::{BODIES, SelInput};
 use crate::theme::Tokens;
 
@@ -244,7 +245,7 @@ fn decode(bytes: &[u8]) -> Option<egui::ColorImage> {
 
 /// `text` on one line, ending in … when it is wider than `width`.
 fn fitted(ui: &egui::Ui, text: &str, width: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), egui::FontId::proportional(13.0), color);
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), egui::FontId::proportional(Tokens::get().font_button), color);
     job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
     ui.painter().layout_job(job)
 }
@@ -259,7 +260,13 @@ fn paint_icon(ui: &egui::Ui, rect: egui::Rect, tex: Option<egui::TextureId>, nam
             let t = Tokens::get();
             ui.painter().rect_filled(rect, 3.0, t.chip);
             let letter = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, letter, egui::FontId::proportional(11.0), t.text);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                letter,
+                egui::FontId::proportional(crate::theme::Tokens::get().font_small),
+                t.text,
+            );
         }
     }
 }
@@ -267,9 +274,7 @@ fn paint_icon(ui: &egui::Ui, rect: egui::Rect, tex: Option<egui::TextureId>, nam
 /// The rows after the Bodies input; true when Enter was pressed in a field.
 pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) -> bool {
     if !k.open {
-        row_label(ui, "Format");
-        combo(ui, "sm_format", &FORMATS.map(|f| f.0), &mut k.format);
-        ui.end_row();
+        choice_row(ui, "Format", "sm_format", &mut k.format, &FORMATS.map(|f| f.0));
         return false;
     }
     if k.stale {
@@ -285,16 +290,16 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) -> bool {
         return false;
     }
 
-    row_label(ui, "Slicer");
-    if let Some(path) = app.slicer_menu.picked.take() {
-        match add_custom(app, &path) {
-            Ok(()) => k.slicer = path,
-            Err(e) => app.set_status(e, true),
+    form_row(ui, "Slicer", |ui| {
+        if let Some(path) = app.slicer_menu.picked.take() {
+            match add_custom(app, &path) {
+                Ok(()) => k.slicer = path,
+                Err(e) => app.set_status(e, true),
+            }
         }
-    }
-    let choosing = app.file_picker_busy();
-    ui.add_enabled_ui(!choosing, |ui| slicer_combo(app, ui, k));
-    ui.end_row();
+        let choosing = app.file_picker_busy();
+        ui.add_enabled_ui(!choosing, |ui| slicer_combo(app, ui, k));
+    });
     false
 }
 
@@ -309,7 +314,9 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
     let mut chosen: Option<String> = None;
     let name = current.map(|e| e.slicer.name.clone());
     // A long name ends in … instead of wrapping onto a second line; the full one is in the tooltip.
-    let r = egui::ComboBox::from_id_salt("sm_slicer").selected_text(text).truncate().width(crate::dialogs::FIELD_W).show_ui(ui, |ui| {
+    let wrap = ui.style().wrap_mode;
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+    let r = crate::ui_kit::dropdown_menu(ui, "sm_slicer", &text, |ui| {
         let frame = ctx.cumulative_frame_nr();
         ctx.data_mut(|d| d.insert_temp(egui::Id::new("sc_slicer_popup"), frame));
         for e in &entries {
@@ -317,14 +324,13 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
             let selected = e.key == k.slicer;
             if resp.hovered() || selected {
-                let v = ui.visuals();
-                let fill = if resp.hovered() { v.widgets.hovered.bg_fill } else { v.selection.bg_fill.gamma_multiply(0.5) };
+                let fill = if resp.hovered() { Tokens::get().hover } else { Tokens::get().selected_bg };
                 ui.painter().rect_filled(rect, 2.0, fill);
             }
             paint_icon(ui, egui::Rect::from_min_size(rect.left_center() + vec2(3.0, -ICON / 2.0), vec2(ICON, ICON)), tex, &e.slicer.name);
-            let text = fitted(ui, &e.slicer.name, rect.width() - (ICON + 9.0) - 6.0, ui.visuals().text_color());
+            let text = fitted(ui, &e.slicer.name, rect.width() - (ICON + 9.0) - 6.0, Tokens::get().text);
             let (elided, at) = (text.elided, rect.left_center() + vec2(ICON + 9.0, -text.size().y / 2.0));
-            ui.painter().galley(at, text, ui.visuals().text_color());
+            ui.painter().galley(at, text, Tokens::get().text);
             crate::scenario::publish_handle(&format!("dialog:Slicer:{}", e.slicer.name), rect.center());
             if e.user {
                 let hint = crate::i18n::format("ui.slicer_delete_tip", &[("program", e.slicer.command.first().map_or("", String::as_str))]);
@@ -345,13 +351,13 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
         }
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
         if resp.hovered() {
-            ui.painter().rect_filled(rect, 2.0, ui.visuals().widgets.hovered.bg_fill);
+            ui.painter().rect_filled(rect, 2.0, Tokens::get().hover);
         }
         ui.painter().text(
             rect.left_center() + vec2(ICON + 9.0, 0.0),
             egui::Align2::LEFT_CENTER,
             crate::i18n::tr_label("Custom…"),
-            egui::FontId::proportional(13.0),
+            egui::FontId::proportional(crate::theme::Tokens::get().font_button),
             Tokens::get().text,
         );
         crate::scenario::publish_handle("dialog:Slicer:Custom", rect.center());
@@ -360,12 +366,13 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
             ui.close();
         }
     });
+    ui.style_mut().wrap_mode = wrap;
     if let Some(name) = name {
-        r.response.clone().on_hover_text(name);
+        r.clone().on_hover_text(name);
     }
     if let Some(e) = current {
         let tex = icon(&mut app.slicer_menu, &ctx, e);
-        let rect = r.response.rect;
+        let rect = r.rect;
         let at = egui::Rect::from_min_size(rect.left_center() + vec2(ui.spacing().button_padding.x + 1.0, -ICON / 2.0), vec2(ICON, ICON));
         paint_icon(ui, at, tex, &e.slicer.name);
     }
@@ -398,19 +405,12 @@ fn add_custom(app: &mut SolveApp, path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn bodies(inputs: &[SelInput]) -> Vec<String> {
-    inputs
-        .first()
-        .map(|i| i.items.iter().filter_map(|s| if let Sel::Body { name } = s { Some(name.clone()) } else { None }).collect())
-        .unwrap_or_default()
-}
-
 /// What the Save (or Send) button asks `file.save_mesh` or `file.send_to_slicer` to do; Save is
 /// without the file name.
 pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)>, String> {
     let format = FORMATS.get(k.format).map_or("stl", |f| f.1);
     let mut p = json!({ "format": format });
-    let names = bodies(inputs);
+    let names = crate::selection::items(inputs, 0).body_names();
     if names.is_empty() {
         return Err(crate::i18n::tr("ui.save_mesh_pick_bodies").into());
     }
@@ -428,7 +428,12 @@ pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)
 
 /// Save and Send need at least one body.
 pub fn ready(inputs: &[SelInput]) -> bool {
-    !bodies(inputs).is_empty()
+    !crate::selection::items(inputs, 0).body_names().is_empty()
+}
+
+/// The command the dialog is for: its name is the dialog's title.
+pub fn command_id(k: &SaveMesh) -> &'static str {
+    if k.open { "file.send_to_slicer" } else { "file.save_mesh" }
 }
 
 /// The button's label: Save, or Send when the file goes to a slicer.
@@ -446,7 +451,7 @@ pub fn run(app: &mut SolveApp, k: &SaveMesh, inputs: &[SelInput]) -> Result<(), 
         return Ok(());
     }
     let (format, ext) = FORMATS.get(k.format).map_or(("stl", "stl"), |f| (f.1, f.2));
-    let name = bodies(inputs).first().cloned().unwrap_or_else(|| app.session.doc.name.clone());
+    let name = crate::selection::items(inputs, 0).body_names().first().cloned().unwrap_or_else(|| app.session.doc.name.clone());
     app.preferences.save_mesh_format = format.into();
     // The file dialog answers later; the dialog closes meanwhile, as for every export.
     app.pick_save(&format!("{name}.{ext}"), &[ext], move |app, path| {
@@ -494,6 +499,7 @@ fn report(app: &mut SolveApp, result: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solidcraft_engine::Sel;
 
     #[test]
     fn without_a_program_dialog_send_to_slicer_is_unavailable_and_starts_nothing() {

@@ -132,11 +132,14 @@ pub fn tool_definitions() -> Vec<Value> {
             "The whole design: user parameters (expression, value, errors), the timeline (features with type, suppressed, \
              rolled back, error, warning, timing), bodies (volume, area, centre of mass, bounding box, face/edge/vertex \
              counts), sketches (curves with ids and coordinates, points, constraints, profiles, degrees of freedom, solve \
-             status), the active sketch, selection and undo depth.",
+             status), assembly joints (what each origin is attached to: occurrence, the feature, face, edge or sketch \
+             curve its face names refer to, whether it resolves and why not; `execute` `joint.inspect {joint}` gives one), \
+             the active sketch, selection and undo depth.",
             obj(
                 json!({
                     "measure": {"type": "boolean", "description": "Measure bodies (default true)"},
                     "sketches": {"type": "boolean", "description": "Full sketch contents (default true; false = summary only)"},
+                    "joints": {"type": "boolean", "description": "Joint definitions as joint.inspect gives them, when the design has joints (default true)"},
                 }),
                 &[],
             ),
@@ -415,6 +418,13 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
                     .map(|id| exec(b, "sketch.inspect", json!({"sketch": id.clone()})).unwrap_or_else(|e| json!({"id": id, "error": e})))
                     .collect();
                 d["sketches"] = Value::Array(full);
+            }
+            // Joints: what each is attached to (left out when there are none, or the app is older).
+            if a.get("joints").and_then(Value::as_bool).unwrap_or(true)
+                && let Ok(j) = exec(b, "joint.inspect", json!({}))
+                && j["joints"].as_array().is_some_and(|v| !v.is_empty())
+            {
+                d["joints"] = j["joints"].clone();
             }
             Ok(d)
         }

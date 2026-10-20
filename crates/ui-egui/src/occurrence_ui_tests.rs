@@ -26,12 +26,7 @@ fn replaced_body_name_uses_evaluated_owner_in_browser_and_component_actions() {
 }
 
 fn fixture() -> (Harness, u64, u64, u64) {
-    let mut h = Harness::new();
-    let part = h.app.run("component.create", json!({"name":"Block"})).unwrap();
-    let component = part["component"].as_u64().unwrap();
-    let first = part["occurrence"].as_u64().unwrap();
-    h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
-    h.app.run("component.activate", json!({"component":0})).unwrap();
+    let (mut h, component, first) = crate::test_support::component_box();
     let second = h.app.run("occurrence.copy", json!({"occurrence":first,"translate":[50,0,0]})).unwrap()["occurrence"].as_u64().unwrap();
     h.frames(3);
     (h, component, first, second)
