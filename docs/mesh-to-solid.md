@@ -16,21 +16,26 @@ closed mesh as a solid body, so those operations work on it.
   converted where it can be; one that cannot stays a mesh body with a warning, so the import
   still succeeds.
 
-## What happens to the body
+## Workflow: before and after
 
-The conversion **replaces the mesh body in place**: the body keeps its row and name in the browser
-(it is the same body, now a B-rep solid), and the timeline gains a **Convert Mesh** feature
-(`ConvertMesh1`). Nothing else is created, so sketches, appearances, booleans and the rest keep
-pointing at that body.
+**Before — a mesh body.** It is a row under **Bodies**, put there by the import feature in the
+timeline. It renders, measures, moves and exports, but the solid operations refuse it ("a boolean
+needs a solid body"): boolean, fillet, chamfer, shell, hole, extrude-cut, a sketch on a face.
 
-- **Undo** (`Ctrl+Z`) or **deleting the Convert Mesh feature** brings the mesh back.
+**After — a solid body.** The conversion **replaces the mesh body in place**: the same row and
+name in the browser (now a B-rep solid), and one **Convert Mesh** feature in the timeline
+(`ConvertMesh1`). Nothing else is created, so scenes, appearances and downstream features keep
+pointing at that body. From here the solid tools work (Combine, Fillet, Chamfer, Shell, Hole,
+Extrude/Revolve, Measure, a sketch on a face, STEP/IGES export), and:
+
+- **Undo** (`Ctrl+Z`) or **deleting the Convert Mesh feature** brings the mesh back; a saved
+  design rebuilds the conversion from the timeline when it is opened.
 - The feature is not edited in the timeline yet: to change the tolerance, delete it and run
   Convert Mesh again.
 - To keep the mesh as well, copy the body before converting — **Move/Copy** (`M`) with **Copy**
   ticked, or `solid.move {bodies: ["Mesh1"], copy: true}` — and convert one of the two.
-
-The conversion follows the features before it (it converts whatever the upstream features last
-built), takes part in undo, and a saved design rebuilds it when it is opened.
+- The result follows the features before it (it converts whatever the upstream features last
+  built).
 
 ## What the conversion does
 
