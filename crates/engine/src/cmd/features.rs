@@ -204,13 +204,16 @@ fn auto_operation_in(s: &Session, p: &Value, world_faces: bool) -> Option<&'stat
     // Match the evaluator's implicit participants: a grouped cut from an empty
     // assembly component considers every body; otherwise keep the active scope.
     // Explicit participants override either default.
+    // A component with no body of its own works on those of the components inside it (#3223).
     let parts = string_list(p, "participants");
     let implicit_all = grouped.is_some() && !st.bodies.iter().any(|body| s.doc.model_body_component(body) == s.active_component);
-    let bodies: Vec<_> = st
-        .bodies
-        .iter()
-        .filter(|b| if parts.is_empty() { implicit_all || s.doc.model_body_component(b) == s.active_component } else { parts.contains(&b.name) })
-        .collect();
+    let bodies: Vec<_> = if !parts.is_empty() {
+        st.bodies.iter().filter(|b| parts.contains(&b.name)).collect()
+    } else if implicit_all {
+        st.bodies.iter().collect()
+    } else {
+        active_scope(s, &st)
+    };
     if bodies.is_empty() {
         return Some("new");
     }
@@ -497,11 +500,12 @@ fn add_feature_in(s: &mut Session, p: &Value, kind: FeatureKind, world: bool) ->
     }
     // A cut or intersect made where the active component has no body of its own (a sketch in
     // the assembly's root, cutting through the parts, #1234) would have nothing to work on: it
-    // takes part in every body instead, which it changes only where it meets them.
+    // takes part in every body instead, which it changes only where it meets them. An extrude's
+    // own operation counts too: an automatic one that came out as a cut (#3223).
     let participants = if participants.is_empty()
         && !primitive
         && (matches!(str_(p, "operation").and_then(Operation::parse), Some(Operation::Cut | Operation::Intersect))
-            || p.get("faces").is_some() && matches!(&kind, FeatureKind::Extrude { operation: Operation::Cut | Operation::Intersect, .. }))
+            || matches!(&kind, FeatureKind::Extrude { operation: Operation::Cut | Operation::Intersect, .. }))
         && {
             let st = s.model.state();
             !st.bodies.is_empty() && !st.bodies.iter().any(|b| s.doc.model_body_component(b) == s.active_component)
@@ -655,14 +659,40 @@ fn extrude(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The body whose face `sketch` is attached to (on the face itself, not offset from it), when
-/// it is a body of the active component.
+/// it is one the active component works on ([`active_scope`]).
 fn sketch_face_body(s: &Session, sketch: u64) -> Option<String> {
     let FeatureKind::Sketch { plane: solidcraft_doc::PlaneRef::Face { anchor: Some(anchor), .. }, .. } = &s.doc.feature(sketch)?.kind else {
         return None;
     };
     let st = s.model.state();
-    let body = st.body(&anchor.target.body)?;
-    (s.doc.model_body_component(body) == s.active_component).then(|| body.name.clone())
+    active_scope(s, &st).into_iter().find(|b| b.name == anchor.target.body).map(|b| b.name.clone())
+}
+
+/// The bodies a feature of the active component works on when it names none: the component's
+/// own. A component with no body of its own (the root of an opened STEP assembly, whose parts
+/// are components inside it) works on the bodies of the components inside it whose geometry is
+/// in its own frame, as an import places it: a profile sketched on such a part's face meets the
+/// part where it is shown (#3223).
+fn active_scope<'a>(s: &Session, st: &'a solidcraft_doc::ModelState) -> Vec<&'a solidcraft_doc::ModelBody> {
+    let active = s.active_component;
+    let own: Vec<_> = st.bodies.iter().filter(|b| s.doc.model_body_component(b) == active).collect();
+    if !own.is_empty() {
+        return own;
+    }
+    let Some(into_active) = solidcraft_doc::mat_inverse(&s.doc.component_transform(active)) else { return own };
+    st.bodies
+        .iter()
+        .filter(|b| {
+            let comp = s.doc.model_body_component(b);
+            if !s.doc.component_within(comp, active) {
+                return false;
+            }
+            let frame = s.doc.component_transform(comp);
+            let world = s.doc.model_body_offset(b).map_or(frame, |offset| solidcraft_doc::mat_mul(&frame, offset));
+            let rel = solidcraft_doc::mat_mul(&into_active, &world);
+            rel.iter().flatten().zip(solidcraft_doc::IDENTITY.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-9)
+        })
+        .collect()
 }
 
 /// A thin extrude's wall from its parameters: the sketch's curves it follows (every drawn

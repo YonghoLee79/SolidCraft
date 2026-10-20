@@ -616,6 +616,61 @@ fn matrix_move_turns_a_quarter_and_moves() {
     }
 }
 
+/// #3223, #2872: a STEP assembly whose part sits two levels down, each level placed, opened and
+/// stood up. With the imported root active, as Open leaves it, a circle sketched on the part's
+/// top face cuts it through, reads as a Cut dragged in and a Join dragged out, and joins it in
+/// one piece instead of starting a body of the root's own.
+#[test]
+fn a_stood_up_nested_step_part_is_cut_and_joined_from_its_face() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-nested-stood-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("nested.step");
+    let mut src = Session::default();
+    let (_, carrier) = created(&mut src, "Carrier");
+    let (part, nested) = created(&mut src, "Nested Part");
+    run(&mut src, "solid.box", json!({"length": 40, "width": 24, "height": 10, "body_name": "NestedBlock"}));
+    run(&mut src, "occurrence.move", json!({"occurrence": carrier, "translate": [12, 7, 5], "axis": [0, 0, 1], "angle": "30 deg"}));
+    run(&mut src, "occurrence.move", json!({"occurrence": nested, "translate": [3, 11, 2], "axis": [0, 1, 0], "angle": "20 deg"}));
+    // The middle of the top face, in the file's frame: the imported root's.
+    let top = solidcraft_doc::apply_point(&src.doc.component_transform(part), solidcraft_geom::Vec3::new(20.0, 12.0, 10.0));
+    run(&mut src, "file.export", json!({"path": path, "format": "step"}));
+
+    let mut s = Session::default();
+    run(&mut s, "doc.open", json!({"path": path, "up": "y"}));
+    let _ = std::fs::remove_dir_all(&dir);
+    let at = solidcraft_doc::apply_point(&s.doc.component_transform(s.active_component), top);
+    run(&mut s, "sketch.create", json!({"plane": {"face": [at.x, at.y, at.z]}, "project_edges": false}));
+    let centre = s
+        .doc
+        .features
+        .iter()
+        .rev()
+        .find_map(|f| match &f.kind {
+            solidcraft_doc::FeatureKind::Sketch { plane: solidcraft_doc::PlaneRef::Face { plane, .. }, .. } => Some(plane.to_local(top)),
+            _ => None,
+        })
+        .unwrap();
+    run(&mut s, "sketch.circle.center", json!({"center": [centre.x, centre.y], "radius": 3}));
+    run(&mut s, "sketch.finish", json!({}));
+    assert_eq!(crate::auto_operation(&s, &json!({"distance": -5})), Some("cut"));
+    assert_eq!(crate::auto_operation(&s, &json!({"distance": 5})), Some("join"));
+    let volume = |s: &mut Session| run(s, "inspect.measure", json!({"bodies": ["NestedBlock"]}))["total"]["volume_mm3"].as_f64().unwrap();
+    let block = 40.0 * 24.0 * 10.0;
+    let hole = std::f64::consts::PI * 3.0 * 3.0;
+
+    // The circle is measured as faceted: within a thousandth of what it removes or adds.
+    for operation in ["cut", "auto"] {
+        run(&mut s, "solid.extrude", json!({"distance": -20, "operation": operation}));
+        assert!((block - volume(&mut s) - hole * 10.0).abs() < 1e-3 * hole * 10.0, "{operation}: {}", volume(&mut s));
+        run(&mut s, "edit.undo", json!({}));
+    }
+    run(&mut s, "solid.extrude", json!({"distance": 5, "operation": "join"}));
+    let st = s.model.state();
+    assert_eq!(st.bodies.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["NestedBlock"]);
+    assert_eq!(st.body("NestedBlock").map(|b| b.body.shell_count()), Some(1));
+    assert!((volume(&mut s) - block - hole * 5.0).abs() < 1e-3 * hole * 5.0, "join: {}", volume(&mut s));
+}
+
 /// A rotation that is one only up to rounding is orthonormalised; a scale, a shear or a mirror
 /// is refused with the reason, and the occurrence stays where it was.
 #[test]
