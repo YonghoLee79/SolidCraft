@@ -454,6 +454,7 @@
   "cmd.joint_drive": "驱动接头",
   "cmd.joint_edit": "编辑接头",
   "cmd.joint_gear": "齿轮",
+  "cmd.joint_inspect": "检查接头",
   "cmd.joint_limits": "接头限制",
   "cmd.joint_list": "列出接头",
   "cmd.joint_motion_link": "运动关联",

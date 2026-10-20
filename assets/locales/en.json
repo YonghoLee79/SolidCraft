@@ -454,6 +454,7 @@
   "cmd.joint_drive": "Drive Joints",
   "cmd.joint_edit": "Edit Joint",
   "cmd.joint_gear": "Gear",
+  "cmd.joint_inspect": "Inspect Joint",
   "cmd.joint_limits": "Joint Limits",
   "cmd.joint_list": "List Joints",
   "cmd.joint_motion_link": "Motion Link",

@@ -454,6 +454,7 @@
   "cmd.joint_drive": "ジョイントを駆動",
   "cmd.joint_edit": "ジョイントを編集",
   "cmd.joint_gear": "ギア",
+  "cmd.joint_inspect": "ジョイントを検査",
   "cmd.joint_limits": "ジョイントの制限",
   "cmd.joint_list": "ジョイントを一覧表示",
   "cmd.joint_motion_link": "モーション リンク",
