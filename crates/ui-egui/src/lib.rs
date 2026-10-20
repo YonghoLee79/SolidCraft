@@ -1441,6 +1441,10 @@ impl SolveApp {
         documents::prompt(self, ui.ctx());
         update::show(self, ui.ctx());
         install::show(self, ui.ctx());
+        // Settings › AI's Add agent dialog: Settings opens over Home too (#3483).
+        if agent_chat::shown(self) {
+            agent_chat::settings::dialog(self, ui.ctx());
+        }
         if self.home.open {
             home::show(self, ui);
             if self.home.open {
