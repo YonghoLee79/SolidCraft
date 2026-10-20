@@ -252,6 +252,33 @@ pub enum OrbitAround {
     Cursor,
 }
 
+/// Which program reads the 3D mouse on Linux when both spacenavd and the device itself (hidraw)
+/// are there (Preferences: "3D mouse driver"). Read by the app's reader, not by this crate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceMouseDriver {
+    /// spacenavd when it runs, else the device itself (how it always was).
+    #[default]
+    Automatic,
+    Spacenavd,
+    /// The hidraw device, bypassing spacenavd's settings.
+    Direct,
+}
+
+impl SpaceMouseDriver {
+    pub const ALL: [Self; 3] = [Self::Automatic, Self::Spacenavd, Self::Direct];
+
+    /// The choice as the reader thread shares it (an `AtomicU8`).
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Back from [`Self::to_u8`]; anything else reads as Automatic.
+    pub fn from_u8(value: u8) -> Self {
+        Self::ALL.into_iter().find(|driver| driver.to_u8() == value).unwrap_or_default()
+    }
+}
+
 /// The browser sidebar's first width, and the width [`Prefs::default`] restores; the panel
 /// itself clamps what the user drags to its own range.
 pub const DEFAULT_BROWSER_WIDTH: f32 = 250.0;
@@ -287,6 +314,8 @@ pub struct Prefs {
     /// Per physical axis of the cap, which of its motions drives it (`space_mouse::reassigned`),
     /// applied after calibration; each motion drives exactly one axis.
     pub space_mouse_axis_source: [usize; 6],
+    /// Which program reads the 3D mouse when spacenavd and the device itself are both there (Linux).
+    pub space_mouse_driver: SpaceMouseDriver,
     /// Per 3D mouse (`space_mouse::Input::device`), the calibration that puts its axes on
     /// 3Dconnexion's. A device without one is read as it reports.
     #[serde(deserialize_with = "calibrations_that_read")]
@@ -454,6 +483,7 @@ impl Default for Prefs {
             space_mouse_reverse: [false; 6],
             space_mouse_axis_speed: [1.0; 6],
             space_mouse_axis_source: crate::space_mouse::SAME_AXES,
+            space_mouse_driver: SpaceMouseDriver::default(),
             space_mouse_calibrations: Default::default(),
             msaa: 4,
             ambient_occlusion: false,
@@ -773,6 +803,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
             p.space_mouse_reverse = d.space_mouse_reverse;
             p.space_mouse_axis_speed = d.space_mouse_axis_speed;
             p.space_mouse_axis_source = d.space_mouse_axis_source;
+            p.space_mouse_driver = d.space_mouse_driver;
             // The 3D mice the user calibrated stay: a calibration describes the device.
             p.look_at_anim = d.look_at_anim;
             p.look_at_speed = d.look_at_speed;
@@ -1458,6 +1489,34 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 app.preferences.space_mouse_axis_source = crate::space_mouse::SAME_AXES;
             }
             ui.end_row();
+            // Only where the reader has seen the choice: Linux, with spacenavd and the device both there.
+            if let Some(present) = app.space_mouse.drivers.filter(|present| present.spacenavd || present.direct) {
+                let [label, auto, direct, only_spacenavd, only_direct] =
+                    ["driver", "driver_auto", "driver_direct", "driver_only_spacenavd", "driver_only_direct"].map(|key| app.tr(&format!("ui.space_mouse_{key}")).to_owned());
+                let driver = &mut app.preferences.space_mouse_driver;
+                ui.label(label);
+                match (present.spacenavd, present.direct) {
+                    (true, true) => {
+                        let name = |driver| match driver {
+                            SpaceMouseDriver::Automatic => auto.as_str(),
+                            SpaceMouseDriver::Spacenavd => "spacenavd",
+                            SpaceMouseDriver::Direct => direct.as_str(),
+                        };
+                        egui::ComboBox::from_id_salt("sc_space_mouse_driver").selected_text(name(*driver)).show_ui(ui, |ui| {
+                            for choice in SpaceMouseDriver::ALL {
+                                ui.selectable_value(driver, choice, name(choice));
+                            }
+                        });
+                    }
+                    (true, false) => {
+                        ui.label(only_spacenavd);
+                    }
+                    (false, _) => {
+                        ui.label(only_direct);
+                    }
+                }
+                ui.end_row();
+            }
             ui.label(app.tr("ui.space_mouse_calibration"));
             ui.horizontal(|ui| {
                 let device = app.space_mouse.device.clone();

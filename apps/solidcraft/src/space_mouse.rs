@@ -8,6 +8,8 @@ mod hidraw;
 #[cfg(target_os = "linux")]
 mod spacenavd;
 
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,6 +21,10 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use solidcraft_space_mouse::Layout;
 use solidcraft_ui_egui::SolveApp;
+#[cfg(target_os = "linux")]
+use solidcraft_ui_egui::prefs::SpaceMouseDriver;
+#[cfg(target_os = "linux")]
+use solidcraft_ui_egui::space_mouse::DriversPresent;
 use solidcraft_ui_egui::space_mouse::{Axes, AxisRule, Calibration, DriverMapping, WheelGuard, calibrated, calibration, navigate_frame};
 
 const STALE_AFTER: Duration = Duration::from_millis(150);
@@ -377,39 +383,130 @@ fn device_layout(device: &hidapi::HidDevice, vendor_id: u16) -> Option<Layout> {
     }
 }
 
-/// Reads the 3D mouse through spacenavd when it runs, so what `spnavcfg` sets (swapped and inverted
-/// axes, sensitivity, dead zones) applies here as in other programs. Without the daemon it reads
-/// `/dev/hidrawN` with plain blocking reads, which end with an error when the device is unplugged.
-/// Opening needs permission: most distributions grant it to the logged-in user for devices that
-/// carry the `uaccess` udev tag, which a rule for the 3D mouse has to add.
+/// What the user chose for the reader and what the reader found, shared with the egui thread.
 #[cfg(target_os = "linux")]
-fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
-    use std::io::Read;
+#[derive(Default)]
+struct Drivers {
+    /// `SpaceMouseDriver::to_u8` of the preference.
+    choice: AtomicU8,
+    /// `PRESENT_SPACENAVD` and `PRESENT_DIRECT`, as of the reader's last look.
+    found: AtomicU8,
+}
+
+#[cfg(target_os = "linux")]
+const PRESENT_SPACENAVD: u8 = 1;
+#[cfg(target_os = "linux")]
+const PRESENT_DIRECT: u8 = 2;
+/// How often a connected reader looks again at what is there, and how long a read of spacenavd
+/// waits for a record before it checks the choice.
+#[cfg(target_os = "linux")]
+const LOOK_EVERY: Duration = Duration::from_secs(1);
+#[cfg(target_os = "linux")]
+const SPACENAVD_WAKE: Duration = Duration::from_millis(250);
+
+#[cfg(target_os = "linux")]
+impl Drivers {
+    fn choice(&self) -> SpaceMouseDriver {
+        SpaceMouseDriver::from_u8(self.choice.load(Ordering::Relaxed))
+    }
+
+    fn present(&self) -> DriversPresent {
+        let found = self.found.load(Ordering::Relaxed);
+        DriversPresent { spacenavd: found & PRESENT_SPACENAVD != 0, direct: found & PRESENT_DIRECT != 0 }
+    }
+
+    fn publish(&self, present: DriversPresent) {
+        let found = (u8::from(present.spacenavd) * PRESENT_SPACENAVD) | (u8::from(present.direct) * PRESENT_DIRECT);
+        self.found.store(found, Ordering::Relaxed);
+    }
+}
+
+/// The reader that was picked.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pick {
+    Spacenavd,
+    Direct,
+}
+
+/// Which reader to use: the one asked for when it is there, else the other, else none. Automatic
+/// asks for spacenavd, which is what has always been read first.
+#[cfg(target_os = "linux")]
+fn choose(wanted: SpaceMouseDriver, spacenavd: bool, direct: bool) -> Option<Pick> {
+    let first = match wanted {
+        SpaceMouseDriver::Automatic | SpaceMouseDriver::Spacenavd => Pick::Spacenavd,
+        SpaceMouseDriver::Direct => Pick::Direct,
+    };
+    let there = |pick| match pick {
+        Pick::Spacenavd => spacenavd,
+        Pick::Direct => direct,
+    };
+    let other = if first == Pick::Spacenavd { Pick::Direct } else { Pick::Spacenavd };
+    [first, other].into_iter().find(|&pick| there(pick))
+}
+
+/// Reads the 3D mouse through spacenavd or `/dev/hidrawN`, as `Drivers::choice` says (Automatic
+/// is spacenavd when it runs, so what `spnavcfg` sets, swapped and inverted axes, sensitivity,
+/// dead zones, applies here as in other programs). Both reads wake up when idle to see whether
+/// the choice changed, which then moves to the other reader without a restart. hidraw is opened
+/// non-blocking and ends with an error when the device is unplugged. Opening needs permission:
+/// most distributions grant it to the logged-in user for devices that carry the `uaccess` udev
+/// tag, which a rule for the 3D mouse has to add.
+#[cfg(target_os = "linux")]
+fn reader(ctx: Context, shared: Arc<Mutex<Reading>>, drivers: Arc<Drivers>) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let look = || DriversPresent { spacenavd: spacenavd::exists(), direct: hidraw::find().is_some() };
     let mut denied = None;
+    let mut told = None;
     loop {
-        if let Some(daemon) = spacenavd::connect() {
-            log::info!("3D mouse: reading spacenavd, which applies the spnavcfg settings");
-            connected(&ctx, &shared, Source::Spacenavd);
-            spacenavd::read(daemon, |axes| publish_held(&ctx, &shared, axes));
-            reset(&ctx, &shared);
-        } else if let Some(device) = hidraw::find() {
-            match std::fs::File::open(&device.path) {
-                Ok(mut file) => {
+        let device = hidraw::find();
+        let present = DriversPresent { spacenavd: spacenavd::exists(), direct: device.is_some() };
+        drivers.publish(present);
+        let wanted = drivers.choice();
+        let mut pick = choose(wanted, present.spacenavd, present.direct);
+        // A socket file with no daemon behind it is no spacenavd.
+        let daemon = if pick == Some(Pick::Spacenavd) { spacenavd::connect() } else { None };
+        if pick == Some(Pick::Spacenavd) && daemon.is_none() {
+            pick = choose(wanted, false, present.direct);
+        }
+        let asked_for = match wanted {
+            SpaceMouseDriver::Automatic => None,
+            SpaceMouseDriver::Spacenavd => Some(Pick::Spacenavd),
+            SpaceMouseDriver::Direct => Some(Pick::Direct),
+        };
+        if let (Some(asked), Some(pick)) = (asked_for, pick)
+            && asked != pick
+            && told != Some((wanted, pick))
+        {
+            log::info!("3D mouse: {asked:?} is not available, reading {pick:?} instead");
+            told = Some((wanted, pick));
+        }
+        // Asked at every idle moment of a read: has the choice changed, and what is there now.
+        let mut looked = Instant::now();
+        let mut stop = || {
+            if looked.elapsed() >= LOOK_EVERY {
+                looked = Instant::now();
+                drivers.publish(look());
+            }
+            drivers.choice() != wanted
+        };
+        match (pick, daemon, device) {
+            (Some(Pick::Spacenavd), Some(daemon), _) => {
+                log::info!("3D mouse: reading spacenavd, which applies the spnavcfg settings");
+                if let Err(error) = daemon.set_read_timeout(Some(SPACENAVD_WAKE)) {
+                    log::warn!("3D mouse: spacenavd reads cannot time out ({error}); a change of driver waits for the next event");
+                }
+                connected(&ctx, &shared, Source::Spacenavd);
+                spacenavd::read(daemon, |axes| publish_held(&ctx, &shared, axes), &mut stop);
+                reset(&ctx, &shared);
+            }
+            (Some(Pick::Direct), _, Some(device)) => match std::fs::OpenOptions::new().read(true).custom_flags(hidraw::O_NONBLOCK).open(&device.path)
+            {
+                Ok(file) => {
                     denied = None;
                     log::info!("3D mouse: reading {}", device.path.display());
                     connected(&ctx, &shared, Source::Hid(device.ids));
-                    let mut report = [0_u8; REPORT_BUFFER_BYTES];
-                    loop {
-                        match file.read(&mut report) {
-                            Ok(0) => break,
-                            Ok(size) => publish(&ctx, &shared, device.layout, report.get(..size).unwrap_or_default()),
-                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                            Err(error) => {
-                                log::info!("3D mouse disconnected: {error}");
-                                break;
-                            }
-                        }
-                    }
+                    hidraw::read_reports(file, |report| publish(&ctx, &shared, device.layout, report), &mut stop);
                     reset(&ctx, &shared);
                 }
                 // Say so once per device node, not every retry.
@@ -418,9 +515,13 @@ fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
                     denied = Some(device.path);
                 }
                 Err(_) => {}
-            }
+            },
+            _ => {}
         }
-        std::thread::sleep(RETRY_AFTER);
+        // A new choice is taken up at once; anything else waits to try again.
+        if drivers.choice() == wanted {
+            std::thread::sleep(RETRY_AFTER);
+        }
     }
 }
 
@@ -463,6 +564,8 @@ fn start_driver_client(ctx: &Context, shared: &Arc<Mutex<Reading>>) {
 
 pub struct SpaceMouse {
     shared: Arc<Mutex<Reading>>,
+    #[cfg(target_os = "linux")]
+    drivers: Arc<Drivers>,
     last_frame: Instant,
     driver_mapping: DriverMapping,
     mapping_checked_at: Instant,
@@ -480,13 +583,25 @@ impl SpaceMouse {
         let shared = Arc::new(Mutex::new(Reading::new(now)));
         let worker_state = Arc::clone(&shared);
         let worker_ctx = ctx.clone();
-        if let Err(error) = std::thread::Builder::new().name("solidcraft-3d-mouse".into()).spawn(move || reader(worker_ctx, worker_state)) {
+        #[cfg(target_os = "linux")]
+        let drivers = Arc::new(Drivers::default());
+        #[cfg(target_os = "linux")]
+        let worker_drivers = Arc::clone(&drivers);
+        let spawned = std::thread::Builder::new().name("solidcraft-3d-mouse".into()).spawn(move || {
+            #[cfg(target_os = "linux")]
+            reader(worker_ctx, worker_state, worker_drivers);
+            #[cfg(not(target_os = "linux"))]
+            reader(worker_ctx, worker_state);
+        });
+        if let Err(error) = spawned {
             log::warn!("3D mouse: reader could not start: {error}");
         }
         #[cfg(target_os = "macos")]
         start_driver_client(ctx, &shared);
         Self {
             shared,
+            #[cfg(target_os = "linux")]
+            drivers,
             last_frame: now,
             driver_mapping: load_driver_mapping().unwrap_or_else(without_profile),
             mapping_checked_at: now,
@@ -534,6 +649,11 @@ impl SpaceMouse {
             }
             self.mapping_checked_at = now;
         }
+        #[cfg(target_os = "linux")]
+        {
+            self.drivers.choice.store(app.preferences.space_mouse_driver.to_u8(), Ordering::Relaxed);
+            app.space_mouse.drivers = Some(self.drivers.present());
+        }
         let Ok(reading) = self.shared.lock().map(|reading| *reading) else { return };
         app.space_mouse.device = reading.device.map(Source::key);
         let calibration = calibration(app);
@@ -547,10 +667,107 @@ impl SpaceMouse {
     }
 }
 
+/// A stream that answers reads from a script, for the timeout paths.
+#[cfg(all(test, target_os = "linux"))]
+mod fake {
+    use std::collections::VecDeque;
+    use std::io::{Error, ErrorKind, Read, Result};
+
+    enum Step {
+        Data(Vec<u8>),
+        Fail(ErrorKind),
+        End,
+    }
+
+    #[derive(Default)]
+    pub struct Script(VecDeque<Step>);
+
+    impl Script {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn data(&mut self, bytes: &[u8]) -> &mut Self {
+            self.0.push_back(Step::Data(bytes.to_vec()));
+            self
+        }
+
+        pub fn timeout(&mut self, kind: ErrorKind) -> &mut Self {
+            self.fail(kind)
+        }
+
+        pub fn fail(&mut self, kind: ErrorKind) -> &mut Self {
+            self.0.push_back(Step::Fail(kind));
+            self
+        }
+
+        pub fn end(&mut self) -> &mut Self {
+            self.0.push_back(Step::End);
+            self
+        }
+    }
+
+    /// Past the script's last step the stream has ended.
+    impl Read for Script {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+            match self.0.pop_front() {
+                Some(Step::Data(bytes)) => {
+                    let size = bytes.len().min(buf.len());
+                    buf[..size].copy_from_slice(&bytes[..size]);
+                    Ok(size)
+                }
+                Some(Step::Fail(kind)) => Err(Error::from(kind)),
+                Some(Step::End) | None => Ok(0),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use solidcraft_ui_egui::space_mouse::{DeviceMotion, Motion};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_reader_asked_for_is_used_when_it_is_there_and_the_other_when_it_is_not() {
+        use Pick::{Direct, Spacenavd};
+        use SpaceMouseDriver::{Automatic, Direct as AskDirect, Spacenavd as AskSpacenavd};
+        // (asked, spacenavd there, device there) and what is read.
+        let cases = [
+            (Automatic, true, true, Some(Spacenavd)),
+            (Automatic, true, false, Some(Spacenavd)),
+            (Automatic, false, true, Some(Direct)),
+            (Automatic, false, false, None),
+            (AskSpacenavd, true, true, Some(Spacenavd)),
+            (AskSpacenavd, true, false, Some(Spacenavd)),
+            (AskSpacenavd, false, true, Some(Direct)),
+            (AskSpacenavd, false, false, None),
+            (AskDirect, true, true, Some(Direct)),
+            (AskDirect, true, false, Some(Spacenavd)),
+            (AskDirect, false, true, Some(Direct)),
+            (AskDirect, false, false, None),
+        ];
+        for (asked, spacenavd, direct, expected) in cases {
+            assert_eq!(choose(asked, spacenavd, direct), expected, "{asked:?}, spacenavd {spacenavd}, device {direct}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn what_the_reader_found_and_the_choice_pass_between_threads() {
+        let drivers = Drivers::default();
+        assert_eq!(drivers.present(), DriversPresent::default());
+        for (spacenavd, direct) in [(true, false), (false, true), (true, true), (false, false)] {
+            drivers.publish(DriversPresent { spacenavd, direct });
+            assert_eq!(drivers.present(), DriversPresent { spacenavd, direct });
+        }
+        assert_eq!(drivers.choice(), SpaceMouseDriver::Automatic);
+        for choice in SpaceMouseDriver::ALL {
+            drivers.choice.store(choice.to_u8(), Ordering::Relaxed);
+            assert_eq!(drivers.choice(), choice);
+        }
+    }
 
     /// The logical axes a reading reaches. Logical Rz rolls the view and logical Ry turns it about
     /// its vertical (`navigation::device_camera` in solidcraft-ui-egui, tested there).
@@ -756,6 +973,8 @@ mod tests {
         reading.axes.rotation = [0, 350, 0];
         let mut mouse = SpaceMouse {
             shared: Arc::new(Mutex::new(reading)),
+            #[cfg(target_os = "linux")]
+            drivers: Arc::default(),
             last_frame: now - Duration::from_millis(20),
             driver_mapping: DriverMapping::object_mode(),
             mapping_checked_at: now,
@@ -784,6 +1003,8 @@ mod tests {
     fn mouse(reading: Reading, now: Instant) -> SpaceMouse {
         SpaceMouse {
             shared: Arc::new(Mutex::new(reading)),
+            #[cfg(target_os = "linux")]
+            drivers: Arc::default(),
             last_frame: now,
             driver_mapping: DriverMapping::object_mode(),
             mapping_checked_at: now,

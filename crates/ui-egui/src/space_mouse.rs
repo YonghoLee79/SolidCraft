@@ -53,6 +53,16 @@ pub struct Input {
     pub calibrating: Option<(String, solidcraft_space_mouse::Wizard)>,
     /// The driver mapping navigation used last frame, which says what each axis does to the view.
     pub mapping: Option<DriverMapping>,
+    /// Which of the Linux readers exist, as the app's reader last saw them; none where there is
+    /// only one way to read the device.
+    pub drivers: Option<DriversPresent>,
+}
+
+/// What the Linux reader found: the spacenavd socket and a direct (hidraw) 3D mouse.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DriversPresent {
+    pub spacenavd: bool,
+    pub direct: bool,
 }
 
 /// Seconds after the cap last moved that wheel events are still taken for 3DxWare's: one can be
@@ -440,6 +450,26 @@ mod tests {
         // Translations and the forward tilt are the raw axes.
         let all = Axes { translation: [100, -200, 300], rotation: [-150, 0, 0] };
         assert_eq!(DriverMapping::object_mode().apply(all), DriverMapping::default().apply(all));
+    }
+
+    #[test]
+    fn the_driver_choice_is_saved_and_an_older_file_reads_automatic() {
+        use crate::prefs::SpaceMouseDriver;
+        let mut saved = serde_json::to_value(crate::prefs::Prefs::default()).unwrap();
+        assert_eq!(saved["space_mouse_driver"], "automatic");
+        for driver in SpaceMouseDriver::ALL {
+            saved["space_mouse_driver"] = serde_json::to_value(driver).unwrap();
+            assert_eq!(crate::prefs::lenient(&saved).space_mouse_driver, driver);
+            assert_eq!(SpaceMouseDriver::from_u8(driver.to_u8()), driver);
+        }
+        saved["space_mouse_driver"] = "direct".into();
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_driver, SpaceMouseDriver::Direct);
+        // One saved before the setting existed, or with a driver this version doesn't know.
+        saved.as_object_mut().unwrap().remove("space_mouse_driver");
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_driver, SpaceMouseDriver::Automatic);
+        saved["space_mouse_driver"] = "evdev".into();
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_driver, SpaceMouseDriver::Automatic);
+        assert_eq!(SpaceMouseDriver::from_u8(200), SpaceMouseDriver::Automatic);
     }
 
     #[test]
