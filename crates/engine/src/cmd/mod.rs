@@ -58,6 +58,7 @@ mod section;
 pub(crate) use measure_sel::measure_items;
 #[cfg(test)]
 mod kernel_heal_tests;
+mod manufacture;
 mod parameters;
 mod plastic;
 mod render;
@@ -274,6 +275,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(construct::COMMANDS.iter());
     v.extend(sheet::COMMANDS.iter());
     v.extend(plastic::COMMANDS.iter());
+    v.extend(manufacture::COMMANDS.iter());
     v.extend(component::COMMANDS.iter());
     v.extend(component_link::COMMANDS.iter());
     v.extend(joints::COMMANDS.iter());
