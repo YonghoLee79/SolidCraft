@@ -977,6 +977,11 @@ pub struct Model {
     kept: KeptSlot,
     /// The imported texts' digests the last `evaluate` fingerprinted the features with.
     step_digests: StepDigests,
+    /// The document context the last `evaluate` ran in ([`context_digest`]).
+    context: u64,
+    /// Results another copy of this model evaluated (ahead, off the window thread) that
+    /// `evaluate` takes for features they match ([`Model::prime`]), with that copy's context.
+    primed: Option<(u64, Arc<std::collections::HashMap<u64, FeatureResult>>)>,
 }
 
 /// Parameters a feature uses directly (inputs, sketch dimensions and the expressions of a
@@ -1143,8 +1148,17 @@ fn evaluation_values(doc: &Document) -> (BTreeMap<String, Value>, BTreeMap<Strin
 
 /// A feature's fingerprint in the chain after `prev`: its own inputs, where it is placed, and
 /// the sheet metal or plastic rules it takes defaults from.
-fn chain_fingerprint(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, prev: u64, rolled_back: bool, steps: &StepDigests) -> u64 {
-    let mut fp = fingerprint(prev, f, vals, rolled_back, steps) ^ placement_digest(doc, f);
+#[allow(clippy::too_many_arguments)]
+fn chain_fingerprint(
+    doc: &Document,
+    vals: &BTreeMap<String, Value>,
+    f: &Feature,
+    prev: u64,
+    rolled_back: bool,
+    steps: &StepDigests,
+    st: Option<&ModelState>,
+) -> u64 {
+    let mut fp = fingerprint(prev, f, vals, rolled_back, steps) ^ placement_digest(doc, f, st);
     // Sheet metal features also depend on the rules (and the parameters they use).
     if f.kind.is_sheet() {
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1229,9 +1243,129 @@ fn cache_key(f: &Feature, chain_fp: u64, local: u64, ctx: u64, state: &ModelStat
     h.finish()
 }
 
-/// Where components are placed, for a sketch that sees other components' geometry (on a face,
-/// or with projections): it is resolved in its own component's view of them.
-fn placement_digest(doc: &Document, f: &Feature) -> u64 {
+/// What a feature reads of where components are placed: the components (their first
+/// placement) and occurrence paths whose geometry it finds in its own frame, or every one.
+#[derive(Default)]
+struct PlacementReads {
+    all: bool,
+    components: std::collections::BTreeSet<u64>,
+    paths: Vec<Vec<u64>>,
+}
+
+impl PlacementReads {
+    fn is_empty(&self) -> bool {
+        !self.all && self.components.is_empty() && self.paths.is_empty()
+    }
+
+    /// The component of body `name` in `st`; every component when the body is not there (a
+    /// projection then takes the body nearest its point, wherever that is).
+    fn body(&mut self, doc: &Document, st: Option<&ModelState>, name: &str) {
+        match st.and_then(|st| st.body(name)) {
+            Some(b) => {
+                self.components.insert(doc.model_body_component(b));
+            }
+            None => self.all = true,
+        }
+    }
+
+    /// The component of sketch `id`, and the root when it holds wires fixed in the world (they
+    /// are read through the reader's whole placement).
+    fn sketch(&mut self, doc: &Document, id: u64) {
+        self.components.insert(doc.feature(id).map(|f| f.component).unwrap_or(0));
+        if doc.sketch(id).is_ok_and(|sk| sk.wires.iter().any(|w| w.space == solidcraft_sketch::WireSpace::World)) {
+            self.components.insert(0);
+        }
+    }
+
+    fn link(&mut self, doc: &Document, st: Option<&ModelState>, source: &solidcraft_sketch::LinkSource) {
+        use solidcraft_sketch::LinkSource as L;
+        match source {
+            L::Edge { body, .. } | L::Face { body, .. } | L::Body { body } | L::Vertex { body, .. } | L::Iso { body, .. } | L::Spun { body, .. } => {
+                self.body(doc, st, body)
+            }
+            L::SketchCurve { sketch, .. } | L::SketchPoint { sketch, .. } => self.sketch(doc, *sketch),
+            L::OnSurface { sketch, body, .. } => {
+                self.sketch(doc, *sketch);
+                self.body(doc, st, body);
+            }
+            L::Intersection { a, b } => {
+                self.link(doc, st, a);
+                self.link(doc, st, b);
+            }
+            // In the sketch's own frame: the component's origin, axes and planes, its own axes, text.
+            L::Origin | L::Axis { .. } | L::SketchAxis { .. } | L::Plane { .. } | L::Text { .. } => {}
+        }
+    }
+}
+
+/// The frame of an occurrence path from the root (its occurrences' transforms in turn); `None`
+/// when the path no longer leads anywhere.
+fn path_frame(doc: &Document, path: &[u64]) -> Option<Mat> {
+    if path.len() > crate::MAX_PLACEMENT_DEPTH + 1 {
+        return None;
+    }
+    let (mut m, mut c) = (crate::IDENTITY, 0);
+    for id in path {
+        let o = doc.occurrences.iter().find(|o| o.id == *id && o.parent == c)?;
+        m = crate::mat_mul(&m, &o.transform);
+        c = o.component;
+    }
+    Some(m)
+}
+
+/// Hash a placement on a grid far finer than anything a design shows ([`QUANTUM`] mm, a
+/// thousandth of that for the rotation), so the same relative placement reached through
+/// different whole-assembly motions (each rounding a little differently) reads the same.
+fn hash_placement(m: &Mat, h: &mut impl Hasher) {
+    for (col, column) in m.iter().enumerate() {
+        let q = if col == 3 { QUANTUM } else { QUANTUM * 1e-3 };
+        for v in column {
+            let r = (v / q).round();
+            // -0 and 0 are the same place.
+            (if r == 0.0 { 0.0f64 } else { r }).to_bits().hash(h);
+        }
+    }
+}
+
+/// Where the geometry a feature reads from other components is placed, as its own component
+/// sees it: the placement of each component (or occurrence path) it reads relative to its own
+/// frame. A feature that reads nothing outside its own frame gives 0, so moving parts around
+/// (a joint driven, an occurrence moved) leaves it as it was; one that reads a part moved
+/// relative to it (a sketch projecting a face of another part, To Object, a mirror of a placed
+/// body) is evaluated again. `st` is the model the feature starts from, which says what
+/// component a body it names belongs to (without it, every component is taken as read).
+/// [`placement_digest`] of a mirror of placed bodies: its own component's frame, each placement it
+/// was picked at (the copy's component, frame and the frame it was picked in) and the offsets of
+/// the bodies it mirrors (#1938).
+fn mirror_placements_digest(doc: &Document, f: &Feature, placements: &[Vec<u64>], bodies: &[crate::BodyName]) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    doc.component_transform(f.component).iter().flatten().for_each(|x| x.to_bits().hash(&mut h));
+    for placed in placements.iter().map(|path| mirror_copy_frame(doc, path)) {
+        placed.is_some().hash(&mut h);
+        if let Some((component, frame, picked)) = placed {
+            component.hash(&mut h);
+            frame.iter().chain(&picked).flatten().for_each(|x| x.to_bits().hash(&mut h));
+        }
+    }
+    for b in bodies {
+        serde_json::to_string(&doc.body_offsets.get(&b.0)).unwrap_or_default().hash(&mut h);
+    }
+    h.finish()
+}
+
+fn placement_digest(doc: &Document, f: &Feature, st: Option<&ModelState>) -> u64 {
+    if doc.occurrences.is_empty() && doc.body_offsets.is_empty() {
+        return 0;
+    }
+    let mut reads = PlacementReads::default();
+    let mut frame = None;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // A sketch, profile or path of another component is moved through both placements.
+    for (sketch, _) in f.kind.profile_sels() {
+        if doc.feature(sketch).is_some_and(|s| s.component != f.component) {
+            reads.sketch(doc, sketch);
+        }
+    }
     let path = match &f.kind {
         FeatureKind::Sweep { path_sketch, .. }
         | FeatureKind::SurfaceSweep { path_sketch, .. }
@@ -1248,10 +1382,8 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
         _ => &[],
     };
     if path.as_ref().is_some_and(wired) || rails.iter().any(|r| wired(&r.sketch)) {
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        let owner = path.and_then(|path| doc.feature(path.0)).map(|feature| feature.component).unwrap_or(0);
-        for frame in [doc.component_transform(f.component), doc.component_transform(owner)] {
-            frame.iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
+        if let Some(path) = path {
+            reads.sketch(doc, path.0);
         }
         // A sweep's profile and the rails' components place them too.
         let profile = match &f.kind {
@@ -1259,69 +1391,86 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
             _ => None,
         };
         for sketch in profile.into_iter().chain(rails.iter().map(|r| &r.sketch)) {
-            let owner = doc.feature(sketch.0).map(|feature| feature.component).unwrap_or(0);
-            doc.component_transform(owner).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
+            reads.sketch(doc, sketch.0);
         }
-        return hash.finish();
     }
     // A network through 3D sketch curves reads their points through the components the
     // feature and those sketches are placed in, as a sweep's wired path does.
     if let FeatureKind::SurfaceNetwork { u, v, .. } = &f.kind {
         let sketches: Vec<crate::SketchId> = u.iter().chain(v).filter_map(|c| c.sketch).collect();
         if sketches.iter().any(wired) {
-            let mut hash = std::collections::hash_map::DefaultHasher::new();
-            doc.component_transform(f.component).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
             for sketch in &sketches {
-                let owner = doc.feature(sketch.0).map(|feature| feature.component).unwrap_or(0);
-                doc.component_transform(owner).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
-            }
-            return hash.finish();
-        }
-    }
-    // To / From Object finds its target where that target's component is placed (#928).
-    let to_object = match &f.kind {
-        FeatureKind::Extrude { extent, .. } => extent.to.is_some() || extent.from.is_some(),
-        FeatureKind::Revolve { to, .. } => to.is_some(),
-        _ => false,
-    };
-    // A mirror of placed bodies follows the placements it was picked at and its own component's
-    // frame, not every occurrence: moving an unrelated one leaves it (and its cache) alone.
-    if let FeatureKind::Mirror { placements, bodies, .. } = &f.kind
-        && !placements.is_empty()
-    {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        doc.component_transform(f.component).iter().flatten().for_each(|x| x.to_bits().hash(&mut h));
-        for placed in placements.iter().map(|path| mirror_copy_frame(doc, path)) {
-            placed.is_some().hash(&mut h);
-            if let Some((component, frame, picked)) = placed {
-                component.hash(&mut h);
-                frame.iter().chain(&picked).flatten().for_each(|x| x.to_bits().hash(&mut h));
+                reads.sketch(doc, sketch.0);
             }
         }
-        for b in bodies {
-            serde_json::to_string(&doc.body_offsets.get(&b.0)).unwrap_or_default().hash(&mut h);
+    }
+    match &f.kind {
+        // To / From Object finds its target where that target's component is placed (#928),
+        // over every body.
+        FeatureKind::Extrude { extent, .. } if extent.to.is_some() || extent.from.is_some() => reads.all = true,
+        FeatureKind::Revolve { to: Some(_), .. } => reads.all = true,
+        // A mirror of placed bodies follows the placements it was picked at and its own component's
+        // frame, not every occurrence: moving an unrelated one leaves it (and its cache) alone.
+        FeatureKind::Mirror { placements, bodies, .. } if !placements.is_empty() => return mirror_placements_digest(doc, f, placements, bodies),
+        // A combine moves tools placed differently from its target into the target's frame (#3383).
+        FeatureKind::Combine { .. } => reads.all = true,
+        // Joins, cuts and intersects meet their targets where those are placed (#3383).
+        kind if drawn_tools_change_bodies(kind) && (drawn_tool_targets(kind) || !f.participants.is_empty()) => reads.all = true,
+        FeatureKind::Sketch { plane, sketch } => {
+            match crate::face_anchor::plane_face_anchor(plane) {
+                // Read in the frame of the placement it was drawn in, its face through the
+                // placement it was picked at.
+                Some(anchor) => {
+                    match anchor.author_frame(doc, f.component) {
+                        Ok(m) => frame = Some(m),
+                        Err(e) => e.to_string().hash(&mut h),
+                    }
+                    if anchor.path.is_empty() {
+                        reads.components.insert(anchor.component);
+                    } else {
+                        reads.paths.push(anchor.path.clone());
+                    }
+                }
+                // A face or edges picked on whatever body lies there.
+                None if plane_reads_geometry(plane) => reads.all = true,
+                None => {}
+            }
+            for link in &sketch.links {
+                reads.link(doc, st, &link.source);
+            }
         }
-        return h.finish();
+        _ => {}
     }
-    // A combine moves tools placed differently from its target into the target's frame (#3383).
-    let combine = matches!(&f.kind, FeatureKind::Combine { .. });
-    if !to_object && !combine && drawn_tools_change_bodies(&f.kind) {
-        return drawn_tools_digest(doc, f);
-    }
-    if to_object || combine {
-        return if doc.occurrences.is_empty() && doc.body_offsets.is_empty() { 0 } else { placements_hash(doc) };
-    }
-    let FeatureKind::Sketch { plane, sketch } = &f.kind else { return 0 };
-    let anchor = crate::face_anchor::plane_face_anchor(plane);
-    if (doc.occurrences.is_empty() && (anchor.is_none() || doc.body_offsets.is_empty()))
-        || (!matches!(plane, PlaneRef::Face { .. }) && anchor.is_none() && sketch.links.is_empty())
-    {
+    if reads.is_empty() {
         return 0;
     }
-    placements_hash(doc)
+    let frame = frame.unwrap_or_else(|| doc.component_transform(f.component));
+    let Some(inverse) = crate::mat_inverse(&frame) else { return placements_hash(doc) };
+    if reads.all {
+        reads.components.insert(0);
+        reads.components.extend(doc.components.iter().map(|c| c.id));
+    }
+    for c in &reads.components {
+        c.hash(&mut h);
+        // Its own component is read in its own frame.
+        if *c != f.component {
+            hash_placement(&crate::mat_mul(&inverse, &doc.component_transform(*c)), &mut h);
+        }
+    }
+    for path in &reads.paths {
+        path.hash(&mut h);
+        match path_frame(doc, path) {
+            Some(m) => hash_placement(&crate::mat_mul(&inverse, &m), &mut h),
+            None => u8::MAX.hash(&mut h),
+        }
+    }
+    serde_json::to_string(&doc.body_offsets).unwrap_or_default().hash(&mut h);
+    // Never 0: the feature reads placements.
+    h.finish() | 1
 }
 
-/// Every occurrence's placement and every body offset.
+/// Every occurrence's placement and every body offset (a feature read from a frame that cannot
+/// be inverted).
 fn placements_hash(doc: &Document) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for o in &doc.occurrences {
@@ -1419,7 +1568,8 @@ impl Model {
         let marker = doc.marker.unwrap_or(usize::MAX);
         let mut prev_fp = first.checked_sub(1).and_then(|i| self.results.get(i)).map_or(0, |r| r.fingerprint);
         for (i, f) in doc.features.iter().enumerate().skip(first) {
-            prev_fp = chain_fingerprint(doc, &vals, f, prev_fp, i >= marker, &steps);
+            let before = self.state_before(f.id);
+            prev_fp = chain_fingerprint(doc, &vals, f, prev_fp, i >= marker, &steps, Some(&before));
             if let Some(r) = self.results.get_mut(i).filter(|r| r.id == f.id) {
                 r.fingerprint = prev_fp;
             }
@@ -1460,10 +1610,29 @@ impl Model {
         let steps = StepDigests::of(doc, &self.step_digests);
         let marker = doc.marker.unwrap_or(usize::MAX);
         let mut prev = 0;
+        // The model each feature starts from (which components the bodies it names are in).
+        let mut state = self.empty.clone();
         doc.features.iter().zip(&self.results).enumerate().all(|(i, (f, r))| {
-            prev = chain_fingerprint(doc, &vals, f, prev, i >= marker, &steps);
+            prev = chain_fingerprint(doc, &vals, f, prev, i >= marker, &steps, Some(&state));
+            if !r.skipped {
+                state = r.state.clone();
+            }
             r.id == f.id && r.fingerprint == prev
         })
+    }
+
+    /// Take the results `ahead` (a copy of this model, evaluated off this thread for the same
+    /// commands) computed: until [`Model::unprime`], `evaluate` reuses each one whose feature
+    /// has the same inputs here, instead of evaluating it again. Results that don't match are
+    /// ignored, so a design changed meanwhile is evaluated as usual.
+    pub fn prime(&mut self, ahead: &Model) {
+        let results = ahead.results.iter().filter(|r| !r.skipped && !r.stale).map(|r| (r.id, r.clone())).collect();
+        self.primed = Some((ahead.context, Arc::new(results)));
+    }
+
+    /// Stop offering the results [`Model::prime`] took.
+    pub fn unprime(&mut self) {
+        self.primed = None;
     }
 
     /// Re-evaluate the document, reusing results up to the first changed feature.
@@ -1478,7 +1647,9 @@ impl Model {
         let mut restored = 0;
         let marker = doc.marker.unwrap_or(usize::MAX);
         let ctx = context_digest(doc, &vals);
+        self.context = ctx;
         self.step_digests = StepDigests::of(doc, &self.step_digests);
+        let primed = self.primed.as_ref().filter(|(context, _)| !self.no_cache && *context == ctx).map(|(_, results)| results.clone());
         // Each feature's component, for `Document::legacy_body_component` on every body after
         // every feature without searching the timeline for each (the first feature with an id).
         let mut feature_component: std::collections::HashMap<u64, u64> = std::collections::HashMap::with_capacity(doc.features.len());
@@ -1490,7 +1661,7 @@ impl Model {
             let rolled_back = i >= marker;
             // Opening was cancelled: the rest is skipped and the result discarded.
             let cancelled = watched.step(i);
-            let fp = chain_fingerprint(doc, &vals, f, prev_fp, rolled_back, &self.step_digests);
+            let fp = chain_fingerprint(doc, &vals, f, prev_fp, rolled_back, &self.step_digests, Some(&state));
             prev_fp = fp;
             if reuse
                 && let Some(old) = self.results.get(i)
@@ -1521,7 +1692,7 @@ impl Model {
                 continue;
             }
             // The same feature on the same inputs: its earlier result.
-            let key = cache_key(f, fp, fingerprint(0, f, &vals, false, &self.step_digests) ^ placement_digest(doc, f), ctx, &state);
+            let key = cache_key(f, fp, fingerprint(0, f, &vals, false, &self.step_digests) ^ placement_digest(doc, f, Some(&state)), ctx, &state);
             let kept = self.kept.0.as_ref().filter(|_| !self.no_cache);
             if !self.no_cache
                 && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.get(key)).or_else(|| kept.and_then(|k| k.get(key)))
@@ -1545,6 +1716,15 @@ impl Model {
                     fingerprint: fp,
                     state: state.clone(),
                 });
+                continue;
+            }
+            // Evaluated ahead on these same inputs (the same chain of definitions from the start).
+            if let Some(r) = primed.as_ref().and_then(|p| p.get(&f.id)).filter(|r| r.fingerprint == fp && !r.stale && !r.skipped) {
+                restored += 1;
+                if r.error.is_none() {
+                    state = r.state.clone();
+                }
+                out.push(FeatureResult { state: state.clone(), ..r.clone() });
                 continue;
             }
             recomputed += 1;
@@ -1787,9 +1967,12 @@ impl Model {
         let marker = doc.marker.unwrap_or(usize::MAX);
         self.step_digests = StepDigests::of(doc, &self.step_digests);
         let mut prev = 0;
+        // Each feature's fingerprint reads the model it starts from, as evaluating does.
+        let mut before = Arc::new(ModelState::default());
         for (i, (r, f)) in self.results.iter_mut().zip(&doc.features).enumerate() {
-            prev = chain_fingerprint(doc, &vals, f, prev, i >= marker, &self.step_digests);
+            prev = chain_fingerprint(doc, &vals, f, prev, i >= marker, &self.step_digests, Some(&before));
             r.fingerprint = prev;
+            before = r.state.clone();
         }
     }
 }
@@ -6419,11 +6602,11 @@ impl Drop for ToolFrames {
     }
 }
 
-/// [`placement_digest`] of a feature with drawn tools: the placements, when it names the bodies
-/// it changes (they may lie in another component, where its tools meet them, #3383); nothing
-/// otherwise, as it then changes only bodies of its own component.
-fn drawn_tools_digest(doc: &Document, f: &Feature) -> u64 {
-    let targets = match &f.kind {
+/// Whether a feature with drawn tools names the bodies it changes: they may lie in another
+/// component, where its tools meet them (#3383), so [`placement_digest`] reads every placement.
+/// Without targets it changes only bodies of its own component.
+fn drawn_tool_targets(kind: &FeatureKind) -> bool {
+    match kind {
         FeatureKind::Extrude { targets, .. }
         | FeatureKind::Revolve { targets, .. }
         | FeatureKind::Loft { targets, .. }
@@ -6431,11 +6614,7 @@ fn drawn_tools_digest(doc: &Document, f: &Feature) -> u64 {
         | FeatureKind::Pipe { targets, .. }
         | FeatureKind::Coil { targets, .. } => !targets.is_empty(),
         _ => false,
-    };
-    if (!targets && f.participants.is_empty()) || (doc.occurrences.is_empty() && doc.body_offsets.is_empty()) {
-        return 0;
     }
-    placements_hash(doc)
 }
 
 /// The matrix taking the evaluated feature's drawn tools into body `name`'s frame (`None`: the

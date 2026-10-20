@@ -456,3 +456,112 @@ fn hostile_animation_params_are_refused() {
     assert!(root.join("in.gif").exists() && !dir.join("out").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A grounded Base plate, an Arm turning on it about Z (joint `Pivot`) and a Head fixed to the
+/// arm. The Arm's slot sketch projects the arm's own edge and its axis, the Head's bore sketch
+/// an edge of the arm (they move together). With `in_context`, the slot sketch also projects an
+/// edge of the Base, across the joint.
+fn pivot(in_context: bool) -> Session {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Base"}));
+    run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 10, "corner": [-20, -20, 0], "body_name": "Plate"}));
+    run(&mut s, "solid.chamfer", json!({"edges": [[0, -20, 10]], "distance": 1}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "component.create", json!({"name": "Arm"}));
+    run(&mut s, "solid.box", json!({"length": 50, "width": 8, "height": 5, "corner": [-4, -4, 10], "body_name": "Bar"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 15], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Slot"}));
+    run(&mut s, "sketch.project", json!({"refs": [{"edge": [20, 4, 15], "body": "Bar"}, "origin"]}));
+    if in_context {
+        run(&mut s, "sketch.project", json!({"refs": [{"edge": [0, 20, 10], "body": "Plate"}]}));
+    }
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [20, -2], "p1": [30, 2]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Slot", "distance": -2, "operation": "cut", "name": "SlotCut"}));
+    run(&mut s, "solid.chamfer", json!({"edges": [[10, -4, 15]], "distance": 0.5}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "component.create", json!({"name": "Head"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 12, "height": 6, "corner": [36, -6, 15], "body_name": "Cap"}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 21], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Bore"}));
+    run(&mut s, "sketch.project", json!({"refs": [{"edge": [40, 4, 15], "body": "Bar"}]}));
+    run(&mut s, "sketch.circle.center", json!({"center": [41, 0], "radius": 2}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Bore", "distance": -4, "operation": "cut", "name": "BoreCut"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    let (base, arm, head) = (occ(&s, "Base"), occ(&s, "Arm"), occ(&s, "Head"));
+    run(&mut s, "occurrence.ground", json!({"occurrence": base, "grounded": true}));
+    run(
+        &mut s,
+        "joint.create",
+        json!({"type": "revolute", "a": {"occurrence": base, "point": [0, 0, 10]}, "b": {"occurrence": arm, "point": [0, 0, 10]}, "flip": true, "name": "Pivot"}),
+    );
+    run(&mut s, "joint.rigid_group", json!({"occurrences": [arm, head]}));
+    s
+}
+
+/// Every body of `model` and `full` the same: names, faces and where their meshes lie.
+fn same_bodies(model: &solidcraft_doc::ModelState, full: &solidcraft_doc::ModelState) {
+    assert_eq!(model.bodies.len(), full.bodies.len());
+    for (a, b) in model.bodies.iter().zip(&full.bodies) {
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.body.face_count(), b.body.face_count(), "{}", a.name);
+        let (m, n) = (a.mesh().bounds(), b.mesh().bounds());
+        assert!(m.min.dist(n.min) < 1e-9 && m.max.dist(n.max) < 1e-9, "{}: {m:?} vs {n:?}", a.name);
+    }
+}
+
+/// The model `s` shows, evaluated again from nothing.
+fn rebuilt(s: &Session) -> std::sync::Arc<solidcraft_doc::ModelState> {
+    let mut full = solidcraft_doc::Model::default();
+    full.no_cache = true;
+    full.evaluate(&s.doc);
+    full.state()
+}
+
+/// Driving a joint only moves parts: a part that projects its own geometry, or that of a part
+/// moving with it, is not evaluated again (#1989's motion on a finished assembly evaluated the
+/// whole timeline on every drive, and every new pose missed the cache).
+#[test]
+fn driving_a_joint_moves_parts_without_evaluating_them() {
+    let mut s = pivot(false);
+    let model = s.model.state();
+    let head = occ(&s, "Head");
+    let tip = |s: &Session| super::world_point(s, head, Vec3::new(46.0, 0.0, 15.0));
+    let before = tip(&s);
+    for (step, angle) in ["30 deg", "75 deg", "-40 deg", "75 deg"].into_iter().enumerate() {
+        let r = run(&mut s, "joint.drive", json!({"joint": "Pivot", "value": angle}));
+        assert_eq!(r["moved"], true, "{r}");
+        assert_eq!((s.model.last_recomputed, s.model.last_restored), (0, 0), "step {step}: nothing evaluated, nothing taken from the cache");
+        assert!(std::sync::Arc::ptr_eq(&model, &s.model.state()), "the parts' bodies are the ones they were");
+    }
+    // The head went round with the arm: 75° about Z through the origin.
+    let (sin, cos) = 75f64.to_radians().sin_cos();
+    let want = Vec3::new(before.x * cos - before.y * sin, before.x * sin + before.y * cos, before.z);
+    assert!(tip(&s).dist(want) < 1e-6, "{:?} vs {want:?}", tip(&s));
+    same_bodies(&s.model.state(), &rebuilt(&s));
+}
+
+/// A sketch that projects another part's edge is in-context design: it is evaluated again when
+/// that part moves relative to it (and gives what a full rebuild gives), not when the two move
+/// together.
+#[test]
+fn an_in_context_sketch_follows_only_the_parts_it_reads() {
+    let mut s = pivot(true);
+    let slot = s.doc.find_feature("Slot").map(|f| f.id).unwrap();
+    let projected = |s: &Session| s.model.state().sketch(slot).map(|k| k.sketch.clone()).unwrap();
+    let first = projected(&s);
+    run(&mut s, "joint.drive", json!({"joint": "Pivot", "value": "30 deg"}));
+    assert!(s.model.last_recomputed > 0, "the slot sketch reads the base, which turned relative to it");
+    assert_ne!(projected(&s).links, first.links, "the base's edge is where the arm now sees it");
+    same_bodies(&s.model.state(), &rebuilt(&s));
+    // The whole assembly moved as one (both occurrences by the same turn and shift): nothing the
+    // sketch reads moved relative to it.
+    let model = s.model.state();
+    let turn = solidcraft_doc::rigid(Vec3::new(5.0, -3.0, 2.0), Vec3::new(1.0, 2.0, 0.0), Vec3::new(0.3, 0.2, 1.0), 0.7);
+    for o in &mut s.doc_mut().occurrences {
+        o.transform = solidcraft_doc::mat_mul(&turn, &o.transform);
+    }
+    s.refresh();
+    assert_eq!(s.model.last_recomputed, 0);
+    assert!(std::sync::Arc::ptr_eq(&model, &s.model.state()));
+    same_bodies(&s.model.state(), &rebuilt(&s));
+}

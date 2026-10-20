@@ -39,6 +39,28 @@ fn slider_cannot_tunnel_to_a_collision_free_endpoint() {
     assert!((rail_value(&s) + 100000.0).abs() < 1e-6, "disabled contact skips sweep budget");
 }
 
+/// Each drive with contact on meshed every body in a contact set again: a body that did not
+/// change keeps its contact mesh across drives (and scratch copies), a changed one is meshed anew.
+#[test]
+fn contact_meshes_are_made_once_per_body() {
+    let mut s = slider();
+    let meshes = |s: &Session| super::ContactGeometry::new(s).unwrap().bodies.iter().map(|b| b.mesh.clone()).collect::<Vec<_>>();
+    let first = meshes(&s);
+    assert_eq!(first.len(), 2);
+    run(&mut s, "joint.drive", json!({"joint": "Rail", "value": 5}));
+    let scratch = s.scratch();
+    for again in [meshes(&s), meshes(&scratch)] {
+        assert!(first.iter().zip(&again).all(|(a, b)| std::sync::Arc::ptr_eq(a, b)), "the same meshes, not tessellated again");
+    }
+    // A body that changed is meshed for what it is now.
+    run(&mut s, "component.activate", json!({"component": "B"}));
+    run(&mut s, "solid.box", json!({"length": 2, "width": 2, "height": 2, "corner": [24, 4, 10], "operation": "join"}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    let changed = meshes(&s);
+    assert!(changed.iter().zip(&first).any(|(a, b)| !std::sync::Arc::ptr_eq(a, b)));
+    assert!(changed.iter().map(|m| m.bounds().max.z).fold(0.0, f64::max) > 11.0, "the joined box is in the contact mesh");
+}
+
 #[test]
 fn revolute_cannot_cross_a_blocker_between_clear_endpoints() {
     let mut s = Session::default();

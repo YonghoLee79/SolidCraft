@@ -3236,6 +3236,39 @@ fn computed_import_preserves_file_and_earlier_undo_history() {
     assert!(s.model.state().bodies.is_empty());
 }
 
+/// Commands evaluated ahead (off the window thread) and then run for real take what was
+/// evaluated: on a design whose states are past the shared cache's budget the second run
+/// evaluated everything again, so an off-thread command cost twice its time.
+#[test]
+fn commands_evaluated_ahead_are_not_evaluated_again() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "w", "expression": "40 mm"}));
+    run(&mut s, "solid.box", json!({"length": "w", "width": 30, "height": 10, "body_name": "Block"}));
+    run(&mut s, "solid.chamfer", json!({"edges": [[10, 0, 10]], "distance": 1}));
+    run(&mut s, "solid.box", json!({"length": 5, "width": 5, "height": 20, "corner": [2, 2, 0], "operation": "cut"}));
+    let commands = vec![("parameters.change".to_string(), json!({"name": "w", "expression": "50 mm"}))];
+    let evaluated = s.ahead().evaluate(&commands).unwrap();
+    // The shared cache dropped those results (as it does past its budget).
+    s.model.cache = Default::default();
+    let mut unprimed = s.scratch();
+    s.prime(&evaluated);
+    let r = run(&mut s, "parameters.change", json!({"name": "w", "expression": "50 mm"}));
+    s.unprime();
+    assert_eq!((&r["recomputed"], &r["restored"]), (&json!(0), &json!(3)), "every feature taken from the evaluation ahead: {r}");
+    let r = run(&mut unprimed, "parameters.change", json!({"name": "w", "expression": "50 mm"}));
+    assert_eq!(r["recomputed"], 3, "without it, all evaluated again: {r}");
+    for (a, b) in s.model.state().bodies.iter().zip(&unprimed.model.state().bodies) {
+        assert_eq!(a.mesh().bounds(), b.mesh().bounds());
+    }
+    // Inputs that differ from those evaluated ahead are evaluated, as usual.
+    s.model.cache = Default::default();
+    s.prime(&evaluated);
+    let r = run(&mut s, "parameters.change", json!({"name": "w", "expression": "60 mm"}));
+    s.unprime();
+    assert_eq!(r["recomputed"], 3, "{r}");
+    assert!((s.model.state().body("Block").unwrap().mesh().bounds().max.x - 60.0).abs() < 1e-9);
+}
+
 #[test]
 fn adopting_a_computed_component_keeps_its_warm_world_geometry() {
     let mut s = Session::default();
