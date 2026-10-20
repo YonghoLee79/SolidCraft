@@ -40,7 +40,15 @@ path = "junit.xml"
 [[profile.ci.overrides]]
 filter = "binary(action_matrix) & test(=action_matrix_sample)"
 threads-required = "num-cpus"
+# Run the all-slot job before long tests can leave it reserving otherwise idle slots.
+priority = 100
 
+
+# These two cases dominated a full Windows run (seed_81 took about 20 minutes).
+# Start them immediately after the all-slot action matrix, beside other costly tests.
+[[profile.ci.overrides]]
+filter = "(package(solidcraft-engine) & test(=tests::robustness_goldens::seed_81)) | (package(solidcraft-kernel) & test(=tspline::tests::hostile_tsplines_never_panic))"
+priority = 99
 
 # The slowest tests start first, so a shard does not end with one of them running alone on a
 # core while the others sit idle (seed_81 alone takes about 20 minutes under CI load). Medians
@@ -67,4 +75,13 @@ filter = """
     | test(/^issue_788_tests::equal_bores_crossing_/)
 ))
 """
-priority = 100
+priority = 98
+
+# Native Windows shader/device creation is serialized, like the Windows CI shader job.
+[test-groups.windows-gpu]
+max-threads = 1
+
+[[profile.ci.overrides]]
+platform = "cfg(windows)"
+filter = "package(solidcraft-gpu) | package(solidcraft) | (package(solidcraft-ui-egui) & test(/(offscreen|gpu)/))"
+test-group = "windows-gpu"
