@@ -22,7 +22,6 @@ path = "src/alias.rs"
 [dependencies]
 solidcraft-engine = { workspace = true }
 solidcraft-gpu = { workspace = true }
-solidcraft-mcp = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

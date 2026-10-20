@@ -89,8 +89,6 @@ impl eframe::App for App {
         storage.set_string(solidcraft_ui_egui::prefs::STORAGE_KEY, self.solve.prefs());
     }
     fn on_exit(&mut self) {
-        // The agent chat's agent and everything it started end with the app.
-        solidcraft_ui_egui::agent_chat::shutdown(&mut self.solve);
         // A save still being written ends before the app does.
         solidcraft_ui_egui::save_job::tick(&mut self.solve, true);
         solidcraft_ui_egui::recovery_ui::close(&mut self.solve);
@@ -210,8 +208,6 @@ fn services(cc: &eframe::CreationContext<'_>) -> Services {
         http_download: Some(std::sync::Arc::new(http_download)),
         // Already an installed app: only the browser build offers to install.
         install_app: None,
-        agent_http: Some(std::sync::Arc::new(agent_http)),
-        secrets: Some(std::sync::Arc::new(Keychain)),
         show_in_folder: Some(Box::new(|path| {
             let folder = std::path::Path::new(path).parent().unwrap_or_else(|| std::path::Path::new("."));
             let mut command = std::process::Command::new(if cfg!(target_os = "windows") {
@@ -266,71 +262,6 @@ fn http_download(url: &str, to: &std::path::Path, progress: &dyn Fn(u64, Option<
     }
     file.sync_all().map_err(|e| fail(format!("{}: {e}", to.display())))?;
     Ok(())
-}
-
-/// HTTP for the agent chat's API agents (OpenAI-compatible endpoints, docs/agent-chat.md): to the
-/// URL the user configured, which may be plain HTTP on this computer (Ollama, LM Studio). No
-/// redirects (a key must not follow one elsewhere), at most 16 MB back.
-fn agent_http(r: &solidcraft_ui_egui::agent_chat::backend::HttpRequest) -> Result<(u16, Vec<u8>), String> {
-    use std::time::Duration;
-    let tls = ureq::tls::TlsConfig::builder()
-        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-        .unversioned_rustls_crypto_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
-        .build();
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .tls_config(tls)
-        .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(r.timeout_s.clamp(1, 900))))
-        .timeout_connect(Some(Duration::from_secs(10)))
-        .user_agent("SolidCraft")
-        .max_redirects(0)
-        .build()
-        .into();
-    let mut response = if r.method == "POST" {
-        let mut req = agent.post(&r.url);
-        for (k, v) in &r.headers {
-            req = req.header(k, v);
-        }
-        req.send(r.body.as_deref().unwrap_or_default())
-    } else {
-        let mut req = agent.get(&r.url);
-        for (k, v) in &r.headers {
-            req = req.header(k, v);
-        }
-        req.call()
-    }
-    .map_err(|e| e.to_string())?;
-    let status = response.status().as_u16();
-    let body = response.body_mut().with_config().limit(16 << 20).read_to_vec().map_err(|e| e.to_string())?;
-    Ok((status, body))
-}
-
-/// API keys in the system keychain (service "SolidCraft agent chat", one entry per agent).
-struct Keychain;
-
-impl Keychain {
-    fn entry(id: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new("SolidCraft agent chat", id).map_err(|e| e.to_string())
-    }
-}
-
-impl solidcraft_ui_egui::agent_chat::backend::Secrets for Keychain {
-    fn get(&self, id: &str) -> Result<Option<String>, String> {
-        match Self::entry(id)?.get_password() {
-            Ok(p) => Ok(Some(p)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-    fn set(&self, id: &str, secret: &str) -> Result<(), String> {
-        Self::entry(id)?.set_password(secret).map_err(|e| e.to_string())
-    }
-    fn delete(&self, id: &str) -> Result<(), String> {
-        match Self::entry(id)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
-    }
 }
 
 /// One GET to GitHub: a 200 answer, or why not (rate limits included).
@@ -628,10 +559,6 @@ fn main() -> eframe::Result {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
-            // The agent chat's MCP bridge reaches the app through an endpoint of its own, started
-            // on a free port the first time the chat connects (docs/agent-chat.md).
-            let ctx = cc.egui_ctx.clone();
-            app.agent_chat.control_starter = Some(Box::new(move |tx| control_server::listen_agent(tx, ctx.clone())));
             if sample {
                 if let Err(e) = app.session.run_script(&solidcraft_engine::sample::script()) {
                     app.set_status(format!("sample: {e}"), true);

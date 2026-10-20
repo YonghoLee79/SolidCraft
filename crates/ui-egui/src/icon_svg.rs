@@ -768,7 +768,7 @@ mod tests {
 
     #[test]
     fn helper_controls_resolve_without_command_registry_entries() {
-        for name in ["agent_chat", "normal", "infinite", "pattern_flip", "pattern_center"] {
+        for name in ["normal", "infinite", "pattern_flip", "pattern_center"] {
             assert!(!resolve(name).placeholder, "UI helper: {name}");
         }
     }

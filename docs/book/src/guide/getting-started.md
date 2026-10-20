@@ -76,7 +76,7 @@ On Ubuntu and other distributions with snapd:
 ```sh
 sudo snap install solidcraft
 solidcraft                # or open SolidCraft from the app menu
-solidcraft.cli --version  # the CLI, for scripts and `solidcraft.cli mcp`
+solidcraft.cli --version  # the CLI, for scripts
 ```
 
 The snap can open designs in your home folder (not hidden folders) and, through the file
@@ -219,7 +219,7 @@ A script is a list of commands:
 
 ![The bracket example, rendered by solidcraft-cli snapshot](../generated/bracket.png)
 
-`snapshot` looks at the model from the iso view. `--view NAME` takes another standard view (`front`, `back`, `top`, `bottom`, `left`, `right`) or the name of a view saved in the design with `view.save`. `--camera JSON` takes any camera, as the MCP `screenshot` tool does (its conventions are in [the MCP page](mcp.md#camera-and-close-up-recipe)). A script that applies a view itself with `view.apply` sets the camera too. The ground grid lies on Z 0, so it cuts through a part that straddles it: `--no-grid` leaves it out of the picture, and `--no-axes` the origin's axes. The picture is drawn on the GPU with the viewport's own pipelines, so it shows what the window would (a surface analysis such as `inspect.zebra` included); a machine without a GPU uses a software one (Mesa's lavapipe on Linux, WARP on Windows), and with neither (a Mac without usable Metal, a Linux box without Mesa's Vulkan) the CPU rasterizer draws it, without surface analysis colours, and the reply's `renderer` says `cpu` with a warning. `SOLIDCRAFT_GPU=auto|hardware|software|cpu` chooses (`hardware` and `software` fail rather than fall to the CPU), and `solidcraft-cli gpu` lists the adapters and the tier a snapshot would use.
+`snapshot` looks at the model from the iso view. `--view NAME` takes another standard view (`front`, `back`, `top`, `bottom`, `left`, `right`) or the name of a view saved in the design with `view.save`. `--camera JSON` takes any camera. A script that applies a view itself with `view.apply` sets the camera too. The ground grid lies on Z 0, so it cuts through a part that straddles it: `--no-grid` leaves it out of the picture, and `--no-axes` the origin's axes. The picture is drawn on the GPU with the viewport's own pipelines, so it shows what the window would (a surface analysis such as `inspect.zebra` included); a machine without a GPU uses a software one (Mesa's lavapipe on Linux, WARP on Windows), and with neither (a Mac without usable Metal, a Linux box without Mesa's Vulkan) the CPU rasterizer draws it, without surface analysis colours, and the reply's `renderer` says `cpu` with a warning. `SOLIDCRAFT_GPU=auto|hardware|software|cpu` chooses (`hardware` and `software` fail rather than fall to the CPU), and `solidcraft-cli gpu` lists the adapters and the tier a snapshot would use.
 
 ```sh
 solidcraft-cli snapshot part.solidcraft --out photo.png --view Photo
@@ -299,7 +299,7 @@ still find the sketches and bodies they use, and a feature that failed in the de
 the same way. Edit a step's values to try a change, or delete the steps after a feature to
 see the design as it was there. Appearances, folders, named views and configurations are
 left out (the CLI notes which), and designs with components or joints are not supported
-yet. In the app and over MCP the same script comes from `timeline.export_script`.
+yet. The same script comes from `timeline.export_script`.
 
 Units are millimetres and degrees unless an expression says otherwise (`"1 in"`, `"30 deg"`),
 and Z is up.
@@ -308,9 +308,8 @@ and Z is up.
 
 SolidCraft was renamed from an earlier working name. Since 0.5.0 everything uses the new
 name: the `solidcraft` and `solidcraft-cli` programs, `.solidcraft` designs, `SOLIDCRAFT_*`
-environment variables, settings folders and the `solidcraft` MCP server. Upgrading keeps
-working: designs, settings, recovery files, environment variables and CLI/MCP setups from
-earlier builds carry over. Every compatibility shim is listed in the
+environment variables and settings folders. Upgrading keeps
+working: designs, settings, recovery files and environment variables from earlier builds carry over. Every compatibility shim is listed in the
 [compatibility notes](https://github.com/bherbruck/solidcraft/blob/main/docs/compatibility.md).
 
 Use the SolidCraft documentation and web-app URLs. GitHub redirects links to the renamed

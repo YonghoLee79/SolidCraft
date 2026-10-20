@@ -2,9 +2,9 @@
 
 Every user-visible action is a **command**: a `CommandSpec` registered in
 `crates/engine/src/cmd/`, with a dotted, lower-case id (`solid.extrude`, `sketch.create`,
-`timeline.rollback`). The toolbar, dialogs, marking menu, S box, scripts, the CLI, the control
-channel and MCP all run commands through `Session::execute(id, params)`. Commands take JSON
-parameters and never open dialogs; a dialog is a front-end form that builds the parameters.
+`timeline.rollback`). The toolbar, dialogs, marking menu, S box, scripts, the CLI and the control channel all run
+commands through `Session::execute(id, params)`. Commands take JSON parameters and never open
+dialogs; a dialog is a front-end form that builds the parameters.
 
 ```rust
 CommandSpec::new("solid.fillet", "Fillet", fillet)
@@ -16,8 +16,8 @@ CommandSpec::new("solid.fillet", "Fillet", fillet)
 
 `run` is `fn(&mut Session, &Value) -> Result<Value>`, and `enabled` is
 `fn(&Session) -> Result<(), String>`; the error string is the disabled-button tooltip. The
-`params` string is the one-line documentation shown by `solidcraft-cli commands`, MCP's
-`list_commands` and the [command reference](../reference/commands.md).
+`params` string is the one-line documentation shown by `solidcraft-cli commands` and the
+[command reference](../reference/commands.md).
 
 A command that changes the design is undoable by default: the session snapshots the document
 before it runs, and a failing command leaves the document unchanged. Feature commands add a
