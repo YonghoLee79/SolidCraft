@@ -424,12 +424,22 @@ pub struct Applying {
     pub(crate) started: f64,
     /// The commands being computed.
     pub(crate) cmds: Vec<(String, Value)>,
+    /// The job has been in a frame. A job that has just started is not taken up in the frame it
+    /// starts, so the dialog says it is computing before the feature appears.
+    pub(crate) seen: bool,
 }
 
 impl Applying {
     /// The evaluation is in (or its worker ended).
     fn finished(&self) -> bool {
         !matches!(self.done.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
+    }
+
+    /// The evaluation is in and the job has been in a frame. A job that has just started waits
+    /// one frame: the window thread may be held up between starting it and the check, and the
+    /// feature must not appear where the dialog says it is computing.
+    fn ready(&self) -> bool {
+        self.seen && self.finished()
     }
 }
 
@@ -459,7 +469,7 @@ fn begin_applying(app: &SolveApp, d: &Dialog) -> Option<Applying> {
         })
         .ok()?;
     match rx.recv_timeout(wait) {
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Some(Applying { done: rx, started: crate::now_ms(), cmds }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Some(Applying { done: rx, started: crate::now_ms(), cmds, seen: false }),
         _ => None,
     }
 }
@@ -3351,7 +3361,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     // OK's evaluation is in: run it, the feature taken from the cache. Inputs changed meanwhile
     // (nothing should change them) are computed in turn, off the window thread too: run here,
     // they would hold the window for the whole boolean.
-    if app.applying.as_ref().is_some_and(Applying::finished) && !cancel {
+    // A job that has just started is not in yet: it waits a frame, so the dialog says it is
+    // computing before the feature appears.
+    let ready = app.applying.as_ref().is_some_and(Applying::ready);
+    if let Some(job) = &mut app.applying {
+        job.seen = true;
+    }
+    if ready && !cancel {
         let computed = app.applying.take().map(|job| job.cmds);
         let current = apply_commands(app, &d).ok();
         let again = if current.is_some() && current != computed { begin_applying(app, &d) } else { None };

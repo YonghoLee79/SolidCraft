@@ -76,6 +76,23 @@ fn cancel_while_computing_applies_nothing() {
     assert_eq!(h.app.session.doc.features.len(), features);
 }
 
+/// #2929: the feature must not appear in the frame OK starts computing in. The window thread
+/// can be held up between starting the evaluation and the check that takes it up, and the
+/// feature then appears where the dialog says it is computing - which is what made
+/// `cancel_while_computing_applies_nothing` fail under load.
+#[test]
+fn ok_computing_off_the_window_thread_does_not_apply_in_the_frame_it_starts() {
+    let mut h = square_on_a_block();
+    h.app.apply_off_thread = Some(Duration::ZERO);
+    let features = h.app.session.doc.features.len();
+    h.step(&json!({"key": "Enter"})).unwrap();
+    assert!(h.app.applying.is_some(), "the dialog is computing");
+    assert_eq!(h.app.session.doc.features.len(), features, "nothing applied in the frame it started");
+    // A frame later the evaluation is in and the feature is applied.
+    until_applied(&mut h);
+    assert_eq!(h.app.session.doc.features.len(), features + 1);
+}
+
 #[test]
 fn the_dialog_holds_its_inputs_while_ok_computes() {
     let mut h = square_on_a_block();
@@ -85,7 +102,7 @@ fn the_dialog_holds_its_inputs_while_ok_computes() {
     // OK computing, until the test lets it finish.
     let (finish, done) = std::sync::mpsc::channel();
     let cmds = h.app.dialog.as_ref().and_then(|d| crate::dialogs::apply_commands(&h.app, d).ok()).unwrap();
-    h.app.applying = Some(crate::dialogs::Applying { done, started: crate::now_ms(), cmds });
+    h.app.applying = Some(crate::dialogs::Applying { done, started: crate::now_ms(), cmds, seen: true });
     // A click on the square picked would take it out of the profiles.
     h.step(&json!({"click": {"world": [10, 10, 10]}})).unwrap();
     h.frames(2);
@@ -106,7 +123,7 @@ fn inputs_changed_while_ok_computes_are_computed_off_the_thread_too() {
     let features = h.app.session.doc.features.len();
     // OK computing other commands than the dialog's, until the test lets it finish.
     let (finish, done) = std::sync::mpsc::channel();
-    h.app.applying = Some(crate::dialogs::Applying { done, started: crate::now_ms(), cmds: Vec::new() });
+    h.app.applying = Some(crate::dialogs::Applying { done, started: crate::now_ms(), cmds: Vec::new(), seen: true });
     finish.send(()).unwrap();
     h.frames(1);
     assert!(h.app.applying.is_some(), "the dialog's own commands are computing");
