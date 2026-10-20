@@ -12,6 +12,9 @@ use crate::ui_kit;
 /// A command that ran at least this long counts as a big operation: autosave right after it.
 pub const BIG_OPERATION_MS: f64 = 1500.0;
 
+/// A tab's autosaver has no clock of its own: [`tick`] tells it when its turn has come.
+const SHARED_CADENCE: Duration = Duration::MAX;
+
 /// Shared settings and cadence; each tab owns its own entry and change tracking.
 pub struct Autosaves {
     pub dir: PathBuf,
@@ -23,11 +26,14 @@ pub struct Autosaves {
 impl Autosaves {
     /// Save the active design immediately, including when taking over a recovered entry.
     pub fn save(&mut self, session: &Session) -> Result<bool> {
-        save_slot(&self.dir, self.interval, &mut self.active, session, true)
+        save_slot(&self.dir, &mut self.active, session, true, true)
     }
 }
 
-fn save_slot(dir: &Path, interval: Duration, slot: &mut Option<Autosaver>, session: &Session, due: bool) -> Result<bool> {
+/// Bring one tab's autosave up to date. `due`: its turn has come. `wait`: write on this thread
+/// and wait for it (Save, close, shutdown); otherwise the write runs on a worker thread, so a
+/// scheduled autosave of several large designs never holds up the window (#3044).
+fn save_slot(dir: &Path, slot: &mut Option<Autosaver>, session: &Session, due: bool, wait: bool) -> Result<bool> {
     // Clean tabs need no serialization or entry, even between scheduled saves.
     if !session.is_dirty() {
         if let Some(mut a) = slot.take() {
@@ -41,10 +47,12 @@ fn save_slot(dir: &Path, interval: Duration, slot: &mut Option<Autosaver>, sessi
         return Ok(false);
     }
     if slot.is_none() {
-        *slot = Some(Autosaver::new(dir, interval)?);
+        *slot = Some(Autosaver::new(dir, SHARED_CADENCE)?);
     }
     match slot.as_mut() {
-        Some(a) => a.save(session),
+        Some(a) if wait => a.save(session),
+        // Skips a tab whose previous write is still running.
+        Some(a) => a.tick(session, true),
         None => Ok(false),
     }
 }
@@ -60,12 +68,12 @@ pub fn tick(app: &mut SolveApp) {
     let mut error = None;
     for slot in app.docs.background_mut() {
         let big = std::mem::take(&mut slot.big_operation);
-        if let Err(e) = save_slot(&a.dir, a.interval, &mut slot.autosave, &slot.session, due || big) {
+        if let Err(e) = save_slot(&a.dir, &mut slot.autosave, &slot.session, due || big, false) {
             error.get_or_insert(e);
         }
     }
     // Background writes must not replace the active design's crash-journal checkpoint.
-    if let Err(e) = save_slot(&a.dir, a.interval, &mut a.active, &app.session, due || big) {
+    if let Err(e) = save_slot(&a.dir, &mut a.active, &app.session, due || big, false) {
         error.get_or_insert(e);
     }
     if let Some(e) = error {
@@ -78,7 +86,7 @@ pub fn tick(app: &mut SolveApp) {
 
 /// Start autosaving into `dir` and queue the designs that crashed apps left there.
 pub fn start(app: &mut SolveApp, dir: &std::path::Path, interval: std::time::Duration) {
-    match Autosaver::new(dir, interval) {
+    match Autosaver::new(dir, SHARED_CADENCE) {
         Ok(a) => {
             app.recoverable = recovery::orphans(dir);
             app.autosave = Some(Autosaves { dir: dir.to_path_buf(), interval, active: Some(a), last_at: Instant::now() });
@@ -91,7 +99,7 @@ pub fn start(app: &mut SolveApp, dir: &std::path::Path, interval: std::time::Dur
 pub fn close(app: &mut SolveApp) {
     if let Some(mut a) = app.autosave.take() {
         for slot in app.docs.background_mut() {
-            let _ = save_slot(&a.dir, a.interval, &mut slot.autosave, &slot.session, true);
+            let _ = save_slot(&a.dir, &mut slot.autosave, &slot.session, true, true);
             if let Some(saver) = slot.autosave.take() {
                 saver.close(&slot.session);
             }
@@ -198,6 +206,21 @@ mod tests {
         entries
     }
 
+    /// A tick, then wait for the writes it started on worker threads. Waiting writes nothing
+    /// new: every design it would write was just written.
+    fn tick_and_wait(app: &mut SolveApp) {
+        tick(app);
+        let Some(a) = app.autosave.as_mut() else { return };
+        for slot in app.docs.background_mut() {
+            if let Some(saver) = slot.autosave.as_mut() {
+                let _ = saver.save(&slot.session);
+            }
+        }
+        if let Some(saver) = a.active.as_mut() {
+            let _ = saver.save(&app.session);
+        }
+    }
+
     fn name(app: &mut SolveApp, name: &str) {
         app.run("file.new", json!({"name": name})).unwrap();
     }
@@ -210,7 +233,7 @@ mod tests {
         let expected = app.session.doc.clone();
         documents::new_tab(&mut app);
         assert!(!app.session.is_dirty());
-        tick(&mut app);
+        tick_and_wait(&mut app);
         assert_eq!(entries(&dir).len(), 1);
         assert!(recovery::orphans(&dir).is_empty(), "all live entries stay locked");
         drop(app); // Simulate a crash: release locks without a final save.
@@ -233,13 +256,13 @@ mod tests {
     fn switching_to_a_clean_tab_keeps_the_background_entry_and_its_id() {
         let (mut app, dir) = app("clean-tab", Duration::ZERO);
         edit(&mut app);
-        tick(&mut app);
+        tick_and_wait(&mut app);
         let before = entries(&dir);
         documents::new_tab(&mut app);
-        tick(&mut app);
+        tick_and_wait(&mut app);
         assert_eq!(entries(&dir), before, "the clean tab cannot delete another tab's entry");
         documents::switch(&mut app, 0);
-        tick(&mut app);
+        tick_and_wait(&mut app);
         assert_eq!(entries(&dir), before, "switching back preserves identity and skips unchanged content");
         drop(app);
         assert_eq!(recovery::orphans(&dir), before);
@@ -260,14 +283,14 @@ mod tests {
             }
             expected.push(app.session.doc.clone());
         }
-        tick(&mut app);
+        tick_and_wait(&mut app);
         let saved = entries(&dir);
         assert_eq!(saved.len(), 3);
         let ids: std::collections::HashSet<_> = saved.iter().map(|e| &e.id).collect();
         assert_eq!(ids.len(), 3);
         for i in [0, 2, 1, 0] {
             documents::switch(&mut app, i);
-            tick(&mut app);
+            tick_and_wait(&mut app);
             assert_eq!(entries(&dir), saved);
         }
         drop(app);
@@ -293,12 +316,12 @@ mod tests {
             name(&mut app, &format!("Design {i}"));
             edit(&mut app);
         }
-        tick(&mut app);
+        tick_and_wait(&mut app);
         let saved = entries(&dir);
         // Cleanup is immediate, even when the next autosave is far away.
         app.autosave.as_mut().unwrap().interval = Duration::from_secs(3600);
         app.run("file.save_as", json!({"path": dir.join("saved.solidcraft")})).unwrap();
-        tick(&mut app);
+        tick_and_wait(&mut app);
         assert_eq!(entries(&dir), saved[..2]);
         documents::close(&mut app, 0, false);
         documents::answer_prompt(&mut app, documents::Answer::Cancel);
@@ -328,7 +351,7 @@ mod tests {
             if discard {
                 // Make entries first, then exercise Don't Save for every design.
                 app.autosave.as_mut().unwrap().interval = Duration::ZERO;
-                tick(&mut app);
+                tick_and_wait(&mut app);
                 assert_eq!(entries(&dir).len(), 2);
                 documents::request_quit(&mut app);
                 documents::answer_prompt(&mut app, documents::Answer::DontSave);
@@ -353,15 +376,15 @@ mod tests {
         assert!(app.docs.background_mut().all(|s| !s.session.crash_journal));
         assert!(!app.big_operation);
         edit(&mut app);
-        tick(&mut app);
+        tick_and_wait(&mut app);
         assert_eq!(entries(&dir).len(), 1, "only the background big operation is due");
         assert!(app.docs.background_mut().all(|s| !s.big_operation));
-        tick(&mut app);
+        tick_and_wait(&mut app);
         assert_eq!(entries(&dir).len(), 1, "the ordinary active edit waits for the interval");
         app.autosave_minutes = 0.00001;
         crate::prefs::set_autosave(&mut app);
         app.autosave.as_mut().unwrap().last_at = Instant::now() - Duration::from_secs(1);
-        tick(&mut app);
+        tick_and_wait(&mut app);
         assert_eq!(entries(&dir).len(), 2, "changed preferences apply to every tab");
         drop(app);
         fs::remove_dir_all(dir).unwrap();
@@ -372,7 +395,7 @@ mod tests {
         let (mut app, dir) = app("failure", Duration::ZERO);
         name(&mut app, "A");
         edit(&mut app);
-        tick(&mut app);
+        tick_and_wait(&mut app);
         let id = entries(&dir)[0].id.clone();
         let blocked = dir.join(format!("{id}.solidcraft"));
         fs::remove_file(&blocked).unwrap();
@@ -381,14 +404,22 @@ mod tests {
         documents::new_tab(&mut app);
         name(&mut app, "B");
         edit(&mut app);
+        // The writes run on worker threads: a failure is reported by a later tick.
+        let failed = |app: &SolveApp| app.status.as_ref().is_some_and(|(message, _, error)| *error && message.contains("autosave failed"));
+        let deadline = Instant::now() + Duration::from_secs(60);
         tick(&mut app);
-        assert!(app.status.as_ref().is_some_and(|(message, _, error)| *error && message.contains("autosave failed")));
+        while !failed(&app) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            tick(&mut app);
+        }
+        assert!(failed(&app));
+        tick_and_wait(&mut app);
         let saved = entries(&dir);
         assert_eq!(saved.len(), 2);
         assert_eq!(recovery::load(&dir, &saved[1].id).unwrap().0, *app.session.doc);
         // Retrying at the next tick also recovers the previously failing tab.
         fs::remove_dir(&blocked).unwrap();
-        tick(&mut app);
+        tick_and_wait(&mut app);
         assert_eq!(recovery::load(&dir, &id).unwrap().0.features.len(), 2);
         drop(app);
         fs::remove_dir_all(dir).unwrap();
