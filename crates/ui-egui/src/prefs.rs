@@ -1412,6 +1412,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
         PAGE_DESIGN => {
             let response = setting::joint_moving_first(app, ui);
             crate::scenario::publish_rect("prefs:joint_moving_first", response.rect);
+            ui_kit::text(ui, app.tr("settings.joint_moving_first_help"), ui_kit::Text::Note("joint_order"));
             ui_kit::row(ui, app.tr_label("Default modelling orientation"), |ui| {
                 let mut selected = usize::from(app.preferences.up_axis == "y");
                 if ui_kit::segmented(ui, &mut selected, &[crate::i18n::tr_label("Z up"), crate::i18n::tr_label("Y up")], Default::default()) {
