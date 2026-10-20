@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Ring, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::blend::{plane_normal, too_large, unsupported, vtx};
@@ -671,10 +671,9 @@ fn build(cur: &Body, sel_pts: &[(Vec3, f64)], round: bool) -> Result<Body> {
                     };
                     news.push(if e.front() == e.absolute_front() { ne } else { ne.inverse() });
                 }
-                let n = news.len();
+                let news = Ring::new(news);
                 let mut out = Vec::new();
-                for i in 0..n {
-                    let (Some(a), Some(b), Some(old)) = (news.get(i), news.get((i + 1) % n), olds.get(i)) else { continue };
+                for ((a, b), old) in news.edges().zip(&olds) {
                     out.push(a.clone());
                     if a.back() != b.front() {
                         let p = pool.get(&old.back().id()).map(|x| &x[..]).unwrap_or(&[]);

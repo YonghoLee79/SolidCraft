@@ -6,7 +6,7 @@
 //! the operations build is not a blend of those edges, so it is refused with the largest size
 //! that does fit. After the build, the volume taken away is checked against the wedges too.
 
-use solidcraft_geom::{Polyline, Vec3};
+use solidcraft_geom::{Polyline, Ring, Vec3};
 use truck_modeling as mt;
 
 use crate::blend::{ChamferSide, plane_normal, vtx};
@@ -185,12 +185,11 @@ const ARC_PIECES: usize = 8;
 /// `poly` clipped to the half-spaces `n·x <= c`, each moved `eps` inwards (empty when nothing
 /// is left).
 fn clip(poly: &[Vec3], planes: &[(Vec3, f64)], eps: f64) -> Vec<Vec3> {
-    let mut cur: Vec<Vec3> = poly.to_vec();
+    let mut cur: Ring<Vec3> = Ring::new(poly.to_vec());
     for (n, c) in planes {
         let c = c - eps;
         let mut next = Vec::with_capacity(cur.len() + 2);
-        for (i, p) in cur.iter().enumerate() {
-            let Some(q) = cur.get((i + 1) % cur.len()) else { continue };
+        for (p, q) in cur.edges() {
             let (dp, dq) = (n.dot(*p) - c, n.dot(*q) - c);
             if dp <= 0.0 {
                 next.push(*p);
@@ -202,9 +201,9 @@ fn clip(poly: &[Vec3], planes: &[(Vec3, f64)], eps: f64) -> Vec<Vec3> {
         if next.is_empty() {
             return next;
         }
-        cur = next;
+        cur = Ring::new(next);
     }
-    cur
+    cur.into_vec()
 }
 
 /// `poly` clipped to the half-spaces, each moved `eps` inwards: is anything left?

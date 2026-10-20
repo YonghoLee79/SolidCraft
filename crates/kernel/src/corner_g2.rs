@@ -24,8 +24,8 @@
 //! corner is a still point of the construction and [`seam_error`] is measured clear of it. A patch
 //! that folds, or a corner with no room, is refused rather than replaced by the G1 ball.
 
-use solidcraft_geom::Vec3;
 use solidcraft_geom::bspline::{HPoint, NurbsSurface};
+use solidcraft_geom::{Ring, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::blend::unsupported;
@@ -365,13 +365,14 @@ fn build(sides: &[Vec<Frame>], apex: Vec3) -> Result<Vec<mt::Face>> {
         let first = side.first().ok_or_else(|| fail("a section curve has no stations"))?;
         verts.push(builder::vertex(p3(first.p)));
     }
+    let verts = Ring::new(verts);
     let mut edges: Vec<mt::Edge> = Vec::with_capacity(sides.len());
     for i in 0..sides.len() {
         let (Some(&a), Some(&b)) = (cuts.get(i), cuts.get(i + 1)) else { return Err(fail("the corner's seams")) };
         let mut piece = loop_curve.clone();
         let _tail = mt::Cut::cut(&mut piece, b);
         let piece = mt::Cut::cut(&mut piece, a);
-        let (Some(from), Some(to)) = (verts.get(i), verts.get((i + 1) % verts.len())) else { return Err(fail("the corner's vertices")) };
+        let (Some(from), Some(to)) = (verts.at(i), verts.at(i + 1)) else { return Err(fail("the corner's vertices")) };
         edges.push(mt::Edge::try_new(from, to, piece).map_err(|e| fail(format!("a corner seam: {e}")))?);
     }
     let face = mt::Face::try_new(vec![mt::Wire::from(edges)], surface).map_err(|e| fail(format!("the corner patch: {e}")))?;

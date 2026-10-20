@@ -637,7 +637,7 @@ fn close_rim(mut faces: Vec<mt::Face>, n: Vec3, d: f64, tol: f64) -> Result<Body
     let u = n.any_perp();
     let v = n.cross(u);
     let origin = n * d;
-    let polys: Vec<Vec<(f64, f64)>> = loops
+    let polys: Vec<Ring<(f64, f64)>> = loops
         .iter()
         .map(|chain| {
             chain
@@ -654,37 +654,14 @@ fn close_rim(mut faces: Vec<mt::Face>, n: Vec3, d: f64, tol: f64) -> Result<Body
                 .collect()
         })
         .collect();
-    let areas: Vec<f64> = polys
-        .iter()
-        .map(|poly| {
-            let m = poly.len();
-            (0..m)
-                .map(|i| match (poly.get(i), poly.get((i + 1) % m)) {
-                    (Some(a), Some(b)) => a.0 * b.1 - b.0 * a.1,
-                    _ => 0.0,
-                })
-                .sum::<f64>()
-                * 0.5
-        })
-        .collect();
-    let inside = |poly: &[(f64, f64)], q: (f64, f64)| -> bool {
-        let m = poly.len();
-        (0..m)
-            .filter(|i| match (poly.get(*i), poly.get((*i + 1) % m)) {
-                (Some(a), Some(b)) => (a.1 > q.1) != (b.1 > q.1) && q.0 < (b.0 - a.0) * (q.1 - a.1) / (b.1 - a.1) + a.0,
-                _ => false,
-            })
-            .count()
-            % 2
-            == 1
-    };
+    let areas: Vec<f64> = polys.iter().map(Ring::signed_area).collect();
     let outers: Vec<usize> = (0..loops.len()).filter(|i| areas.get(*i).is_some_and(|a| *a > 0.0)).collect();
     let mut holes_of: HashMap<usize, Vec<usize>> = HashMap::new();
     for i in (0..loops.len()).filter(|i| !outers.contains(i)) {
         let q = polys.get(i).and_then(|p| p.first()).copied().ok_or_else(|| fail("an empty loop"))?;
         let around = outers
             .iter()
-            .filter(|o| polys.get(**o).is_some_and(|p| inside(p, q)))
+            .filter(|o| polys.get(**o).is_some_and(|p| p.contains(q)))
             .min_by(|x, y| areas.get(**x).partial_cmp(&areas.get(**y)).unwrap_or(std::cmp::Ordering::Equal))
             .ok_or_else(|| fail("a hole outside every outline"))?;
         holes_of.entry(*around).or_default().push(i);

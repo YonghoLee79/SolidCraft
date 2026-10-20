@@ -131,6 +131,12 @@ pub trait Planar: Copy {
     fn xy(self) -> (f64, f64);
 }
 
+impl Planar for (f64, f64) {
+    fn xy(self) -> (f64, f64) {
+        self
+    }
+}
+
 impl Planar for Vec2 {
     fn xy(self) -> (f64, f64) {
         (self.x, self.y)
