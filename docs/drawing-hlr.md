@@ -193,7 +193,11 @@ Other limits:
   cone's far apex included) share the own-face margin of 1e-6 of the face's size when a
   ray leaves one of them.
 - Not in this slice: the kernel adapter (after W02), perspective, section regions (W03),
-  views and commands (W07), and mirrored placements. A single surface's silhouette is traced
+  views and commands (W07), and mirrored placements. Of the records the kernel now saves,
+  planes through three points (`PlaneThrough`) are drawn as planes; a body with a procedural
+  `SurfaceIntersection` curve or a `PlacedRevolution` surface (whose placement may scale it
+  unevenly) is refused by `prepare` with `HlrError::Unsupported` until the adapter handles
+  them. A single surface's silhouette is traced
   on one thread, so one torus seen obliquely still takes about 0.3 s whatever the thread
   count.
 
@@ -246,7 +250,9 @@ and intervals:
   panicking item ends the work with its error; scenes over `MAX_ITEMS` placements and trim
   sample counts out of range are refused; sampling one long spline and tracing a body's
   silhouettes ask for cancellation inside the item; spline points and part hulls come from
-  their own knot spans;
+  their own knot spans; a box stored with planes through three points draws the same bits as
+  one with axis-stored planes, and placed revolutions and procedural intersection curves are
+  refused as not supported yet;
 - torus ray roots for thin, large and nearly tangent cases, and torus silhouettes near
   the axis direction.
 
