@@ -5199,7 +5199,11 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 *slot = ModelBody::traced_new(mb.name.clone(), first, mb.feature);
             }
             for (k, b) in it.enumerate() {
-                let mut name = format!("{} ({})", mb.name, k + 1);
+                // A piece renamed with `body.rename` keeps its own name (#3510).
+                let mut name = match f.body_names.get(k).filter(|n| !n.trim().is_empty() && st.body(n).is_none()) {
+                    Some(n) => n.clone(),
+                    None => format!("{} ({})", mb.name, k + 1),
+                };
                 while st.body(&name).is_some() {
                     name.push('\'');
                 }
