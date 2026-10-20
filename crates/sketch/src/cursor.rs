@@ -5,7 +5,7 @@ use super::{
     residual_work, system, within_budget,
 };
 use crate::{
-    Budget, CurveKind, Sketch,
+    Budget, CurveKind, PointIdx, Sketch,
     linalg::{Mat, rref},
     union_find::{find, union},
 };
@@ -25,7 +25,7 @@ const TOTAL_CORRECTION_ITERS: usize = 256;
 /// exhausted. The work budget includes Jacobian, null-space and LM arithmetic, not wall time.
 pub fn move_point_towards(
     sk: &mut Sketch,
-    point: usize,
+    point: PointIdx,
     target: Vec2,
     max_step: f64,
     budget: Option<&mut Budget>,
@@ -63,7 +63,7 @@ pub fn move_line_towards(
 // Both callers' endpoint weights sum to (1, 0): translating the anchors translates the grab.
 fn move_cursor_towards(
     sk: &mut Sketch,
-    points: &[(usize, Vec2)],
+    points: &[(PointIdx, Vec2)],
     target: Vec2,
     max_step: f64,
     mut budget: Option<&mut Budget>,
@@ -78,8 +78,8 @@ fn move_cursor_towards(
     }
     let problem = sk.clone();
     let lay = layout(&problem, &Hold::default());
-    let active: Vec<_> =
-        points.iter().filter(|(_, w)| w.x != 0.0 || w.y != 0.0).filter_map(|(p, w)| Some((lay.pvar.get(*p).copied().flatten()?, *w))).collect();
+    let active: Vec<_> = points.iter().filter(|(_, w)| w.x != 0.0 || w.y != 0.0).filter_map(|(p, w)| Some((lay.var_of(*p)?, *w))).collect();
+
     let Some(&(px, _)) = active.first() else { return false };
     let (blocks, _) = build_blocks(&problem, &lay, &points_on_curves(&problem));
     let mut parent: Vec<usize> = (0..lay.n).collect();
