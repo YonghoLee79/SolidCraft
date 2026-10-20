@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use solidcraft_geom::{Aabb3, Mesh, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Plane, Polyline, Region2, Seg2, Vec2, Vec3};
 
 use crate::Result;
 use crate::body::Body;
@@ -154,7 +154,7 @@ pub fn trace(result: &Body, inputs: &[&Body]) -> Result<History> {
         let mut origin = None;
         'search: for (op, m) in imeshes.iter().enumerate() {
             for (ie, ipts) in m.edges.iter().enumerate() {
-                if probe.iter().all(|p| ipts.windows(2).any(|w| p.dist_to_segment(w[0], w[1]) <= tol)) {
+                if probe.iter().all(|p| ipts.segments().any(|s| s.dist(*p) <= tol)) {
                     origin = Some((op, ie));
                     break 'search;
                 }
@@ -272,8 +272,7 @@ pub fn blend_origins(result: &Body, input: &Body, edges: &[usize], prov: &mut Hi
         let samples = face_samples(rf);
         let mean = |e: usize| {
             let Some(pts) = im.edges.get(e) else { return f64::INFINITY };
-            samples.iter().map(|(p, _)| pts.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min)).sum::<f64>()
-                / samples.len().max(1) as f64
+            samples.iter().map(|(p, _)| pts.distance_to(*p)).sum::<f64>() / samples.len().max(1) as f64
         };
         if let Some(e) = edges.iter().copied().min_by(|a, b| mean(*a).total_cmp(&mean(*b))) {
             fp.origins = vec![FaceOrigin::Edge { operand: 0, edge: e }];

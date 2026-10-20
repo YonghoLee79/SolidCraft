@@ -4,7 +4,7 @@
 
 use egui::{Pos2, Rect};
 use solidcraft_engine::Sel;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Polyline, Vec3};
 
 use crate::viewport::Hit;
 
@@ -148,7 +148,7 @@ pub(crate) fn point_value(v: Vec3) -> serde_json::Value {
 }
 
 pub(crate) fn polyline_mid(pts: &[Vec3]) -> Vec3 {
-    let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let len: f64 = pts.length();
     let mut acc = 0.0;
     for w in pts.windows(2) {
         let l = w[0].dist(w[1]);

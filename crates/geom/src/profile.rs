@@ -6,7 +6,7 @@ use std::f64::consts::TAU;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Aabb2, Ring, Vec2};
+use crate::{Aabb2, Ring, Segment, Vec2};
 
 /// One boundary segment in sketch coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -511,9 +511,10 @@ impl Loop2 {
         use std::f64::consts::PI;
         Loop2 { segs: vec![Seg2::Arc { center, radius, start, sweep: PI }, Seg2::Arc { center, radius, start: start + PI, sweep: PI }] }
     }
+    /// The closed polygon through `pts`: a line from each point to the next, the last back to the
+    /// first.
     pub fn polygon(pts: &[Vec2]) -> Loop2 {
-        let n = pts.len();
-        Loop2 { segs: (0..n).filter_map(|i| Some(Seg2::Line { a: *pts.get(i)?, b: *pts.get((i + 1) % n)? })).collect() }
+        Loop2 { segs: pts.iter().zip(pts.iter().cycle().skip(1)).map(|(&a, &b)| Seg2::Line { a, b }).collect() }
     }
     /// Signed area: positive when counter-clockwise.
     pub fn signed_area(&self) -> f64 {
@@ -554,10 +555,8 @@ impl Loop2 {
     /// Area-weighted centroid (of the polyline approximation).
     pub fn centroid(&self) -> Vec2 {
         let poly = self.polyline(1e-3);
-        let n = poly.len();
         let (mut a2, mut c) = (0.0, Vec2::ZERO);
-        for i in 0..n {
-            let (Some(p), Some(q)) = (poly.get(i), poly.get((i + 1) % n)) else { continue };
+        for (p, q) in poly.edges() {
             let k = p.cross(*q);
             a2 += k;
             c += (*p + *q) * k;
@@ -566,12 +565,7 @@ impl Loop2 {
     }
     /// Closed within `tol`?
     pub fn is_closed(&self, tol: f64) -> bool {
-        let n = self.segs.len();
-        n > 0
-            && (0..n).all(|i| match (self.segs.get(i), self.segs.get((i + 1) % n)) {
-                (Some(a), Some(b)) => a.end().dist(b.start()) <= tol,
-                _ => false,
-            })
+        !self.segs.is_empty() && self.segs.iter().zip(self.segs.iter().cycle().skip(1)).all(|(a, b)| a.end().dist(b.start()) <= tol)
     }
 }
 
@@ -603,10 +597,7 @@ impl Region2 {
             let y = y0 + (y1 - y0) * k as f64 / 16.0;
             let mut xs: Vec<f64> = Vec::new();
             for l in std::iter::once(&self.outer).chain(&self.holes) {
-                let pl = l.polyline(1e-2);
-                let n = pl.len();
-                for i in 0..n {
-                    let (Some(a), Some(b)) = (pl.get(i), pl.get((i + 1) % n)) else { continue };
+                for (a, b) in l.polyline(1e-2).edges() {
                     if (a.y > y) != (b.y > y) {
                         xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
                     }
@@ -658,14 +649,7 @@ fn max_clearance(loops: &[Ring<Vec2>]) -> f64 {
         if !inside(p) {
             return 0.0;
         }
-        sides
-            .iter()
-            .map(|(a, b)| {
-                let ab = *b - *a;
-                let t = ((p - *a).dot(ab) / ab.len2()).clamp(0.0, 1.0);
-                p.dist(*a + ab * t)
-            })
-            .fold(f64::INFINITY, f64::min)
+        sides.iter().map(|(a, b)| Segment::new(*a, *b).dist(p)).fold(f64::INFINITY, f64::min)
     };
     const N: usize = 32;
     let size = hi - lo;
@@ -701,10 +685,7 @@ impl Region2 {
     pub fn triangulate(&self, tol: f64) -> Vec<[Vec2; 3]> {
         let mut edges: Vec<(Vec2, Vec2)> = Vec::new();
         for l in std::iter::once(&self.outer).chain(&self.holes) {
-            let pl = l.polyline(tol);
-            let n = pl.len();
-            for i in 0..n {
-                let (Some(a), Some(b)) = (pl.get(i), pl.get((i + 1) % n)) else { continue };
+            for (a, b) in l.polyline(tol).edges() {
                 if (a.y - b.y).abs() > 1e-12 {
                     edges.push(if a.y < b.y { (*a, *b) } else { (*b, *a) });
                 }
@@ -840,13 +821,8 @@ fn segment_distance(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> f64 {
     if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0)) && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0)) {
         return 0.0;
     }
-    let to = |p: Vec2, s: Vec2, e: Vec2| {
-        let v = e - s;
-        let len2 = v.dot(v);
-        let t = if len2 > 0.0 { ((p - s).dot(v) / len2).clamp(0.0, 1.0) } else { 0.0 };
-        p.dist(s + v * t)
-    };
-    to(a, c, d).min(to(b, c, d)).min(to(c, a, b)).min(to(d, a, b))
+    let (ab, cd) = (Segment::new(a, b), Segment::new(c, d));
+    cd.dist(a).min(cd.dist(b)).min(ab.dist(c)).min(ab.dist(d))
 }
 
 #[cfg(test)]
@@ -979,9 +955,7 @@ mod tests {
         fn every_edge(r: &Region2, tol: f64) -> Vec<[Vec2; 3]> {
             let mut edges = Vec::new();
             for l in std::iter::once(&r.outer).chain(&r.holes) {
-                let pl = l.polyline(tol);
-                for i in 0..pl.len() {
-                    let (a, b) = (pl[i], pl[(i + 1) % pl.len()]);
+                for (&a, &b) in l.polyline(tol).edges() {
                     if (a.y - b.y).abs() > 1e-12 {
                         edges.push(if a.y < b.y { (a, b) } else { (b, a) });
                     }

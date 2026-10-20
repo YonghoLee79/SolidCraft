@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 
 use egui::{Pos2, Stroke};
 use serde_json::{Value, json};
-use solidcraft_engine::geom::{Vec2, Vec3};
+use solidcraft_engine::geom::{Polyline, Vec2, Vec3};
 
 use crate::SolveApp;
 use crate::tool_modifiers::{Audit, Binding, Match, ModAction, ModifierCombo, Scope, ToolModifiers, Trigger};
@@ -696,7 +696,7 @@ fn arg(p: &(Vec2, Option<String>)) -> Value {
 fn curve_len(app: &SolveApp, id: &str) -> f64 {
     let st = app.session.world_state();
     let Some(ss) = active_sketch(app).and_then(|s| st.sketch(s)) else { return 10.0 };
-    ss.sketch.curve_index(id).map(|c| ss.sketch.polyline(c).windows(2).map(|w| w[0].dist(w[1])).sum::<f64>()).unwrap_or(10.0)
+    ss.sketch.curve_index(id).map(|c| ss.sketch.polyline(c).length()).unwrap_or(10.0)
 }
 
 fn round_nice(x: f64) -> f64 {
@@ -1319,7 +1319,7 @@ fn glyph_anchors(sk: &solidcraft_engine::sketch::Sketch, k: &solidcraft_engine::
     // Half way along the curve, and the direction there.
     let mid = |c: usize| -> Option<(Vec2, Option<Vec2>)> {
         let poly = sk.polyline(c);
-        let total: f64 = poly.windows(2).map(|w| w[0].dist(w[1])).sum();
+        let total: f64 = poly.length();
         let mut acc = 0.0;
         for w in poly.windows(2) {
             let l = w[0].dist(w[1]);

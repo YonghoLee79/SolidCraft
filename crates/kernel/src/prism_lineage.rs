@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use solidcraft_geom::{Plane, Region2, Vec2, Vec3};
+use solidcraft_geom::{Plane, Polyline, Region2, Ring, Vec2, Vec3};
 use truck_modeling as mt;
 
 use super::{Index, Section, Tag, dist_to, inside};
@@ -277,9 +277,9 @@ impl<'a> Context<'a> {
                 // The edge as a fine polyline: a line exactly, an arc within its chords' sag.
                 let n = if matches!(c, mt::Curve::Line(_)) { 1 } else { 64 };
                 let pts: Vec<Vec3> = (0..=n).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / n as f64))).collect();
-                let length: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+                let length: f64 = pts.length();
                 let near = self.tol * 10.0 + if n == 1 { 0.0 } else { length * 2e-3 };
-                pts.windows(2).any(|w| at.dist_to_segment(w[0], w[1]) <= near)
+                pts.segments().any(|s| s.dist(at) <= near)
             })
         });
         match (on.next(), on.next()) {
@@ -432,12 +432,12 @@ impl<'a> Context<'a> {
         let mut junctions: HashMap<mt::VertexID, (usize, usize, bool)> = HashMap::new();
         for w in body.solid.face_iter().nth(start)?.absolute_boundaries() {
             let es: Vec<mt::Edge> = w.edge_iter().cloned().collect();
-            let segs: Vec<usize> = es.iter().map(segment_of).collect::<Option<_>>()?;
+            let segs: Ring<usize> = Ring::new(es.iter().map(segment_of).collect::<Option<_>>()?);
             if segs.windows(2).any(|p| p.first() > p.get(1)) {
                 return None;
             }
             for (k, e) in es.iter().enumerate() {
-                let (s, next) = (*segs.get(k)?, *segs.get((k + 1) % segs.len())?);
+                let (s, next) = (*segs.at(k)?, *segs.at(k + 1)?);
                 junctions.insert(e.back().id(), (s, next, s == next && k + 1 != segs.len()));
             }
         }

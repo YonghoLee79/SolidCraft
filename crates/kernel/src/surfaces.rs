@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::{Plane, Region2, Seg2, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Plane, Region2, Ring, Seg2, UnitVec3, Vec2, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -1159,19 +1159,16 @@ pub fn extend(body: &Body, at: &[Vec3], distance: f64) -> Result<Body> {
             }
             Some(p + d * (w.cross(e).dot(c) / cc))
         };
-        let mut corners = Vec::with_capacity(m);
-        for i in 0..m {
-            let (Some(prev), Some(cur)) = (lines.get((i + m - 1) % m), lines.get(i)) else { continue };
-            let p = meet(*prev, *cur).unwrap_or(cur.0);
-            corners.push(mt::Vertex::new(p3(p)));
-        }
+        let corners: Ring<mt::Vertex> =
+            Ring::new(lines).with_prev().map(|(prev, cur)| mt::Vertex::new(p3(meet(*prev, *cur).unwrap_or(cur.0)))).collect();
         let mut rec = Rebuild::default();
-        let wire: mt::Wire = (0..m)
-            .filter_map(|i| {
-                let (a, b, old) = (corners.get(i)?, corners.get((i + 1) % m)?, edges.get(i)?);
+        let wire: mt::Wire = corners
+            .edges()
+            .zip(&edges)
+            .map(|((a, b), old)| {
                 let e = mt::Edge::new_unchecked(a, b, mt::Curve::Line(mt::Line(a.point(), b.point())));
                 rec.piece(&e, old);
-                Some(e)
+                e
             })
             .collect::<Vec<_>>()
             .into();

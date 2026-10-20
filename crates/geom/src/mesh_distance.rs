@@ -4,7 +4,7 @@
 //! rather than the product of the triangle counts.
 
 use crate::compare::closest_on_triangle;
-use crate::{Aabb3, Bvh, Mesh, Vec3};
+use crate::{Aabb3, Bvh, Mesh, Segment, Vec3};
 
 /// A mesh's triangles with their B-rep faces, indexed for distance queries.
 #[derive(Clone, Debug, Default)]
@@ -128,38 +128,6 @@ pub fn box_gap(a: &Aabb3, b: &Aabb3) -> f64 {
     d.len()
 }
 
-/// The nearest points of segments `p0`–`p1` and `q0`–`q1` (Ericson, Real-Time Collision
-/// Detection, 5.1.9).
-pub fn closest_on_segments(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3) -> (Vec3, Vec3) {
-    let (d1, d2, r) = (p1 - p0, q1 - q0, p0 - q0);
-    let (a, e, f) = (d1.len2(), d2.len2(), d2.dot(r));
-    const TINY: f64 = 1e-300;
-    let (s, t) = if a <= TINY && e <= TINY {
-        (0.0, 0.0)
-    } else if a <= TINY {
-        (0.0, (f / e).clamp(0.0, 1.0))
-    } else {
-        let c = d1.dot(r);
-        if e <= TINY {
-            ((-c / a).clamp(0.0, 1.0), 0.0)
-        } else {
-            let b = d1.dot(d2);
-            let den = a * e - b * b;
-            let mut s = if den > TINY * (a * e).max(1.0) { ((b * f - c * e) / den).clamp(0.0, 1.0) } else { 0.0 };
-            let mut t = (b * s + f) / e;
-            if t < 0.0 {
-                t = 0.0;
-                s = (-c / a).clamp(0.0, 1.0);
-            } else if t > 1.0 {
-                t = 1.0;
-                s = ((b - c) / a).clamp(0.0, 1.0);
-            }
-            (s, t)
-        }
-    };
-    (p0 + d1 * s, q0 + d2 * t)
-}
-
 /// Where segment `p`–`q` passes through triangle `t` (not when it lies in its plane).
 fn segment_through(p: Vec3, q: Vec3, t: &[Vec3; 3]) -> Option<Vec3> {
     let [a, b, c] = *t;
@@ -201,7 +169,7 @@ pub fn triangle_distance(s: &[Vec3; 3], t: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
     }
     for (p0, p1) in edges(s) {
         for (q0, q1) in edges(t) {
-            let (a, b) = closest_on_segments(p0, p1, q0, q1);
+            let (a, b) = Segment::new(p0, p1).closest_points(&Segment::new(q0, q1));
             keep(a, b);
         }
     }
@@ -230,7 +198,7 @@ mod tests {
         let (d, ..) = triangle_distance(&floor, &tri([2.0, 2.0, -1.0], [2.0, 2.0, 1.0], [3.0, 2.0, 1.0]));
         assert_eq!(d, 0.0);
         // Parallel segments overlapping along their length.
-        let (p, q) = closest_on_segments(Vec3::ZERO, Vec3::X * 4.0, Vec3::new(2.0, 1.0, 0.0), Vec3::new(6.0, 1.0, 0.0));
+        let (p, q) = Segment::new(Vec3::ZERO, Vec3::X * 4.0).closest_points(&Segment::new(Vec3::new(2.0, 1.0, 0.0), Vec3::new(6.0, 1.0, 0.0)));
         assert!((p.dist(q) - 1.0).abs() < 1e-12);
     }
 

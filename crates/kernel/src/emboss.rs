@@ -5,7 +5,7 @@ use crate::numbered::NumberedRegion;
 use crate::offset::{Surf, surf_of};
 use crate::record::Operand;
 use crate::{KernelError, Result, guard};
-use solidcraft_geom::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Plane, Region2, Ring, Seg2, Vec2, Vec3};
 use truck_modeling::{self as mt, Transformed, builder};
 
 fn fail(s: &str) -> KernelError {
@@ -495,16 +495,15 @@ fn face_axial_bounds(face: &mt::Face, o: Vec3, axis: Vec3) -> Result<Option<(f64
 }
 
 fn wrapped_loop(lp: &Loop2, r: f64, rr: f64, at: &impl Fn(Vec2, f64) -> Vec3) -> Result<(mt::Wire, mt::Wire, Vec<mt::Face>)> {
-    let base: Vec<_> = lp.segs.iter().map(|s| builder::vertex(p3(at(s.start(), r)))).collect();
-    let top: Vec<_> = lp.segs.iter().map(|s| builder::vertex(p3(at(s.start(), rr)))).collect();
-    let radial: Vec<_> = base.iter().zip(&top).map(|(a, b)| builder::line(a, b)).collect();
+    let base: Ring<_> = lp.segs.iter().map(|s| builder::vertex(p3(at(s.start(), r)))).collect();
+    let top: Ring<_> = lp.segs.iter().map(|s| builder::vertex(p3(at(s.start(), rr)))).collect();
+    let radial: Ring<_> = base.iter().zip(top.iter()).map(|(a, b)| builder::line(a, b)).collect();
     let mut be = Vec::new();
     let mut te = Vec::new();
     let mut walls = Vec::new();
     for (i, s) in lp.segs.iter().enumerate() {
-        let next = (i + 1) % lp.segs.len();
         let (Some(a), Some(b), Some(c), Some(d), Some(ra), Some(rb)) =
-            (base.get(i), base.get(next), top.get(i), top.get(next), radial.get(i), radial.get(next))
+            (base.at(i), base.at(i + 1), top.at(i), top.at(i + 1), radial.at(i), radial.at(i + 1))
         else {
             return Err(fail("loop topology"));
         };

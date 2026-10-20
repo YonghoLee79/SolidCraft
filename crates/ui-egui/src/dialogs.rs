@@ -11,7 +11,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::doc::{AxisRef, Direction, FeatureKind, FilletStyle, HoleKind, Operation, PatternKind, PlaneRef, ProfileSel, ThinSide};
-use solidcraft_engine::geom::{Aabb3, Vec3};
+use solidcraft_engine::geom::{Aabb3, Polyline, Vec3};
 
 use crate::SolveApp;
 use crate::selection::{
@@ -1244,7 +1244,7 @@ const ON_FACE: f64 = 1e-3;
 /// side for one over the triangle, with an absolute tolerance that is wide for a sliver.)
 fn triangle_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
     let sides = [(a, b), (b, c), (c, a)];
-    let to_sides = || sides.iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min);
+    let to_sides = || [a, b, c, a].distance_to(p);
     // However small the triangle: only one without area (or not finite) has no plane.
     let n = (b - a).cross(c - a);
     let len = n.len();
@@ -1686,7 +1686,7 @@ pub(crate) fn point_tri_dist(p: Vec3, [a, b, c]: [Vec3; 3]) -> f64 {
             return (p - q).len();
         }
     }
-    p.dist_to_segment(a, b).min(p.dist_to_segment(b, c)).min(p.dist_to_segment(c, a))
+    [a, b, c, a].distance_to(p)
 }
 
 /// The pattern objects' label: features are picked in the timeline.
@@ -3798,7 +3798,7 @@ pub(crate) fn edge_sel(s: &Session, p0: Vec3) -> Option<Sel> {
         let p = stored_on(&frames, &b.name, p0);
         let m = b.mesh();
         for (i, e) in m.edges.iter().enumerate() {
-            let d = e.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+            let d = e.distance_to(p);
             if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, Sel::Edge { body: b.name.clone(), index: i, point: p }));
             }

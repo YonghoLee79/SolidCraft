@@ -7,7 +7,7 @@
 
 use std::f64::consts::{PI, TAU};
 
-use crate::{Loop2, Region2, Seg2, Vec2};
+use crate::{Loop2, Region2, Seg2, Segment, Vec2};
 
 /// Most pieces one segment is fitted with.
 pub const MAX_FIT_PIECES: usize = 2048;
@@ -176,12 +176,7 @@ impl Region2 {
 /// Distance from `p` to a line or arc segment (other segments: to their closest point).
 fn dist_to(s: &Seg2, p: Vec2) -> f64 {
     match *s {
-        Seg2::Line { a, b } => {
-            let d = b - a;
-            let l2 = d.len2();
-            let t = if l2 > 1e-300 { ((p - a).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
-            (a + d * t).dist(p)
-        }
+        Seg2::Line { a, b } => Segment::new(a, b).dist(p),
         Seg2::Arc { center, radius, start, sweep } => {
             let ang = (p - center).angle();
             let delta = if sweep >= 0.0 { (ang - start).rem_euclid(TAU) } else { (start - ang).rem_euclid(TAU) };
@@ -301,11 +296,7 @@ mod tests {
 
     fn ellipse(c: Vec2, a: f64, b: f64) -> Loop2 {
         let corners = [c + Vec2::new(a, 0.0), c + Vec2::new(0.0, b), c - Vec2::new(a, 0.0), c - Vec2::new(0.0, b)];
-        Loop2 {
-            segs: (0..4)
-                .map(|i| Seg2::Conic { a: corners[i], apex: corners[i] + corners[(i + 1) % 4] - c, b: corners[(i + 1) % 4], w: FRAC_1_SQRT_2 })
-                .collect(),
-        }
+        Loop2 { segs: crate::Ring::from(corners).edges().map(|(&p, &q)| Seg2::Conic { a: p, apex: p + q - c, b: q, w: FRAC_1_SQRT_2 }).collect() }
     }
 
     #[test]

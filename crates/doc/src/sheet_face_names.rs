@@ -37,10 +37,7 @@ impl SheetBody {
                 continue;
             }
             let q2 = Vec2::new(q.x, q.y);
-            let pts = region.outer.ccw().polyline(1e-3);
-            let m = pts.len();
-            for k in 0..m {
-                let (Some(&a), Some(&b)) = (pts.get(k), pts.get((k + 1) % m)) else { continue };
+            for (k, (&a, &b)) in region.outer.ccw().polyline(1e-3).edges().enumerate() {
                 let d = b - a;
                 if d.len2() < 1e-18 || self.rim_edge(pi, a, b, k).as_deref() != Some("bend") {
                     continue;

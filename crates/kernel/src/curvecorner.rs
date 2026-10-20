@@ -16,7 +16,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Ring, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use super::{
@@ -1178,10 +1178,9 @@ pub(crate) fn corner_blend_style(solid: &Solid, ids: &[mt::EdgeID], size: f64, r
                     };
                     news.push(if e.front() == e.absolute_front() { ne } else { ne.inverse() });
                 }
-                let n = news.len();
+                let news = Ring::new(news);
                 let mut ws = Vec::new();
-                for i in 0..n {
-                    let (Some(a), Some(b)) = (news.get(i), news.get((i + 1) % n)) else { continue };
+                for (a, b) in news.edges() {
                     ws.push(a.clone());
                     if a.back() != b.front() {
                         ws.extend(connect(a.back(), b.front(), &everywhere, Owner::Face(fi))?);

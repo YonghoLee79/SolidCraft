@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::kernel::{FaceSurface, face_surface};
 use solidcraft_engine::doc::{FaceAttachmentStatus, ModelBody, naming};
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Polyline, Vec3};
 
 /// One in this many actions runs on pull requests (by a stable hash of its key).
 const PR_SAMPLE: u64 = 40;
@@ -153,7 +153,7 @@ fn pt(v: Vec3) -> Value {
 }
 
 fn polyline_mid(pts: &[Vec3]) -> Vec3 {
-    let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let len: f64 = pts.length();
     let mut acc = 0.0;
     for w in pts.windows(2) {
         let l = w[0].dist(w[1]);
@@ -163,10 +163,6 @@ fn polyline_mid(pts: &[Vec3]) -> Vec3 {
         acc += l;
     }
     pts.first().copied().unwrap_or_default()
-}
-
-fn polyline_len(pts: &[Vec3]) -> f64 {
-    pts.windows(2).map(|w| w[0].dist(w[1])).sum()
 }
 
 /// A straight polyline's direction.
@@ -248,7 +244,7 @@ fn actions(s: &Session) -> Vec<Action> {
                 let longest = edges_of(i)
                     .into_iter()
                     .filter_map(|e| mesh.edges.get(e).filter(|pts| straight(pts).is_some()))
-                    .max_by(|a, b| polyline_len(a).total_cmp(&polyline_len(b)));
+                    .max_by(|a, b| a.length().total_cmp(&b.length()));
                 if let Some(e) = longest {
                     add(
                         "face.angle_plane",
@@ -281,7 +277,7 @@ fn actions(s: &Session) -> Vec<Action> {
                 let room = edges_of(i)
                     .into_iter()
                     .filter_map(|e| mesh.edges.get(e))
-                    .flat_map(|pts| pts.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).collect::<Vec<_>>())
+                    .flat_map(|pts| pts.segments().map(|s| s.dist(p)).collect::<Vec<_>>())
                     .fold(f64::MAX, f64::min);
                 if room.is_finite() && room > 0.15 {
                     let dia = round3((room * 0.8).min(6.0));
@@ -385,12 +381,12 @@ fn actions(s: &Session) -> Vec<Action> {
             }
             let entity = format!("{world}/{}", edge_names.get(e).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| format!("edge{e}")));
             let mid = polyline_mid(pts);
-            let own = if closed(pts) { polyline_len(pts) / std::f64::consts::PI } else { polyline_len(pts) };
+            let own = if closed(pts) { pts.length() / std::f64::consts::PI } else { pts.length() };
             let my_ends = ends(e);
             let shortest = pickable
                 .iter()
                 .filter(|&&o| o != e && ends(o).iter().any(|q| my_ends.iter().any(|m| near(*m, *q))))
-                .filter_map(|&o| mesh.edges.get(o).map(|p| polyline_len(p)))
+                .filter_map(|&o| mesh.edges.get(o).map(|p| p.length()))
                 .fold(own, f64::min);
             let r = round3((shortest * 0.1).max(0.01));
             let mut add = |action, act| out.push(Action { entity: entity.clone(), action, act });

@@ -2,7 +2,7 @@
 //! inference for interactive tools.
 
 use serde_json::{Value, json};
-use solidcraft_geom::Vec2;
+use solidcraft_geom::{Polyline, Vec2};
 use solidcraft_sketch::{ConstraintKind, CurveKind, Sketch};
 
 use super::sketch::{add_c, constraint_result, dof_now, edit, listed, redundancy, residual_of};
@@ -321,7 +321,7 @@ fn guess(sk: &Sketch, ents: &[String], cmd: &str) -> Result<ConstraintKind> {
                             }
                             _ => f64::INFINITY,
                         };
-                        let len = sk.polyline(x).windows(2).map(|w| w[0].dist(w[1])).sum::<f64>();
+                        let len = sk.polyline(x).length();
                         return Ok(if off < len * 0.05 { Collinear { a: x, b: y } } else { Parallel { a: x, b: y } });
                     }
                     if u.dot(v).abs() < 0.2 {
@@ -418,7 +418,7 @@ fn anchor(sk: &Sketch, k: &ConstraintKind) -> Option<Vec2> {
     // Half way along the curve.
     let mid = |c: usize| -> Option<Vec2> {
         let poly = sk.polyline(c);
-        let total: f64 = poly.windows(2).map(|w| w[0].dist(w[1])).sum();
+        let total: f64 = poly.length();
         let mut acc = 0.0;
         for w in poly.windows(2) {
             let l = w[0].dist(w[1]);

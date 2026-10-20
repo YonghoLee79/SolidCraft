@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Ring, Segment, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, edge_order, from_p3, p3};
@@ -753,7 +753,9 @@ impl Sources {
             _ => between
                 .iter()
                 .copied()
-                .filter(|i| edges.ends.get(*i).is_some_and(|(s, t)| ends.0.dist_to_segment(*s, *t) <= tol && ends.1.dist_to_segment(*s, *t) <= tol))
+                .filter(|i| {
+                    edges.ends.get(*i).is_some_and(|(s, t)| Segment::new(*s, *t).dist(ends.0) <= tol && Segment::new(*s, *t).dist(ends.1) <= tol)
+                })
                 .collect(),
         };
         match along.as_slice() {
@@ -870,7 +872,7 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
         index.insert(k, verts.len() - 1);
         verts.len() - 1
     };
-    let mut loops: Vec<(PlaneEq, Vec<usize>)> = Vec::new();
+    let mut loops: Vec<(PlaneEq, Ring<usize>)> = Vec::new();
     let mut srcs: Vec<FaceOrigin> = Vec::new();
     for p in polys {
         let mut l: Vec<usize> = p.v.iter().map(|v| id(*v, &mut verts)).collect();
@@ -879,18 +881,14 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
             l.pop();
         }
         if l.len() >= 3 {
-            loops.push((p.plane, l));
+            loops.push((p.plane, Ring::new(l)));
             srcs.push(p.src);
         }
     }
     // Split every polygon edge at vertices lying on it (T-junctions). Vertices are binned in a
     // grid sized to the typical edge, so each edge only looks at its neighbourhood.
     let tol = size * 1e-7;
-    let edge_len: Vec<f64> = loops
-        .iter()
-        .flat_map(|(_, l)| (0..l.len()).filter_map(move |i| Some((*l.get(i)?, *l.get((i + 1) % l.len())?))))
-        .filter_map(|(a, b)| Some((*verts.get(b)? - *verts.get(a)?).len()))
-        .collect();
+    let edge_len: Vec<f64> = loops.iter().flat_map(|(_, l)| l.edges()).filter_map(|(a, b)| Some((*verts.get(*b)? - *verts.get(*a)?).len())).collect();
     let mean = edge_len.iter().sum::<f64>() / edge_len.len().max(1) as f64;
     let cell = mean.max(size * 1e-4).max(1e-9);
     let ckey = |p: Vec3| ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64);
@@ -909,9 +907,7 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
             groups.push(*pl);
             groups.len() - 1
         });
-        let n = l.len();
-        for i in 0..n {
-            let (Some(&a), Some(&b)) = (l.get(i), l.get((i + 1) % n)) else { continue };
+        for (&a, &b) in l.edges() {
             let (Some(&pa), Some(&pb)) = (verts.get(a), verts.get(b)) else { continue };
             let d = pb - pa;
             let len2 = d.len2();
@@ -938,7 +934,7 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
                 .filter_map(|k| {
                     let v = verts.get(k)?;
                     let t = (*v - pa).dot(d) / len2.max(1e-300);
-                    (t > 1e-9 && t < 1.0 - 1e-9 && v.dist_to_segment(pa, pb) < q).then_some((t, k))
+                    (t > 1e-9 && t < 1.0 - 1e-9 && Segment::new(pa, pb).dist(*v) < q).then_some((t, k))
                 })
                 .collect();
             on.sort_by(|x, y| x.0.total_cmp(&y.0));
@@ -998,10 +994,10 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
     guard("planar boolean rebuild", || {
         let mut verts = verts.clone();
         // Every plane group's boundary loops (vertex indices).
-        let mut all_loops: Vec<Vec<Vec<usize>>> = Vec::new();
+        let mut all_loops: Vec<Vec<Ring<usize>>> = Vec::new();
         for (g, _) in groups.iter().enumerate() {
             let mut segs: Vec<(usize, usize)> = boundary.iter().filter(|e| e.0 == g).map(|e| (e.1, e.2)).collect();
-            let mut loops_g: Vec<Vec<usize>> = Vec::new();
+            let mut loops_g: Vec<Ring<usize>> = Vec::new();
             while let Some((s, t)) = segs.pop() {
                 let mut lp = vec![s, t];
                 let mut cur = t;
@@ -1022,13 +1018,13 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
                         if let Some(at) = stack.iter().position(|x| *x == v) {
                             let sub: Vec<usize> = stack.split_off(at);
                             if sub.len() >= 3 {
-                                loops_g.push(sub);
+                                loops_g.push(Ring::new(sub));
                             }
                         }
                         stack.push(v);
                     }
                     if stack.len() >= 3 {
-                        loops_g.push(stack);
+                        loops_g.push(Ring::new(stack));
                     }
                 }
             }
@@ -1045,10 +1041,8 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
             let Some(loops_g) = all_loops.get(g) else { continue };
             let mut wires: Vec<mt::Wire> = Vec::new();
             for lp in loops_g {
-                let n = lp.len();
-                let mut es = Vec::with_capacity(n);
-                for i in 0..n {
-                    let (Some(&a), Some(&b)) = (lp.get(i), lp.get((i + 1) % n)) else { continue };
+                let mut es = Vec::with_capacity(lp.len());
+                for (&a, &b) in lp.edges() {
                     let k = (a.min(b), a.max(b));
                     let e = match edges.get(&k) {
                         Some(e) => e.clone(),
@@ -1068,28 +1062,20 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
             }
             // Outer loops are counter-clockwise about the plane normal; holes go with the
             // outer loop that contains them.
-            let area = |lp: &Vec<usize>| -> f64 {
-                let n = lp.len();
-                let mut s = Vec3::ZERO;
-                for i in 0..n {
-                    if let (Some(a), Some(b)) = (lp.get(i).and_then(|k| verts.get(*k)), lp.get((i + 1) % n).and_then(|k| verts.get(*k))) {
-                        s += a.cross(*b);
-                    }
-                }
+            // Newell's area vector over the loop's edges.
+            let area = |lp: &Ring<usize>| -> f64 {
+                let s = lp.edges().filter_map(|(a, b)| Some(verts.get(*a)?.cross(*verts.get(*b)?))).fold(Vec3::ZERO, |s, x| s + x);
                 s.dot(plane.n) * 0.5
             };
             let (outer, holes): (Vec<usize>, Vec<usize>) = (0..loops_g.len()).partition(|i| loops_g.get(*i).is_some_and(|l| area(l) > 0.0));
             let u = plane.n.any_perp();
             let w = plane.n.cross(u);
             let to2 = |p: Vec3| (p.dot(u), p.dot(w));
-            let inside = |pt: Vec3, lp: &Vec<usize>| {
+            let inside = |pt: Vec3, lp: &Ring<usize>| {
                 let (px, py) = to2(pt);
-                let n = lp.len();
                 let mut c = false;
-                for i in 0..n {
-                    let (Some(a), Some(b)) = (lp.get(i).and_then(|k| verts.get(*k)), lp.get((i + 1) % n).and_then(|k| verts.get(*k))) else {
-                        continue;
-                    };
+                for (a, b) in lp.edges() {
+                    let (Some(a), Some(b)) = (verts.get(*a), verts.get(*b)) else { continue };
                     let ((ax, ay), (bx, by)) = (to2(*a), to2(*b));
                     if (ay > py) != (by > py) && px < ax + (py - ay) / (by - ay) * (bx - ax) {
                         c = !c;
@@ -1155,7 +1141,7 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
 /// (#679): the faces around it form several fans that share no edge there. Each fan past the
 /// first gets its own copy of the vertex (same point), so every vertex of the shell is a
 /// manifold one.
-fn split_pinched_vertices(loops: &mut [Vec<Vec<usize>>], verts: &mut Vec<Vec3>, orig: &mut Vec<usize>) {
+fn split_pinched_vertices(loops: &mut [Vec<Ring<usize>>], verts: &mut Vec<Vec3>, orig: &mut Vec<usize>) {
     // Every corner: (group, loop, position), by vertex.
     let mut corners: BTreeMap<usize, Vec<(usize, usize, usize)>> = BTreeMap::new();
     for (g, ls) in loops.iter().enumerate() {
@@ -1177,9 +1163,10 @@ fn split_pinched_vertices(loops: &mut [Vec<Vec<usize>>], verts: &mut Vec<Vec3>, 
         let nbrs: Vec<[usize; 2]> = cs
             .iter()
             .map(|(g, li, i)| {
-                let l = loops.get(*g).and_then(|ls| ls.get(*li)).map(Vec::as_slice).unwrap_or(&[]);
-                let n = l.len().max(1);
-                [l.get((i + n - 1) % n).copied().unwrap_or(v), l.get((i + 1) % n).copied().unwrap_or(v)]
+                let l = loops.get(*g).and_then(|ls| ls.get(*li));
+                let around = |k: usize| l.and_then(|l| l.at(k)).copied().unwrap_or(v);
+                let n = l.map_or(1, |l| l.len());
+                [around(i + n - 1), around(i + 1)]
             })
             .collect();
         let mut parent: Vec<usize> = (0..cs.len()).collect();
@@ -1212,7 +1199,7 @@ fn split_pinched_vertices(loops: &mut [Vec<Vec<usize>>], verts: &mut Vec<Vec3>, 
         }
     }
     for ((g, li, i), new) in renames {
-        if let Some(slot) = loops.get_mut(g).and_then(|ls| ls.get_mut(li)).and_then(|l| l.get_mut(i)) {
+        if let Some(slot) = loops.get_mut(g).and_then(|ls| ls.get_mut(li)).and_then(|l| l.at_mut(i)) {
             *slot = new;
         }
     }

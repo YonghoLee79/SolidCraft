@@ -1,6 +1,6 @@
 use serde_json::json;
 use solidcraft_engine::Session;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Polyline, Vec3};
 
 use super::*;
 use crate::Services;
@@ -38,7 +38,7 @@ fn edge(app: &SolveApp, p: Vec3) -> Sel {
     let mut best: Option<(f64, Sel)> = None;
     for b in &st.bodies {
         for (index, e) in b.mesh().edges.iter().enumerate() {
-            let d = e.windows(2).filter_map(|w| Some(p.dist_to_segment(*w.first()?, *w.get(1)?))).fold(f64::MAX, f64::min);
+            let d = e.distance_to(p);
             if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, Sel::Edge { body: b.name.clone(), index, point: p }));
             }

@@ -1,7 +1,7 @@
 //! Issue #616: small boxes joined flush to the walls and floor of a part never change it away
 //! from the box, and a retry that would is refused.
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Polyline, Vec3};
 
 use crate::*;
 
@@ -33,11 +33,7 @@ fn tri_dist(p: Vec3, [a, b, c]: [Vec3; 3]) -> f64 {
     let Some(u) = n.normalized() else { return f64::INFINITY };
     let h = (p - a).dot(u);
     let q = p - u * h;
-    if [(a, b), (b, c), (c, a)].iter().all(|(x, y)| (*y - *x).cross(q - *x).dot(n) >= 0.0) {
-        h.abs()
-    } else {
-        [(a, b), (b, c), (c, a)].iter().map(|(x, y)| p.dist_to_segment(*x, *y)).fold(f64::INFINITY, f64::min)
-    }
+    if [(a, b), (b, c), (c, a)].iter().all(|(x, y)| (*y - *x).cross(q - *x).dot(n) >= 0.0) { h.abs() } else { [a, b, c, a].distance_to(p) }
 }
 
 /// A point of `from`'s surface outside `region` that is not on `onto`'s surface.

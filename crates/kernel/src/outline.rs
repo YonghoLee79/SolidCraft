@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 use mt::{BoundedCurve, ParametricCurve};
-use solidcraft_geom::{Vec2, Vec3};
+use solidcraft_geom::{Ring, Segment, Vec2, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3};
@@ -110,12 +110,7 @@ impl Piece {
     /// Distance from `p` to the piece.
     fn dist(&self, p: Vec2) -> f64 {
         match *self {
-            Piece::Line { a, b } => {
-                let d = b - a;
-                let l2 = d.len2();
-                let s = if l2 > 0.0 { ((p - a).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
-                p.dist(a + d * s)
-            }
+            Piece::Line { a, b } => Segment::new(a, b).dist(p),
             Piece::Arc { c, r, t0, sweep } => match Self::arc_fraction(t0, sweep, (p - c).angle()) {
                 Some(_) => ((p - c).len() - r).abs(),
                 None => p.dist(self.at(0.0)).min(p.dist(self.at(1.0))),
@@ -377,8 +372,8 @@ fn loops(uses: &[Use]) -> Option<Vec<Vec<usize>>> {
 
 /// The signed area a loop bounds (positive counter-clockwise).
 fn area(uses: &[Use], lp: &[usize]) -> f64 {
-    let pts: Vec<Vec2> = lp.iter().filter_map(|i| uses.get(*i)).flat_map(|u| (0..16).map(move |k| u.piece.at(k as f64 / 16.0))).collect();
-    (0..pts.len()).map(|i| pts.get(i).zip(pts.get((i + 1) % pts.len())).map(|(a, b)| a.cross(*b)).unwrap_or(0.0)).sum::<f64>() * 0.5
+    let pts: Ring<Vec2> = lp.iter().filter_map(|i| uses.get(*i)).flat_map(|u| (0..16).map(move |k| u.piece.at(k as f64 / 16.0))).collect();
+    pts.signed_area()
 }
 
 /// `body` with its faces `faces` (in the plane of `fr`, facing along its normal) divided by those

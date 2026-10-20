@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use solidcraft_geom::Vec3;
 
 use crate::Document;
+use solidcraft_geom::compare::closest_on_triangle;
 
 /// A look: a name (a library entry's, or "Custom"), sRGB colour and opacity (1 = opaque).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -275,42 +276,6 @@ pub fn nearest_face(b: &crate::ModelBody, p: Vec3) -> Option<(f64, usize)> {
 /// How far from a face of `b` a picked point may lie and still pick it (`face_index_at`).
 pub fn pick_tolerance(b: &crate::ModelBody) -> f64 {
     b.body.size() * 0.05 + 1e-6
-}
-
-/// The point of triangle abc nearest p.
-pub(crate) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let (ab, ac, ap) = (b - a, c - a, p - a);
-    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-    let bp = p - b;
-    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        return a + ab * (d1 / (d1 - d3));
-    }
-    let cp = p - c;
-    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        return a + ac * (d2 / (d2 - d6));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    }
-    let den = va + vb + vc;
-    if den.abs() < 1e-300 {
-        return a;
-    }
-    a + ab * (vb / den) + ac * (vc / den)
 }
 
 #[cfg(test)]

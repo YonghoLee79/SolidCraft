@@ -10,8 +10,8 @@
 //! B-spline curve, eq. 3.4: control values at the knot averages reproduce a linear function),
 //! A2.1 (span search).
 
-use crate::Vec3;
 use crate::bspline::{Dir, HPoint, NurbsSurface, Side, SplineError, SplineResult, find_span, invalid, local_basis_array};
+use crate::{Ring, Vec3};
 
 /// Most loop points a fill takes.
 pub const MAX_LOOP_POINTS: usize = 8192;
@@ -210,8 +210,10 @@ fn fit_once(fit: &[Vec3], all: &[Vec3], tol: f64, crown: f64) -> SplineResult<Fi
         (pts.iter().map(|p| [(*p - o).dot(x), (*p - o).dot(y)]).collect(), pts.iter().map(|p| (*p - o).dot(n)).collect())
     };
     let (uv, h) = project(all);
+    let uv = Ring::new(uv);
     check_projectable(all, &uv)?;
     let (fuv, fh) = project(fit);
+    let fuv = Ring::new(fuv);
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     for q in &uv {
         for d in 0..2 {
@@ -233,8 +235,7 @@ fn fit_once(fit: &[Vec3], all: &[Vec3], tol: f64, crown: f64) -> SplineResult<Fi
     // only after denser sampling; the coarsest is always tried.
     let extent = [hi[0] - lo[0], hi[1] - lo[1]];
     let mut step = [0.0f64; 2];
-    for k in 0..m {
-        let (p, q) = (fuv.get(k).copied().unwrap_or([0.0; 2]), fuv.get((k + 1) % m).copied().unwrap_or([0.0; 2]));
+    for (p, q) in fuv.edges() {
         for d in 0..2 {
             step[d] = step[d].max((q[d] - p[d]).abs());
         }
@@ -288,7 +289,7 @@ fn fit_once(fit: &[Vec3], all: &[Vec3], tol: f64, crown: f64) -> SplineResult<Fi
 /// leaves the surface itself as it is, until it does. Returns the crowned surface, how many
 /// control points took the bump, and the farthest the bump moved the surface at a sampled loop
 /// point (0).
-fn crown_fill(surface: NurbsSurface, uv: &[[f64; 2]], crown: f64, normal: Vec3) -> SplineResult<(NurbsSurface, usize, f64)> {
+fn crown_fill(surface: NurbsSurface, uv: &Ring<[f64; 2]>, crown: f64, normal: Vec3) -> SplineResult<(NurbsSurface, usize, f64)> {
     if crown == 0.0 {
         return Ok((surface, 0, 0.0));
     }
@@ -303,7 +304,7 @@ fn crown_fill(surface: NurbsSurface, uv: &[[f64; 2]], crown: f64, normal: Vec3) 
 /// with its own normal there. Its net may be refined up to `max_spans` each way.
 pub(crate) fn crown_fill_along(
     surface: NurbsSurface,
-    uv: &[[f64; 2]],
+    uv: &Ring<[f64; 2]>,
     crown: f64,
     along: &dyn Fn([f64; 2]) -> Option<Vec3>,
     max_spans: usize,
@@ -345,7 +346,7 @@ pub(crate) fn crown_fill_along(
 /// box's diagonal. `None` when the net has no such point.
 fn crown_net(
     base: &NurbsSurface,
-    uv: &[[f64; 2]],
+    uv: &Ring<[f64; 2]>,
     gap: [f64; 2],
     crown: f64,
     along: &dyn Fn([f64; 2]) -> Option<Vec3>,
@@ -430,44 +431,25 @@ fn blossom(quad: (f64, f64, f64), t: [f64; 3]) -> f64 {
 /// Whether the parameter rectangle `u` × `v` keeps clear of the sampled loop: its middle is
 /// inside the loop and no loop segment comes within `gap` of it. A control point whose support
 /// keeps clear takes the crown's bump without moving the surface over the loop.
-fn clear_of_loop(u: [f64; 2], v: [f64; 2], uv: &[[f64; 2]], gap: [f64; 2]) -> bool {
-    if !inside_loop([(u[0] + u[1]) / 2.0, (v[0] + v[1]) / 2.0], uv) {
+fn clear_of_loop(u: [f64; 2], v: [f64; 2], uv: &Ring<[f64; 2]>, gap: [f64; 2]) -> bool {
+    if !uv.contains([(u[0] + u[1]) / 2.0, (v[0] + v[1]) / 2.0]) {
         return false;
     }
     let lo = [u[0] - gap[0], v[0] - gap[1]];
     let hi = [u[1] + gap[0], v[1] + gap[1]];
-    let m = uv.len();
-    (0..m).all(|k| {
-        let (Some(a), Some(b)) = (uv.get(k).copied(), uv.get((k + 1) % m).copied()) else { return false };
-        !segment_meets_rect(a, b, lo, hi)
-    })
+    uv.edges().all(|(&a, &b)| !segment_meets_rect(a, b, lo, hi))
 }
 
 /// The largest step between neighbouring samples of the loop, per direction: a rectangle this far
 /// clear of the sampled loop cannot be entered by the edges between the samples either.
-fn loop_gap(uv: &[[f64; 2]]) -> [f64; 2] {
-    let m = uv.len();
+fn loop_gap(uv: &Ring<[f64; 2]>) -> [f64; 2] {
     let mut gap = [0.0f64; 2];
-    for k in 0..m {
-        let (Some(a), Some(b)) = (uv.get(k).copied(), uv.get((k + 1) % m).copied()) else { continue };
+    for (a, b) in uv.edges() {
         for d in 0..2 {
             gap[d] = gap[d].max((b[d] - a[d]).abs());
         }
     }
     gap
-}
-
-/// Whether `p` is inside the closed loop `uv` (ray casting).
-pub(crate) fn inside_loop(p: [f64; 2], uv: &[[f64; 2]]) -> bool {
-    let m = uv.len();
-    let mut inside = false;
-    for k in 0..m {
-        let (Some(a), Some(b)) = (uv.get(k).copied(), uv.get((k + 1) % m).copied()) else { continue };
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
-            inside = !inside;
-        }
-    }
-    inside
 }
 
 /// Whether the segment `p`–`q` meets the rectangle `lo`–`hi` (Liang–Barsky clipping).
@@ -495,9 +477,9 @@ fn segment_meets_rect(p: [f64; 2], q: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> b
 }
 
 /// Refuse a loop that does not bound a height field over its plane (see [`fill_loop`]).
-fn check_projectable(points: &[Vec3], uv: &[[f64; 2]]) -> SplineResult<()> {
+fn check_projectable(points: &[Vec3], uv: &Ring<[f64; 2]>) -> SplineResult<()> {
     let m = uv.len();
-    let q = |k: usize| uv.get(k % m).copied().unwrap_or([0.0; 2]);
+    let q = |k: usize| uv.at(k).copied().unwrap_or([0.0; 2]);
     let p = |k: usize| points.get(k % m).copied().unwrap_or(Vec3::ZERO);
     let step = |k: usize| {
         let (a, b) = (q(k), q(k + 1));

@@ -16,7 +16,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use serde_json::Value;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::ModelState;
-use solidcraft_engine::geom::{Aabb3, Mesh, Ring, Vec3};
+use solidcraft_engine::geom::{Aabb3, Mesh, Polyline, Ring, Vec3};
 
 use crate::SolveApp;
 use crate::gpu::{GpuScene, SceneSlot};
@@ -789,7 +789,7 @@ pub fn point_triangle_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
     let h = (p - a).dot(nn);
     let q = p - nn * h;
     let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12);
-    if inside { h.abs() } else { [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min) }
+    if inside { h.abs() } else { [a, b, c, a].distance_to(p) }
 }
 
 /// The same computed sketch preview is drawn over both native GPU and CPU viewports.

@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
-use solidcraft_geom::{Mesh, UnitVec3, Vec3};
+use solidcraft_geom::{Mesh, Polyline, UnitVec3, Vec3};
 
 use crate::Result;
 use crate::body::{Body, from_p3};
@@ -396,7 +396,7 @@ fn classify_faces(b: &Body, mesh: &Mesh, nf: usize, tol: f64) -> Vec<Surf> {
 /// Merged face/edge/vertex counts (see module docs). `mesh` must be `b.tessellate(..)`.
 /// The point halfway along a polyline (by length).
 fn halfway(pl: &[Vec3]) -> Option<Vec3> {
-    let total: f64 = pl.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let total: f64 = pl.length();
     let mut left = total * 0.5;
     for w in pl.windows(2) {
         let l = w[0].dist(w[1]);

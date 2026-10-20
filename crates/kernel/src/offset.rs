@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Polyline, Ring, Segment, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3};
@@ -496,9 +496,7 @@ fn split_corner(
     // one of the corner's edges turns that edge round, and a face whose loops cross after the
     // move is refused (both checked in `offset_body`).
     let triples: Vec<[usize; 3]> = if mixed {
-        let ring = face_ring(&pairs, planes.len())?;
-        let n = ring.len();
-        (0..n).map(|i| [ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]]).collect()
+        Ring::new(face_ring(&pairs, planes.len())?).corners().map(|c| [*c.prev, *c.at, *c.next]).collect()
     } else {
         let mut t = Vec::new();
         for ia in 0..planes.len() {
@@ -692,7 +690,7 @@ pub(crate) fn arc_mid(e: &mt::Edge, tol: f64) -> Option<Option<Vec3>> {
     if a.dist(b) < tol {
         return None;
     }
-    if pts.iter().all(|p| p.dist_to_segment(a, b) < tol) {
+    if pts.iter().all(|p| Segment::new(a, b).dist(*p) < tol) {
         return Some(None);
     }
     let (u, v) = (b - a, m - a);
@@ -1038,14 +1036,13 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                 let m = move_point(mid, &o, &s, &n, size * 1e-6).ok_or_else(|| fail("faces that don't meet along a collapsed round"))?;
                 let near = size * 1e-5;
                 let twin = merged.iter().find(|(x, y, pts, _)| {
-                    ((*x == a.id() && *y == c.id()) || (*x == c.id() && *y == a.id()))
-                        && pts.windows(2).any(|w| w.first().zip(w.get(1)).is_some_and(|(p, q)| m.dist_to_segment(*p, *q) < near))
+                    ((*x == a.id() && *y == c.id()) || (*x == c.id() && *y == a.id())) && pts.segments().any(|s| s.dist(m) < near)
                 });
                 let ne = match twin {
                     Some((_, _, _, x)) => x.clone(),
                     None => {
                         let (pa, pc) = (from_p3(a.point()), from_p3(c.point()));
-                        let x = if m.dist_to_segment(pa, pc) < near { builder::line(a, c) } else { builder::circle_arc(a, c, p3(m)) };
+                        let x = if Segment::new(pa, pc).dist(m) < near { builder::line(a, c) } else { builder::circle_arc(a, c, p3(m)) };
                         let xc = x.curve();
                         let (u0, u1) = xc.range_tuple();
                         let pts: Vec<Vec3> = (0..=16).map(|j| from_p3(xc.subs(u0 + (u1 - u0) * j as f64 / 16.0))).collect();
@@ -1110,7 +1107,7 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
             }
             let mut wires: Vec<mt::Wire> = Vec::new();
             for w in f.absolute_boundaries() {
-                let old_edges: Vec<mt::Edge> = w.edge_iter().cloned().collect();
+                let old_edges: Ring<mt::Edge> = w.edge_iter().cloned().collect();
                 let mut wire: Vec<mt::Edge> = Vec::new();
                 for (j, e) in old_edges.iter().enumerate() {
                     if let Some((ne, flip)) = edges.get(&e.id()) {
@@ -1118,7 +1115,7 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                     }
                     // At a split corner, along the new edges from this edge's end to the next's.
                     let v = e.back();
-                    let (Some(nodes), Some(next)) = (splits.get(&v.id()), old_edges.get((j + 1) % old_edges.len())) else { continue };
+                    let (Some(nodes), Some(next)) = (splits.get(&v.id()), old_edges.at(j + 1)) else { continue };
                     let (Some(from), Some(to)) = (node_of(v.id(), e.id()), node_of(v.id(), next.id())) else { return Err(fail("split corner")) };
                     let path = split_path(nodes, i, from, to).ok_or_else(|| fail("split corner"))?;
                     for pair in path.windows(2) {

@@ -1,7 +1,7 @@
 //! Edge nodes: every edge of a body sampled once, so the faces on either side share the very
 //! same boundary points (watertight by construction).
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Segment, Vec3};
 use truck_meshalgo::prelude::*;
 use truck_modeling as mt;
 
@@ -117,7 +117,7 @@ pub(crate) fn sample_edge(edge: &mt::Edge, rules: &Rules, h: f64) -> Nodes {
         let (q1, q3) = (at(a + 0.25 * (b - a)), at(a + 0.75 * (b - a)));
         let done = sg.depth >= MAX_DEPTH || out.len() + stack.len() >= MAX_EDGE_NODES;
         let fine = || {
-            let sag = [q1, pm, q3].iter().flatten().map(|q| q.0.dist_to_segment(pa.0, pb.0)).fold(0.0, f64::max);
+            let sag = [q1, pm, q3].iter().flatten().map(|q| Segment::new(pa.0, pb.0).dist(q.0)).fold(0.0, f64::max);
             let short = !(pa.0.dist(pb.0) > h * (1.0 + 1e-9));
             // The two half chords of an arc turning θ differ by θ/2.
             let straight = match (rules.turn, pm) {

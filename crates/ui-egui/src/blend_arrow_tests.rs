@@ -7,7 +7,7 @@ use crate::dialogs::Kind;
 use crate::scenario::Harness;
 use serde_json::json;
 use solidcraft_engine::Sel;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Polyline, Vec3};
 
 /// A 40 x 30 x 20 block with a 20 x 30 x 10 step on its left half: the edge along y at x 20,
 /// z 20 is inside (concave); the block's right top edge (x 40, z 20) and the step's top right
@@ -23,7 +23,7 @@ fn l_step() -> Harness {
 fn edge(h: &Harness, p: Vec3) -> Sel {
     let st = h.app.session.world_state();
     let m = st.body("Body1").unwrap().mesh();
-    let i = m.edges.iter().position(|e| e.windows(2).any(|w| p.dist_to_segment(w[0], w[1]) < 1e-9)).expect("an edge there");
+    let i = m.edges.iter().position(|e| e.segments().any(|s| s.dist(p) < 1e-9)).expect("an edge there");
     Sel::Edge { body: "Body1".into(), index: i, point: p }
 }
 

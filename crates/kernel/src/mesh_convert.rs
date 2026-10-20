@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Plane, Region2, Ring, Vec2, Vec3};
 
 use crate::{Body, KernelError, Result};
 
@@ -360,8 +360,7 @@ fn fit_loop(points: &[Vec2], tolerance: f64, epsilon: f64) -> Loop2 {
             if radius.is_finite() && radius > epsilon && points.iter().all(|p| (center.dist(*p) - radius).abs() <= epsilon * 3.) {
                 let mut sweep = 0.;
                 let mut direction = 0f64;
-                let valid = (0..points.len()).all(|i| {
-                    let (Some(a), Some(b)) = (points.get(i), points.get((i + 1) % points.len())) else { return false };
+                let valid = Ring::new(points.to_vec()).edges().all(|(a, b)| {
                     let signed = ((*a - center).cross(*b - center)).atan2((*a - center).dot(*b - center));
                     if direction == 0. {
                         direction = signed.signum();

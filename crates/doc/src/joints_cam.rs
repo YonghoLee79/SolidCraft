@@ -15,7 +15,7 @@
 use std::f64::consts::TAU;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Aabb2, Aabb3, Ring, Vec2, Vec3};
+use solidcraft_geom::{Aabb2, Aabb3, Polyline, Ring, Segment, Vec2, Vec3};
 
 use super::{JointKind, JointOrigin, MotionLink, Size, component_bodies, component_of, flip_of, occurrence_world, size_of};
 use crate::{DocError, Document, IDENTITY, Mat, ModelState, Result, apply_point, apply_vector, mat_inverse, mat_mul};
@@ -184,7 +184,7 @@ fn touches_turning(poly: &Ring<Vec2>, pivot: Vec2, arm: f64, r: f64, start: f64,
         vec![base + spread, base - spread]
     };
     for (&p, &q) in poly.edges() {
-        let near = dist_to_segment(pivot, p, q);
+        let near = Segment::new(p, q).dist(pivot);
         let far = (p - pivot).len().max((q - pivot).len());
         if near > arm + r || far < arm - r {
             continue;
@@ -214,7 +214,7 @@ fn touches_turning(poly: &Ring<Vec2>, pivot: Vec2, arm: f64, r: f64, start: f64,
 /// overlaps the profile by more than `slack`.
 fn overlaps_turning(poly: &Ring<Vec2>, pivot: Vec2, arm: f64, r: f64, (start, turn): (f64, f64), turned: f64, slack: f64) -> bool {
     let at = pivot + Vec2::from_angle(start + turn * turned) * arm;
-    let gap = poly.edges().map(|(p, q)| dist_to_segment(at, *p, *q)).fold(f64::INFINITY, f64::min);
+    let gap = poly.distance_to(at);
     // Inside counts only clear of the boundary: a knife on an edge touches it.
     gap < r - slack || (gap > slack && poly.contains(at))
 }
@@ -243,12 +243,6 @@ pub fn next_contact_turning(poly: &Ring<Vec2>, pivot: Vec2, arm: f64, r: f64, (s
     } else {
         touches.into_iter().filter(|t| *t >= from - 1e-12).find(clear)
     }
-}
-
-fn dist_to_segment(x: Vec2, p: Vec2, q: Vec2) -> f64 {
-    let d = q - p;
-    let t = if d.len2() > 0.0 { ((x - p).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
-    x.dist(p + d * t)
 }
 
 /// Everything a cam's table is worked out from, in the cam's fixed frame C.
@@ -348,7 +342,7 @@ fn profile_points(doc: &Document, st: &ModelState, p: &CamProfile, cam: &super::
                     .filter(|e| on.is_none_or(|b| e.0 == b))
                     .map(|e| {
                         let d = e.1.windows(2).filter_map(|w| match w {
-                            [p, q] => Some(at.dist_to_segment(*p, *q)),
+                            [p, q] => Some(Segment::new(*p, *q).dist(at)),
                             _ => None,
                         });
                         (d.fold(f64::MAX, f64::min), e)

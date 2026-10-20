@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Ring, Vec3};
 
 use crate::body::Body;
 use crate::step_in::p21::{self, Param};
@@ -1360,8 +1360,7 @@ fn gap_middle(ex: &p21::Exchange, loops: &[Vec<(u64, bool)>], z: V3, radial: &im
             (close(x, s) && close(y, t)) || (close(x, t) && close(y, s))
         })
     };
-    let n = angles.len();
-    let gaps: Vec<(f64, f64)> = (0..n).filter_map(|i| Some((*angles.get(i)?, *angles.get((i + 1) % n)?))).filter(|(s, t)| !joined(*s, *t)).collect();
+    let gaps: Vec<(f64, f64)> = Ring::new(angles).edges().map(|(s, t)| (*s, *t)).filter(|(s, t)| !joined(*s, *t)).collect();
     let [(s, t)] = gaps[..] else { return None };
     let m = s + (t - s).rem_euclid(TAU) / 2.0;
     unit(add(mul(e1, m.cos()), mul(e2, m.sin())))

@@ -14,6 +14,7 @@
 use std::collections::HashSet;
 
 use mt::{BoundedCurve, Cut, InnerSpace, ParametricCurve, ParametricSurface, SearchNearestParameter};
+use solidcraft_geom::Polyline as _;
 use solidcraft_geom::bspline::{CurveN, NurbsSurface, SplineError};
 use solidcraft_geom::network::{self, CrossFace, FaceFrame, NetCurve, NetworkCurve, PointCurve, Tolerances};
 use solidcraft_geom::{Plane, Seg2, Vec3};
@@ -333,11 +334,11 @@ impl EdgeFaces {
 impl CrossFace for EdgeFaces {
     fn frame(&mut self, at: Vec3, tangent: Vec3) -> Option<FaceFrame> {
         // The edge nearest the point, and the chain's direction along it there.
-        let near = |s: &EdgeSide| s.pts.windows(2).map(|w| at.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+        let near = |s: &EdgeSide| s.pts.distance_to(at);
         let k = (0..self.sides.len()).min_by(|a, b| near(&self.sides[*a]).total_cmp(&near(&self.sides[*b])))?;
         let side = self.sides.get_mut(k)?;
-        let seg = side.pts.windows(2).min_by(|a, b| at.dist_to_segment(a[0], a[1]).total_cmp(&at.dist_to_segment(b[0], b[1])))?;
-        let chain_dir = seg[1] - seg[0];
+        let seg = side.pts.segments().min_by(|a, b| a.dist(at).total_cmp(&b.dist(at)))?;
+        let chain_dir = seg.b - seg.a;
         let s = &side.surface;
         let (u, v) = s.search_nearest_parameter(p3(at), side.hint, 100).or_else(|| s.search_nearest_parameter(p3(at), None, 100))?;
         side.hint = Some((u, v));

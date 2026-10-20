@@ -139,13 +139,6 @@ impl Vec3 {
     pub fn to_f32(self) -> [f32; 3] {
         [self.x as f32, self.y as f32, self.z as f32]
     }
-    /// Distance from this point to the segment `a`–`b`.
-    pub fn dist_to_segment(self, a: Vec3, b: Vec3) -> f64 {
-        let ab = b - a;
-        let l2 = ab.len2();
-        let t = if l2 > 0.0 { ((self - a).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        self.dist(a + ab * t)
-    }
 }
 
 macro_rules! ops {

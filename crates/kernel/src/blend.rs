@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Polyline, Ring, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3, v3};
@@ -71,10 +71,9 @@ fn rebuild_face_dropping(f: &mt::Face, subst: &HashMap<mt::EdgeID, mt::Edge>, dr
             edges.push(ne);
         }
         // Close gaps with connector edges.
-        let n = edges.len();
+        let edges = Ring::new(edges);
         let mut out: Vec<mt::Edge> = Vec::new();
-        for i in 0..n {
-            let (Some(cur), Some(next)) = (edges.get(i), edges.get((i + 1) % n)) else { continue };
+        for (cur, next) in edges.edges() {
             out.push(cur.clone());
             if cur.back() != next.front() {
                 out.extend(
@@ -1522,16 +1521,16 @@ fn run_on_loop(cur: &Body, solid: &Solid, pts: &[Vec3]) -> Result<Option<(Vec<mt
             continue;
         }
         for w in f.boundaries() {
-            let es: Vec<mt::Edge> = w.edge_iter().cloned().collect();
+            let es: Ring<mt::Edge> = w.edge_iter().cloned().collect();
             let m = es.len();
-            let sel = |i: usize| es.get(i % m).is_some_and(|e| per.iter().any(|(_, id)| *id == e.id()));
+            let sel = |i: usize| es.at(i).is_some_and(|e| per.iter().any(|(_, id)| *id == e.id()));
             // A filler: an unselected arc meeting both neighbours smoothly.
             let smooth = |a: &mt::Edge, b: &mt::Edge| match (dir(a, true), dir(b, false)) {
                 (Some(x), Some(y)) => x.dot(y) > 1.0 - 1e-6,
                 _ => false,
             };
             let filler = |i: usize| {
-                let (Some(prev), Some(e), Some(next)) = (es.get((i + m - 1) % m), es.get(i % m), es.get((i + 1) % m)) else { return false };
+                let (Some(prev), Some(e), Some(next)) = (es.at(i + m - 1), es.at(i), es.at(i + 1)) else { return false };
                 !matches!(e.curve(), mt::Curve::Line(_)) && smooth(prev, e) && smooth(e, next)
             };
             let usable = |i: usize| sel(i) || filler(i);
@@ -1704,8 +1703,7 @@ pub(crate) fn edge_mid(e: &mt::Edge) -> Option<Vec3> {
 /// Do the loop's edges meet tangentially everywhere?
 fn smooth_loop(w: &mt::Wire) -> bool {
     use mt::{BoundedCurve, ParametricCurve};
-    let es: Vec<mt::Edge> = w.edge_iter().cloned().collect();
-    let n = es.len();
+    let es: Ring<mt::Edge> = w.edge_iter().cloned().collect();
     let dir = |e: &mt::Edge, at_end: bool| -> Option<Vec3> {
         let c = e.oriented_curve();
         let (t0, t1) = c.range_tuple();
@@ -1713,11 +1711,8 @@ fn smooth_loop(w: &mt::Wire) -> bool {
         let d = c.der(t);
         Vec3::new(d.x, d.y, d.z).normalized()
     };
-    (0..n).all(|i| match (es.get(i), es.get((i + 1) % n)) {
-        (Some(a), Some(b)) => match (dir(a, true), dir(b, false)) {
-            (Some(x), Some(y)) => x.dot(y) > 1.0 - 1e-6,
-            _ => false,
-        },
+    es.edges().all(|(a, b)| match (dir(a, true), dir(b, false)) {
+        (Some(x), Some(y)) => x.dot(y) > 1.0 - 1e-6,
         _ => false,
     })
 }
@@ -1770,8 +1765,7 @@ fn loop_split(cur: &Body, pts: &[Vec3]) -> Result<Option<(Vec<Vec<Vec3>>, Vec<Ve
         .collect();
     let mut per: Vec<(Vec3, mt::EdgeID)> = Vec::new();
     for p in pts {
-        let dists: Vec<(usize, f64)> =
-            polys.iter().map(|e| (e.index, e.points.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min))).collect();
+        let dists: Vec<(usize, f64)> = polys.iter().map(|e| (e.index, e.points.distance_to(*p))).collect();
         let best = dists.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
         if best > size * 0.05 + 1e-3 {
             return Ok(None);

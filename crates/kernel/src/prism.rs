@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 
-use solidcraft_geom::{Aabb2, Loop2, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Aabb2, Loop2, Plane, Region2, Ring, Seg2, Segment, Vec2, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3};
@@ -1035,11 +1035,7 @@ fn inside_clear(regions: &[Region2], point: Vec2, tol: f64) -> bool {
 /// Other curve types keep the shared solver introduced on main.
 fn closest_param(segment: &Seg2, point: Vec2) -> f64 {
     match *segment {
-        Seg2::Line { a, b } => {
-            let direction = b - a;
-            let length2 = direction.dot(direction);
-            if length2 > 1e-300 && length2.is_finite() { ((point - a).dot(direction) / length2).clamp(0.0, 1.0) } else { 0.0 }
-        }
+        Seg2::Line { a, b } => Segment::new(a, b).param(point),
         Seg2::Arc { center, radius, start, sweep } if radius > 0.0 && sweep.abs() > 1e-12 && sweep.abs() <= std::f64::consts::TAU + 1e-9 => {
             let offset = point - center;
             let delta = ((offset.y.atan2(offset.x) - start) * sweep.signum()).rem_euclid(std::f64::consts::TAU);
@@ -1389,10 +1385,11 @@ fn exact_loop(lp: &Loop2, tags: &[Tag], sources: &[Seg2], near: f64) -> (Vec<Seg
     if pieces.is_empty() {
         return plain();
     }
+    let mut pieces = Ring::new(pieces);
     let m = pieces.len();
     let inner = |t: f64| t > 1e-9 && t < 1.0 - 1e-9;
     for i in 0..m {
-        let (Some(p), Some(q)) = (pieces.get(i).copied(), pieces.get((i + 1) % m).copied()) else { continue };
+        let (Some(p), Some(q)) = (pieces.at(i).copied(), pieces.at(i + 1).copied()) else { continue };
         let joint = p.end();
         let src = |f: usize| sources.get(f);
         let found = match (p, q) {
@@ -1414,10 +1411,10 @@ fn exact_loop(lp: &Loop2, tags: &[Tag], sources: &[Seg2], near: f64) -> (Vec<Seg
             _ => None,
         });
         let Some((x, y, at)) = found else { continue };
-        if let Some(p) = pieces.get_mut(i) {
+        if let Some(p) = pieces.at_mut(i) {
             p.set_end(x, at);
         }
-        if let Some(q) = pieces.get_mut((i + 1) % m) {
+        if let Some(q) = pieces.at_mut(i + 1) {
             q.set_start(y, at);
         }
     }
@@ -1442,26 +1439,26 @@ fn exact_loop(lp: &Loop2, tags: &[Tag], sources: &[Seg2], near: f64) -> (Vec<Seg
     // nearly round curve read as an arc ends a few hundredths of a micron off the curve after
     // it), the one that is not an arc moves its end onto the arc's (an arc's ends stay on its
     // circle). Two arcs are left as they meet, as a boolean of lines and arcs leaves them.
-    let m = segs.len();
-    for i in 0..m {
-        let j = (i + 1) % m;
-        let (Some(x), Some(y)) = (segs.get(i).copied(), segs.get(j).copied()) else { continue };
+    let mut segs = Ring::new(segs);
+    for i in 0..segs.len() {
+        let j = i + 1;
+        let (Some(x), Some(y)) = (segs.at(i).copied(), segs.at(j).copied()) else { continue };
         let gap = x.end().dist(y.start());
         if gap == 0.0 || gap > near {
             continue;
         }
         let arc = |s: &Seg2| matches!(s, Seg2::Arc { .. });
         if !arc(&y) {
-            if let Some(s) = segs.get_mut(j) {
+            if let Some(s) = segs.at_mut(j) {
                 *s = seg_with_ends(&y, x.end(), y.end());
             }
         } else if !arc(&x)
-            && let Some(s) = segs.get_mut(i)
+            && let Some(s) = segs.at_mut(i)
         {
             *s = seg_with_ends(&x, x.start(), y.start());
         }
     }
-    (segs, ts)
+    (segs.into_vec(), ts)
 }
 
 /// The boolean of sections of lines and arcs alone ([`boolean2d_tagged`]).
@@ -2117,9 +2114,8 @@ fn sew_connected_sections(
                     }
                 }
                 // Each wall runs into the next one of its loop, the last into the first.
-                for (k, (run, tag, at)) in around.iter().enumerate() {
-                    let next = around.get((k + 1) % around.len())?.0;
-                    runs.get_mut(*run)?.3.push(lineage::Slab { tag: *tag, next, at: *at });
+                for ((run, tag, at), (next, ..)) in Ring::new(around).edges() {
+                    runs.get_mut(*run)?.3.push(lineage::Slab { tag: *tag, next: *next, at: *at });
                 }
             }
         }
