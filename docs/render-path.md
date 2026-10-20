@@ -12,22 +12,20 @@ create the compute pipeline does not register an available path executor.
 The native UI opens its independent job device on the viewport's selected adapter,
 so software fallback and safe mode do not rediscover a failing hardware driver.
 An incompatible explicit GPU policy leaves progressive rendering unavailable there.
-On D3D12 the path tracer compiles with DXC: FXC, wgpu's fallback compiler, needs
-about two hours for the path shader (#3217). x64 Windows builds link DXC in (built
-from its open source by mach-dxcompiler); elsewhere `dxcompiler.dll` beside
-SolidCraft or on the `PATH` provides it. The path tracer reopens the viewport's GPU
-on a D3D12 instance of its own that uses DXC, so the viewport keeps FXC, which still
-drives GPUs without shader model 6. When the viewport runs on D3D12, the path tracer
-prefers the same GPU through Vulkan, whose compiled pipelines persist between runs,
-and uses D3D12 with DXC only without it. Without DXC, discovery skips D3D12 adapters;
-with neither, the path executor reports why it is unavailable instead of compiling.
+The path tracer runs on Vulkan only (#3217). A viewport on D3D12 is reopened on the
+same GPU through Vulkan. Where there is no Vulkan driver (macOS for now, Windows over
+Remote Desktop or on the WARP software adapter, older drivers), the path executor reports
+itself unavailable and images render on the CPU. On an RTX 4090, D3D12 was never faster:
+equal per sample with DXC and about 55% slower with FXC, and it compiles the path shader
+at every start (about 82 s with DXC, about 2 hours with FXC), where Vulkan's compiled
+pipelines persist between runs.
 
-Compiled pipelines persist between runs where the backend keeps a pipeline cache
-(Vulkan; wgpu has none for D3D12 or Metal, #3433). The cache lives in
-`%LOCALAPPDATA%\SolidCraft\cache\shaders`, `~/Library/Caches/SolidCraft/shaders` or
-`$XDG_CACHE_HOME/solidcraft/shaders`; `SOLIDCRAFT_SHADER_CACHE` names another folder,
-or `off` disables it. A file that fails its checksum, or comes from another driver or
-wgpu version, is ignored and rewritten; deleting the folder is always safe.
+Compiled pipelines persist between runs in a wgpu pipeline cache (#3433), so only the
+first start on a machine compiles the path shader (minutes on a cold driver). The cache
+lives in `%LOCALAPPDATA%\SolidCraft\cache\shaders` or `$XDG_CACHE_HOME/solidcraft/shaders`;
+`SOLIDCRAFT_SHADER_CACHE` names another folder, or `off` disables it. A file that fails its
+checksum, or comes from another driver or wgpu version, is ignored and rewritten; deleting
+the folder is always safe.
 
 In the Render workspace, enable **Progressive rendering** and select samples per
 pixel before checking or starting an image. These controls are transient image-job

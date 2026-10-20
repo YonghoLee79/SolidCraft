@@ -182,18 +182,6 @@ fn render(root: &Path, crates: &[Crate]) -> String {
         out += &format!("{font_rule}\nSIL OPEN FONT LICENSE Version 1.1\n{font_rule}\n\n{ofl_clean}\n");
     }
 
-    // The DirectX Shader Compiler that mach-dxcompiler-rs links into the x64 Windows programs (#3217).
-    let dxc = root.join("assets/licences/directx-shader-compiler");
-    for file in ["LICENSE.TXT", "ThirdPartyNotices.txt"] {
-        let text = std::fs::read_to_string(dxc.join(file)).unwrap_or_default().replace("\r\n", "\n").trim().to_string();
-        if !text.is_empty() {
-            out += &format!(
-                "\n{font_rule}\nDirectX Shader Compiler (linked into the x64 Windows programs through mach-dxcompiler-rs): {file}\n\
-                 Source: https://github.com/microsoft/DirectXShaderCompiler\n{font_rule}\n\n{text}\n"
-            );
-        }
-    }
-
     out
 }
 

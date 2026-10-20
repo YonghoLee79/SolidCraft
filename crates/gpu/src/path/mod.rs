@@ -64,34 +64,29 @@ pub fn host() -> Result<ImageHost> {
 /// Open an independent job device on the viewport's selected adapter. In particular,
 /// software fallback and safe mode must not rediscover a failing hardware driver.
 /// An explicit incompatible SOLIDCRAFT_GPU policy leaves this executor unavailable.
+/// The path tracer runs on Vulkan only: a viewport on another backend is reopened on the same
+/// GPU through Vulkan, and without one the executor is unavailable and images render on the CPU.
 pub fn host_on_adapter(adapter: &wgpu::Adapter) -> Result<ImageHost> {
     let policy = crate::select::Policy::from_env().map_err(gpu)?;
     let info = adapter.get_info();
     if !policy.admits(crate::select::tier_of(info.device_type)) {
         return Err(gpu(format!("viewport adapter does not satisfy SOLIDCRAFT_GPU={}", policy.name())));
     }
-    if info.backend == wgpu::Backend::Dx12 {
-        // The same GPU through Vulkan first: its compiled pipelines persist between runs
-        // (shader_cache), where D3D12 compiles again at every start (~82 s with DXC, #3433).
-        // Else D3D12 on an instance of its own that compiles with DXC, never FXC (#3217).
-        let same_gpu = |i: &wgpu::AdapterInfo, backend| i.backend == backend && i.vendor == info.vendor && i.device == info.device;
-        let instance = crate::select::dxc_instance();
-        let (reopened, _) = crate::select::pick_on(&instance, policy, |i| same_gpu(i, wgpu::Backend::Vulkan))
-            .or_else(|| crate::select::pick_on(&instance, policy, |i| same_gpu(i, wgpu::Backend::Dx12)))
-            .ok_or_else(|| gpu(FXC_UNSUPPORTED))?;
-        let reopened_info = reopened.get_info();
-        let (device, queue) = open_device(&reopened)?;
-        log::info!("gpu-path viewport GPU: {} through {:?}", info.name, reopened_info.backend);
-        return ImageHost::with_executor(Arc::new(Executor::new(device, queue, &reopened_info)?));
+    if info.backend != wgpu::Backend::Vulkan {
+        let (vulkan, _) = crate::select::pick_vulkan(policy, |i| i.vendor == info.vendor && i.device == info.device)
+            .ok_or_else(|| gpu(format!("{VULKAN_ONLY}; the viewport uses {:?}", info.backend)))?;
+        let vulkan_info = vulkan.get_info();
+        let (device, queue) = open_device(&vulkan)?;
+        log::info!("gpu-path viewport GPU: {} through Vulkan", info.name);
+        return ImageHost::with_executor(Arc::new(Executor::new(device, queue, &vulkan_info)?));
     }
     let (device, queue) = open_device(adapter)?;
     log::info!("gpu-path viewport adapter: {} ({:?})", info.name, info.device_type);
     ImageHost::with_executor(Arc::new(Executor::new(device, queue, &info)?))
 }
 
-/// Without DXC, D3D12 compiles the path shader with FXC, which takes about two hours (#3217).
-const FXC_UNSUPPORTED: &str =
-    "gpu-path needs DXC on D3D12 (FXC takes hours to compile its shader): put dxcompiler.dll beside SolidCraft, or use a Vulkan adapter";
+/// Why the executor is unavailable without Vulkan (#3217).
+const VULKAN_ONLY: &str = "the GPU path tracer needs a Vulkan driver (images render on the CPU without one)";
 
 // Path resources need six storage buffers (geometry, BVH, accumulation, HDRI,
 // textures, medium-failure counts). Request that limit only on this independent path device: raster and
@@ -117,11 +112,8 @@ fn open_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
 }
 fn open_headless() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     let policy = crate::select::Policy::from_env().map_err(gpu)?;
-    // D3D12 only with DXC: discovery skips it where it would compile with FXC (#3217).
-    let (adapter, _) = crate::select::pick_on(&crate::select::dxc_instance(), policy, |_| true).ok_or_else(|| {
-        let fxc_only = crate::select::pick(policy).is_some_and(|(a, _)| a.get_info().backend == wgpu::Backend::Dx12);
-        gpu(if fxc_only { FXC_UNSUPPORTED.to_string() } else { format!("no gpu-path adapter satisfies {}", policy.name()) })
-    })?;
+    let (adapter, _) = crate::select::pick_vulkan(policy, |_| true)
+        .ok_or_else(|| gpu(format!("{VULKAN_ONLY}; no Vulkan adapter satisfies SOLIDCRAFT_GPU={}", policy.name())))?;
     let (device, queue) = open_device(&adapter)?;
     Ok((adapter, device, queue))
 }

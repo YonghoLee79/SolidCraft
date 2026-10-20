@@ -144,7 +144,10 @@ fn context() -> Option<Arc<Context>> {
     let (adapter, device, queue) = match open_headless() {
         Ok(v) => v,
         Err(e) => {
-            assert!(std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required GPU unavailable: {e}");
+            // The path tracer runs on Vulkan only: where the backends in use leave Vulkan out
+            // (macOS, or `WGPU_BACKEND=dx12`), it is unavailable by design, not missing.
+            let vulkan = crate::select::native_backends().contains(wgpu::Backends::VULKAN);
+            assert!(!vulkan || std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required GPU unavailable: {e}");
             return None;
         }
     };

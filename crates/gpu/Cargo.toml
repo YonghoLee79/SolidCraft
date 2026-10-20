@@ -25,12 +25,6 @@ wgpu = { workspace = true, features = ["metal", "vulkan", "dx12", "gles"] }
 solidcraft-gpu-native = { workspace = true }
 sha2 = { workspace = true }
 
-# x64 Windows: DXC built from its open source and linked in, so D3D12 compiles the path tracer's
-# shader without FXC, which needs hours for it (#3217). The viewport keeps its own compiler
-# (`select::viewport_dx12_compiler`). wgpu has no linked-in DXC for 32-bit or ARM64 Windows.
-[target.'cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))'.dependencies]
-wgpu = { workspace = true, features = ["static-dxc"] }
-
 [dev-dependencies]
 image = { workspace = true }
 solidcraft-kernel = { workspace = true }

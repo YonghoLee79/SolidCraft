@@ -6,7 +6,10 @@ fn executor() -> Option<Executor> {
     let (adapter, device, queue) = match open_headless() {
         Ok(device) => device,
         Err(e) => {
-            assert!(std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required GPU unavailable: {e}");
+            // The path tracer runs on Vulkan only: where the backends in use leave Vulkan out
+            // (macOS, or `WGPU_BACKEND=dx12`), it is unavailable by design, not missing.
+            let vulkan = crate::select::native_backends().contains(wgpu::Backends::VULKAN);
+            assert!(!vulkan || std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required GPU unavailable: {e}");
             eprintln!("gpu-path device test skipped: {e}");
             return None;
         }
@@ -514,16 +517,17 @@ fn shader_validates_without_a_device() {
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).unwrap();
 }
 
-/// #3217: the path tracer's instance offers D3D12 only with DXC, and never DXC off Windows.
+/// #3217: the path tracer opens Vulkan adapters only, and none where the platform has no
+/// Vulkan backend (macOS).
 #[test]
-fn path_instance_offers_d3d12_only_with_dxc() {
-    let dxc = crate::select::dxc();
-    if !cfg!(target_os = "windows") {
-        assert!(dxc.is_none());
+fn path_devices_are_vulkan_only() {
+    let picked = crate::select::pick_vulkan(crate::select::Policy::Auto, |_| true);
+    if let Some((adapter, report)) = &picked {
+        assert_eq!(adapter.get_info().backend, wgpu::Backend::Vulkan);
+        assert_eq!(report.backend, "Vulkan");
     }
-    let adapters = pollster::block_on(crate::select::dxc_instance().enumerate_adapters(wgpu::Backends::all()));
-    if dxc.is_none() {
-        assert!(adapters.iter().all(|a| a.get_info().backend != wgpu::Backend::Dx12));
+    if cfg!(target_os = "macos") {
+        assert!(picked.is_none());
     }
 }
 

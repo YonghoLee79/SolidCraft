@@ -713,8 +713,6 @@ fn wgpu_options(cpu: bool, preference: Option<&str>) -> eframe::egui_wgpu::WgpuC
             eprintln!("SolidCraft graphics: starting {backends:?}");
             setup.instance_descriptor.backends = backends;
         }
-        // FXC or dxcompiler.dll as before, not the DXC linked in for the path tracer (#3217).
-        setup.instance_descriptor.backend_options.dx12.shader_compiler = solidcraft_gpu::select::viewport_dx12_compiler();
         if cpu {
             setup.native_adapter_selector = Some(std::sync::Arc::new(startup::pick_cpu_adapter));
         }

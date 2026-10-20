@@ -90,8 +90,6 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/appearances/library.rs | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/fonts/biz-udp-gothic/OFL.txt | The BIZ UDGothic Project Authors | Unmodified accompanying font licence | SIL OFL 1.1 |
 | assets/fonts/liberation-sans/OFL.txt | Red Hat, Inc.; Liberation Fonts contributors | Unmodified accompanying font licence | SIL OFL 1.1 |
-| assets/licences/directx-shader-compiler/LICENSE.TXT | Microsoft Corporation; LLVM Team | https://github.com/microsoft/DirectXShaderCompiler at v1.9.2609, unmodified; licence of the DXC linked into x64 Windows builds (#3217) | NCSA |
-| assets/licences/directx-shader-compiler/ThirdPartyNotices.txt | Microsoft Corporation | https://github.com/microsoft/DirectXShaderCompiler at v1.9.2609, unmodified; third-party notices of the DXC linked into x64 Windows builds | NCSA and the licences it names |
 | assets/icons/app/linux/exports/hicolor/128x128/apps/ai.storyteller.solidcraft.png | SolidCraft contributors | Generated from assets/icons/app/shared/source/app_icon.rs with the original CLI/ICO encoders | MIT OR Apache-2.0 |
 | assets/icons/app/linux/exports/hicolor/16x16/apps/ai.storyteller.solidcraft.png | SolidCraft contributors | Generated from assets/icons/app/shared/source/app_icon.rs with the original CLI/ICO encoders | MIT OR Apache-2.0 |
 | assets/icons/app/linux/exports/hicolor/24x24/apps/ai.storyteller.solidcraft.png | SolidCraft contributors | Generated from assets/icons/app/shared/source/app_icon.rs with the original CLI/ICO encoders | MIT OR Apache-2.0 |
