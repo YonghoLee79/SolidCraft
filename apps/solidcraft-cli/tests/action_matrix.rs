@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::kernel::{FaceSurface, face_surface};
 use solidcraft_engine::doc::{FaceAttachmentStatus, ModelBody, naming};
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Triangle, Vec3};
 
 /// One in this many actions runs on pull requests (by a stable hash of its key).
 const PR_SAMPLE: u64 = 40;
@@ -217,7 +217,7 @@ fn actions(s: &Session) -> Vec<Action> {
         // A point well inside each face: the middle of its largest triangle.
         let mut inside: BTreeMap<usize, (Vec3, f64)> = BTreeMap::new();
         for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-            if let Some([a, bb, c]) = mesh.tri(t) {
+            if let Some(Triangle([a, bb, c])) = mesh.tri(t) {
                 let area = (bb - a).cross(c - a).len();
                 let e = inside.entry(*f as usize).or_insert(((a + bb + c) * (1.0 / 3.0), -1.0));
                 if area > e.1 {

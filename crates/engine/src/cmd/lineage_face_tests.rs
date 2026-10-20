@@ -7,6 +7,7 @@ use crate::Session;
 use serde_json::{Value, json};
 use solidcraft_doc::FaceAttachmentStatus;
 use solidcraft_doc::config::FaceCertificate;
+use solidcraft_geom::Triangle;
 
 fn run(s: &mut Session, command: &str, params: Value) -> Value {
     s.execute(command, &params).unwrap_or_else(|e| panic!("{command} {params}: {e}"))
@@ -261,8 +262,8 @@ fn flat_faces(s: &Session) -> Vec<(usize, solidcraft_geom::Vec3)> {
                 .zip(&mesh.tri_face)
                 .filter(|(_, f)| **f as usize == index)
                 .filter_map(|(t, _)| mesh.tri(t))
-                .max_by(|[a, b, c], [d, e, f]| (*b - *a).cross(*c - *a).len().total_cmp(&(*e - *d).cross(*f - *d).len()))
-                .map(|[a, b, c]| (a + b + c) * (1.0 / 3.0))?;
+                .max_by(|Triangle([a, b, c]), Triangle([d, e, f])| (*b - *a).cross(*c - *a).len().total_cmp(&(*e - *d).cross(*f - *d).len()))
+                .map(|Triangle([a, b, c])| (a + b + c) * (1.0 / 3.0))?;
             Some((index, point))
         })
         .collect()

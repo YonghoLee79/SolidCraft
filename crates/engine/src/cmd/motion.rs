@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use solidcraft_doc::Mat;
 use solidcraft_doc::joints::{self, JointKind};
 use solidcraft_doc::motion::{ContactSet, ExplodedView, MotionStudy, StudyKey};
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Triangle, Vec3};
 use solidcraft_kernel::Body;
 
 use super::CommandSpec;
@@ -201,7 +201,7 @@ fn mesh_overlap(ma: &solidcraft_geom::Mesh, mb: &solidcraft_geom::Mesh, tol: f64
     (depth > tol).then_some(depth)
 }
 
-fn tris(m: &solidcraft_geom::Mesh) -> Vec<[Vec3; 3]> {
+fn tris(m: &solidcraft_geom::Mesh) -> Vec<Triangle> {
     m.triangles.iter().filter_map(|t| m.tri(t)).collect()
 }
 
@@ -211,7 +211,7 @@ fn deepest(a: &solidcraft_geom::Mesh, b: &solidcraft_geom::Mesh, tol: f64) -> f6
     let bx = b.bounds();
     let mut pts: Vec<Vec3> = a.positions.clone();
     let mut edges: Vec<(Vec3, Vec3)> = Vec::new();
-    for [p, q, r] in tris(a) {
+    for Triangle([p, q, r]) in tris(a) {
         pts.extend([(p + q) * 0.5, (q + r) * 0.5, (r + p) * 0.5, (p + q + r) * (1.0 / 3.0)]);
         edges.extend([(p, q), (q, r), (r, p)]);
     }
@@ -226,7 +226,7 @@ fn deepest(a: &solidcraft_geom::Mesh, b: &solidcraft_geom::Mesh, tol: f64) -> f6
         {
             continue;
         }
-        let d = tb.iter().map(|[a, b, c]| closest(p, *a, *b, *c).dist(p)).fold(f64::MAX, f64::min);
+        let d = tb.iter().map(|Triangle([a, b, c])| Triangle([*a, *b, *c]).closest_point(p).dist(p)).fold(f64::MAX, f64::min);
         if d > tol.max(best) && inside(p, &tb) {
             best = d;
         }
@@ -242,7 +242,7 @@ fn deepest(a: &solidcraft_geom::Mesh, b: &solidcraft_geom::Mesh, tol: f64) -> f6
 /// lie inside, deeper than `tol`, as elsewhere in the check). Two plates crossing each other's
 /// faces put no vertex, mid-edge or triangle centre of either inside the other — the chord an
 /// edge cuts is how that crossing is seen (#3323).
-fn crossing(p: Vec3, q: Vec3, tb: &[[Vec3; 3]], bx: Aabb3, tol: f64) -> f64 {
+fn crossing(p: Vec3, q: Vec3, tb: &[Triangle], bx: Aabb3, tol: f64) -> f64 {
     if p.x.max(q.x) < bx.min.x - tol
         || p.x.min(q.x) > bx.max.x + tol
         || p.y.max(q.y) < bx.min.y - tol
@@ -260,7 +260,7 @@ fn crossing(p: Vec3, q: Vec3, tb: &[[Vec3; 3]], bx: Aabb3, tol: f64) -> f64 {
     // Where the edge crosses the surface, along the edge. A crossing at a vertex or along an
     // edge shared by two triangles is found twice (or more); merges of neighbours leave the
     // entry and exit of each chord as one pair each.
-    let mut hits: Vec<f64> = tb.iter().filter_map(|t| contact_sweep::segment_hits_triangle(p, q, t)).map(|h| (h - p).dot(d) / len2).collect();
+    let mut hits: Vec<f64> = tb.iter().filter_map(|t| contact_sweep::segment_hits_triangle(p, q, &t.0)).map(|h| (h - p).dot(d) / len2).collect();
     if hits.len() < 2 {
         return 0.0;
     }
@@ -272,7 +272,7 @@ fn crossing(p: Vec3, q: Vec3, tb: &[[Vec3; 3]], bx: Aabb3, tol: f64) -> f64 {
             break;
         }
         let m = p + d * ((pair[0] + pair[1]) * 0.5);
-        let deep = tb.iter().map(|[a, b, c]| closest(m, *a, *b, *c).dist(m)).fold(f64::MAX, f64::min);
+        let deep = tb.iter().map(|t| t.closest_point(m).dist(m)).fold(f64::MAX, f64::min);
         if deep > tol.max(best) && inside(m, tb) {
             best = deep;
         }
@@ -281,12 +281,12 @@ fn crossing(p: Vec3, q: Vec3, tb: &[[Vec3; 3]], bx: Aabb3, tol: f64) -> f64 {
 }
 
 /// Ray parity along a skew direction (no axis-aligned edge hits).
-fn inside(p: Vec3, tris: &[[Vec3; 3]]) -> bool {
+fn inside(p: Vec3, tris: &[Triangle]) -> bool {
     // Fixed ray coordinates, not an approximation used to compute Euler's constant.
     #[allow(clippy::approx_constant)]
     let dir = Vec3::new(0.577_215_664_9, 0.327_118_441_9, 0.751_891_438_7);
     let mut n = 0;
-    for [a, b, c] in tris {
+    for Triangle([a, b, c]) in tris {
         let (e1, e2) = (*b - *a, *c - *a);
         let h = dir.cross(e2);
         let det = e1.dot(h);
@@ -309,42 +309,6 @@ fn inside(p: Vec3, tris: &[[Vec3; 3]]) -> bool {
         }
     }
     n % 2 == 1
-}
-
-/// The point of triangle abc nearest p.
-fn closest(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let (ab, ac, ap) = (b - a, c - a, p - a);
-    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-    let bp = p - b;
-    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        return a + ab * (d1 / (d1 - d3));
-    }
-    let cp = p - c;
-    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        return a + ac * (d2 / (d2 - d6));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    }
-    let den = va + vb + vc;
-    if den.abs() < 1e-300 {
-        return a;
-    }
-    a + ab * (vb / den) + ac * (vc / den)
 }
 
 /// Set joint values, stopping short where contact sets would collide or a closed loop could no

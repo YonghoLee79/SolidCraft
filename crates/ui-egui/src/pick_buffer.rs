@@ -19,6 +19,7 @@ use solidcraft_gpu::pick::{PickBuffer, PickOut, PickScene, PickView};
 
 use crate::SolveApp;
 use crate::viewport::Proj;
+use solidcraft_engine::geom::Triangle;
 
 /// Most surface triangles the pass draws (beyond them the CPU indexes answer alone).
 pub const MAX_TRIANGLES: usize = 6_000_000;
@@ -159,7 +160,7 @@ fn scene(app: &SolveApp, st: &Arc<ModelState>, key: u64) -> Option<Arc<Scene>> {
             return None;
         }
         for t in &m.triangles {
-            if let Some([a, b, c]) = m.tri(t) {
+            if let Some(Triangle([a, b, c])) = m.tri(t) {
                 scene.triangle([f(a), f(b), f(c)]);
             }
         }

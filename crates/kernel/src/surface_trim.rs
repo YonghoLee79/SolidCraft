@@ -3,7 +3,7 @@
 //! Trim: two surfaces cut by each other, each keeping its picked side, extended to meet first
 //! when one stops short of the other.
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Triangle, Vec3};
 use truck_modeling as mt;
 
 use crate::body::Body;
@@ -114,7 +114,7 @@ fn nearest_faces(body: &Body, at: &[Vec3]) -> Result<Vec<usize>> {
         .map(|p| {
             let mut best: Option<(f64, u32)> = None;
             for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-                let Some([a, b, c]) = m.tri(t) else { continue };
+                let Some(Triangle([a, b, c])) = m.tri(t) else { continue };
                 let d = ((a + b + c) / 3.0).dist(*p).min(a.dist(*p)).min(b.dist(*p)).min(c.dist(*p));
                 if best.is_none_or(|(x, _)| d < x) {
                     best = Some((d, *f));

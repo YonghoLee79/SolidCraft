@@ -42,7 +42,7 @@ pub use threemf::{MAX_3MF_BYTES, MeshObject, model_xml, model_xml_with, read_3mf
 pub use urdf::{UrdfOptions, UrdfPackage, urdf};
 
 use solidcraft_doc::{Document, Metadata, ModelState};
-use solidcraft_geom::{Mesh, Vec3};
+use solidcraft_geom::{Mesh, Triangle, Vec3};
 
 /// Design file extension.
 pub const DESIGN_EXT: &str = "solidcraft";
@@ -355,7 +355,7 @@ pub fn stl_binary(meshes: &[Mesh], name: &str) -> Vec<u8> {
     out.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
     for m in meshes {
         for t in &m.triangles {
-            let Some([a, b, c]) = m.tri(t) else { continue };
+            let Some(Triangle([a, b, c])) = m.tri(t) else { continue };
             let nrm = (b - a).cross(c - a).normalized().unwrap_or_default();
             for v in [nrm, a, b, c] {
                 for x in v.to_f32() {
@@ -374,7 +374,7 @@ pub fn stl_ascii(meshes: &[Mesh], name: &str) -> String {
     let mut s = format!("solid {name}\n");
     for m in meshes {
         for t in &m.triangles {
-            let Some([a, b, c]) = m.tri(t) else { continue };
+            let Some(Triangle([a, b, c])) = m.tri(t) else { continue };
             let n = (b - a).cross(c - a).normalized().unwrap_or_default();
             s += &format!("  facet normal {:e} {:e} {:e}\n    outer loop\n", n.x, n.y, n.z);
             for v in [a, b, c] {

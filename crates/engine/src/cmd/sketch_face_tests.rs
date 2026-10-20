@@ -1,6 +1,6 @@
 use crate::Session;
 use serde_json::{Value, json};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Triangle, Vec3};
 
 fn run(s: &mut Session, command: &str, params: Value) -> Value {
     s.execute(command, &params).unwrap_or_else(|error| panic!("{command} {params}: {error}"))
@@ -592,7 +592,7 @@ fn flat_faces(s: &Session) -> Vec<(String, usize, Vec3, Vec3)> {
         let mesh = body.mesh();
         let mut inside: std::collections::BTreeMap<usize, (Vec3, f64)> = std::collections::BTreeMap::new();
         for (triangle, face) in mesh.triangles.iter().zip(&mesh.tri_face) {
-            if let Some([a, b, c]) = mesh.tri(triangle) {
+            if let Some(Triangle([a, b, c])) = mesh.tri(triangle) {
                 let area = (b - a).cross(c - a).len();
                 let entry = inside.entry(*face as usize).or_insert(((a + b + c) * (1. / 3.), -1.));
                 if area > entry.1 {

@@ -5,8 +5,8 @@
 //! almost every face compare as well as any.
 
 use serde_json::{Value, json};
-use solidcraft_geom::Vec3;
 use solidcraft_geom::compare::{self, CompareOptions, Side};
+use solidcraft_geom::{Triangle, Vec3};
 
 use super::CommandSpec;
 use crate::params::bad;
@@ -120,7 +120,7 @@ fn difference(ma: &Value, mb: &Value) -> Value {
 /// The volume a closed mesh encloses (divergence theorem, about its box's centre).
 fn enclosed_volume(m: &solidcraft_geom::Mesh) -> f64 {
     let o = m.bounds().center();
-    m.triangles.iter().filter_map(|t| m.tri(t)).map(|[a, b, c]| (a - o).dot((b - o).cross(c - o)) / 6.0).sum()
+    m.triangles.iter().filter_map(|t| m.tri(t)).map(|Triangle([a, b, c])| (a - o).dot((b - o).cross(c - o)) / 6.0).sum()
 }
 
 /// What makes the comparison less certain: a body whose surface does not enclose what it

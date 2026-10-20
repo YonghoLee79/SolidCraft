@@ -3,6 +3,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 use serde_json::{Value, json};
 
 use crate::Session;
+use solidcraft_geom::Triangle;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
     match s.execute(id, &p) {
@@ -4305,8 +4306,8 @@ fn flat_face_points(s: &Session) -> Vec<(usize, solidcraft_geom::Vec3, solidcraf
                 .zip(&mesh.tri_face)
                 .filter(|(_, f)| **f as usize == index)
                 .filter_map(|(t, _)| mesh.tri(t))
-                .max_by(|[a, b, c], [d, e, f]| (*b - *a).cross(*c - *a).len().total_cmp(&(*e - *d).cross(*f - *d).len()))
-                .map(|[a, b, c]| (a + b + c) * (1.0 / 3.0))?;
+                .max_by(|Triangle([a, b, c]), Triangle([d, e, f])| (*b - *a).cross(*c - *a).len().total_cmp(&(*e - *d).cross(*f - *d).len()))
+                .map(|Triangle([a, b, c])| (a + b + c) * (1.0 / 3.0))?;
             Some((index, point, normal))
         })
         .collect()

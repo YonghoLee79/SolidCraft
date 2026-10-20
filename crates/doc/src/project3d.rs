@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use solidcraft_geom::{Mesh, Plane, Vec2, Vec3};
+use solidcraft_geom::{Mesh, Plane, Triangle, Vec2, Vec3};
 use solidcraft_sketch::LinkSource;
 
 use crate::eval::ModelState;
@@ -19,7 +19,7 @@ pub(crate) fn mesh_of(st: &ModelState, src: &LinkSource) -> Option<(Arc<Mesh>, O
         LinkSource::Face { body, at } => {
             let b = st.body(body).or_else(|| st.bodies.iter().min_by(|x, y| dist_to(&x.mesh(), *at).total_cmp(&dist_to(&y.mesh(), *at))))?;
             let m = b.mesh();
-            let (f, _, _) = crate::project::nearest_face(&m, *at)?;
+            let f = m.nearest_face(*at)?.face;
             Some((m, Some(f)))
         }
         _ => None,
@@ -27,11 +27,11 @@ pub(crate) fn mesh_of(st: &ModelState, src: &LinkSource) -> Option<(Arc<Mesh>, O
 }
 
 fn dist_to(m: &Mesh, p: Vec3) -> f64 {
-    crate::project::nearest_face(m, p).map(|x| x.2).unwrap_or(f64::INFINITY)
+    m.nearest_face(p).map_or(f64::INFINITY, |h| h.dist)
 }
 
-fn tris(m: &Mesh, face: Option<u32>) -> Vec<[Vec3; 3]> {
-    m.triangles.iter().zip(&m.tri_face).filter(|(_, f)| face.is_none_or(|x| x == **f)).filter_map(|(t, _)| m.tri(t)).collect()
+fn tris(m: &Mesh, face: Option<u32>) -> Vec<Triangle> {
+    m.face_tris().filter(|(_, f)| face.is_none_or(|x| x == *f)).map(|(t, _)| t).collect()
 }
 
 /// Ray–triangle hit parameter (Möller–Trumbore), any sign.
@@ -305,7 +305,7 @@ pub(crate) fn iso_curve(m: &Mesh, f: u32, p: Vec3, dir: &str) -> Vec<Vec<Vec3>> 
         .filter_map(|(t, _)| m.tri(t))
         .filter_map(|t| (t[1] - t[0]).cross(t[2] - t[0]).normalized())
         .collect();
-    let Some(n0) = crate::project::nearest_face(m, p).and_then(|_| ns.first().copied()) else { return Vec::new() };
+    let Some(n0) = m.nearest_face(p).and_then(|_| ns.first().copied()) else { return Vec::new() };
     // Normal at p: of the nearest triangle of the face.
     let np = m
         .triangles
@@ -355,7 +355,7 @@ pub(crate) fn iso_curve(m: &Mesh, f: u32, p: Vec3, dir: &str) -> Vec<Vec<Vec3>> 
 /// polylines. Each family is the face cut by parallel planes spaced evenly over the face.
 pub fn iso_grid(m: &Mesh, f: u32, p: Vec3, count: usize) -> Vec<Vec<Vec3>> {
     let count = count.clamp(1, 100);
-    let verts: Vec<Vec3> = m.triangles.iter().zip(&m.tri_face).filter(|(_, x)| **x == f).filter_map(|(t, _)| m.tri(t)).flatten().collect();
+    let verts: Vec<Vec3> = m.face_tris_of(f as usize).flatten().collect();
     if verts.is_empty() {
         return Vec::new();
     }

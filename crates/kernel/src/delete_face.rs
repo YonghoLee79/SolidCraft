@@ -349,11 +349,7 @@ mod tests {
     fn faces_where(b: &crate::Body, keep: impl Fn(Vec3) -> bool) -> Vec<usize> {
         let m = b.tessellate(1e-3).unwrap();
         let n = m.tri_face.iter().max().map(|x| *x as usize + 1).unwrap_or(0);
-        (0..n)
-            .filter(|f| {
-                m.triangles.iter().zip(&m.tri_face).filter(|(_, x)| **x as usize == *f).all(|(t, _)| m.tri(t).unwrap().iter().all(|p| keep(*p)))
-            })
-            .collect()
+        (0..n).filter(|f| m.face_tris_of(*f).all(|t| t.iter().all(|p| keep(*p)))).collect()
     }
 
     #[test]

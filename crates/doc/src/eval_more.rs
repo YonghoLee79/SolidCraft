@@ -5,7 +5,7 @@ use super::*;
 use crate::EmbossFace;
 use crate::apply_point;
 use crate::sheet;
-use solidcraft_geom::{Aabb3, Loop2, Ring, Seg2};
+use solidcraft_geom::{Aabb3, Loop2, Ring, Seg2, Triangle};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState) -> Result<()> {
     match &f.kind {
@@ -49,7 +49,10 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     if split {
                         return Err(DocError::Invalid("selected cylinder face was split".into()));
                     }
-                    let (index, _, _) = crate::project::nearest_face(&mb.mesh(), picked)
+                    let index = mb
+                        .mesh()
+                        .nearest_face(picked)
+                        .map(|h| h.face)
                         .ok_or_else(|| DocError::Invalid("selected cylinder face cannot be resolved".into()))?;
                     if !crate::naming::face_has_name(&mb, index as usize, name) {
                         return Err(DocError::Invalid("selected cylinder face is ambiguous".into()));
@@ -168,9 +171,9 @@ fn planar_normal_at(b: &Body, p: Vec3) -> Option<Vec3> {
     let faces = b.faces(tol).ok()?;
     let mesh = b.tessellate(tol).ok()?;
     let mut near = vec![f64::INFINITY; faces.len()];
-    for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-        if let (Some([u, v, w]), Some(d)) = (mesh.tri(t), near.get_mut(*f as usize)) {
-            *d = d.min(crate::appearance::closest_on_triangle(p, u, v, w).dist(p));
+    for (Triangle([u, v, w]), f) in mesh.face_tris() {
+        if let Some(d) = near.get_mut(f as usize) {
+            *d = d.min(Triangle([u, v, w]).closest_point(p).dist(p));
         }
     }
     faces
@@ -1538,7 +1541,7 @@ fn plate_recesses(body: &Body, mesh: &Mesh, plane: &Plane, at: Vec3, n: Vec3, (l
     let level = |p: Vec3| (p - at).dot(n);
     let mut faces: BTreeMap<u32, Option<LevelFace>> = BTreeMap::new();
     for (tri, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-        let Some([a, b, c]) = mesh.tri(tri) else { continue };
+        let Some(Triangle([a, b, c])) = mesh.tri(tri) else { continue };
         let cr = (b - a).cross(c - a);
         let len = cr.len();
         if !(len > 1e-12) {
@@ -1663,7 +1666,7 @@ fn body_under(st: &ModelState, body: &Option<crate::BodyName>, p: Vec3) -> Resul
     let i = body_at(st, body, &[p])?;
     let b = st.bodies.get(i).ok_or_else(|| DocError::Invalid("there is no body".into()))?;
     let tolerance = (b.body.size() * 1e-5).max(1e-4);
-    if crate::project::nearest_face(&b.mesh(), p).is_none_or(|(_, _, distance)| distance > tolerance) {
+    if b.mesh().nearest_face(p).is_none_or(|h| h.dist > tolerance) {
         return Err(DocError::Invalid("the plastic feature's placement is no longer on its body face".into()));
     }
     Ok(b.name.clone())

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use solidcraft_geom::mesh_distance::{MeshClosest, TriangleSet};
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Triangle, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -138,8 +138,8 @@ impl<'a> DistanceShape<'a> {
             let sides: Vec<Vec3> = tris
                 .iter()
                 .filter_map(|&k| self.set.triangle(k))
-                .filter(|[a, b, c]| solidcraft_geom::compare::closest_on_triangle(at, *a, *b, *c).dist(at) <= reach)
-                .map(|[a, b, c]| across((a + b + c) / 3.0))
+                .filter(|Triangle([a, b, c])| Triangle([*a, *b, *c]).closest_point(at).dist(at) <= reach)
+                .map(|Triangle([a, b, c])| across((a + b + c) / 3.0))
                 .filter(|w| w.len() > tiny)
                 .collect();
             let Some(inward) = sides.iter().copied().max_by(|x, y| x.len().total_cmp(&y.len())) else { continue };

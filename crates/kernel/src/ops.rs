@@ -1,7 +1,7 @@
 //! Operations on bodies: booleans and rigid transforms.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Triangle, Vec3};
 use truck_modeling as mt;
 
 use std::collections::HashMap;
@@ -292,13 +292,16 @@ fn under_surface(
     within: Option<&solidcraft_geom::Aabb3>,
     ignored: &dyn Fn(Vec3, u32) -> bool,
 ) -> bool {
-    m.triangles.iter().enumerate().filter_map(|(i, t)| Some((m.tri(t)?, m.tri_face.get(i).copied().unwrap_or(u32::MAX)))).any(|([p, q, r], face)| {
-        let Some(n) = (q - p).cross(r - p).normalized() else { return false };
-        let c = (p + q + r) * (1.0 / 3.0) - n * depth;
-        let near = within.is_none_or(|b| c.x >= b.min.x && c.x <= b.max.x && c.y >= b.min.y && c.y <= b.max.y && c.z >= b.min.z && c.z <= b.max.z);
-        // A wall thinner than `depth` puts the point outside its own body: no evidence.
-        near && other.contains(c) == inside && own.contains(c) && !ignored(c, face)
-    })
+    m.triangles.iter().enumerate().filter_map(|(i, t)| Some((m.tri(t)?, m.tri_face.get(i).copied().unwrap_or(u32::MAX)))).any(
+        |(Triangle([p, q, r]), face)| {
+            let Some(n) = (q - p).cross(r - p).normalized() else { return false };
+            let c = (p + q + r) * (1.0 / 3.0) - n * depth;
+            let near =
+                within.is_none_or(|b| c.x >= b.min.x && c.x <= b.max.x && c.y >= b.min.y && c.y <= b.max.y && c.z >= b.min.z && c.z <= b.max.z);
+            // A wall thinner than `depth` puts the point outside its own body: no evidence.
+            near && other.contains(c) == inside && own.contains(c) && !ignored(c, face)
+        },
+    )
 }
 
 /// Whether the bodies' facetings show that the samples' answer (see [`trivial`]) is wrong:
@@ -430,10 +433,6 @@ fn shared_cylinders(a: &Body, b: &Body, ma: &solidcraft_geom::Mesh, mb: &solidcr
         }
         (lo <= hi).then_some((lo, hi))
     };
-    // A face's facets.
-    fn facets(m: &solidcraft_geom::Mesh, face: usize) -> impl Iterator<Item = [Vec3; 3]> + '_ {
-        m.triangles.iter().zip(&m.tri_face).filter(move |(_, f)| **f as usize == face).filter_map(|(t, _)| m.tri(t))
-    }
     // How near to and far from an axis a face's facets reach (nearest on their edges), and
     // whether its material is inside the cylinder there (its normals point away from the axis).
     let reach = |m: &solidcraft_geom::Mesh, face: usize, origin: Vec3, axis: Vec3| -> (f64, f64, bool) {
@@ -442,7 +441,7 @@ fn shared_cylinders(a: &Body, b: &Body, ma: &solidcraft_geom::Mesh, mb: &solidcr
             v - axis * v.dot(axis)
         };
         let (mut near, mut far, mut out) = (f64::INFINITY, 0.0f64, 0.0);
-        for t in facets(m, face) {
+        for Triangle(t) in m.face_tris_of(face) {
             for (p, q) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
                 let (p, q) = (radial(p), radial(q));
                 let d = q - p;
@@ -1874,12 +1873,11 @@ fn sliver_faces(b: &Body, size: f64) -> usize {
     // Per face: its area, and how many of its triangles use each mesh edge (its boundary once).
     let mut area: HashMap<u32, f64> = HashMap::new();
     let mut sides: HashMap<(u32, (i64, i64, i64), (i64, i64, i64)), (u32, f64)> = HashMap::new();
-    for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-        let Some([a, b, c]) = m.tri(t) else { continue };
-        *area.entry(*f).or_default() += (b - a).cross(c - a).len() * 0.5;
+    for (Triangle([a, b, c]), f) in m.face_tris() {
+        *area.entry(f).or_default() += (b - a).cross(c - a).len() * 0.5;
         for (p, r) in [(a, b), (b, c), (c, a)] {
             let (kp, kr) = (key(p), key(r));
-            let k = if kp <= kr { (*f, kp, kr) } else { (*f, kr, kp) };
+            let k = if kp <= kr { (f, kp, kr) } else { (f, kr, kp) };
             sides.entry(k).or_insert((0, p.dist(r))).0 += 1;
         }
     }

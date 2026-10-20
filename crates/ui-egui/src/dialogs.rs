@@ -11,7 +11,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::doc::{AxisRef, Direction, FeatureKind, FilletStyle, HoleKind, Operation, PatternKind, PlaneRef, ProfileSel, ThinSide};
-use solidcraft_engine::geom::{Aabb3, Vec3};
+use solidcraft_engine::geom::{Aabb3, Triangle, Vec3};
 
 use crate::SolveApp;
 use crate::selection::{
@@ -1293,7 +1293,7 @@ pub(crate) struct FaceSnap {
     /// A point of the plane, its unit normal, and how far a point on the face may be from it
     /// (the triangles' own distance plus [`ON_FACE`]); `None` when the face isn't planar.
     plane: Option<(Vec3, Vec3, f64)>,
-    tris: Vec<([Vec3; 3], Aabb3)>,
+    tris: Vec<(Triangle, Aabb3)>,
     /// Point-in-triangle tests left for this pick.
     budget: std::cell::Cell<usize>,
 }
@@ -1307,9 +1307,9 @@ impl FaceSnap {
         let m = b.mesh();
         #[cfg(test)]
         SNAP_WORK.with(|w| w.set((w.get().0, w.get().1 + m.triangles.len())));
-        let tris: Vec<[Vec3; 3]> = m.triangles.iter().zip(&m.tri_face).filter(|(_, f)| **f as usize == face).filter_map(|(t, _)| m.tri(t)).collect();
+        let tris: Vec<Triangle> = m.face_tris_of(face).collect();
         // Anything within ON_FACE of a triangle is within this of the plane.
-        let stray = tris.iter().flatten().map(|v| (*v - origin).dot(normal).abs()).fold(0.0, f64::max);
+        let stray = tris.iter().flat_map(|t| t.iter()).map(|v| (*v - origin).dot(normal).abs()).fold(0.0, f64::max);
         let plane = (origin, normal, stray + ON_FACE);
         let mut region = Aabb3::EMPTY;
         for p in near.iter().filter(|p| near_plane(plane, **p)) {
@@ -1340,7 +1340,7 @@ impl FaceSnap {
             return None;
         }
         let at = Aabb3 { min: p, max: p };
-        for ([a, b, c], bb) in &self.tris {
+        for (Triangle([a, b, c]), bb) in &self.tris {
             let left = self.budget.get();
             if left == 0 {
                 return None;
@@ -1435,7 +1435,7 @@ mod face_snap_tests {
             body: "Body1".into(),
             face: 0,
             plane: Some((Vec3::ZERO, Vec3::Z, ON_FACE)),
-            tris: vec![([a, b, c], bb)],
+            tris: vec![(Triangle([a, b, c]), bb)],
             budget: std::cell::Cell::new(SNAP_BUDGET),
         };
         for p in off {
@@ -1654,7 +1654,7 @@ fn feature_of_face(s: &Session, body: &str, index: usize, p: Vec3) -> Option<u64
                 && p.x <= bb.max.x + tol
                 && p.y <= bb.max.y + tol
                 && p.z <= bb.max.z + tol
-                && m.triangles.iter().filter_map(|t| m.tri(t)).any(|t| point_tri_dist(p, t) < tol)
+                && m.triangles.iter().filter_map(|t| m.tri(t)).any(|t| t.closest_point(p).dist(p) < tol)
         })
     };
     let found = s
@@ -1673,20 +1673,6 @@ fn feature_of_face(s: &Session, body: &str, index: usize, p: Vec3) -> Option<u64
         c.1.insert(key, found);
     });
     found
-}
-
-/// Distance from a point to a triangle.
-pub(crate) fn point_tri_dist(p: Vec3, [a, b, c]: [Vec3; 3]) -> f64 {
-    let n = (b - a).cross(c - a);
-    let nn = n.dot(n);
-    if nn > 1e-24 {
-        let q = p - n * ((p - a).dot(n) / nn);
-        let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= 0.0);
-        if inside {
-            return (p - q).len();
-        }
-    }
-    p.dist_to_segment(a, b).min(p.dist_to_segment(b, c)).min(p.dist_to_segment(c, a))
 }
 
 /// The pattern objects' label: features are picked in the timeline.
@@ -3820,11 +3806,10 @@ pub(crate) fn face_sel(s: &Session, p0: Vec3) -> Option<Sel> {
     for b in &st.bodies {
         let p = stored_on(&frames, &b.name, p0);
         let m = b.mesh();
-        for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-            let Some([a, bb, c]) = m.tri(t) else { continue };
+        for (Triangle([a, bb, c]), f) in m.face_tris() {
             let d = crate::preview::point_triangle_dist(p, a, bb, c);
             if best.as_ref().is_none_or(|(bd, _, _, _)| d < *bd) {
-                best = Some((d, b, *f as usize, p));
+                best = Some((d, b, f as usize, p));
             }
         }
     }

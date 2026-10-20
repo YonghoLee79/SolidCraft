@@ -1,8 +1,8 @@
 //! Vector hidden-line removal: intersect each projected edge with triangle half planes and
 //! its depth plane, then union occluded parameter intervals. A BVH bounds the candidate work.
+use solidcraft_geom::{Aabb3, Triangle, Vec2, Vec3};
 #[cfg(test)]
-use solidcraft_geom::Mesh;
-use solidcraft_geom::{Aabb3, Vec2, Vec3};
+use solidcraft_geom::{BoxedTriangle, Mesh};
 use solidcraft_io::{DxfEntity, DxfShape};
 use solidcraft_render::Camera;
 use std::collections::BTreeMap;
@@ -92,27 +92,22 @@ fn overlap(a: &Aabb3, b: &Aabb3) -> bool {
 }
 
 #[cfg(test)]
-struct Triangle {
-    p: [Vec3; 3],
-    bounds: Aabb3,
-}
-#[cfg(test)]
 struct Tree {
     bounds: Aabb3,
     children: Option<(Box<Tree>, Box<Tree>)>,
-    triangles: Vec<Triangle>,
+    triangles: Vec<BoxedTriangle>,
 }
 #[cfg(test)]
 impl Tree {
-    fn new(mut triangles: Vec<Triangle>) -> Self {
-        let b = triangles.iter().fold(Aabb3::EMPTY, |b, t| b.union(&t.bounds));
+    fn new(mut triangles: Vec<BoxedTriangle>) -> Self {
+        let b = triangles.iter().fold(Aabb3::EMPTY, |b, (_, tb)| b.union(tb));
         if triangles.len() <= 12 {
             return Self { bounds: b, children: None, triangles };
         }
         let x = b.size().x > b.size().y;
         let middle = triangles.len() / 2;
         triangles.select_nth_unstable_by(middle, |a, b| {
-            let c = |t: &Triangle| if x { t.bounds.center().x } else { t.bounds.center().y };
+            let c = |(_, tb): &BoxedTriangle| if x { tb.center().x } else { tb.center().y };
             c(a).total_cmp(&c(b))
         });
         let right = triangles.split_off(middle);
@@ -127,9 +122,9 @@ impl Tree {
             left.intervals(a, b, bx, eps, out, budget)?;
             right.intervals(a, b, bx, eps, out, budget)?;
         } else {
-            for t in &self.triangles {
-                if overlap(&t.bounds, bx)
-                    && let Some(span) = occluded(a, b, t.p, eps)
+            for (t, tb) in &self.triangles {
+                if overlap(tb, bx)
+                    && let Some(span) = occluded(a, b, *t, eps)
                 {
                     out.push(span);
                 }
@@ -154,8 +149,8 @@ fn clip(lo: &mut f64, hi: &mut f64, f0: f64, f1: f64) -> bool {
     }
     *hi > *lo
 }
-fn occluded(a: Vec3, b: Vec3, t: [Vec3; 3], eps: f64) -> Option<(f64, f64)> {
-    let [p, q, r] = t;
+fn occluded(a: Vec3, b: Vec3, t: Triangle, eps: f64) -> Option<(f64, f64)> {
+    let Triangle([p, q, r]) = t;
     let area = cross(xy(q - p), xy(r - p));
     if area.abs() < 1e-20 {
         return None;
@@ -242,7 +237,7 @@ fn edges(mesh: &Mesh, cam: &Camera, eps: f64) -> Vec<(Vec3, Vec3)> {
     }
     let mut adjacent: BTreeMap<_, (Vec3, Vec3, bool, bool, usize)> = BTreeMap::new();
     for indices in &mesh.triangles {
-        let Some([a, b, c]) = mesh.tri(indices) else { continue };
+        let Some(Triangle([a, b, c])) = mesh.tri(indices) else { continue };
         let n = (b - a).cross(c - a);
         let toward = if cam.fov > 0.0 { cam.eye() - (a + b + c) / 3.0 } else { cam.basis().2 };
         let front = n.dot(toward) > 0.0;
@@ -292,9 +287,9 @@ fn reference_drawing(meshes: &[Mesh], cam: &Camera) -> Result<Vec<Line>, &'stati
     let mut segments = Vec::new();
     for m in meshes {
         for t in &m.triangles {
-            if let Some([a, b, c]) = m.tri(t) {
+            if let Some(Triangle([a, b, c])) = m.tri(t) {
                 let p = [project(a)?, project(b)?, project(c)?];
-                triangles.push(Triangle { p, bounds: bounds(p) });
+                triangles.push((Triangle(p), bounds(p)));
             }
         }
         for (a, b) in edges(m, cam, eps) {
@@ -355,7 +350,7 @@ mod tests {
     }
     #[test]
     fn a_line_is_split_at_triangle_boundaries_and_depth_crossings() {
-        let t = [Vec3::new(0., 0., 1.), Vec3::new(2., 0., 1.), Vec3::new(0., 2., 1.)];
+        let t = Triangle([Vec3::new(0., 0., 1.), Vec3::new(2., 0., 1.), Vec3::new(0., 2., 1.)]);
         let (lo, hi) = occluded(Vec3::new(-1., 0.5, 0.), Vec3::new(3., 0.5, 0.), t, 0.).unwrap();
         assert!((lo - 0.25).abs() < 1e-9 && (hi - 0.625).abs() < 1e-9);
         assert!(occluded(Vec3::new(0., 0.5, 2.), Vec3::new(1., 0.5, 2.), t, 0.).is_none());

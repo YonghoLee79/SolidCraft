@@ -8,10 +8,10 @@
 //! was worked out from geometry, found where the reference's point no longer lies, is reported:
 //! only geometry decided.
 
-use solidcraft_geom::{Mesh, Vec3};
+use solidcraft_geom::{Mesh, Triangle, Vec3};
 
 use crate::history_names::{Match, Names};
-use crate::naming::{self, closest, edge_names, face_names, legacy_edge_names, legacy_face_names, strip_piece};
+use crate::naming::{self, edge_names, face_names, legacy_edge_names, legacy_face_names, strip_piece};
 use crate::piece_names::{strip_edge_number, strip_edge_piece};
 use crate::{ModelBody, ModelState};
 
@@ -103,8 +103,8 @@ fn nearest_on_face(m: &Mesh, face: usize, p: Vec3) -> Option<(f64, Vec3)> {
         if *f as usize != face {
             continue;
         }
-        let Some([a, b, c]) = m.tri(t) else { continue };
-        let q = closest(p, a, b, c);
+        let Some(Triangle([a, b, c])) = m.tri(t) else { continue };
+        let q = Triangle([a, b, c]).closest_point(p);
         let d = q.dist(p);
         // A non-finite candidate must never become the best: nothing compares less than NaN.
         if d.is_finite() && best.is_none_or(|x| d < x.0) {
@@ -229,7 +229,7 @@ impl FaceHit {
             if *f as usize != self.face {
                 continue;
             }
-            let Some([a, bb, c]) = m.tri(t) else { continue };
+            let Some(Triangle([a, bb, c])) = m.tri(t) else { continue };
             // A hair's width around each triangle, so a place on the seam of two is on the face.
             let centre = (a + bb + c) * (1.0 / 3.0);
             let grow = |v: Vec3| v + (v - centre).normalized().unwrap_or(Vec3::ZERO) * slack;
@@ -374,8 +374,8 @@ fn legacy_locate<'a>(bodies: impl Iterator<Item = (usize, &'a ModelBody)>, name:
             if !exact && strip_piece(n) != stem {
                 continue;
             }
-            let Some([a, bb, c]) = m.tri(t) else { continue };
-            let q = closest(p, a, bb, c);
+            let Some(Triangle([a, bb, c])) = m.tri(t) else { continue };
+            let q = Triangle([a, bb, c]).closest_point(p);
             let d = q.dist(p) - if exact { 1e-9 } else { 0.0 };
             if d.is_finite() && best.is_none_or(|x| d < x.0) {
                 best = Some((d, bi, *f as usize, q, !exact, tol));

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use solidcraft_doc::joints;
 use solidcraft_doc::{Document, IDENTITY, Mat, apply_point, mat_mul};
-use solidcraft_geom::{Aabb3, Bvh, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Bvh, Mesh, Triangle, Vec3};
 
 use crate::params::bad;
 use crate::{Result, Session};
@@ -102,7 +102,7 @@ impl ContactGeometry {
                     let mut thickness = extent.x.min(extent.y).min(extent.z);
                     let mut directions: Vec<Vec3> = Vec::new();
                     for triangle in &mesh.triangles {
-                        let Some([a, b, c]) = mesh.tri(triangle) else {
+                        let Some(Triangle([a, b, c])) = mesh.tri(triangle) else {
                             return Err(limit("invalid contact tessellation"));
                         };
                         let Some(direction) = (b - a).cross(c - a).normalized() else { continue };
@@ -339,7 +339,7 @@ impl ContactGeometry {
     /// cost, refused past `budget`.
     pub(super) fn gaps(&self, s: &Session, cutoff: f64, work: &mut usize, budget: usize) -> Result<Vec<Gap>> {
         let meshes = self.placed(s)?;
-        let tris: Vec<Vec<[Vec3; 3]>> = meshes.iter().map(|m| m.triangles.iter().filter_map(|t| m.tri(t)).collect()).collect();
+        let tris: Vec<Vec<Triangle>> = meshes.iter().map(|m| m.triangles.iter().filter_map(|t| m.tri(t)).collect()).collect();
         let boxes: Vec<Aabb3> = meshes.iter().map(Mesh::bounds).collect();
         let mut trees: Vec<Option<Bvh>> = vec![None; meshes.len()];
         let mut nearest: BTreeMap<(u64, u64), Gap> = BTreeMap::new();
@@ -399,9 +399,9 @@ fn limit_error(message: &str) -> crate::EngineError {
     limit(message)
 }
 
-fn tri_box(t: &[Vec3; 3]) -> Aabb3 {
+fn tri_box(t: &Triangle) -> Aabb3 {
     let mut b = Aabb3::EMPTY;
-    for p in t {
+    for p in &t.0 {
         b.add(*p);
     }
     b
@@ -419,8 +419,8 @@ fn box_distance(a: &Aabb3, b: &Aabb3) -> f64 {
 /// lies wholly inside the other.
 #[allow(clippy::too_many_arguments)]
 fn mesh_gap(
-    a: &[[Vec3; 3]],
-    b: &[[Vec3; 3]],
+    a: &[Triangle],
+    b: &[Triangle],
     tree: &Bvh,
     ba: &Aabb3,
     bb: &Aabb3,
@@ -433,7 +433,7 @@ fn mesh_gap(
     let mut bound = limit;
     if !bound.is_finite() {
         let centre = bb.center();
-        let near = |list: &[[Vec3; 3]], to: Vec3| list.iter().map(|t| t[0]).min_by(|p, q| p.dist(to).total_cmp(&q.dist(to)));
+        let near = |list: &[Triangle], to: Vec3| list.iter().map(|t| t.0[0]).min_by(|p, q| p.dist(to).total_cmp(&q.dist(to)));
         if let Some(pa) = near(a, centre)
             && let Some(pb) = near(b, pa)
         {
@@ -479,7 +479,7 @@ fn mesh_gap(
         ba.min.x <= bb.max.x && bb.min.x <= ba.max.x && ba.min.y <= bb.max.y && bb.min.y <= ba.max.y && ba.min.z <= bb.max.z && bb.min.z <= ba.max.z;
     if overlap {
         *work = work.saturating_add(a.len() + b.len());
-        for (p, other) in [(a.first().map(|t| t[0]), b), (b.first().map(|t| t[0]), a)] {
+        for (p, other) in [(a.first().map(|t| t.0[0]), b), (b.first().map(|t| t.0[0]), a)] {
             if let Some(p) = p
                 && super::inside(p, other)
             {
@@ -491,7 +491,8 @@ fn mesh_gap(
 }
 
 /// The distance between triangles `a` and `b`, with their nearest points (0 where they cross).
-fn tri_distance(a: &[Vec3; 3], b: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
+fn tri_distance(ta: &Triangle, tb: &Triangle) -> (f64, Vec3, Vec3) {
+    let (Triangle(a), Triangle(b)) = (ta, tb);
     for (x, y) in [(a, b), (b, a)] {
         for i in 0..3 {
             if let (Some(p), Some(q)) = (x.get(i), x.get((i + 1) % 3))
@@ -509,10 +510,10 @@ fn tri_distance(a: &[Vec3; 3], b: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
         }
     };
     for p in a {
-        keep(*p, super::closest(*p, b[0], b[1], b[2]));
+        keep(*p, tb.closest_point(*p));
     }
     for q in b {
-        keep(super::closest(*q, a[0], a[1], a[2]), *q);
+        keep(ta.closest_point(*q), *q);
     }
     for i in 0..3 {
         for j in 0..3 {

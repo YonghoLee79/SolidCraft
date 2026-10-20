@@ -1,7 +1,7 @@
 //! Issue #616: small boxes joined flush to the walls and floor of a part never change it away
 //! from the box, and a retry that would is refused.
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Triangle, Vec3};
 
 use crate::*;
 
@@ -28,7 +28,7 @@ fn lid() -> Body {
 }
 
 /// Distance from `p` to the triangle `abc` (brute force, independent of the guard's grid).
-fn tri_dist(p: Vec3, [a, b, c]: [Vec3; 3]) -> f64 {
+fn tri_dist(p: Vec3, Triangle([a, b, c]): Triangle) -> f64 {
     let n = (b - a).cross(c - a);
     let Some(u) = n.normalized() else { return f64::INFINITY };
     let h = (p - a).dot(u);
@@ -42,8 +42,8 @@ fn tri_dist(p: Vec3, [a, b, c]: [Vec3; 3]) -> f64 {
 
 /// A point of `from`'s surface outside `region` that is not on `onto`'s surface.
 fn moved_outside(from: &Mesh, onto: &Mesh, region: &Aabb3, tol: f64) -> Option<Vec3> {
-    let tris: Vec<[Vec3; 3]> = onto.triangles.iter().filter_map(|t| onto.tri(t)).collect();
-    from.triangles.iter().filter_map(|t| from.tri(t)).find_map(|[a, b, c]| {
+    let tris: Vec<Triangle> = onto.triangles.iter().filter_map(|t| onto.tri(t)).collect();
+    from.triangles.iter().filter_map(|t| from.tri(t)).find_map(|Triangle([a, b, c])| {
         let p = (a + b + c) / 3.0;
         let inside = p.x > region.min.x && p.y > region.min.y && p.z > region.min.z && p.x < region.max.x && p.y < region.max.y && p.z < region.max.z;
         (!inside && !tris.iter().any(|t| tri_dist(p, *t) < tol)).then_some(p)
