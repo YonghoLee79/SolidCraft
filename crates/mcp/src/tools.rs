@@ -278,9 +278,21 @@ pub fn tool_definitions() -> Vec<Value> {
             "Bridged to the app: the result of a request that was still running when its tool call returned (an error \
              starting \"still running:\"). Waits for it up to 60 s: then its own result (or error), or done: false while \
              it still runs (call again). pending: null when nothing is running. A request still running was not \
-             cancelled: don't send it again; other calls wait for it before they are sent.",
+             cancelled (`cancel` cancels it): don't send it again; other calls wait for it before they are sent.",
             obj(json!({}), &[]),
             Effect::ReadOnly,
+        ),
+        tool(
+            "cancel",
+            "Cancel",
+            "Bridged: cancel the request that was still running in the app when its call returned (an error starting \
+             \"still running:\"), without waiting for it. One still waiting its turn will not run; a design change or \
+             export computing off the app's window thread is stopped (Preferences > AI), and nothing of it is applied. One \
+             already applying on the window thread can't be cancelled: the error says so, and it will still finish. Only \
+             this server's own request can be cancelled. Headless calls always run to their end, so there is nothing to \
+             cancel.",
+            obj(json!({}), &[]),
+            Effect::Edits,
         ),
         tool("undo", "Undo", "Undo the last change to the design.", obj(json!({}), &[]), Effect::Edits),
         tool("redo", "Redo", "Redo the last undone change.", obj(json!({}), &[]), Effect::Edits),
@@ -481,6 +493,7 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
             None => exec(b, "diagnostics.crash_reports", pick(a, &["limit"])),
         },
         "running" => b.call("control.running", json!({})),
+        "cancel" => b.call("control.cancel", json!({})),
         "undo" => exec(b, "edit.undo", json!({})),
         "redo" => exec(b, "edit.redo", json!({})),
         "new_design" => exec(b, "file.new", pick(a, &["name"])),
@@ -569,6 +582,7 @@ fn batch_step(step: &Value) -> Result<(String, Value, Option<String>), String> {
         "batch" => Err("batches don't nest: put the steps in this batch".into()),
         "pending" => Err("`pending` is a tool, not a command: call it on its own".into()),
         "running" => Err("`running` is a tool, not a command: call it on its own".into()),
+        "cancel" => Err("`cancel` is a tool, not a command: call it on its own".into()),
         // An engine command: the step goes as it is.
         _ => Ok((String::new(), Value::Null, None)),
     }
@@ -578,6 +592,7 @@ fn batch_step(step: &Value) -> Result<(String, Value, Option<String>), String> {
 const TOOL_STEPS: &[&str] = &[
     "batch",
     "body_topology",
+    "cancel",
     "crash_reports",
     "describe_command",
     "execute",
