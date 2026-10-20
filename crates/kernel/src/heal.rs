@@ -1,5 +1,6 @@
-//! Clean-up after operations: coplanar neighbouring faces become one face, and two straight
-//! edges meeting in line at a vertex nothing else uses become one edge (they are kept as one).
+//! Clean-up after operations: coplanar neighbouring faces become one face (and so do those on
+//! one cylinder, see `heal_cylinders.rs`), and two straight edges meeting in line at a vertex
+//! nothing else uses become one edge (they are kept as one).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -8,6 +9,9 @@ use truck_modeling::{self as mt, builder};
 
 use crate::body::{Solid, from_p3};
 use crate::history::{Change, EdgeOrigin, FaceProv};
+
+#[path = "heal_cylinders.rs"]
+mod cylinders;
 
 fn plane_of(f: &mt::Face) -> Option<(Vec3, f64)> {
     match f.oriented_surface() {
@@ -89,6 +93,26 @@ pub(crate) fn edge_points(e: &mt::Edge) -> Vec<Vec3> {
     (0..=4).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 4.0))).collect()
 }
 
+/// Oriented boundary edges chained into loops, end to start.
+fn chain_loops(mut rest: Vec<mt::Edge>) -> Option<Vec<Vec<mt::Edge>>> {
+    let mut loops: Vec<Vec<mt::Edge>> = Vec::new();
+    while let Some(first) = rest.pop() {
+        let start = first.front().clone();
+        let mut cur = first.back().clone();
+        let mut lp = vec![first];
+        let mut guard = 0;
+        while cur != start && guard < 100_000 {
+            guard += 1;
+            let k = rest.iter().position(|e| e.front() == &cur)?;
+            let e = rest.remove(k);
+            cur = e.back().clone();
+            lp.push(e);
+        }
+        loops.push(lp);
+    }
+    Some(loops)
+}
+
 /// Merge each group of edge-connected coplanar faces into one face (keeping faces apart along
 /// the lines in `keep`). Returns the new shell and, for each of its faces, the faces of `shell`
 /// it was made from (by position); None when nothing changed or a merged face can't be built.
@@ -158,22 +182,7 @@ fn merge_coplanar(shell: &mt::Shell, tol: f64, keep: &[Vec<Vec3>]) -> Option<(mt
                 }
             }
         }
-        // Chain into loops.
-        let mut loops: Vec<Vec<mt::Edge>> = Vec::new();
-        while let Some(first) = rest.pop() {
-            let start = first.front().clone();
-            let mut cur = first.back().clone();
-            let mut lp = vec![first];
-            let mut guard = 0;
-            while cur != start && guard < 100_000 {
-                guard += 1;
-                let k = rest.iter().position(|e| e.front() == &cur)?;
-                let e = rest.remove(k);
-                cur = e.back().clone();
-                lp.push(e);
-            }
-            loops.push(lp);
-        }
+        let loops = chain_loops(rest)?;
         let (outer, holes): (Vec<Vec<mt::Edge>>, Vec<Vec<mt::Edge>>) = loops.into_iter().partition(|l| loop_area(l, n) > 0.0);
         let surface = faces.get(*members.first()?)?.oriented_surface();
         for o in &outer {
@@ -193,10 +202,11 @@ fn merge_coplanar(shell: &mt::Shell, tol: f64, keep: &[Vec<Vec3>]) -> Option<(mt
     Some((out.into(), from))
 }
 
-/// Join runs of collinear straight edges at vertices only they use: each run becomes one edge,
-/// every face it borders is rebuilt once (linear in the shell, however long the runs; a faceted
-/// body such as a modeled thread has thousands of such edges).
-fn merge_collinear(shell: &mt::Shell, trace: &mut Trace) -> Option<mt::Shell> {
+/// Join runs of collinear straight edges, and of arcs of one circle (within `arcs`, when given;
+/// a half turn at most, #2844), at vertices only they use: each run becomes one edge, every face it borders
+/// is rebuilt once (linear in the shell, however long the runs; a faceted body such as a modeled
+/// thread has thousands of such edges).
+fn merge_collinear(shell: &mt::Shell, arcs: Option<f64>, trace: &mut Trace) -> Option<mt::Shell> {
     let mut faces: Vec<mt::Face> = shell.face_iter().cloned().collect();
     let mut edges: Vec<mt::Edge> = Vec::new();
     let mut index: HashMap<mt::EdgeID, usize> = HashMap::new();
@@ -219,6 +229,18 @@ fn merge_collinear(shell: &mt::Shell, trace: &mut Trace) -> Option<mt::Shell> {
         let [ia, ib] = es[..] else { continue };
         let (Some(a), Some(b)) = (edges.get(ia), edges.get(ib)) else { continue };
         if !matches!(a.curve(), mt::Curve::Line(_)) || !matches!(b.curve(), mt::Curve::Line(_)) {
+            if let Some(tol) = arcs
+                && let (Some(ca), Some(cb)) = (arc_circle(a, tol), arc_circle(b, tol))
+                && same_circle(ca, cb, tol)
+            {
+                let (ra, rb) = (find(&mut parent, ia), find(&mut parent, ib));
+                if ra != rb
+                    && let Some(x) = parent.get_mut(ra.max(rb))
+                {
+                    *x = ra.min(rb);
+                    any = true;
+                }
+            }
             continue;
         }
         let other = |e: &mt::Edge| if e.front().id() == *v { e.back().clone() } else { e.front().clone() };
@@ -265,6 +287,7 @@ fn merge_collinear(shell: &mt::Shell, trace: &mut Trace) -> Option<mt::Shell> {
         let (Some(first), Some(last), None) = (ends.next(), ends.next(), ends.next()) else { continue };
         // Walk the run from one end, collecting its vertices in order.
         let mut order = vec![first.id()];
+        let mut walked: Vec<&mt::Edge> = Vec::new();
         let (mut cur, mut prev) = (first.id(), usize::MAX);
         for _ in 0..members.len() {
             let next = at.get(&cur).and_then(|es| es.iter().copied().find(|i| *i != prev && members.contains(i)));
@@ -272,20 +295,35 @@ fn merge_collinear(shell: &mt::Shell, trace: &mut Trace) -> Option<mt::Shell> {
             cur = if e.1.front().id() == cur { e.1.back().id() } else { e.1.front().id() };
             prev = e.0;
             order.push(cur);
+            walked.push(e.1);
         }
         if order.last() != Some(&last.id()) || order.len() != members.len() + 1 {
             continue;
         }
-        // Every piece must lie along the whole run, not just along its neighbour.
-        let Some(dir) = (from_p3(last.point()) - from_p3(first.point())).normalized() else { continue };
-        let straight = members
-            .iter()
-            .filter_map(|i| edges.get(*i))
-            .all(|e| (from_p3(e.back().point()) - from_p3(e.front().point())).normalized().is_some_and(|d| d.dot(dir).abs() > 1.0 - 1e-10));
-        if !straight {
-            continue;
-        }
-        let line = builder::line(&first, &last);
+        let pieces = || members.iter().filter_map(|i| edges.get(*i));
+        let line = if let Some(tol) = arcs
+            && let Some(c) = members.first().and_then(|i| edges.get(*i)).and_then(|e| arc_circle(e, tol))
+        {
+            // Every piece on the one circle, a half turn at most in all (as sketch circles come).
+            let sweep: Option<f64> = pieces().map(|e| arc_circle(e, tol).filter(|x| same_circle(c, *x, tol)).map(|x| x.3)).sum();
+            let Some(mid) = walked.get(walked.len() / 2) else { continue };
+            if !sweep.is_some_and(|s| s <= std::f64::consts::PI + 1e-7) {
+                continue;
+            }
+            // Through a point inside the run: halfway along its middle piece.
+            use mt::{BoundedCurve, ParametricCurve};
+            let (t0, t1) = mid.curve().range_tuple();
+            builder::circle_arc(&first, &last, mid.curve().subs((t0 + t1) * 0.5))
+        } else {
+            // Every piece must lie along the whole run, not just along its neighbour.
+            let Some(dir) = (from_p3(last.point()) - from_p3(first.point())).normalized() else { continue };
+            let straight = pieces()
+                .all(|e| (from_p3(e.back().point()) - from_p3(e.front().point())).normalized().is_some_and(|d| d.dot(dir).abs() > 1.0 - 1e-10));
+            if !straight {
+                continue;
+            }
+            builder::line(&first, &last)
+        };
         trace.made_of(&line, members.iter().filter_map(|i| edges.get(*i)).map(|e| e.id()));
         for i in members {
             if let Some(e) = edges.get(*i) {
@@ -324,6 +362,28 @@ fn merge_collinear(shell: &mt::Shell, trace: &mut Trace) -> Option<mt::Shell> {
         *f = absolute_face(f, wires)?;
     }
     Some(faces.into())
+}
+
+/// The circle an arc edge lies on (centre, radius, unit axis either way) and the turn it sweeps;
+/// None for lines and other curves.
+fn arc_circle(e: &mt::Edge, tol: f64) -> Option<(Vec3, f64, Vec3, f64)> {
+    use mt::{BoundedCurve, ParametricCurve};
+    if matches!(e.curve(), mt::Curve::Line(_)) {
+        return None;
+    }
+    let (o, r, axis) = crate::curveblend::circle_of(e, tol)?;
+    let c = e.curve();
+    let (t0, t1) = c.range_tuple();
+    let turn = |p: mt::Point3, q: mt::Point3| {
+        let (p, q) = (from_p3(p) - o, from_p3(q) - o);
+        p.cross(q).len().atan2(p.dot(q))
+    };
+    let (a, m, b) = (c.subs(t0), c.subs((t0 + t1) * 0.5), c.subs(t1));
+    Some((o, r, axis, turn(a, m) + turn(m, b)))
+}
+
+fn same_circle(a: (Vec3, f64, Vec3, f64), b: (Vec3, f64, Vec3, f64), tol: f64) -> bool {
+    a.0.dist(b.0) < tol && (a.1 - b.1).abs() < tol && a.2.dot(b.2).abs() > 1.0 - 1e-9
 }
 
 /// The exact curve an approximate edge (a boolean's intersection curve) really is: a line or a
@@ -478,7 +538,7 @@ pub(crate) fn planar_surfaces(shell: &mt::Shell, tol: f64) -> Option<mt::Shell> 
 /// Heal a solid; returns the input unchanged when nothing applies or healing fails.
 #[cfg(test)]
 pub fn heal(solid: Solid, size: f64) -> Solid {
-    healed(solid, size, &[], false, false).0
+    healed(solid, size, &[], false, false, false).0
 }
 
 /// What healing made each face and edge of its result from.
@@ -537,21 +597,30 @@ impl HealMap {
 /// along lines they were split along on purpose (`keep`), with what each face and edge of the
 /// result was made from (`None` when that could not be followed).
 pub(crate) fn heal_traced(solid: Solid, size: f64, keep: &[Vec<Vec3>]) -> (Solid, Option<HealMap>) {
-    healed(solid, size, keep, true, false)
+    healed(solid, size, keep, true, false, false)
+}
+
+/// [`heal_traced`] for a prism boolean's union, whose walls are exact: the strips its slabs
+/// split a cylinder into merge as well, and the arcs they leave split join (#2844).
+pub(crate) fn heal_prism_traced(solid: Solid, size: f64, keep: &[Vec<Vec3>]) -> (Solid, Option<HealMap>) {
+    healed(solid, size, keep, true, false, true)
 }
 
 /// [`heal_traced`] that only merges coplanar neighbouring faces and joins the straight edges
-/// they leave split in line (#1049), leaving every curve and surface as it is: for results
-/// whose geometry is already exact (a prism boolean's).
+/// they leave split in line (#1049), and merges the strips of a cylinder and joins the arcs they
+/// leave split (#2844), leaving every other curve and surface as it is: for results whose
+/// geometry is already exact (a prism boolean's).
 pub(crate) fn merge_faces_traced(solid: Solid, size: f64, keep: &[Vec<Vec3>]) -> (Solid, Option<HealMap>) {
-    healed(solid, size, keep, true, true)
+    healed(solid, size, keep, true, true, true)
 }
 
-/// The healed solid, and what it was made from when `traced`.
-fn healed(solid: Solid, size: f64, keep: &[Vec<Vec3>], traced: bool, faces_only: bool) -> (Solid, Option<HealMap>) {
+/// The healed solid, and what it was made from when `traced`. Faces on one cylinder merge and
+/// arcs of one circle join only when the solid is a prism boolean's (`prism`): elsewhere
+/// surfaces and curves are only near their cylinders and circles.
+fn healed(solid: Solid, size: f64, keep: &[Vec<Vec3>], traced: bool, faces_only: bool, prism: bool) -> (Solid, Option<HealMap>) {
     // Edges a boolean made are intersection curves, which panic where they no longer
     // evaluate; the solid then stays as it is.
-    match crate::guard("heal", || Ok(heal_shells(&solid, size, keep, traced, faces_only))) {
+    match crate::guard("heal", || Ok(heal_shells(&solid, size, keep, traced, faces_only, prism))) {
         Ok(Some((healed, map))) => (healed, map),
         _ => {
             let map = if traced { crate::guard("heal map", || Ok(HealMap::identity(&solid))).ok() } else { None };
@@ -597,7 +666,7 @@ impl Trace {
     }
 }
 
-fn heal_shells(solid: &Solid, size: f64, keep: &[Vec<Vec3>], traced: bool, faces_only: bool) -> Option<(Solid, Option<HealMap>)> {
+fn heal_shells(solid: &Solid, size: f64, keep: &[Vec<Vec3>], traced: bool, faces_only: bool, prism: bool) -> Option<(Solid, Option<HealMap>)> {
     let tol = (size * 1e-7).max(1e-9);
     let mut shells = Vec::new();
     let mut changed = false;
@@ -611,7 +680,7 @@ fn heal_shells(solid: &Solid, size: f64, keep: &[Vec<Vec3>], traced: bool, faces
         let count = cur.face_iter().count();
         let mut from: Vec<Vec<usize>> = (first..first + count).map(|i| vec![i]).collect();
         first += count;
-        // Faces come out in place, one for one, except where coplanar ones merge.
+        // Faces come out in place, one for one, except where coplanar or co-cylindrical ones merge.
         if !faces_only && let Some(m) = planar_surfaces(&cur, (size * 1e-7).max(1e-9)) {
             cur = m;
             changed = true;
@@ -625,9 +694,16 @@ fn heal_shells(solid: &Solid, size: f64, keep: &[Vec<Vec3>], traced: bool, faces
             from = groups.iter().map(|g| g.iter().filter_map(|i| from.get(*i)).flatten().copied().collect()).collect();
             changed = true;
         }
+        // Strips of one cylinder side by side (a prism boolean splits its walls at every other
+        // section's vertices) become one face per half wall over their height (#2844).
+        if prism && let Some((m, groups)) = cylinders::merge_cocylindrical(&cur, tol, keep) {
+            cur = m;
+            from = groups.iter().map(|g| g.iter().filter_map(|i| from.get(*i)).flatten().copied().collect()).collect();
+            changed = true;
+        }
         // Straight edges the merged pieces leave split at vertices nothing else uses join
         // into one, after any boolean (#1049): later features meet one edge, not the pieces.
-        if let Some(m) = merge_collinear(&cur, &mut trace) {
+        if let Some(m) = merge_collinear(&cur, prism.then_some(tol), &mut trace) {
             cur = m;
             changed = true;
         }

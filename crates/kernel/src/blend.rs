@@ -2869,7 +2869,9 @@ mod tests {
     #[test]
     fn a_blend_runs_into_a_cylinder_at_its_end() {
         let body = box_and_boss();
-        let vol = |b: &Body| b.tessellate(1e-4).unwrap().measure().volume;
+        // Meshed finely: at 1e-4 the meshes of the wall a half turn wide err by more than the
+        // blend's own volume allows.
+        let vol = |b: &Body| b.tessellate(2e-5).unwrap().measure().volume;
         let v0 = vol(&body);
         // The edge (40, 0..8, 0) ends in the cylinder wall at y = 8.
         let len = 20.0 - (144.0f64 - 0.0).sqrt();
@@ -2982,7 +2984,8 @@ mod tests {
         // wall is in pieces (inside the box it is gone): the blend's end lies on the cylinder
         // where the box was, now laid bare.
         let body = box_and_boss();
-        let vol = |b: &Body| b.tessellate(1e-4).unwrap().measure().volume;
+        // Meshed finely, as in `a_blend_runs_into_a_cylinder_at_its_end`.
+        let vol = |b: &Body| b.tessellate(2e-5).unwrap().measure().volume;
         let v0 = vol(&body);
         for (shape, area) in [(Shape::Round, (1.0 - std::f64::consts::PI / 4.0) * 0.64), (Shape::Flat, 0.32)] {
             let out = blend(&body, &[Vec3::new(40.0, 4.0, 20.0)], 0.8, shape, "blend").unwrap();
@@ -3089,5 +3092,47 @@ mod tests {
             assert!((actual - removed).abs() < 1e-3 * removed, "{actual} vs {removed}");
             assert!(rounded.validity().is_empty());
         }
+    }
+
+    /// Two crossing cylinders (r 17 and 9.5, 12 apart) with a bar joined to the big one.
+    fn crossing_cylinders_and_bar() -> Body {
+        let cyl = |c: Vec3, r: f64| crate::build::cylinder(c, Vec3::Z, r, 10.0).unwrap();
+        let body = crate::ops::boolean(&cyl(Vec3::ZERO, 17.0), &cyl(Vec3::new(12.0, 0.0, 0.0), 9.5), crate::BoolOp::Union).unwrap().unwrap();
+        let bar = crate::build::box_solid(Vec3::new(-80.0, -5.0, 0.0), Vec3::new(-10.0, 5.0, 10.0)).unwrap();
+        crate::ops::boolean(&body, &bar, crate::BoolOp::Union).unwrap().unwrap()
+    }
+
+    #[test]
+    fn a_refused_edge_is_not_rolled_again_after_blends_far_from_it() {
+        // The small cylinder's rim refuses a round of 3 (the ball doesn't fit where the rim runs
+        // into the seams with the big one). The bar has two straight edges at its far end that
+        // round on their own. Each blend there leaves the rim's surroundings as they were, so
+        // the rim is tried once, not once per blend (in one order: refused that way, every
+        // other order is tried too).
+        let body = crossing_cylinders_and_bar();
+        let rim = Vec3::new(21.5, 0.0, 10.0);
+        let ends = [Vec3::new(-80.0, -5.0, 5.0), Vec3::new(-80.0, 5.0, 5.0)];
+        ROLLS.with(|n| n.set(0));
+        let e = blend_in_order(&body, &[rim, ends[0], ends[1]], 3.0, Shape::Round, "fillet", false).unwrap_err();
+        assert!(e.to_string().contains("the ball doesn't fit"), "{e}");
+        let rolls = ROLLS.with(|n| n.get());
+        assert_eq!(rolls, 1, "the rim was rolled {rolls} times");
+        // The far edges alone still round.
+        assert!(fillet(&body, &ends, 3.0).is_ok());
+    }
+
+    #[test]
+    fn the_seam_of_crossing_cylinders_rounds() {
+        // The walls cross at 43.3 degrees; a round of 3 fills 0.10686 mm^2 of the corner
+        // (integrated in 2D), over the 10 mm height. The walls were strips (#2844) too narrow
+        // for it.
+        let body = crossing_cylinders_and_bar();
+        let along = (17.0f64 * 17.0 - 9.5 * 9.5 + 12.0 * 12.0) / 24.0;
+        let seam = Vec3::new(along, (289.0 - along * along).sqrt(), 5.0);
+        let out = fillet(&body, &[seam], 3.0).unwrap();
+        assert!(out.validity().is_empty(), "{:?}", out.validity());
+        let vol = |b: &Body| b.tessellate(2e-5).unwrap().measure().volume;
+        let added = vol(&out) - vol(&body);
+        assert!((added - 1.0686).abs() < 1.0686 * 5e-3, "{added}");
     }
 }

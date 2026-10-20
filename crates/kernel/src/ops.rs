@@ -1183,7 +1183,7 @@ fn prism_result(a: &Body, b: &Body, op: BoolOp, size: f64, counts: &[(usize, usi
         result.map(|body| {
             body.map(|body| {
                 if op == BoolOp::Union {
-                    guard("heal prism boolean", || recorded::heal_body(&body, (*body.solid).clone(), size, &keep, counts)).unwrap_or(body)
+                    guard("heal prism boolean", || recorded::heal_prism_union(&body, size, &keep, counts)).unwrap_or(body)
                 } else if authored(a) || authored(b) {
                     body
                 } else {

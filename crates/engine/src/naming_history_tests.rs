@@ -378,8 +378,7 @@ fn a_cut_through_one_of_two_bosses_names_only_its_own_walls() {
     run(&mut s, "sketch.finish", json!({}));
     run(&mut s, "solid.extrude", json!({"distance": 16, "body_name": "Arm"}));
     run(&mut s, "solid.cylinder", json!({"diameter": 46.0, "height": 22, "base": [0, 0, 0], "operation": "join", "targets": ["Arm"]}));
-    let boss = named_at(&listed(&mut s, "Arm"), [19.98, -4.24, 19.0]);
-    assert!(boss.starts_with("F3:side"), "{boss}");
+    boss_wall_named(&listed(&mut s, "Arm"));
     run(&mut s, "solid.cylinder", json!({"diameter": 30.0, "height": 20, "base": [170.0, 0, 0], "operation": "join", "targets": ["Arm"]}));
     let joined = listed(&mut s, "Arm");
     assert!(joined.iter().all(|(_, exact, _)| *exact), "{joined:?}");
@@ -394,10 +393,22 @@ fn a_cut_through_one_of_two_bosses_names_only_its_own_walls() {
     for (at, line) in [([0.0, -6.35, 11.0], "l1"), ([6.35, 0.0, 11.0], "l2"), ([0.0, 6.35, 11.0], "l3"), ([-6.35, 0.0, 11.0], "l4")] {
         assert_eq!(named_at(&cut, at), format!("F6:side:{line}"));
     }
-    assert_eq!(named_at(&cut, [19.98, -4.24, 19.0]), boss);
+    boss_wall_named(&cut);
     run(&mut s, "solid.fillet", json!({"edges": [[6.35, 6.35, 10], [-6.35, 6.35, 10], [-6.35, -6.35, 10], [6.35, -6.35, 10]], "radius": 1.5}));
     let filleted = listed(&mut s, "Arm");
     let blends = filleted.iter().filter(|(n, _, _)| n.starts_with("F7:blend:")).count();
     assert_eq!(blends, 4, "{filleted:?}");
-    assert_eq!(named_at(&filleted, [19.98, -4.24, 19.0]), boss);
+    boss_wall_named(&filleted);
+}
+
+/// The faces of the first boss's wall above the arm (z 16 to 22, round the origin) are named
+/// after the boss's side. Merged a half turn at a time (#2844), how it is cut into faces
+/// changes as later booleans split and merge it again; its name does not.
+fn boss_wall_named(faces: &[(String, bool, [f64; 3])]) {
+    let wall: Vec<&String> = faces
+        .iter()
+        .filter(|(_, _, c)| c[2] > 16.5 && c[2] < 21.5 && (c[0] * c[0] + c[1] * c[1]).sqrt() > 10.0 && (c[0] * c[0] + c[1] * c[1]).sqrt() < 23.01)
+        .map(|(n, _, _)| n)
+        .collect();
+    assert!(!wall.is_empty() && wall.iter().all(|n| n.starts_with("F3:side")), "{wall:?} in {faces:?}");
 }

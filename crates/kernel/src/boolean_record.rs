@@ -148,7 +148,17 @@ pub(crate) fn heal_build(
     edges: Option<Vec<Vec<EdgeOrigin>>>,
     counts: &[(usize, usize)],
 ) -> Result<Body> {
-    let (healed, map) = crate::heal::heal_traced(solid, size, keep);
+    build_healed(crate::heal::heal_traced(solid, size, keep), faces, edges, counts)
+}
+
+/// The body a healed solid makes (`healed` and what healing made it from), with the history its
+/// unhealed faces and edges had carried through.
+fn build_healed(
+    (healed, map): (Solid, Option<crate::heal::HealMap>),
+    faces: Option<Vec<FaceProv>>,
+    edges: Option<Vec<Vec<EdgeOrigin>>>,
+    counts: &[(usize, usize)],
+) -> Result<Body> {
     if !edges_evaluate(&healed) {
         return Err(crate::KernelError::Failed("an edge of the result does not evaluate".into()));
     }
@@ -168,6 +178,13 @@ pub(crate) fn truck_result(s: Solid, h: Option<Shapeops>, size: f64, keep: &[Vec
 pub(crate) fn heal_body(body: &Body, solid: Solid, size: f64, keep: &[Vec<Vec3>], counts: &[(usize, usize)]) -> Result<Body> {
     let (faces, edges) = body.history().map(|h| (h.faces.clone(), h.edges.iter().map(|e| e.origins.clone()).collect())).unzip();
     heal_build(solid, size, keep, faces, edges, counts)
+}
+
+/// [`heal_body`] for a prism boolean's union: the strips its slabs split a cylinder into merge
+/// too (#2844).
+pub(crate) fn heal_prism_union(body: &Body, size: f64, keep: &[Vec<Vec3>], counts: &[(usize, usize)]) -> Result<Body> {
+    let (faces, edges) = body.history().map(|h| (h.faces.clone(), h.edges.iter().map(|e| e.origins.clone()).collect())).unzip();
+    build_healed(crate::heal::heal_prism_traced((*body.solid).clone(), size, keep), faces, edges, counts)
 }
 
 /// A prism boolean's result `body` with the coplanar pieces its slabs leave merged (nothing

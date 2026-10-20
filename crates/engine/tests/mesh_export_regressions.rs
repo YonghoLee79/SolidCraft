@@ -75,3 +75,47 @@ fn a_rim_cut_by_a_cylinder_exports_closed() {
     let open = open_edges(&triangles);
     assert!(open.is_empty(), "STL: {} edges not used twice, e.g. {:?}", open.len(), open.first());
 }
+
+/// #2844: a ring joined onto a plate with a grid of square holes, sunk 0.6 mm into it (the
+/// issue's script) and standing on it: each wall above the plate stays one cylinder rather than
+/// a strip per hole edge its foot crosses (sunk, its foot in each hole it crosses stays a face of
+/// its own, two where the circle's halves meet), and the body still exports closed.
+#[test]
+fn a_ring_on_a_perforated_plate_keeps_whole_walls_and_exports_closed() {
+    for (offset, distance, cylinders) in [("0.6", 20.6, 13), ("1.2", 20.0, 2)] {
+        let mut s = Session::default();
+        run(
+            &mut s,
+            json!([
+                {"command": "solid.box", "params": {"corner": [0, 0, 0], "length": 80, "width": 80, "height": 1.2, "name": "Plate"}},
+                {"command": "sketch.create", "params": {"plane": "XY", "offset": "1.2", "name": "Grid"}},
+                {"command": "sketch.rectangle.two_point", "params": {"p0": [4.8, 4.8], "p1": [11.2, 11.2]}},
+                {"command": "sketch.pattern.rectangular", "params": {"entities": ["l1", "l2", "l3", "l4"], "count": 9, "spacing": 8, "count2": 9, "spacing2": 8, "dir": [1, 0], "dir2": [0, 1]}},
+                {"command": "sketch.finish", "params": {}},
+                {"command": "solid.extrude", "params": {"sketch": "Grid", "distance": 1.3, "direction": "negative", "operation": "cut", "name": "Holes"}},
+                {"command": "sketch.create", "params": {"plane": "XY", "offset": offset, "name": "RingSk"}},
+                {"command": "sketch.circle.center", "params": {"center": [41.3, 40.7], "radius": 20.8}},
+                {"command": "sketch.circle.center", "params": {"center": [41.3, 40.7], "radius": 19.6}},
+                {"command": "sketch.finish", "params": {}},
+                {"command": "solid.extrude", "params": {"sketch": "RingSk", "distance": distance, "operation": "join", "profiles": [{"point": [61.5, 40.7]}], "name": "Ring"}}
+            ]),
+        );
+        let measured = s.execute("inspect.measure", &json!({})).unwrap();
+        assert_eq!(measured["bodies"][0]["face_types"]["cylinder"], cylinders, "ring from z {offset}: {}", measured["bodies"][0]["face_types"]);
+
+        let st = s.model.state();
+        let mut index: HashMap<[u32; 3], u32> = HashMap::new();
+        let triangles: Vec<[u32; 3]> = read_stl(&export(&st, &[], Format::StlBinary, "tray").unwrap())
+            .unwrap()
+            .iter()
+            .map(|t| {
+                t.map(|p| {
+                    let n = index.len() as u32;
+                    *index.entry(p.map(f32::to_bits)).or_insert(n)
+                })
+            })
+            .collect();
+        let open = open_edges(&triangles);
+        assert!(open.is_empty(), "ring from z {offset}: {} edges not used twice, e.g. {:?}", open.len(), open.first());
+    }
+}
