@@ -57,17 +57,8 @@ fn loop_area(edges: &[mt::Edge], n: Vec3) -> f64 {
 fn inside(p: Vec3, edges: &[mt::Edge], n: Vec3) -> bool {
     let u = n.any_perp();
     let w = n.cross(u);
-    let pts: Vec<(f64, f64)> = edges.iter().flat_map(samples).map(|q| (q.dot(u), q.dot(w))).collect();
-    let (px, py) = (p.dot(u), p.dot(w));
-    let k = pts.len();
-    let mut c = false;
-    for i in 0..k {
-        let (Some(&(ax, ay)), Some(&(bx, by))) = (pts.get(i), pts.get((i + 1) % k)) else { continue };
-        if (ay > py) != (by > py) && px < ax + (py - ay) / (by - ay) * (bx - ax) {
-            c = !c;
-        }
-    }
-    c
+    let pts: Ring<(f64, f64)> = edges.iter().flat_map(samples).map(|q| (q.dot(u), q.dot(w))).collect();
+    pts.contains((p.dot(u), p.dot(w)))
 }
 
 /// Do the points lie along one of the lines faces were split along on purpose (polylines;

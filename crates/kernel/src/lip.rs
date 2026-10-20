@@ -53,7 +53,7 @@ fn face_at(body: &Body, at: Vec3) -> Result<(usize, Vec3)> {
 
 /// The face's loop moved `w` into the face (to the left of its edges, as a face's boundary has
 /// its inside on the left), corners mitred where the offsets don't already meet.
-fn offset_loop(pieces: &[Piece], n: Vec3, w: f64, tol: f64) -> Result<Vec<Piece>> {
+fn offset_loop(pieces: &Ring<Piece>, n: Vec3, w: f64, tol: f64) -> Result<Ring<Piece>> {
     let left = |a: Vec3, b: Vec3| n.cross(b - a).normalized();
     let mut out: Vec<Piece> = Vec::new();
     for p in pieces {
@@ -81,12 +81,12 @@ fn offset_loop(pieces: &[Piece], n: Vec3, w: f64, tol: f64) -> Result<Vec<Piece>
     }
     // Joints: where the offsets don't meet (sharp corners of lines), the lines are extended or
     // cut back to their crossing.
-    let k = out.len();
-    for i in 0..k {
-        let j = (i + 1) % k;
-        let (Some(pi), Some(pj)) = (out.get(i).copied(), out.get(j).copied()) else { continue };
+    let mut out = Ring::new(out);
+    for i in 0..out.len() {
+        let j = i + 1;
+        let (Some(pi), Some(pj)) = (out.at(i).copied(), out.at(j).copied()) else { continue };
         if pi.b.dist(pj.a) < tol {
-            if let Some(x) = out.get_mut(j) {
+            if let Some(x) = out.at_mut(j) {
                 x.a = pi.b;
             }
             continue;
@@ -102,10 +102,10 @@ fn offset_loop(pieces: &[Piece], n: Vec3, w: f64, tol: f64) -> Result<Vec<Piece>
                 }
                 let t = w0.cross(d2).dot(cr) / den;
                 let x = pi.a + d1 * t;
-                if let Some(e) = out.get_mut(i) {
+                if let Some(e) = out.at_mut(i) {
                     e.b = x;
                 }
-                if let Some(e) = out.get_mut(j) {
+                if let Some(e) = out.at_mut(j) {
                     e.a = x;
                 }
             }
@@ -125,7 +125,7 @@ fn circle_centre(a: Vec3, m: Vec3, b: Vec3) -> Option<Vec3> {
     Some(a + (v.cross(w) * u.len2() + w.cross(u) * v.len2()) * (1.0 / d))
 }
 
-fn pieces(wire: &mt::Wire, size: f64) -> Result<Vec<Piece>> {
+fn pieces(wire: &mt::Wire, size: f64) -> Result<Ring<Piece>> {
     wire.edge_iter()
         .map(|e| {
             let (a, b) = (from_p3(e.front().point()), from_p3(e.back().point()));
@@ -226,11 +226,9 @@ pub fn raise_band(body: &Body, at: Vec3, width: f64, height: f64, outside: bool)
         let pieces = pieces(along, size)?;
         let moved = offset_loop(&pieces, n, width, tol)?;
         // The band's other edge, on the face.
-        let verts: Vec<mt::Vertex> = moved.iter().map(|p| builder::vertex(p3(p.a))).collect();
-        let k = verts.len();
-        let mut cedges: Vec<mt::Edge> = Vec::with_capacity(k);
-        for (i, p) in moved.iter().enumerate() {
-            let (Some(a), Some(b)) = (verts.get(i), verts.get((i + 1) % k)) else { return Err(fail("vertex")) };
+        let verts: Ring<mt::Vertex> = moved.iter().map(|p| builder::vertex(p3(p.a))).collect();
+        let mut cedges: Vec<mt::Edge> = Vec::with_capacity(verts.len());
+        for ((a, b), p) in verts.edges().zip(moved.iter()) {
             cedges.push(match p.mid {
                 None => builder::line(a, b),
                 Some(m) => builder::circle_arc(a, b, p3(m)),

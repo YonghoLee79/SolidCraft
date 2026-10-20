@@ -1,7 +1,7 @@
 //! Helical sweeps (coils, springs) and lofts to a point (pyramids, cones).
 
 use mt::builder;
-use solidcraft_geom::{Grid, Loop2, Mesh, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Grid, Loop2, Mesh, Plane, Region2, Ring, Seg2, Vec2, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, Solid, p3};
@@ -197,11 +197,11 @@ pub fn loft_to_point(plane: &Plane, lp: &Loop2, apex: Vec3) -> Result<Body> {
     let base = crate::numbered::number_loops([lp]).pop().ok_or_else(|| KernelError::Invalid("loft to a point: bad section".into()))?.oriented(above);
     let lp = &base.lp;
     guard("loft to point", || {
-        let verts: Vec<mt::Vertex> = lp.segs.iter().map(|s| builder::vertex(p3(plane.to_world(s.start())))).collect();
+        let verts: Ring<mt::Vertex> = lp.segs.iter().map(|s| builder::vertex(p3(plane.to_world(s.start())))).collect();
         let top = builder::vertex(p3(apex));
         let m = verts.len();
-        let edges: Vec<mt::Edge> = (0..m).filter_map(|i| Some(builder::line(verts.get(i)?, verts.get((i + 1) % m)?))).collect();
-        let sides: Vec<mt::Edge> = verts.iter().map(|v| builder::line(v, &top)).collect();
+        let edges: Vec<mt::Edge> = verts.edges().map(|(a, b)| builder::line(a, b)).collect();
+        let sides: Ring<mt::Edge> = verts.iter().map(|v| builder::line(v, &top)).collect();
         let mut faces = Vec::with_capacity(m + 1);
         // History as the faces are made: the base is the section (the start cap), each
         // triangle comes from its base segment.
@@ -210,7 +210,7 @@ pub fn loft_to_point(plane: &Plane, lp: &Loop2, apex: Vec3) -> Result<Body> {
         faces.push(builder::try_attach_plane(&[bw]).map_err(|e| KernelError::Failed(format!("loft base: {e}")))?);
         history.push(record::cap(false));
         for i in 0..m {
-            let (Some(e), Some(up), Some(down)) = (edges.get(i), sides.get((i + 1) % m), sides.get(i)) else { continue };
+            let (Some(e), Some(up), Some(down)) = (edges.get(i), sides.at(i + 1), sides.at(i)) else { continue };
             // Triangle i: along the base edge, up to the apex, back down — opposite to the base's winding.
             let w: mt::Wire = vec![e.inverse(), down.clone(), up.inverse()].into();
             faces.push(builder::try_attach_plane(&[w]).map_err(|e| KernelError::Failed(format!("loft side: {e}")))?);
