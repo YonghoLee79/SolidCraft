@@ -66,15 +66,19 @@ fn liftable(sk: &solidcraft_sketch::Sketch, curves: &[usize], comp: &dyn Fn(Vec2
 }
 
 /// Turn the curves `curves` of the target 3D sketch into drawn 3D curves through the same
-/// places, moved by `offset` (world); or, with `grab` (a sketch point and the world place it goes
-/// to), turn every line and fit-point spline through that point (or the point alone) into drawn
-/// 3D curves and move just that point there, its neighbours staying joined. Returns the new
-/// drawn curves and, for a grab, where the grabbed point is now (curve id, fit index).
+/// places, moved by `offset` (world); the points `points` move by `offset` too, each on its own:
+/// a lone point becomes a drawn 3D point, and the lines and fit-point splines through one that
+/// isn't on a moved curve become drawn 3D curves with just that point moved. With `grab` (a
+/// sketch point and the world place it goes to), turn every line and fit-point spline through that
+/// point (or the point alone) into drawn 3D curves and move just that point there, its neighbours
+/// staying joined. Returns the new drawn curves and, for a grab, where the grabbed point is now
+/// (curve id, fit index).
 pub(super) fn lift(
     s: &mut Session,
     p: &Value,
     cmd: &str,
     curves: &[String],
+    points: &[String],
     offset: Vec3,
     grab: Option<(String, Vec3)>,
 ) -> Result<(Vec<String>, Option<(String, usize)>, Value)> {
@@ -103,16 +107,47 @@ pub(super) fn lift(
         }
         which.sort_unstable();
         which.dedup();
-        let lifted = liftable(sk, &which, &comp, cmd)?;
-        sk.remove_curves(&which);
-        if let Some((pi, _)) = lone {
-            sk.remove_points(&[pi]);
+        // Points moved on their own: lone ones, and ones on curves that stay where they are
+        // (those curves are lifted in place, then just the point moves).
+        let mut alone: Vec<(usize, Vec3)> = Vec::new();
+        let mut on_curves: Vec<usize> = Vec::new();
+        let mut in_place: Vec<usize> = Vec::new();
+        for r in points {
+            let pi = sk.resolve_point(r).filter(|i| *i != 0).ok_or_else(|| bad(cmd, format!("no point `{r}`")))?;
+            let through: Vec<usize> = sk.curves.iter().enumerate().filter(|(_, c)| c.kind.uses(pi)).map(|(i, _)| i).collect();
+            if through.is_empty() {
+                if !alone.iter().any(|(q, _)| *q == pi) {
+                    alone.push((pi, sk.points.get(pi).map(|q| comp(q.pos)).ok_or_else(|| bad(cmd, "the point is missing"))?));
+                }
+            } else if !through.iter().all(|c| which.contains(c)) {
+                on_curves.push(pi);
+                in_place.extend(through.into_iter().filter(|c| !which.contains(c)));
+            }
         }
+        in_place.sort_unstable();
+        in_place.dedup();
+        let moved = which.len();
+        let mut all = which.clone();
+        all.extend(in_place.iter().copied());
+        let lifted = liftable(sk, &all, &comp, cmd)?;
+        sk.remove_curves(&all);
+        let mut gone: Vec<usize> = alone.iter().map(|(q, _)| *q).collect();
+        if let Some((pi, _)) = lone {
+            gone.push(pi);
+        }
+        sk.remove_points(&gone);
         let mut made = Vec::new();
         let mut at = None;
-        for (ids, fit) in &lifted {
-            let fit: Vec<Vec3> = fit.iter().map(|q| *q + shift).collect();
+        // Where each point moved on its own sits on the drawn curves (curve id, fit index).
+        let mut placed: Vec<(usize, String, usize)> = Vec::new();
+        for (n, (ids, fit)) in lifted.iter().enumerate() {
+            let fit: Vec<Vec3> = if n < moved { fit.iter().map(|q| *q + shift).collect() } else { fit.clone() };
             let w = sk.add_drawn_wire_in(&fit, WireSpace::Component)?;
+            for (k, q) in ids.iter().enumerate() {
+                if n >= moved && on_curves.contains(q) {
+                    placed.push((*q, w.clone(), k));
+                }
+            }
             if let Some((pi, _)) = grabbed
                 && at.is_none()
                 && let Some(k) = ids.iter().position(|i| *i == pi)
@@ -125,6 +160,21 @@ pub(super) fn lift(
             let w = sk.add_drawn_wire_in(&[q + shift], WireSpace::Component)?;
             at = Some((w.clone(), 0));
             made.push(w);
+        }
+        for (_, q) in &alone {
+            made.push(sk.add_drawn_wire_in(&[*q + shift], WireSpace::Component)?);
+        }
+        // Each point on curves lifted in place moves by the offset, once (the first curve it is
+        // on; the drawn curves through it stay joined there).
+        let mut done: Vec<usize> = Vec::new();
+        for (pi, w, k) in &placed {
+            if done.contains(pi) {
+                continue;
+            }
+            done.push(*pi);
+            if let Some(now) = sk.wire_index(w).and_then(|i| sk.wires.get(i)).and_then(|x| x.fit.get(*k)).copied() {
+                sk.move_drawn_point(w, *k, now + shift)?;
+            }
         }
         if let (Some((_, to)), Some((w, k))) = (grabbed, &at) {
             sk.move_drawn_point(w, *k, solidcraft_doc::apply_point(&inverse, to))?;
@@ -234,7 +284,7 @@ fn move3d(s: &mut Session, p: &Value) -> Result<Value> {
             (None, Some(d)) => at + d,
             _ => return Err(bad(cmd, "give `to` or `by`")),
         };
-        let (wires, grabbed, info) = lift(s, p, cmd, &[], Vec3::ZERO, Some((point.to_string(), to)))?;
+        let (wires, grabbed, info) = lift(s, p, cmd, &[], &[], Vec3::ZERO, Some((point.to_string(), to)))?;
         let (wire, index) = grabbed.ok_or_else(|| bad(cmd, "the point did not lift"))?;
         return Ok(json!({"moved": 1, "lifted": wires, "wire": wire, "index": index, "sketch": info}));
     }
