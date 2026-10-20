@@ -652,8 +652,8 @@ fn main() -> eframe::Result {
                 .until("starting.view", {
                     // The shader compile runs on a worker thread: the window keeps drawing and
                     // answering (moving, minimizing) meanwhile (#1210).
-                    let mut job: Option<std::thread::JoinHandle<solidcraft_ui_egui::gpu::Built>> = None;
-                    move |a: &mut App, _| {
+                    let mut job: Option<std::sync::mpsc::Receiver<solidcraft_ui_egui::gpu::Built>> = None;
+                    move |a: &mut App, ctx| {
                         let Some(rs) = &render_state else { return true };
                         let gpu_meshing = !a.solve.cpu_meshing;
                         let build = move |rs: &eframe::egui_wgpu::RenderState| {
@@ -664,26 +664,31 @@ fn main() -> eframe::Result {
                         if job.is_none() {
                             eprintln!("SolidCraft graphics: {:?}, MSAA {}x (requested {}x)", rs.adapter.get_info().backend, rs.msaa_samples, samples);
                             solidcraft_engine::crash::phase("viewport pipelines (shader compile)");
+                            let (done, ready) = std::sync::mpsc::channel();
                             let worker_rs = rs.clone();
-                            match std::thread::Builder::new().name("viewport pipelines".into()).spawn(move || build(&worker_rs)) {
-                                Ok(handle) => job = Some(handle),
-                                Err(e) => {
-                                    log::warn!("viewport pipelines: no worker thread ({e}); compiling on the window's thread");
-                                    let built = build(rs);
-                                    gpu_ready(a, rs, built, samples);
-                                    return true;
-                                }
+                            let wake = ctx.clone();
+                            let work = move || {
+                                let _ = done.send(build(&worker_rs));
+                                // The next frame takes the pipelines at once, not at the page's next redraw.
+                                wake.request_repaint();
+                            };
+                            if let Err(e) = std::thread::Builder::new().name("viewport pipelines".into()).spawn(work) {
+                                log::warn!("viewport pipelines: no worker thread ({e}); compiling on the window's thread");
+                                gpu_ready(a, rs, build(rs), samples);
+                                return true;
                             }
+                            job = Some(ready);
                         }
-                        if !job.as_ref().is_some_and(std::thread::JoinHandle::is_finished) {
-                            return false;
-                        }
-                        match job.take().map(std::thread::JoinHandle::join) {
+                        match job.as_ref().map(std::sync::mpsc::Receiver::try_recv) {
                             Some(Ok(built)) => gpu_ready(a, rs, built, samples),
-                            // The panic hook has written its crash report; the viewport draws on the CPU.
-                            Some(Err(_)) => a.solve.set_status("The 3D view could not start on this graphics device; it draws without it.", true),
+                            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return false,
+                            // The worker panicked (its crash report is written): the viewport draws on the CPU.
+                            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                                a.solve.set_status("The 3D view could not start on this graphics device; it draws without it.", true);
+                            }
                             None => {}
                         }
+                        job = None;
                         true
                     }
                 })
