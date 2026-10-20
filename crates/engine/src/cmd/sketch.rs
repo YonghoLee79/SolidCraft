@@ -179,7 +179,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("entities: [curve, point or constraint ids]"),
     CommandSpec::new("sketch.move_point", "Drag Sketch Point", move_point).icon("sketch_move").enabled(in_sketch).params("point: ref, to: [x,y]"),
     CommandSpec::new("sketch.drag", "Drag Sketch Geometry", drag).icon("sketch_move").enabled(in_sketch).live(drag_live).params(
-        "entity: point or curve, from: [x,y] where it was grabbed, to: [x,y], live?: bool: a point moves toward `to` within the design constraints; when exact cursor placement is impossible, bounded feasible steps minimize cursor distance while keeping design constraints mandatory. A line (spline, conic) slides by to - from; a circle or arc grabbed on its edge takes the radius to `to`. `with?`: [point or curve ids]: the rest of a selection dragged by `entity`, which all slides by to - from as one (circles keep their radii). Long moves use continuation to retain the solution branch, and a step that would sweep an arc through its start is rejected. Returns `reached`: progress along the requested move (0..1; feasible point motion projects its actual displacement onto that move), and `at`: where the grabbed spot went (`from` moved as the dragged points did), the `from` of the next move. `live: true` solves the sketch and leaves later features stale until `sketch.drag_end` or a command that reads the model; `dof` is then the one from before the drag",
+        "entity: point or curve, from: [x,y] where it was grabbed, to: [x,y], live?: bool: points and the material point grabbed on a line move toward `to` within the design constraints. When exact placement is impossible, bounded feasible steps minimize cursor distance. Splines slide by to - from; a circle or arc grabbed on its edge takes the radius to `to`. `with?`: [point or curve ids] moves the rest of a selection with the entity as one translation (circles keep their radii). Long moves retain the solution branch; arcs cannot sweep through their starts. Returns `reached`: progress projected onto the requested move (0..1), `at`: the grabbed position for the next frame, and `retry`: budget-limited progress can continue in another frame. `live: true` shares a work budget across held-solve decomposition and cursor correction; ordinary recovery and the final model evaluation retain their existing limits, not a wall-clock deadline. Later features stay stale until `sketch.drag_end`; `dof` stays from before the drag",
     ),
     CommandSpec::new("sketch.drag_end", "End Sketch Drag", drag_end).icon("sketch_move").enabled(in_sketch).doc_only().params(
         "constraint?: {command: a sketch.constraint.* id, params}: ends a drag made of `sketch.drag` `live: true` frames: adds the constraint it let go on (not kept if it over-constrains the sketch), then evaluates the whole model once; returns the constraint's result and the sketch's solved state and degrees of freedom",
@@ -2453,7 +2453,7 @@ fn drag_frame(s: &mut Session, p: &Value, live: bool) -> Result<(Value, Option<c
         if let Some(link) = super::sketch_create::text_link(sk, r).map(str::to_owned) {
             let moving = sk.link_points(&link).into_iter().filter_map(|i| sk.point(i).map(|p| (i, p))).collect();
             super::sketch_create::move_text(sk, &link, to - from, 0.0, Vec2::ZERO, false)?;
-            return Ok((drag::Dragged { reached: 1.0, moving }, Left::Unsolved));
+            return Ok((drag::Dragged { reached: 1.0, moving, ..Default::default() }, Left::Unsolved));
         }
         // The held solves work on the dimensions' current values (a solved step applies them).
         doc.apply_dimension_values(&doc.param_values().0, sk)?;
@@ -2462,13 +2462,12 @@ fn drag_frame(s: &mut Session, p: &Value, live: bool) -> Result<(Value, Option<c
         // its degrees of freedom.
         Ok((d, if live && last.is_some() { left } else { left.solve_again() }))
     })?;
-    // Where the grabbed spot went: `from` moved as the dragged points did on average (with the
-    // whole step when it followed; otherwise as the sketch's own solve left them).
+    // Lines retain the grabbed material point through rotation. Other entities report the
+    // average displacement of their moving points, as before.
     let sk = s.doc.sketch(id)?;
-    let moves: Vec<Vec2> = d.moving.iter().filter_map(|&(q, was)| Some(sk.point(q)? - was)).collect();
-    let at = from + moves.iter().fold(Vec2::ZERO, |a, m| a + *m) * (1.0 / moves.len().max(1) as f64);
+    let at = d.at(sk, from);
     let rep = rep.or_else(|| last.map(|last| SolveReport { status: solidcraft_sketch::SolveStatus::Solved, failing: Vec::new(), ..last }));
-    let out = json!({"sketch": rep.as_ref().map(report_json), "reached": d.reached, "at": [at.x, at.y]});
+    let out = json!({"sketch": rep.as_ref().map(report_json), "reached": d.reached, "at": [at.x, at.y], "retry": d.retry});
     Ok((out, rep.filter(|_| live).map(|report| crate::LiveEdit { sketch: id, report })))
 }
 

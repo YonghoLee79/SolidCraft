@@ -287,6 +287,8 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
         // The features scroll horizontally in the space right of the playback controls.
         let strip = Rect::from_min_max(pos2(x, r.top()), r.right_bottom());
         ui.scope_builder(UiBuilder::new().max_rect(strip), |ui| {
+            // A plain mouse wheel scrolls the strip sideways too, not only Shift + wheel (#3356).
+            ui.style_mut().always_scroll_the_only_direction = true;
             egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
                 let p = ui.painter().clone();
                 let mut x = ui.max_rect().left();
@@ -622,6 +624,25 @@ mod tests {
         h.app.run("select.clear", json!({})).unwrap();
         h.frames(4);
         h
+    }
+
+    /// A timeline wider than the window scrolls with a plain mouse wheel (#3356).
+    #[test]
+    fn the_mouse_wheel_scrolls_a_long_timeline() {
+        let mut h = Harness::new();
+        for i in 0..80 {
+            h.app.run("sketch.create", json!({"plane": "XY", "name": format!("S{i}")})).unwrap();
+            h.app.run("sketch.finish", json!({})).unwrap();
+        }
+        h.frames(4);
+        let first = crate::scenario::handle_at("timeline:S0").unwrap();
+        let last = crate::scenario::handle_at("timeline:S79").unwrap();
+        assert!(last.x > 1600.0, "the timeline runs past the 1600-point window: {last:?}");
+        h.call("ui.scroll", json!({"x": first.x + 200.0, "y": first.y, "delta": -400.0}));
+        h.frames(30);
+        let moved = crate::scenario::handle_at("timeline:S0").unwrap();
+        assert!(moved.x < first.x - 100.0, "the wheel scrolled the timeline: {first:?} → {moved:?}");
+        assert_eq!(moved.y, first.y);
     }
 
     #[test]

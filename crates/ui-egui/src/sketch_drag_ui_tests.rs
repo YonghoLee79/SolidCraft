@@ -97,6 +97,72 @@ fn steps(a: egui::Pos2, b: egui::Pos2, n: usize) -> Vec<egui::Pos2> {
     (1..=n).map(|k| a + (b - a) * (k as f32 / n as f32)).collect()
 }
 
+fn four_bar() -> Harness {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    run(&mut h, "sketch.create", json!({"plane":"XZ"}));
+    let x = -10.0 + (1600.0 - 400.0 + 52.0 * 52.0) / 104.0;
+    let y = -(1600.0_f64 - (x + 10.0) * (x + 10.0)).sqrt();
+    run(&mut h, "sketch.line", json!({"points":[[0,0],[-10,0],[x,y],[42,0]],"ids":["crank","coupler","rocker"],"infer":false}));
+    run(&mut h, "sketch.line", json!({"points":["crank.start","rocker.end"],"ids":["ground"],"infer":false}));
+    for (line, length) in [("crank", 10), ("coupler", 40), ("rocker", 20), ("ground", 42)] {
+        run(&mut h, "sketch.dimension", json!({"entities":[line],"value":length}));
+    }
+    run(&mut h, "sketch.constraint.horizontal_vertical", json!({"line":"ground"}));
+    run(&mut h, "sketch.options", json!({"snap":false,"show_dimensions":false,"show_constraints":false}));
+    h.settle();
+    h
+}
+
+#[test]
+fn a_four_bar_edge_follows_a_stationary_pointer_and_keeps_the_grab() {
+    let mut h = four_bar();
+    let a = screen(&mut h, -7.0, 0.0);
+    let b = screen(&mut h, -7.0, 11.2);
+    let undo = h.app.session.undo.len();
+    press_and_move(&mut h, &[a, b]);
+    assert_eq!(h.app.viewport.point_drag.as_ref().map(|(id, _, _)| id.as_str()), Some("crank"), "grabbed the edge, not an endpoint");
+    h.frames(8);
+    let nearest = Vec2::new(-10.0, 16.0).normalized().unwrap() * 10.0;
+    assert!(point(&h, "crank.end").dist(nearest) < 0.05, "{:?}", point(&h, "crank.end"));
+    release(&mut h, b);
+    assert!(point(&h, "crank.end").dist(nearest) < 0.05);
+    assert_eq!(h.app.session.undo.len(), undo + 1);
+    run(&mut h, "edit.undo", json!({}));
+    assert!(point(&h, "crank.end").dist(Vec2::new(-10.0, 0.0)) < 1e-7);
+}
+
+#[test]
+fn a_four_bar_release_uses_the_final_pointer_position() {
+    let mut h = four_bar();
+    let a = screen(&mut h, -10.0, 0.0);
+    let b = screen(&mut h, -10.0, 3.0);
+    let end = screen(&mut h, -10.0, 16.0);
+    press_and_move(&mut h, &[a, b]);
+    h.frames(8);
+    assert_eq!(h.app.viewport.point_drag.as_ref().map(|(id, _, _)| id.as_str()), Some("crank.end"));
+    release(&mut h, end);
+    let nearest = Vec2::new(-10.0, 16.0).normalized().unwrap() * 10.0;
+    assert!(point(&h, "crank.end").dist(nearest) < 0.05, "release left {:?}", point(&h, "crank.end"));
+    assert!(!h.app.session.model.is_stale());
+}
+
+#[test]
+fn a_four_bar_edge_grab_keeps_its_pick_offset_when_rotating() {
+    let mut h = four_bar();
+    let a = screen(&mut h, -7.0, 0.25);
+    let b = screen(&mut h, -7.0, 11.2);
+    press_and_move(&mut h, &[a, b]);
+    assert_eq!(h.app.viewport.point_drag.as_ref().map(|(id, _, _)| id.as_str()), Some("crank"));
+    h.frames(8);
+    release(&mut h, b);
+    let local = Vec2::new(0.7, -0.025);
+    let target = Vec2::new(-7.0, 11.2);
+    let closest = target * (10.0 * local.len() / target.len());
+    let end = (closest * local.x - Vec2::new(-closest.y, closest.x) * local.y) * (1.0 / local.dot(local));
+    assert!(point(&h, "crank.end").dist(end) < 0.05, "{:?}, expected {end:?}", point(&h, "crank.end"));
+}
+
 #[test]
 fn a_viewport_drag_solves_the_sketch_live_and_rebuilds_the_model_on_release() {
     let mut h = Harness::new();

@@ -34,6 +34,34 @@ fn check_partial_face_contact_pattern() {
     println!("#674 volume {volume:.6} / {expected_volume:.6} mm³; area {area:.6} / {expected_area:.6} mm²; {shells} shells");
 }
 
+/// A cylinder intersected with a disc carrying a tooth whose corners stand 0.27 mm out of it
+/// (radius 16.92 for 16.65): the general boolean can't intersect them, and the sampled answer
+/// (the disc is inside the cylinder) used to be kept with a warning, corners and all. The
+/// intersection must trim them or fail and leave the body as it was (#3244).
+#[test]
+fn intersection_never_keeps_material_outside_the_trimming_cylinder() {
+    let mut s = Session::default();
+    let (a, b) = ([-0.1706475844770042, 7.63270030627277], [0.1706475844770042, 7.63270030627277]);
+    for (command, params) in [
+        ("solid.cylinder", json!({"radius": 16.65, "height": 5, "body_name": "Base"})),
+        ("sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [-1, 0, 0], "y_dir": [0, 0, 1]}})),
+        ("sketch.line", json!({"points": [a, [-3, 4.99], [3, 4.99], b]})),
+        ("sketch.arc.three_point", json!({"start": b, "through": [0, 7.7], "end": a})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"distance": 1.6875953835063608, "start_offset": 14.962404616493638, "operation": "join", "targets": ["Base"]})),
+    ] {
+        s.execute(command, &params).unwrap();
+    }
+    let before = volume(&s, "Base");
+    let r = s.execute("solid.cylinder", &json!({"radius": 16.65, "height": 14.59, "operation": "intersect", "targets": ["Base"]}));
+    let state = s.model.state();
+    let reach = state.body("Base").unwrap().body.tessellate(1e-3).unwrap().positions.iter().map(|p| p.x.hypot(p.y)).fold(0.0, f64::max);
+    match r {
+        Ok(_) => assert!(reach < 16.65 + 1e-2, "kept material out to radius {reach}"),
+        Err(e) => assert!((volume(&s, "Base") - before).abs() < 1e-9 && reach > 16.9, "{e}"),
+    }
+}
+
 fn replay(script: &str) -> Session {
     let mut s = Session::default();
     let script: Value = serde_json::from_str(script).unwrap();
