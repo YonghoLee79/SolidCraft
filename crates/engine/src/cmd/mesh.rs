@@ -16,7 +16,7 @@ use crate::{
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("mesh.convert", "Convert Mesh", convert)
         .icon("import")
-        .params("body?: mesh body name (default: the selected mesh body); tolerance?: length expression (default 0.05 mm): reconstruct a closed constant-section mechanical mesh as editable planar and cylindrical faces, with a parametric timeline feature; name?"),
+        .params("body?: mesh body name (default: the selected mesh body); tolerance?: length expression (default 0.05 mm): rebuild a closed mesh as a solid body, with a parametric timeline feature — coplanar triangles fuse into planar faces (holes and all) and a curved surface stays faceted, so booleans, fillets, shell, holes and sketches on its faces work; a constant-section part is rebuilt exactly with planar and circular cylindrical faces; name?"),
 ];
 
 /// The mesh body to convert: `body`, else the one selected body.
@@ -32,7 +32,7 @@ fn target(s: &Session, p: &Value, cmd: &str) -> Result<String> {
     }
 }
 
-fn convert(s: &mut Session, p: &Value) -> Result<Value> {
+pub(super) fn convert(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "mesh.convert";
     let state = s.model.state();
     let body = target(s, p, cmd)?;

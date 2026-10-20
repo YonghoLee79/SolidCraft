@@ -1,0 +1,56 @@
+# Importing a mesh as a solid body
+
+A 3MF, STL, OBJ or glTF file imports as **mesh bodies**: they render, measure, move and export,
+but the operations that need a B-rep — boolean, fillet, chamfer, shell, hole, extrude-cut,
+sketch on a face — refuse them ("a boolean needs a solid body"). **Convert Mesh** rebuilds a
+closed mesh as a solid body, so those operations work on it.
+
+## How to convert
+
+- **Right-click a mesh body → Convert to Solid** (in the browser or the viewport): it opens the
+  Convert Mesh dialog with that body picked and its tolerance; or
+- **Convert Mesh** from the toolbar or the command palette, a script, the CLI or the control
+  channel: `mesh.convert {body, tolerance?, name?}`.
+- **On import**: tick **Preferences → Design → Import meshes as solids**, or pass
+  `as_solid: true` yourself (with a `tolerance`, default 0.05 mm). Each imported mesh is then
+  converted where it can be; one that cannot stays a mesh body with a warning, so the import
+  still succeeds.
+
+The conversion is a **timeline feature** (`MeshConvert`): it keeps the body's name, follows the
+features before it (it converts whatever the upstream features last built), takes part in undo,
+and a saved design rebuilds it when it is opened.
+
+## What the conversion does
+
+1. Welds coincident vertices and checks the mesh: closed (two triangles per edge) and
+   consistently oriented (every edge used once each way). A mesh wound inwards is turned outward.
+2. Tries the exact **prismatic** reconstruction first: a closed part that is one profile extruded
+   straight (holes included) is rebuilt with planar faces and, where certified within the
+   tolerance, circular cylindrical walls.
+3. Otherwise every triangle becomes a planar facet, and neighbouring triangles that lie on one
+   plane **fuse into a single face** (with its holes): a box's six sides stay six faces, and a
+   polygonal hole's wall is a ring of quads.
+4. Sews the faces into one solid, checks its validity, and compares its volume with the mesh's: a
+   solid that does not close, or that measures another volume, is refused.
+
+Everything that is not a plane (a bore's wall, a fillet, a freeform surface) stays **faceted**: the
+conversion never invents a surface the mesh does not describe. A constant-section part gets its
+cylinders exactly, because that case is certified analytically.
+
+## Limits and errors
+
+- A closed, consistently oriented mesh of at most **50 000 triangles**, leaving at most
+  **20 000 fused faces**, each with a boundary of at most 8 192 edges. A bigger mesh is refused
+  with its size and the limit: simplify it first.
+- An open or non-manifold mesh, a face boundary that branches (the mesh touches itself at a
+  point), or a solid that cannot be sewn or validated is refused with a message saying which;
+  the design is left unchanged, and on import the body stays a mesh.
+- The work reports its progress to the import card and stops on Cancel.
+- Nothing panics: the kernel guard turns an internal failure into an error.
+
+## What works afterwards
+
+Booleans (join, cut, intersect), fillet, chamfer, shell, hole, extrude-cut, a sketch on a face,
+measure, and export to STEP, IGES, 3MF and STL. A fillet on a faceted wall selects that facet's
+edge, as on any other B-rep: the conversion does not smooth the input's facets into a surface the
+file never had.
