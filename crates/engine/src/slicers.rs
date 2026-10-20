@@ -840,6 +840,9 @@ fn bus_list(program: &str, limit: std::time::Duration) -> Bus {
         // Read on another thread so a long list can't fill the pipe while this one waits, and hand
         // the text back over a channel so that waiting for it has the same deadline: a process
         // the program left running may keep the pipe open long after the program is gone.
+        // The reader is left to end when the pipe closes, not waited for. A busctl that answered but
+        // left a process holding its stdout reads as Slow, and each poll of such a bus can leave one
+        // blocked reader behind until that process lets go.
         let Some(mut stdout) = child.stdout.take() else { return Bus::Unknown };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
