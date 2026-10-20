@@ -772,8 +772,7 @@ fn support_faces(body: &Body, chain: &[mt::Edge], leave: Vec3) -> Result<Vec<mt:
     let mut out = Vec::with_capacity(chain.len());
     for edge in chain {
         let curve = edge.curve();
-        let (t0, t1) = curve.range_tuple();
-        let mid = from_p3(curve.subs(0.5 * (t0 + t1)));
+        let mid = from_p3(curve.subs(curve.range().mid()));
         let mut best: Option<(f64, mt::Face)> = None;
         for face in body.solid.face_iter() {
             if !face.edge_iter().any(|f| f.id() == edge.id()) {
