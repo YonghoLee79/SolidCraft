@@ -236,6 +236,13 @@ fn decode(bytes: &[u8]) -> Option<egui::ColorImage> {
     Some(egui::ColorImage::from_rgba_unmultiplied([SIDE as usize, SIDE as usize], small.as_raw()))
 }
 
+/// `text` on one line, ending in … when it is wider than `width`.
+fn fitted(ui: &egui::Ui, text: &str, width: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), egui::FontId::proportional(13.0), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
+    ui.painter().layout_job(job)
+}
+
 /// An icon, or the first letter of the name on a tile when there is none.
 fn paint_icon(ui: &egui::Ui, rect: egui::Rect, tex: Option<egui::TextureId>, name: &str) {
     match tex {
@@ -301,7 +308,9 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
     let mut pick_custom = false;
     let mut delete: Option<String> = None;
     let mut chosen: Option<String> = None;
-    let r = egui::ComboBox::from_id_salt("sm_slicer").selected_text(text).width(crate::dialogs::FIELD_W).show_ui(ui, |ui| {
+    let name = current.map(|e| e.slicer.name.clone());
+    // A long name ends in … instead of wrapping onto a second line; the full one is in the tooltip.
+    let r = egui::ComboBox::from_id_salt("sm_slicer").selected_text(text).truncate().width(crate::dialogs::FIELD_W).show_ui(ui, |ui| {
         let frame = ctx.cumulative_frame_nr();
         ctx.data_mut(|d| d.insert_temp(egui::Id::new("sc_slicer_popup"), frame));
         for e in &entries {
@@ -314,20 +323,18 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
                 ui.painter().rect_filled(rect, 2.0, fill);
             }
             paint_icon(ui, egui::Rect::from_min_size(rect.left_center() + vec2(3.0, -ICON / 2.0), vec2(ICON, ICON)), tex, &e.slicer.name);
-            ui.painter().text(
-                rect.left_center() + vec2(ICON + 9.0, 0.0),
-                egui::Align2::LEFT_CENTER,
-                &e.slicer.name,
-                egui::FontId::proportional(13.0),
-                ui.visuals().text_color(),
-            );
+            let text = fitted(ui, &e.slicer.name, rect.width() - (ICON + 9.0) - 6.0, ui.visuals().text_color());
+            let (elided, at) = (text.elided, rect.left_center() + vec2(ICON + 9.0, -text.size().y / 2.0));
+            ui.painter().galley(at, text, ui.visuals().text_color());
             crate::scenario::publish_handle(&format!("dialog:Slicer:{}", e.slicer.name), rect.center());
             if e.user {
                 let hint = crate::i18n::format("ui.slicer_delete_tip", &[("program", e.slicer.command.first().map_or("", String::as_str))]);
-                resp.clone().on_hover_text(hint);
+                resp.clone().on_hover_text(if elided { format!("{}\n{hint}", e.slicer.name) } else { hint });
                 if resp.hovered() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
                     delete = Some(e.key.clone());
                 }
+            } else if elided {
+                resp.clone().on_hover_text(&e.slicer.name);
             }
             if resp.clicked() {
                 chosen = Some(e.key.clone());
@@ -354,6 +361,9 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
             ui.close();
         }
     });
+    if let Some(name) = name {
+        r.response.clone().on_hover_text(name);
+    }
     if let Some(e) = current {
         let tex = icon(&mut app.slicer_menu, &ctx, e);
         let rect = r.response.rect;
@@ -742,6 +752,21 @@ mod tests {
         assert!(status.2 && status.0.contains("/tmp/part.3mf"), "{status:?}");
         assert!(!seen.exists());
         let _ = std::fs::remove_dir_all(seen.parent().unwrap());
+    }
+
+    #[test]
+    fn a_long_slicer_name_is_cut_with_an_ellipsis_to_fit_its_row() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let long = "PrusaSlicer (Flatpak, master, a rather long install label)";
+            let galley = fitted(ui, long, 120.0, Color32::WHITE);
+            assert!(galley.elided, "does not fit, so it is cut");
+            assert!(galley.size().x <= 120.0 + 0.5, "{}", galley.size().x);
+            assert_eq!(galley.rows.len(), 1, "one line");
+            let short = fitted(ui, "OrcaSlicer", 120.0, Color32::WHITE);
+            assert!(!short.elided && short.size().x <= 120.0);
+        });
+        output.textures_delta.clear();
     }
 
     #[test]
