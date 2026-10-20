@@ -139,12 +139,10 @@ fn batch(app: &mut SolveApp, q: params::Batch) -> Outcome {
     if steps.len() > MAX_BATCH {
         return err(format!("engine.batch: commands must be an array of at most {MAX_BATCH} steps"));
     }
-    // The agent cursor acts out each `engine.execute` on its own.
-    if app.ui.agent_cursor.show {
-        return err("engine.batch unavailable: the agent cursor is shown");
-    }
-    if let Some((i, c)) = steps.iter().enumerate().find_map(|(i, step)| command(step).filter(|c| LOADS_A_FILE.contains(c)).map(|c| (i, c))) {
-        return err(format!("engine.batch unavailable: step {i} ({c}) loads a file"));
+    // (With the agent cursor shown, the pointer has already acted out a short summary of the
+    // batch: `agent_cursor::intercept`.)
+    if let Some(why) = batch_refusal(steps) {
+        return err(why);
     }
     let (rollback, profile) = (q.rollback, q.profile);
     let timed = profile || q.timings;
