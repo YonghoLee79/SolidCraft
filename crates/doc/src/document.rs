@@ -1053,6 +1053,15 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         corners: Vec<FlangeCorner>,
     },
+    SheetCornerJoin {
+        covering: String,
+        covered: String,
+        corner_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Overlap")]
+        overlap: Option<Expr>,
+        body: BodyName,
+    },
     /// Flat hems on sheet edges.
     SheetHem {
         edges: Vec<Position>,
@@ -2126,6 +2135,7 @@ impl FeatureKind {
             FeatureKind::SheetBase { .. }
                 | FeatureKind::SheetContour { .. }
                 | FeatureKind::SheetFlange { .. }
+                | FeatureKind::SheetCornerJoin { .. }
                 | FeatureKind::SheetHem { .. }
                 | FeatureKind::SheetPerforate { .. }
                 | FeatureKind::SheetFold { .. }
@@ -2180,6 +2190,7 @@ impl FeatureKind {
             FeatureKind::SheetBase { .. } => "BaseFlangeFeature",
             FeatureKind::SheetContour { .. } => "ContourFlangeFeature",
             FeatureKind::SheetFlange { .. } => "EdgeFlangeFeature",
+            FeatureKind::SheetCornerJoin { .. } => "CornerJoinFeature",
             FeatureKind::SheetHem { .. } => "HemFeature",
             FeatureKind::SheetPerforate { .. } => "PerforateFeature",
             FeatureKind::SheetFold { .. } => "FoldFeature",
@@ -2260,6 +2271,7 @@ impl FeatureKind {
             FeatureKind::SheetBase { .. } => "BaseFlange",
             FeatureKind::SheetContour { .. } => "ContourFlange",
             FeatureKind::SheetFlange { .. } => "EdgeFlange",
+            FeatureKind::SheetCornerJoin { .. } => "CornerJoin",
             FeatureKind::SheetHem { .. } => "Hem",
             FeatureKind::SheetPerforate { .. } => "Perforate",
             FeatureKind::SheetFold { .. } => "Fold",

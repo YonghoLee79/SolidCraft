@@ -528,6 +528,7 @@
   "cmd.render_status": "Render Progress",
   "cmd.select_clear": "Clear Selection",
   "cmd.sheet_convert": "Convert to Sheet Metal",
+  "cmd.sheet_corner_join": "Corner Join",
   "cmd.sheet_export_bend_table": "Export Bend Table",
   "cmd.sheet_export_dxf": "Export Flat Pattern as DXF",
   "cmd.sheet_flange": "Flange",

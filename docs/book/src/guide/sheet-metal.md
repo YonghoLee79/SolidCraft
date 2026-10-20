@@ -6,6 +6,8 @@ The SHEET METAL tab builds parts from a sheet of constant thickness under a **sh
 - **Flange** (`sheet.flange`): a base flange from a sketch profile, a contour flange from an open
   sketch, or an edge flange from a part edge.
 - **Hem** (`sheet.hem`) and **Fold** (`sheet.fold`) along a sketch line.
+- **Corner Join** (`sheet.corner_join`) joins neighbouring base flanges, including flanges
+  made by separate features.
 - **Unfold / Refold** (`sheet.unfold`, `sheet.refold`) for working on the flat part.
 - **Convert** (`sheet.convert`) turns a plate of constant thickness into sheet metal, or, with
   bend edges, a solid or a shelled body.
@@ -119,10 +121,32 @@ cover both side walls of a 120 x 90 mm base under the 2 mm rule above:
 Corner choices are saved with the feature and restored by Edit Feature. Choosing Butt there
 removes an overlap. The folded solid, mass and flat pattern use the same panel ends, including
 DXF output; an overlap changes panel lengths without extending bend lines. Currently overlap
-requires two convex, neighbouring base flanges with panels beyond their bends, made in the
-same feature and bending the same way. Returns, side-edge flanges, concave corners and tear
+requires two convex, neighbouring base flanges with panels beyond their bends and bending
+the same way. The `corners` parameter applies to flanges made in the same feature.
+Returns, side-edge flanges, concave corners and tear
 relief are not supported for overlap. An unsupported overlap, or one that would intersect in
 the flat pattern, is refused rather than silently replaced with Butt.
+
+For flanges made in separate operations, add **Corner Join** from **SHEET METAL > MODIFY**
+after both Flange features. Select a flat face on **Flange 1** and **Flange 2**, choose Butt,
+Partial Overlap or Full Overlap, and choose the Covering flange for an overlap. The result is
+a separate timeline feature with live preview and Edit Feature support. It follows earlier
+flange and parameter changes; a removed flange reports a lost reference instead of silently
+selecting a replacement. Suppress or edit the join to repair it.
+
+The JSON command takes the sheet's persistent flange tags (`F<feature>.<edge>`, as used in its
+panel face names), not current array indices. For example, where features 3 and 4 each made
+one wall:
+
+```json
+{"command":"sheet.corner_join","params":{"covering":"F3.0","covered":"F4.0",
+ "corner_type":"partial","overlap":"1 mm"}}
+```
+
+The two flanges must belong to the same folded sheet and still meet at a corner of its base.
+Joins on torn flanges, flanges with returns, or corners already removed by a relief are refused.
+Butt and Full Overlap take no overlap expression. The operation changes panel ends, not bend
+lines, and the same geometry drives the folded part, mass properties, flat pattern and DXF.
 
 The flanges of one edge flange feature can each have an angle and a height of their own. An
 entry of `edges` is a point `[x, y, z]`, which takes the feature's `height` and `angle`, or an
@@ -132,8 +156,8 @@ so parameters work, and each is a feature input of its own (`Edge angle`, `Edge 
 `Height` and `Angle`. The corners between such flanges close like those between equal ones:
 the ends run toward each other the rule's gap apart, either side of the plane halfway between
 the two flanges, and a taller flange's end keeps that line up to its own tip. This is how to
-close a corner between flanges at different angles, because flanges of separate features
-don't close toward each other. In the Flange dialog, picking more than one edge shows a row
+close a corner between flanges at different angles in one feature; separate features need
+a later Corner Join. In the Flange dialog, picking more than one edge shows a row
 per edge with an angle and a height box; an empty box takes the value above.
 
 ```json

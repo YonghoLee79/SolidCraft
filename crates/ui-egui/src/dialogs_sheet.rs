@@ -72,6 +72,11 @@ pub enum Sm {
         relief_size: String,
         corners: Vec<FlangeCornerChoice>,
     },
+    CornerJoin {
+        kind: usize,
+        cover_second: usize,
+        overlap: String,
+    },
     Hem {
         length: String,
         gap: String,
@@ -112,6 +117,7 @@ impl Sm {
     pub fn title(&self) -> &'static str {
         match self {
             Sm::Flange { .. } => "FLANGE",
+            Sm::CornerJoin { .. } => "CORNER JOIN",
             Sm::Hem { .. } => "HEM",
             Sm::Fold { .. } => "FOLD",
             Sm::Unfold { refold: false } => "UNFOLD",
@@ -163,6 +169,10 @@ fn new_flange(ty: usize) -> Sm {
 pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
     let (sm, inputs) = match id {
         "sheet.flange" => (new_flange(0), vec![SelInput::new("Profile / Edges", PROFILES | EDGES | CURVES, true)]),
+        "sheet.corner_join" => (
+            Sm::CornerJoin { kind: 0, cover_second: 0, overlap: "1 mm".into() },
+            vec![SelInput::new("Flange 1", PLANAR_FACES, false), SelInput::new("Flange 2", PLANAR_FACES, false)],
+        ),
         "sheet.hem" => (Sm::Hem { length: "5 mm".into(), gap: String::new(), flip: false }, vec![SelInput::new("Edges", EDGES, true)]),
         "sheet.fold" => (
             Sm::Fold { angle: "90 deg".into(), radius: String::new(), position: 0, flip: false },
@@ -317,6 +327,21 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
             row_label(ui, "Flip");
             ui.checkbox(flip, "");
             ui.end_row();
+        }
+        Sm::CornerJoin { kind, cover_second, overlap } => {
+            row_label(ui, "Corner Type");
+            combo(ui, "sm_join_type", &CORNER_LABELS, kind);
+            ui.end_row();
+            if *kind > 0 {
+                row_label(ui, "Covering");
+                combo(ui, "sm_join_covering", &["Flange 1", "Flange 2"], cover_second);
+                ui.end_row();
+            }
+            if *kind == 1 {
+                row_label(ui, "Overlap");
+                enter |= field(ui, overlap);
+                ui.end_row();
+            }
         }
         Sm::Hem { length, gap, flip } => {
             row_label(ui, "Type");
@@ -513,6 +538,34 @@ fn export_flat(app: &mut SolveApp, body: &str, extension: &str) -> String {
 
 // ---- commands ----
 
+fn corner_flange(app: &SolveApp, selection: Option<&Sel>) -> Result<(String, String), String> {
+    let Some(Sel::Face { body, point, .. }) = selection else {
+        return Err("select a flat face on each flange".into());
+    };
+    let state = app.session.world_state();
+    let sheet = state.sheets.iter().find(|sheet| sheet.body == *body).ok_or("select flanges on a sheet metal body")?;
+    let (name, _) = sheet.panel_face_at(*point, 0.01).ok_or("select a flat face on a flange")?;
+    let tag = name
+        .split(':')
+        .next()
+        .filter(|tag| sheet.flanges.iter().any(|flange| flange.tag == *tag))
+        .ok_or("select a flange, not the base or a bend")?;
+    Ok((body.clone(), tag.into()))
+}
+
+fn corner_flange_sel(app: &SolveApp, body: &str, tag: &str) -> Option<Sel> {
+    let state = app.session.world_state();
+    let sheet = state.sheets.iter().find(|sheet| sheet.body == body)?;
+    let flange = sheet.flanges.iter().find(|flange| flange.tag == tag)?;
+    let points = sheet.panel(flange).outer.polyline(1e-3);
+    if points.is_empty() {
+        return None;
+    }
+    let center = points.iter().copied().fold(solidcraft_engine::geom::Vec2::ZERO, |sum, point| sum + point) / points.len() as f64;
+    let plane = sheet.panel_face(&format!("{tag}:top"))?;
+    face_sel(&app.session, plane.to_world(center))
+}
+
 fn rule_value(app: &SolveApp, rule: usize) -> Option<String> {
     rule.checked_sub(1).and_then(|i| rule_list(app).get(i).map(|r| r.name.clone()))
 }
@@ -638,6 +691,20 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
                 p["rule"] = json!(r);
             }
             ("sheet.flange", p)
+        }
+        Sm::CornerJoin { kind, cover_second, overlap } => {
+            let (first_body, first) = corner_flange(app, items(inputs, 0).first())?;
+            let (second_body, second) = corner_flange(app, items(inputs, 1).first())?;
+            if first_body != second_body {
+                return Err("select two flanges belonging to the same sheet".into());
+            }
+            let (covering, covered) = if *cover_second == 1 { (second, first) } else { (first, second) };
+            let mut params = json!({"body": first_body, "covering": covering, "covered": covered,
+                "corner_type": CORNER_TYPES.get(*kind).copied().unwrap_or("butt")});
+            if *kind == 1 {
+                params["overlap"] = json!(overlap);
+            }
+            ("sheet.corner_join", params)
         }
         Sm::Hem { length, gap, flip } => {
             let edges = edge_points(inputs);
@@ -799,6 +866,22 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
                     .collect(),
             };
             (f, picked)
+        }
+        FeatureKind::SheetCornerJoin { covering, covered, corner_type, overlap, body } => {
+            let (_, mut inputs) = start(app, "sheet.corner_join")?;
+            for (input, tag) in inputs.iter_mut().zip([covering, covered]) {
+                input.items = corner_flange_sel(app, &body.0, tag).into_iter().collect();
+            }
+            let kind = CORNER_TYPES.iter().position(|kind| *kind == corner_type).unwrap_or(0);
+            return Some((
+                Kind::Sheet(Sm::CornerJoin {
+                    kind,
+                    cover_second: 0,
+                    overlap: overlap.as_deref().map(str::to_string).unwrap_or_else(|| "1 mm".into()),
+                }),
+                inputs,
+                extra,
+            ));
         }
         FeatureKind::SheetHem { edges, length, gap, flip, body } => {
             if let Some(b) = body {

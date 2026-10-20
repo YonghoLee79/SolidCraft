@@ -315,6 +315,7 @@
   "cmd.render_status": "렌더링 진행 상황",
   "cmd.select_clear": "선택 지우기",
   "cmd.sheet_convert": "판금으로 변환",
+  "cmd.sheet_corner_join": "모서리 이음",
   "cmd.sheet_export_bend_table": "벤딩 표 내보내기",
   "cmd.sheet_export_dxf": "전개도를 DXF로 내보내기",
   "cmd.sheet_flange": "플랜지",

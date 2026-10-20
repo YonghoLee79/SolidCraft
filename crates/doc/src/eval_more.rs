@@ -622,6 +622,34 @@ pub(super) fn sheet_eval(
             tag_flanges(sh, n0, f.id);
             rebuild_sheet(st, i)
         }
+        FeatureKind::SheetCornerJoin { covering, covered, corner_type, overlap, body } => {
+            let index = sheet_for(st, &Some(body.clone()), None)?;
+            let sheet = st.sheets.get_mut(index).ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            let resolve = |tag: &str| {
+                sheet
+                    .flanges
+                    .iter()
+                    .position(|flange| flange.tag == tag)
+                    .ok_or_else(|| DocError::Invalid(format!("corner join lost flange `{tag}`; select its replacement or suppress the join")))
+            };
+            let (covering, covered) = (resolve(covering)?, resolve(covered)?);
+            let amount = match corner_type.as_str() {
+                "butt" if overlap.is_none() => None,
+                "full" if overlap.is_none() => Some(sheet.t),
+                "partial" => {
+                    let expression = overlap.as_ref().ok_or_else(|| DocError::Invalid("partial overlap needs an overlap length".into()))?;
+                    let amount = val(vals, expression, Kind::Length)?;
+                    if !amount.is_finite() || amount <= 0.0 || amount >= sheet.t {
+                        return Err(DocError::Invalid("partial overlap must be greater than zero and less than the sheet thickness".into()));
+                    }
+                    Some(amount)
+                }
+                "butt" | "full" => return Err(DocError::Invalid("only partial overlap takes an overlap length".into())),
+                _ => return Err(DocError::Invalid("corner type must be butt, partial or full".into())),
+            };
+            sheet.join_corner(covering, covered, amount)?;
+            rebuild_sheet(st, index)
+        }
         FeatureKind::SheetPerforate { diameter, pitch, margin, pattern, body } => {
             // Without a body name the field goes on the newest sheet, as the command's own body lookup does.
             let i = match body {

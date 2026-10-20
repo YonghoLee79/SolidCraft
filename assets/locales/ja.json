@@ -528,6 +528,7 @@
   "cmd.render_status": "レンダリングの進行状況",
   "cmd.select_clear": "選択をクリア",
   "cmd.sheet_convert": "板金に変換",
+  "cmd.sheet_corner_join": "コーナー接合",
   "cmd.sheet_export_bend_table": "曲げテーブルをエクスポート",
   "cmd.sheet_export_dxf": "展開図を DXF としてエクスポート",
   "cmd.sheet_flange": "フランジ",

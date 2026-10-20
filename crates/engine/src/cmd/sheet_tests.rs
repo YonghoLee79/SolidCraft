@@ -3088,6 +3088,107 @@ fn corner_overlap_reaches_the_part_flat_pattern_dxf_and_saved_design() {
 }
 
 #[test]
+fn standalone_corner_join_follows_separate_features_and_saved_parameters() {
+    let edges = [[60, 0, 2], [120, 45, 2]];
+    for kind in ["butt", "partial", "full"] {
+        let mut s = Session::default();
+        run(
+            &mut s,
+            "sheet.manage_rules",
+            json!({"name":"AL2", "thickness":"2 mm", "k_factor":0.5, "bend_radius":"1 mm", "gap":"0.5 mm", "active":true}),
+        );
+        base(&mut s, 120.0, 90.0);
+        run(&mut s, "parameters.change", json!({"name":"lap", "expression":"1 mm"}));
+        let first = run(&mut s, "sheet.flange", json!({"edges":[edges[0]], "height":38.6}));
+        run(&mut s, "sheet.flange", json!({"edges":[edges[1]], "height":38.6}));
+        let state = s.model.state();
+        let tags: Vec<String> = state.sheets[0].flanges.iter().map(|flange| flange.tag.clone()).collect();
+        let bends = flat(&mut s)["bends"].clone();
+        let mut params = json!({"covering":tags[0], "covered":tags[1], "corner_type":kind});
+        if kind == "partial" {
+            params["overlap"] = json!("lap");
+        }
+        let before = volume(&mut s);
+        let joined = run(&mut s, "sheet.corner_join", params.clone());
+        assert_eq!(s.doc.features.last().unwrap().kind.type_name(), "CornerJoinFeature");
+        assert!(s.model.results.iter().all(|result| result.error.is_none()), "{:?}", s.model.results);
+        let after = volume(&mut s);
+        assert!((after - before).abs() > 1.0);
+        assert_eq!(flat(&mut s)["bends"], bends);
+        run(&mut s, "edit.undo", json!({}));
+        assert!((volume(&mut s) - before).abs() < 1e-6);
+        run(&mut s, "edit.redo", json!({}));
+        assert!((volume(&mut s) - after).abs() < 1e-6);
+        let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+        assert_eq!(flat(&mut reopened), flat(&mut s));
+        assert!((volume(&mut reopened) - after).abs() < 1e-6);
+        if kind == "partial" {
+            run(&mut reopened, "parameters.change", json!({"name":"lap", "expression":"1.5 mm"}));
+            assert!(volume(&mut reopened) > after);
+        }
+        run(
+            &mut reopened,
+            "timeline.redefine",
+            json!({"feature":first["feature"], "command":"sheet.flange", "params":{"edges":[edges[0]], "height":45}}),
+        );
+        assert!(reopened.model.results.iter().all(|result| result.error.is_none()), "{:?}", reopened.model.results);
+        assert!(volume(&mut reopened) > after);
+        run(
+            &mut reopened,
+            "timeline.redefine",
+            json!({"feature":joined["feature"], "command":"sheet.corner_join", "params":{"covering":tags[1], "covered":tags[0], "corner_type":"full"}}),
+        );
+        assert!(reopened.model.results.iter().all(|result| result.error.is_none()));
+        let dxf = run(&mut reopened, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+        assert!(!solidcraft_io::read_dxf(&dxf).unwrap().is_empty());
+        let folded = volume(&mut reopened);
+        run(&mut reopened, "sheet.unfold", json!({}));
+        run(&mut reopened, "sheet.refold", json!({}));
+        assert!((volume(&mut reopened) - folded).abs() < 1e-6);
+        let mut missing = (*reopened.doc).clone();
+        if let solidcraft_doc::FeatureKind::SheetCornerJoin { covering, .. } =
+            &mut missing.features.iter_mut().find(|feature| json!(feature.id) == joined["feature"]).unwrap().kind
+        {
+            *covering = "F999999.0".into();
+        }
+        let missing = Session::new(missing);
+        assert!(missing.model.results.iter().any(|result| result.error.as_deref().is_some_and(|error| error.contains("lost flange"))));
+    }
+}
+
+#[test]
+fn standalone_corner_join_rejects_bad_input_atomically() {
+    let mut s = Session::default();
+    run(&mut s, "sheet.manage_rules", json!({"name":"AL2", "thickness":"2 mm", "active":true}));
+    base(&mut s, 120.0, 90.0);
+    run(&mut s, "sheet.flange", json!({"edges":[[60,0,2]], "height":30}));
+    run(&mut s, "sheet.flange", json!({"edges":[[120,45,2]], "height":30}));
+    let state = s.model.state();
+    let tags: Vec<String> = state.sheets[0].flanges.iter().map(|flange| flange.tag.clone()).collect();
+    let before = s.doc.to_json();
+    for extra in [
+        json!({"covered":tags[0]}),
+        json!({"covered":"F999999.0"}),
+        json!({"body":"missing"}),
+        json!({"corner_type":"partial"}),
+        json!({"corner_type":"partial", "overlap":0}),
+        json!({"corner_type":"partial", "overlap":2}),
+        json!({"corner_type":"partial", "overlap":"1 deg"}),
+        json!({"corner_type":"full", "overlap":1}),
+        json!({"corner_type":"unknown"}),
+    ] {
+        let mut params = json!({"covering":tags[0], "covered":tags[1]});
+        params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert!(s.execute("sheet.corner_join", &params).is_err(), "{params}");
+        assert_eq!(s.doc.to_json(), before);
+    }
+    run(&mut s, "sheet.unfold", json!({}));
+    let before = s.doc.to_json();
+    assert!(s.execute("sheet.corner_join", &json!({"covering":tags[0], "covered":tags[1]})).is_err());
+    assert_eq!(s.doc.to_json(), before);
+}
+
+#[test]
 fn bad_corner_overlap_is_refused_without_changing_the_design() {
     let mut s = Session::default();
     run(&mut s, "sheet.manage_rules", json!({"name": "AL2", "thickness": "2 mm", "active": true}));

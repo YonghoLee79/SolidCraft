@@ -568,6 +568,68 @@ fn flange_dialog_picks_corner_overlap_and_clears_it_on_edit() {
 }
 
 #[test]
+fn standalone_corner_join_dialog_selects_previews_applies_and_reopens() {
+    let mut h = crate::scenario::Harness::new();
+    h.app
+        .run("sheet.manage_rules", json!({"name":"AL2", "thickness":"2 mm", "k_factor":0.5, "bend_radius":"1 mm", "gap":"0.5 mm", "active":true}))
+        .unwrap();
+    h.app.run("sketch.create", json!({"plane":"XY", "name":"Base"})).unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0], "p1":[120,90]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.app.run("sheet.flange", json!({"sketch":"Base"})).unwrap();
+    h.app.run("sheet.flange", json!({"edges":[[60,0,2]], "height":38.6})).unwrap();
+    h.app.run("sheet.flange", json!({"edges":[[120,45,2]], "height":38.6})).unwrap();
+    let state = h.app.session.model.state();
+    let tags: Vec<String> = state.sheets[0].flanges.iter().map(|flange| flange.tag.clone()).collect();
+    h.app.start("sheet.corner_join");
+    let mut dialog = h.app.dialog.clone().unwrap();
+    assert!(apply_commands(&h.app, &dialog).is_err());
+    assert_eq!(dialog.inputs.iter().map(|input| input.label).collect::<Vec<_>>(), ["Flange 1", "Flange 2"]);
+    for (input, tag) in dialog.inputs.iter_mut().zip(&tags) {
+        input.items = corner_flange_sel(&h.app, "Body1", tag).into_iter().collect();
+        assert_eq!(input.items.len(), 1);
+    }
+    h.app.dialog = Some(dialog);
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"dialog:Corner Type"}})).unwrap();
+    h.step(&json!({"click":{"handle":"dialog:Corner Type:Partial Overlap"}})).unwrap();
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"dialog:Covering"}})).unwrap();
+    h.step(&json!({"click":{"handle":"dialog:Covering:Flange 2"}})).unwrap();
+    h.frames(3);
+    assert!(h.app.preview.error.is_none(), "{:?}", h.app.preview.error);
+    let commands = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    assert_eq!(commands[0].0, "sheet.corner_join");
+    assert_eq!(commands[0].1["covering"], tags[1]);
+    assert_eq!(commands[0].1["covered"], tags[0]);
+    assert_eq!(commands[0].1["overlap"], "1 mm");
+    h.step(&json!({"widget":"OK"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+    let id = h.app.session.doc.features.last().unwrap().id;
+    let mut edited = edit_dialog(&h.app, id, None).unwrap();
+    assert!(matches!(&edited.kind, Kind::Sheet(Sm::CornerJoin { kind:1, cover_second:0, overlap }) if overlap == "1 mm"));
+    assert!(edited.inputs.iter().all(|input| input.items.len() == 1));
+    let commands = apply_commands(&h.app, &edited).unwrap();
+    assert_eq!(commands[0].1["params"]["covering"], tags[1]);
+    assert_eq!(commands[0].1["params"]["covered"], tags[0]);
+    if let Kind::Sheet(Sm::CornerJoin { kind, .. }) = &mut edited.kind {
+        *kind = 2;
+    }
+    let commands = apply_commands(&h.app, &edited).unwrap();
+    assert_eq!(commands[0].1["params"]["corner_type"], "full");
+    assert!(commands[0].1["params"].get("overlap").is_none());
+    run_all(&mut h.app, commands);
+    assert!(h.app.session.model.results.iter().all(|result| result.error.is_none()));
+    if let Kind::Sheet(Sm::CornerJoin { kind, .. }) = &mut edited.kind {
+        *kind = 0;
+    }
+    let commands = apply_commands(&h.app, &edited).unwrap();
+    run_all(&mut h.app, commands);
+    edited.inputs[1].items.clear();
+    assert!(apply_commands(&h.app, &edited).is_err());
+}
+
+#[test]
 fn pocket_depth_labels_follow_inches_without_changing_flat_data() {
     let mut app = plate();
     app.run("document.units", json!({"units":"in"})).unwrap();

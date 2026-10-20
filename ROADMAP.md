@@ -68,7 +68,9 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 M10 edge flanges now offer Butt, Partial Overlap and Full Overlap per neighbouring base
 corner, with a choice of covering flange. Choices persist through edits and reopening; panel
 ends agree in the folded part, flat pattern and DXF. See [sheet metal](docs/book/src/guide/sheet-metal.md)
-for the API and current overlap limits (same-feature base flanges, no tear relief).
+for the API and current overlap limits. A separate Corner Join timeline feature also joins
+neighbouring base flanges made in different operations, using persistent flange references,
+with live preview and editing. Torn flanges, returns and removed corners remain unsupported.
 
 M6 navigation preferences include **Touchpad**: Shift + pointer movement pans, Alt/Option +
 pointer movement orbits without a mouse button, and vertical scrolling zooms. Other presets

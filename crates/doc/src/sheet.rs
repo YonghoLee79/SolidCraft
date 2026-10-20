@@ -3000,6 +3000,24 @@ impl SheetBody {
         Ok(notes)
     }
 
+    pub fn join_corner(&mut self, covering: usize, covered: usize, overlap: Option<f64>) -> Result<()> {
+        if self.flat || covering == covered {
+            return Err(DocError::Invalid("pick two different flanges on a folded sheet".into()));
+        }
+        let corner = self
+            .corners(&[covering, covered])
+            .into_iter()
+            .next()
+            .ok_or_else(|| DocError::Invalid("pick neighbouring flanges on the same base; their corner may have been removed".into()))?;
+        for index in [covering, covered] {
+            let flange = self.flanges.get(index).ok_or_else(|| DocError::Invalid("missing flange".into()))?;
+            if flange.tear.0 || flange.tear.1 || self.flanges.iter().any(|child| child.parent == Some(index)) {
+                return Err(DocError::Invalid("not supported yet: corner joins on torn flanges or flanges with returns".into()));
+            }
+        }
+        self.close_corner_overlap(&corner, overlap.map(|amount| (covering, amount))).map_err(DocError::Invalid)
+    }
+
     /// A point of the flat frame, in the part's coordinates, for a note.
     fn shown(&self, c: Vec2) -> String {
         let w = apply_point(&self.frame_mat(), v3(c));
@@ -5408,6 +5426,32 @@ mod tests {
                     assert!(solid.validity().is_empty(), "{:?}", solid.validity());
                     assert!((vol(&solid) - flat_area(&sheet) * sheet.t).abs() < vol(&solid) * 1e-3);
                     assert_ne!(flat_area(&sheet), flat_area(&previous));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn separate_flange_operations_can_join_their_corner() {
+        let base =
+            base_flange("Body1", "AL2", &alu(), Plane::XY, rect(Vec2::ZERO, Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0)));
+        let picks = [Vec3::new(60.0, 0.0, 2.0), Vec3::new(120.0, 45.0, 2.0)];
+        for degrees in [90.0_f64, 72.0, -90.0, -72.0] {
+            for overlap in [None, Some(1.0), Some(2.0)] {
+                for covering in [0, 1] {
+                    let mut separate = base.clone();
+                    for pick in picks {
+                        separate.add_flanges(&[pick], 38.6, degrees.abs().to_radians(), 1.0, "inside", degrees < 0.0).unwrap();
+                    }
+                    separate.join_corner(covering, 1 - covering, overlap).unwrap();
+                    let mut together = base.clone();
+                    together.add_flanges(&picks, 38.6, degrees.abs().to_radians(), 1.0, "inside", degrees < 0.0).unwrap();
+                    together.join_corner(covering, 1 - covering, overlap).unwrap();
+                    assert!((flat_area(&separate) - flat_area(&together)).abs() < 1e-6, "{degrees}, {overlap:?}, {covering}");
+                    let solid = separate.solid().unwrap();
+                    assert!(solid.validity().is_empty(), "{:?}", solid.validity());
+                    assert_eq!(separate.flat_regions().unwrap().len(), 1);
+                    assert!((vol(&solid) - flat_area(&separate) * separate.t).abs() < vol(&solid) * 1e-3);
                 }
             }
         }

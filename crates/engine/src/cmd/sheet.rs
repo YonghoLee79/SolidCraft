@@ -27,6 +27,10 @@ pub static COMMANDS: &[CommandSpec] = &[
          Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused, \
          and so is the corner relief on a base or contour flange",
     ),
+    CommandSpec::new("sheet.corner_join", "Corner Join", corner_join).at("SHEET METAL", "MODIFY").icon("corner_join").params(
+        "covering, covered: flange tags (F<feature>.<edge>, from the sheet's face names); corner_type?: butt|partial|full (default butt); \
+         overlap?: length expression (partial only); body?; name? - join neighbouring base flanges, including separate flange features",
+    ),
     CommandSpec::new("sheet.perforate", "Perforate", perforate).at("SHEET METAL", "CREATE").icon("perforate").params(
         "diameter, pitch: expr; margin?: expr (clear of edges, cut-outs and bends; default: the diameter); pattern?: staggered (60°, default) | square; body? - a perforation field over the whole flat sheet: holes in the flat pattern (perforations), the DXF (layer PERFORATION) and the measured volume, not cut into the B-rep (#732)",
     ),
@@ -291,6 +295,46 @@ fn perforate(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "`pattern` is \"staggered\" (60°, default) or \"square\""));
     }
     add_feature(s, p, FeatureKind::SheetPerforate { diameter, pitch, margin, pattern, body: str_(p, "body").map(BodyName::from) })
+}
+
+fn corner_join(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sheet.corner_join";
+    let covering = str_(p, "covering").filter(|tag| !tag.is_empty()).ok_or_else(|| bad(cmd, "select the covering flange"))?;
+    let covered = str_(p, "covered").filter(|tag| !tag.is_empty()).ok_or_else(|| bad(cmd, "select the other flange"))?;
+    if covering == covered {
+        return Err(bad(cmd, "select two different flanges"));
+    }
+    let corner_type = str_(p, "corner_type").unwrap_or("butt");
+    if !["butt", "partial", "full"].contains(&corner_type) {
+        return Err(bad(cmd, "corner type must be butt, partial or full"));
+    }
+    let overlap = expr(p, "overlap");
+    if corner_type == "partial" && overlap.is_none() {
+        return Err(bad(cmd, "partial overlap needs an overlap length"));
+    }
+    if corner_type != "partial" && p.get("overlap").is_some_and(|value| !value.is_null()) {
+        return Err(bad(cmd, "only partial overlap takes an overlap length"));
+    }
+    if let Some(amount) = &overlap {
+        check_expr(s, amount, Kind::Length, cmd, "overlap")?;
+    }
+    let state = s.model.state();
+    let sheet = state
+        .sheets
+        .iter()
+        .find(|sheet| {
+            str_(p, "body").is_none_or(|body| sheet.body == body)
+                && [covering, covered].iter().all(|tag| sheet.flanges.iter().any(|flange| flange.tag == *tag))
+        })
+        .ok_or_else(|| bad(cmd, "select two flanges belonging to the same sheet"))?;
+    let kind = FeatureKind::SheetCornerJoin {
+        covering: covering.into(),
+        covered: covered.into(),
+        corner_type: corner_type.into(),
+        overlap,
+        body: BodyName::from(sheet.body.clone()),
+    };
+    add_feature(s, p, kind)
 }
 
 fn hem(s: &mut Session, p: &Value) -> Result<Value> {

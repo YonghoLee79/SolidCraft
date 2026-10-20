@@ -315,6 +315,7 @@
   "cmd.render_status": "Renderfortschritt",
   "cmd.select_clear": "Auswahl aufheben",
   "cmd.sheet_convert": "In Blech umwandeln",
+  "cmd.sheet_corner_join": "Eckverbindung",
   "cmd.sheet_export_bend_table": "Biegungstabelle exportieren",
   "cmd.sheet_export_dxf": "Flachmuster als DXF exportieren",
   "cmd.sheet_flange": "Flansch",
