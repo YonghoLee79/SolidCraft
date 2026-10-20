@@ -78,7 +78,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("circle3")
         .enabled(in_sketch)
         .params(concat!("p0, p1, p2", connect_doc!(), created_doc!())),
-    CommandSpec::new("sketch.arc.three_point", "3-Point Arc", arc_three).at("SKETCH", "CREATE").icon("arc3").enabled(in_sketch).params(concat!("start, end, through", connect_doc!(), created_doc!())),
+    CommandSpec::new("sketch.arc.three_point", "3-Point Arc", arc_three).at("SKETCH", "CREATE").icon("arc3").enabled(in_sketch).params(concat!("start, end, through: [x,y] or point ref (a referenced through point stays on the arc)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.arc.center_point", "Center Point Arc", arc_center)
         .at("SKETCH", "CREATE")
         .icon("arc_center")
@@ -1193,18 +1193,22 @@ fn arc_three(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_(p, "id").map(str::to_string);
     let (out, info) = draw(s, p, cmd, |sk, doc| {
         let (a, b) = (req_parg(sk, doc, p, "start", cmd)?, req_parg(sk, doc, p, "end", cmd)?);
-        let t = req_vec2(cmd, p, "through")?;
-        let (o, _) = circumcircle(a.pos(), t, b.pos()).ok_or_else(|| bad(cmd, "the points are collinear"))?;
+        let t = req_parg(sk, doc, p, "through", cmd)?;
+        let (o, _) = circumcircle(a.pos(), t.pos(), b.pos()).ok_or_else(|| bad(cmd, "the points are collinear"))?;
         // Counter-clockwise from start to end must pass the through point; otherwise swap.
         let ang = |q: Vec2| (q - o).angle();
         let ccw_span = |from: f64, to: f64| (to - from).rem_euclid(std::f64::consts::TAU);
-        let ccw = ccw_span(ang(a.pos()), ang(t)) < ccw_span(ang(a.pos()), ang(b.pos()));
+        let ccw = ccw_span(ang(a.pos()), ang(t.pos())) < ccw_span(ang(a.pos()), ang(b.pos()));
         let (s0, e0) = if ccw { (a, b) } else { (b, a) };
         let ci = sk.add_arc(o, s0.pos(), e0.pos(), [None, s0.idx(), e0.idx()], id.as_deref())?;
         if let Some(c) = sk.curves.get_mut(ci) {
             c.reversed = !ccw;
         }
-        Ok((ids_of(sk, &[ci]), Vec::new()))
+        let mut cons = Vec::new();
+        if let Some(point) = t.idx() {
+            cons.push(add_c(sk, ConstraintKind::PointOnCurve { p: point, c: ci })?);
+        }
+        Ok((ids_of(sk, &[ci]), cons))
     })?;
     Ok(result(out, info))
 }

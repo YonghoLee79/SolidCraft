@@ -398,7 +398,7 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
         "sketch.circle.center" => json!({"center": arg(&p[0]), "radius": d(0, 1)}),
         "sketch.circle.two_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1])}),
         "sketch.circle.three_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "p2": xy(&p[2])}),
-        "sketch.arc.three_point" => json!({"start": arg(&p[0]), "end": arg(&p[1]), "through": xy(&p[2])}),
+        "sketch.arc.three_point" => json!({"start": arg(&p[0]), "end": arg(&p[1]), "through": arg(&p[2])}),
         "sketch.arc.center_point" => match crate::sketch_dims::locked_value(app, t, "Sweep") {
             Some(sweep) => json!({"center": arg(&p[0]), "start": arg(&p[1]), "sweep": sweep.to_degrees()}),
             None => json!({"center": arg(&p[0]), "start": arg(&p[1]), "end": xy(&p[2])}),
