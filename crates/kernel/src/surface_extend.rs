@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 use mt::{BoundedCurve, ParametricCurve, ParametricSurface};
 use solidcraft_geom::tess::EvalSurface;
-use solidcraft_geom::{Segment, UnitVec3, Vec3};
+use solidcraft_geom::{Ring, Segment, UnitVec3, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -583,7 +583,7 @@ impl<'a> Extension<'a> {
         let runs: Vec<Option<Run>> =
             (0..m).map(|i| if chosen(i) { self.run_of(fr, &corners, i).map(Some) } else { Ok(None) }).collect::<Result<_>>()?;
         // The far end at each corner next to an extended edge (from that edge's run).
-        let far_at: Vec<Option<Far>> = (0..m)
+        let far_at: Ring<Option<Far>> = (0..m)
             .map(|i| match (runs.get(i).copied().flatten(), runs.get((i + m - 1) % m).copied().flatten()) {
                 (Some(r), _) => self.far(fr, &r, r.t0).map(Some),
                 (None, Some(r)) => self.far(fr, &r, r.t1).map(Some),
@@ -701,7 +701,7 @@ impl<'a> Extension<'a> {
                 Piece::Far(i) => {
                     let run = runs.get(i).copied().flatten().ok_or_else(|| KernelError::Failed("extend: a run".into()))?;
                     let old = fr.edges.get(i).ok_or_else(|| KernelError::Failed("extend: an edge".into()))?;
-                    let (Some(a), Some(b)) = (far_at.get(i).copied().flatten(), far_at.get((i + 1) % m).copied().flatten()) else {
+                    let (Some(a), Some(b)) = (far_at.at(i).copied().flatten(), far_at.at(i + 1).copied().flatten()) else {
                         return Err(KernelError::Failed("extend: the corners of an edge".into()));
                     };
                     let va = self.corner_vertex(old.front(), a.f);
@@ -721,7 +721,7 @@ impl<'a> Extension<'a> {
                         (vertex_q(edge)?, old.front().clone())
                     };
                     let (b, vb) = if to_far {
-                        let f = far_at.get((edge + 1) % m).copied().flatten().ok_or_else(|| KernelError::Failed("extend: a corner".into()))?;
+                        let f = far_at.at(edge + 1).copied().flatten().ok_or_else(|| KernelError::Failed("extend: a corner".into()))?;
                         (f.fq, self.corner_vertex(old.back(), f.f))
                     } else {
                         (vertex_q((edge + 1) % m)?, old.back().clone())
@@ -1044,10 +1044,7 @@ fn check_loop(fr: &Frame, poly: &[[f64; 2]]) -> Result<()> {
             }
         }
     }
-    let segs = |pts: &[[f64; 2]]| -> Vec<([f64; 2], [f64; 2])> {
-        let n = pts.len();
-        (0..n).filter_map(|i| Some((*pts.get(i)?, *pts.get((i + 1) % n)?))).collect()
-    };
+    let segs = |pts: &[[f64; 2]]| -> Vec<([f64; 2], [f64; 2])> { Ring::new(pts.to_vec()).edges().map(|(a, b)| (*a, *b)).collect() };
     let outer = segs(poly);
     let n = outer.len();
     for i in 0..n {
