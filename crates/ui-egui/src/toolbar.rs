@@ -415,7 +415,7 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         if response.on_hover_text(crate::i18n::tr_label("Report a bug — review a screenshot and open a GitHub draft")).clicked() {
             crate::help::run(app, &ui.ctx().clone(), "report");
         }
-        // Preferences, at the top right like Fusion's profile menu (also Ctrl+,).
+        // Preferences, at the top right (also Ctrl+,).
         let gear = Rect::from_center_size(pos2(r.right() - captions - 70.0, r.center().y), vec2(24.0, 24.0));
         let gresp = ui.interact(gear, ui.id().with("sc_prefs_button"), Sense::click());
         if gresp.hovered() {
@@ -596,7 +596,7 @@ pub fn save(app: &mut SolveApp) {
         return;
     }
     if app.session.path.is_some() {
-        let _ = app.run("file.save", json!({}));
+        crate::save_job::start(app, "file.save", json!({}));
     } else {
         save_as(app);
     }
@@ -609,8 +609,11 @@ fn save_as(app: &mut SolveApp) {
 fn save_as_with_extension(app: &mut SolveApp, extension: &str) {
     let name = format!("{}.{extension}", app.session.doc.name);
     app.pick_save(&name, &[solidcraft_engine::io::DESIGN_EXT, "json"], |app, path| {
-        if let Some(path) = path {
-            let _ = app.run("file.save_as", json!({"path": path}));
+        // A save under way answers a closing tab when it ends.
+        if let Some(path) = path
+            && crate::save_job::start(app, "file.save_as", json!({"path": path}))
+        {
+            return;
         }
         crate::documents::saved_for_close(app);
     });
@@ -1467,6 +1470,8 @@ mod header_report_tests {
         h.frames(3);
         h.step(&json!({"click":{"handle":"appbar:folder"}})).unwrap();
         h.step(&json!({"widget":"Save As JSON…"})).unwrap();
+        // Written on a worker: the window keeps drawing until it is done.
+        h.settle();
         let saved = h.app.session.path.clone().unwrap();
         let bytes = std::fs::read(&saved).unwrap();
         assert!(!solidcraft_engine::io::is_design_container(&bytes));

@@ -55,17 +55,17 @@ fn circle_given_by_its_centre_takes_that_round_end() {
     for z in [6.0, 16.0] {
         assert!(near(place(&s, "Knob", Vec3::new(0.0, 0.0, z)), Vec3::new(0.0, 0.0, z)), "{:?}", place(&s, "Knob", Vec3::new(0.0, 0.0, z)));
     }
-    // The top end's centre: its axis points up, out of the knob.
+    // The top end's centre: its axis points up, out of the knob. It is kept by the knob's wall
+    // and the face its end opens onto, so it follows them.
     run(&mut s, "joint.origin", json!({"occurrence": "Knob", "circle": [0, 0, 16], "name": "Top"}));
-    let top = s.doc.assembly.origins.iter().find(|o| o.name == "Top").map(|o| o.origin.snap.clone());
-    assert!(
-        matches!(top, Some(solidcraft_doc::joints::Snap::Point { point, z: Some(z) }) if near(point, Vec3::new(0.0, 0.0, 16.0)) && near(z, Vec3::Z)),
-        "{top:?}"
-    );
-    // Off the axis is still refused, and so is a coupling size (it follows a face).
+    let top = s.doc.assembly.origins.iter().find(|o| o.name == "Top").map(|o| o.origin.clone()).unwrap();
+    assert!(matches!(&top.snap, solidcraft_doc::joints::Snap::CircleCenter { face: Some(_), end: Some(_), .. }), "{top:?}");
+    let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &top).unwrap();
+    assert!(near(Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(0.0, 0.0, 16.0)) && near(Vec3::new(m[2][0], m[2][1], m[2][2]), Vec3::Z), "{m:?}");
+    // Off the axis is still refused; a coupling size given by a centre is that round face's
+    // radius (it follows the face).
     assert!(s.execute("joint.origin", &json!({"occurrence": "Knob", "circle": [3, 0, 6]})).is_err());
-    let e = s.execute("joint.screw", &json!({"joint": "J", "pitch": {"occurrence": "Knob", "circle": [0, 0, 6]}})).unwrap_err();
-    assert!(e.to_string().contains("not its centre"), "{e}");
+    run(&mut s, "joint.screw", json!({"joint": "J", "pitch": {"occurrence": "Knob", "circle": [0, 0, 6]}}));
 }
 
 #[test]
@@ -1453,6 +1453,10 @@ mod cam;
 #[path = "motion_analysis_tests.rs"]
 mod motion_analysis;
 
+// Joints swept until parts touch: a door, the four-bar above and a Watt six-bar.
+#[path = "motion_sweep_tests.rs"]
+mod motion_sweep;
+
 /// A pin through a hole of its own radius whose axis is a hair off the hole's (parts placed from
 /// rounded coordinates): the walls are all but tangent along two lines, which the boolean can't
 /// intersect. Each offset gets a checked answer: clear on the axis and within the kernel's
@@ -1479,4 +1483,162 @@ fn interference_of_a_pin_a_hair_off_its_hole() {
         assert!((got - want).abs() < 1e-6 * want, "{offset}: {got} against {want}: {i}");
         assert!((i["interferences"][0]["near_coaxial"]["offset_mm"].as_f64().unwrap_or(0.0) - offset).abs() < 1e-9, "{i}");
     }
+}
+
+/// The pin's head has the radius of the bush the pin sits in, on nearly its axis but beside it:
+/// two walls of one radius that never meet along the axis don't stop the crescent from counting.
+#[test]
+fn interference_of_a_headed_pin_a_hair_off_a_bush_of_its_heads_radius() {
+    let crescent = |r: f64, e: f64| std::f64::consts::PI * r * r - (2.0 * r * r * (e / (2.0 * r)).acos() - e / 2.0 * (4.0 * r * r - e * e).sqrt());
+    let offset = 5.9e-4;
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": 5.25, "height": 10, "base": [0, 0, 0], "operation": "new", "body_name": "Bush"}));
+    run(&mut s, "solid.cylinder", json!({"radius": 3, "height": 14, "base": [0, 0, -2], "operation": "cut", "targets": ["Bush"]}));
+    run(&mut s, "solid.cylinder", json!({"radius": 3, "height": 8, "base": [offset, 0, -3], "operation": "new", "body_name": "Pin"}));
+    run(&mut s, "solid.cylinder", json!({"radius": 5.25, "height": 2, "base": [offset, 0, -5], "operation": "join", "targets": ["Pin"]}));
+    let i = run(&mut s, "inspect.interference", json!({"bodies": ["Bush", "Pin"]}));
+    assert_eq!(i["unchecked"].as_array().map(Vec::len), Some(0), "{i}");
+    assert_eq!(i["count"], 1, "{i}");
+    let want = 5.0 * crescent(3.0, offset);
+    let got = i["interferences"][0]["volume_mm3"].as_f64().unwrap_or(0.0);
+    assert!((got - want).abs() < 1e-6 * want, "{got} against {want}: {i}");
+    assert!(i["interferences"][0]["near_coaxial"].is_object(), "{i}");
+}
+
+/// A headed pin made before the plate it sits in, a hair off the plate's hole: the crescent
+/// whichever body comes first.
+#[test]
+fn interference_of_a_headed_pin_made_before_its_plate() {
+    let crescent = |r: f64, e: f64| std::f64::consts::PI * r * r - (2.0 * r * r * (e / (2.0 * r)).acos() - e / 2.0 * (4.0 * r * r - e * e).sqrt());
+    let offset = 5.6e-4;
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": 3, "height": 12, "base": [offset, 0, -2.35], "operation": "new", "body_name": "Pin"}));
+    run(&mut s, "solid.cylinder", json!({"radius": 5.25, "height": 3, "base": [offset, 0, -5.35], "operation": "join", "targets": ["Pin"]}));
+    run(&mut s, "solid.box", json!({"length": 60, "width": 60, "height": 2, "corner": [-30, -30, -2.35], "body_name": "Plate"}));
+    run(&mut s, "solid.cylinder", json!({"radius": 3, "height": 9, "base": [0, 0, -6], "operation": "cut", "targets": ["Plate"]}));
+    let i = run(&mut s, "inspect.interference", json!({"bodies": ["Pin", "Plate"]}));
+    assert_eq!(i["unchecked"].as_array().map(Vec::len), Some(0), "{i}");
+    assert_eq!(i["count"], 1, "{i}");
+    let want = 2.0 * crescent(3.0, offset);
+    let got = i["interferences"][0]["volume_mm3"].as_f64().unwrap_or(0.0);
+    assert!((got - want).abs() < 1e-6 * want, "{got} against {want}: {i}");
+}
+
+/// A grounded Base (a 40 x 40 x 10 box), a Pin extruded 20 mm from the sketch circle `c1` of
+/// `PinSketch` (r5 at x = 100) and a Cap box; a revolute Hinge from the Base's top to the Pin's
+/// top rim, its offset the parameter `gap`, and a rigid Fix between two points of Base and Cap.
+fn hinge_and_fix() -> Session {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "gap", "expression": "2 mm"}));
+    run(&mut s, "component.create", json!({"name": "Base"}));
+    run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 10, "corner": [0, 0, 0]}));
+    let base = occ(&s, "Base");
+    run(&mut s, "occurrence.ground", json!({"occurrence": base, "grounded": true}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "component.create", json!({"name": "Pin"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "PinSketch"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [100, 0], "radius": 5, "id": "c1"}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 20}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "component.create", json!({"name": "Cap"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 5, "corner": [200, 0, 0]}));
+    let r = run(
+        &mut s,
+        "joint.create",
+        json!({"type": "revolute", "name": "Hinge", "offset": "gap", "limits": [[-90, 90]],
+               "a": {"occurrence": "Base", "face": [20, 20, 10]}, "b": {"occurrence": "Pin", "circle": [105, 0, 20]}}),
+    );
+    assert_eq!(r["errors"].as_array().map(Vec::len), Some(0), "{r}");
+    run(
+        &mut s,
+        "joint.create",
+        json!({"type": "rigid", "name": "Fix", "a": {"occurrence": "Base", "point": [0, 0, 0]}, "b": {"occurrence": "Cap", "point": [200, 0, 0]}}),
+    );
+    s
+}
+
+/// The reference of `role` on side `side` of an inspected joint.
+fn reference<'a>(j: &'a Value, side: &str, role: &str) -> &'a Value {
+    j[side]["references"].as_array().and_then(|r| r.iter().find(|r| r["role"] == role)).unwrap_or(&Value::Null)
+}
+
+/// `joint.inspect` gives each joint's definition: its kind, offset (and the expression it
+/// follows), limits and values, and for each side the occurrence and component, the snap as
+/// saved, and what its face names refer to: a circle's wall back to the extrude and the sketch
+/// curve it was swept from.
+#[test]
+fn joint_inspect_gives_what_each_joint_is_attached_to() {
+    let mut s = hinge_and_fix();
+    let all = run(&mut s, "joint.inspect", json!({}));
+    let joints = all["joints"].as_array().cloned().unwrap_or_default();
+    assert_eq!(joints.iter().map(|j| j["name"].clone()).collect::<Vec<_>>(), [json!("Hinge"), json!("Fix")], "{all}");
+
+    let hinge = run(&mut s, "joint.inspect", json!({"joint": "Hinge"}))["joints"][0].clone();
+    assert_eq!((&hinge["type"], &hinge["offset"], &hinge["expressions"]["offset"]), (&json!("revolute"), &json!(2.0), &json!("gap")), "{hinge}");
+    assert_eq!(hinge["values"][0]["limits"], json!([-90.0, 90.0]), "{hinge}");
+    assert_eq!(hinge["dofs"], json!(["angle"]));
+    assert_eq!((&hinge["a"]["occurrence_name"], &hinge["a"]["component_name"]), (&json!("Base:1"), &json!("Base")), "{hinge}");
+    assert_eq!(hinge["a"]["path"], hinge["a"]["occurrence_name"]);
+    assert_eq!((&hinge["a"]["snap"]["type"], &hinge["b"]["snap"]["type"]), (&json!("face_center"), &json!("circle_center")), "{hinge}");
+    assert_eq!((&hinge["a"]["resolves"], &hinge["b"]["resolves"]), (&json!(true), &json!(true)), "{hinge}");
+    assert_eq!(hinge["b"]["component_name"], "Pin");
+    // The Pin's wall: the extrude's side swept from PinSketch's c1.
+    let wall = reference(&hinge, "b", "face");
+    assert_eq!(wall["feature"]["type"], "ExtrudeFeature", "{hinge}");
+    assert_eq!(
+        (&wall["sketch"]["name"], &wall["sketch"]["curve"], &wall["sketch"]["curve_type"]),
+        (&json!("PinSketch"), &json!("c1"), &json!("circle")),
+        "{hinge}"
+    );
+    assert_eq!(wall["name"].as_str().map(|n| n.contains(":side:c1")), Some(true), "{hinge}");
+    // The rim's end face is the extrude's top.
+    assert_eq!(reference(&hinge, "b", "end")["feature"], wall["feature"], "{hinge}");
+    // The Base's top: a face of its box, no sketch.
+    assert!(reference(&hinge, "a", "face")["feature"]["id"].is_u64() && reference(&hinge, "a", "face")["sketch"].is_null(), "{hinge}");
+
+    let fix = &joints[1];
+    assert_eq!((&fix["type"], &fix["values"], &fix["dofs"]), (&json!("rigid"), &json!([]), &json!([])), "{fix}");
+    assert_eq!((&fix["b"]["snap"]["type"], &fix["b"]["snap"]["point"]), (&json!("point"), &json!([200.0, 0.0, 0.0])), "{fix}");
+    assert_eq!(fix["b"]["references"], json!([]));
+    assert!(fix.get("expressions").is_none(), "{fix}");
+
+    // A joint that isn't there is an error.
+    assert!(s.execute("joint.inspect", &json!({"joint": "Nope"})).is_err());
+}
+
+/// A joint whose sketch circle is replaced: its origin's face is gone, so it no longer
+/// resolves; the inspection says why and that its curve is no longer in the sketch.
+#[test]
+fn joint_inspect_reports_a_lost_origin() {
+    let mut s = hinge_and_fix();
+    run(&mut s, "sketch.edit", json!({"sketch": "PinSketch"}));
+    run(&mut s, "sketch.delete", json!({"entities": ["c1"]}));
+    run(&mut s, "sketch.circle.center", json!({"center": [100, 0], "radius": 5, "id": "c2"}));
+    run(&mut s, "sketch.finish", json!({}));
+    let hinge = run(&mut s, "joint.inspect", json!({"joint": "Hinge"}))["joints"][0].clone();
+    assert_eq!(hinge["b"]["resolves"], false, "{hinge}");
+    let wall = reference(&hinge, "b", "face");
+    let name = wall["name"].as_str().unwrap_or_default();
+    assert!(hinge["b"]["error"].as_str().is_some_and(|e| e.contains(name)), "{hinge}");
+    assert_eq!(wall["sketch"]["curve"], "c1", "{hinge}");
+    assert!(wall["sketch"]["error"].is_string(), "{hinge}");
+    assert!(!hinge["errors"].as_array().is_none_or(Vec::is_empty), "the solve says so too: {hinge}");
+    // The Base side is still found.
+    assert_eq!(hinge["a"]["resolves"], true);
+}
+
+/// `joint.inspect` reads only: no undo step, the design unchanged, and the id agents' gates
+/// treat as reading (`*.inspect`).
+#[test]
+fn joint_inspect_reads_only() {
+    let mut s = hinge_and_fix();
+    let spec = crate::cmd::command_specs().into_iter().find(|c| c.id == "joint.inspect");
+    assert!(spec.is_some_and(|c| !c.undoable && c.tab.is_empty()));
+    let undo = run(&mut s, "document.inspect", json!({}))["undo"].clone();
+    let before = serde_json::to_value(&s.doc).unwrap_or_default();
+    run(&mut s, "joint.inspect", json!({}));
+    run(&mut s, "joint.inspect", json!({"joint": "Fix"}));
+    assert_eq!(run(&mut s, "document.inspect", json!({}))["undo"], undo);
+    assert_eq!(serde_json::to_value(&s.doc).unwrap_or_default(), before);
 }

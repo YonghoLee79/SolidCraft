@@ -528,6 +528,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             hl_slot: slot.clone(),
             pv_key: 0,
             pv_slot: slot,
+            pv_hide: false,
             view_proj: camera.view_proj(f64::from(rect.width() / rect.height().max(1.0)), radius).to_f32(),
             back: camera.back().to_f32(),
             size_px: [rect.width() * ppp, rect.height() * ppp],
@@ -538,6 +539,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             analysis_colors: [0.0; 36],
             access: None,
             outline: false,
+            // Product rendering has its own lighting; AO is a Design viewport setting.
+            ao_radius: 0.0,
             eye: [eye.x as f32, eye.y as f32, eye.z as f32, if camera.fov > 0.0 { 1.0 } else { 0.0 }],
             ssaa: if width < full.0 { width as f32 / full.0 as f32 } else { 1.0 },
         });

@@ -26,8 +26,36 @@ mod trace;
 pub use trace::{TraceForm, picked_point};
 
 /// Joint types in the order the Type box lists them (command names).
-pub const TYPES: [&str; 7] = ["rigid", "revolute", "slider", "cylindrical", "pin_slot", "planar", "ball"];
-const TYPE_LABELS: [&str; 7] = ["Rigid", "Revolute", "Slider", "Cylindrical", "Pin-slot", "Planar", "Ball"];
+pub const TYPES: [&str; 13] = [
+    "rigid",
+    "revolute",
+    "slider",
+    "cylindrical",
+    "pin_slot",
+    "planar",
+    "ball",
+    "parallel",
+    "perpendicular",
+    "angle",
+    "point_on_plane",
+    "point_on_line",
+    "line_on_plane",
+];
+const TYPE_LABELS: [&str; 13] = [
+    "Rigid",
+    "Revolute",
+    "Slider",
+    "Cylindrical",
+    "Pin-slot",
+    "Planar",
+    "Ball",
+    "Parallel",
+    "Perpendicular",
+    "Angle",
+    "Point on plane",
+    "Point on line",
+    "Line on plane",
+];
 /// What a joint origin input accepts (snaps on faces, edges and vertices).
 pub const SNAPS: u16 = FACES | EDGES | VERTICES;
 /// Commands whose effect is where occurrences sit (previewed on the placed model).
@@ -281,8 +309,10 @@ pub fn edit_joint(app: &SolveApp, id: u64) -> Option<Dialog> {
     f.editing = Some(id);
     f.kind = TYPES.iter().position(|t| JointKind::parse(t) == Some(j.kind)).unwrap_or(0);
     f.flip = j.flip;
-    f.angle = num(j.angle.to_degrees(), "deg");
-    f.offset[2] = num(j.offset, "mm");
+    // An offset or angle typed as an expression shows (and is sent back) as that expression, so
+    // the joint keeps following its parameters.
+    f.angle = j.exprs.angle.clone().unwrap_or_else(|| num(j.angle.to_degrees(), "deg"));
+    f.offset[2] = j.exprs.offset.clone().unwrap_or_else(|| num(j.offset, "mm"));
     f.fit_limits();
     for (i, l) in f.limits.iter_mut().enumerate() {
         if let Some(Some((lo, hi))) = j.limits.get(i) {
@@ -701,7 +731,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Asm, inputs: &mut [Se
             ui.end_row();
             row_label(ui, "");
             let stale = result.is_some() && *of != picked;
-            if ui.button(if stale { "Compute again" } else { "Compute" }).clicked() {
+            if ui.button(crate::i18n::tr(if stale { "dialog.compute_again" } else { "dialog.compute" })).clicked() {
                 let (r, o) = interference(app, &picked, clearance);
                 *result = Some(r);
                 *overlaps = o;
@@ -729,7 +759,7 @@ fn interference(app: &mut SolveApp, picked: &[Sel], clearance: &str) -> (Value, 
     let (scale, _) = crate::prefs::unit_scale(&app.session.doc.units);
     let clearance = match crate::prefs::parse_length_mm(clearance, scale) {
         Some(v) if v >= 0.0 => v,
-        _ => return (json!({ "error": "the clearance must be a length of 0 or more" }), Vec::new()),
+        _ => return (json!({ "error": crate::i18n::tr("dialog.clearance_invalid") }), Vec::new()),
     };
     let mut p = json!({ "clearance": clearance, "nearest": 1 });
     if !names.is_empty() {
@@ -762,7 +792,7 @@ fn interference_rows(app: &SolveApp, ui: &mut egui::Ui, r: &Value) {
     }
     let hits = r["overlaps"].as_array().cloned().unwrap_or_default();
     row_label(ui, "Checked");
-    ui.label(format!("{} bodies", r["bodies"].as_u64().unwrap_or(0)));
+    ui.label(crate::i18n::format("dialog.bodies_count", &[("count", &r["bodies"].as_u64().unwrap_or(0).to_string())]));
     ui.end_row();
     let unchecked = r["unchecked"].as_array().cloned().unwrap_or_default();
     let near = r["near"].as_array().cloned().unwrap_or_default();
@@ -812,7 +842,7 @@ fn interference_rows(app: &SolveApp, ui: &mut egui::Ui, r: &Value) {
     // Pairs the check could not work out: not clear, not known to interfere.
     for u in unchecked {
         row_label(ui, &format!("{} · {}", u["a"].as_str().unwrap_or(""), u["b"].as_str().unwrap_or("")));
-        ui.label(RichText::new("could not be checked").color(t.warning)).on_hover_text(u["reason"].as_str().unwrap_or(""));
+        ui.label(RichText::new(crate::i18n::tr("dialog.could_not_be_checked")).color(t.warning)).on_hover_text(u["reason"].as_str().unwrap_or(""));
         ui.end_row();
     }
 }
@@ -930,7 +960,7 @@ pub fn commands(app: &SolveApp, k: &Asm, inputs: &[SelInput]) -> Result<Vec<(Str
             }
             let (x, y) = (eval(&f.offset[0], ValueKind::Length)?, eval(&f.offset[1], ValueKind::Length)?);
             let a_param = if x.abs() > 1e-12 || y.abs() > 1e-12 { shifted(&a, x, y) } else { a.param };
-            // Picked origins mate as in Fusion (the engine's default: B's z opposite A's, faces
+            // Picked origins mate by default (the engine's default: B's z opposite A's, faces
             // meet face to face, a pin goes into its hole); the dialog's Flip is the command's
             // `flip`, which turns B the other way.
             let p = json!({"type": kind, "a": a_param, "b": b.param, "flip": f.flip, "offset": f.offset[2], "angle": f.angle, "limits": limits});
@@ -1199,7 +1229,7 @@ fn joint_menu(
     }
     ui.separator();
     if ui.button("Delete").clicked() {
-        *run = Some(("joint.delete", json!({ "joint": id })));
+        *run = Some(("selection.delete", json!({ "joints": [id] })));
         ui.close();
     }
 }
@@ -1218,8 +1248,15 @@ pub fn timeline_joints(app: &mut SolveApp, ui: &mut egui::Ui, p: &egui::Painter,
     let mut run: Option<(&'static str, Value)> = None;
     for (id, name, kind, suppressed) in joints {
         let br = egui::Rect::from_min_size(egui::pos2(x, r.top() + 6.0), vec2(28.0, 28.0));
+        crate::scenario::publish_handle(&format!("timeline-joint:{name}"), br.center());
         let resp = ui.interact(br, ui.id().with(("joint", id)), egui::Sense::click());
-        let bg = if resp.hovered() { t.hover } else { t.timeline_item };
+        let bg = if app.tree.picked_joints.contains(&id) {
+            t.accent_soft
+        } else if resp.hovered() {
+            t.hover
+        } else {
+            t.timeline_item
+        };
         p.rect(br, 3.0, bg, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         crate::icons::paint(p, br.shrink(4.0), "joint", if suppressed { t.border } else { t.icon }, t.icon_fill, t.accent);
         if suppressed {
@@ -1228,12 +1265,21 @@ pub fn timeline_joints(app: &mut SolveApp, ui: &mut egui::Ui, p: &egui::Painter,
         let resp = resp.on_hover_text(format!("{name}  ({kind:?} joint)\nDouble-click to edit · right-click for more"));
         if resp.double_clicked() {
             open = edit_joint(app, id);
+        } else if resp.clicked() {
+            pick_joint(app, id, ui.input(|i| i.modifiers.command || i.modifiers.ctrl));
+        }
+        if resp.secondary_clicked() && !app.tree.picked_joints.contains(&id) {
+            pick_joint(app, id, false);
         }
         resp.context_menu(|ui| joint_menu(app, ui, (id, kind, suppressed), &mut open, &mut run));
         x += 32.0;
     }
     if let Some((c, prm)) = run {
-        let _ = app.run(c, prm);
+        if c == "selection.delete" {
+            crate::delete::request(app, prm);
+        } else {
+            let _ = app.run(c, prm);
+        }
     }
     if let Some(d) = open {
         app.tool = None;
@@ -1256,7 +1302,10 @@ pub fn timeline_joints_vertical(app: &mut SolveApp, ui: &mut egui::Ui) {
     let mut run = None;
     for (id, name, kind, suppressed) in joints {
         let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), egui::Sense::click());
-        if response.hovered() {
+        crate::scenario::publish_handle(&format!("timeline-joint:{name}"), rect.center());
+        if app.tree.picked_joints.contains(&id) {
+            ui.painter().rect_filled(rect, 3.0, t.accent_soft);
+        } else if response.hovered() {
             ui.painter().rect_filled(rect, 3.0, t.hover);
         }
         let icon = egui::Rect::from_min_size(egui::pos2(rect.left() + 4.0, rect.top() + 4.0), vec2(22.0, 22.0));
@@ -1274,11 +1323,20 @@ pub fn timeline_joints_vertical(app: &mut SolveApp, ui: &mut egui::Ui) {
         let response = response.on_hover_text(format!("{name}  ({kind:?} joint)\nDouble-click to edit · right-click for more"));
         if response.double_clicked() {
             open = edit_joint(app, id);
+        } else if response.clicked() {
+            pick_joint(app, id, ui.input(|i| i.modifiers.command || i.modifiers.ctrl));
+        }
+        if response.secondary_clicked() && !app.tree.picked_joints.contains(&id) {
+            pick_joint(app, id, false);
         }
         response.context_menu(|ui| joint_menu(app, ui, (id, kind, suppressed), &mut open, &mut run));
     }
     if let Some((command, params)) = run {
-        let _ = app.run(command, params);
+        if command == "selection.delete" {
+            crate::delete::request(app, params);
+        } else {
+            let _ = app.run(command, params);
+        }
     }
     if let Some(dialog) = open {
         app.tool = None;
@@ -1297,18 +1355,18 @@ pub fn browser_joints(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize) {
         return;
     }
     // Drawn like every other browser node (its fold, eye and rows publish `fold:Joints`,
-    // `eye:Joints`, `row:<name>`). The folder's eye hides every joint's glyph, or shows them
-    // all when none is shown.
+    // `eye:Joints`, `row:<name>`). The folder's eye is its own: hiding it hides every joint's
+    // glyph without changing each joint's eye.
     let key = "c0/joints";
     let open = is_open(app, key, true);
-    let any_visible = joints.iter().any(|j| app.session.joint_visible(j.0));
+    let folder_shown = !app.session.folder_hidden(key);
     let r = draw_row(
         ui,
         ui.id().with(key),
-        &Row { depth, fold: Some(open), eye: Some(any_visible), icon: "folder", label: "Joints", ..Default::default() },
+        &Row { depth, fold: Some(open), eye: Some(folder_shown), icon: "folder", label: "Joints", dim: !folder_shown, ..Default::default() },
     );
     if r.eye {
-        let _ = app.run("browser.visibility", json!({ "folder": "joints", "visible": !any_visible }));
+        crate::browser::toggle_folder(app, key);
     } else if r.fold || r.clicked {
         toggle(app, key, true);
     }
@@ -1329,7 +1387,7 @@ pub fn browser_joints(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize) {
                 label: &name,
                 name: true,
                 selected,
-                dim: suppressed || !visible,
+                dim: suppressed || !visible || !folder_shown,
                 ..Default::default()
             },
         );
@@ -1347,7 +1405,7 @@ pub fn browser_joints(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize) {
         // The same menus as the rest of the browser.
         if let Some(at) = r.secondary {
             if !app.tree.picked_joints.contains(&id) {
-                app.tree.picked_joints = vec![id];
+                pick_joint(app, id, false);
             }
             crate::context_menu::open_for(app, at, crate::context_menu::Target::Joint { id });
         }
@@ -1361,6 +1419,8 @@ pub fn browser_joints(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize) {
 /// A click on a joint's browser row: it becomes the pick (or, with Ctrl, toggles in or out of
 /// it). Picked joints draw highlighted in the viewport, even hidden ones.
 pub fn pick_joint(app: &mut SolveApp, id: u64, add: bool) {
+    app.tree.picked_timeline_groups.clear();
+    app.tree.timeline_anchor = None;
     if !add {
         let was = app.tree.picked_joints == [id];
         app.tree.picked_joints.clear();
@@ -1472,7 +1532,7 @@ pub fn drawn_joints(app: &SolveApp) -> Vec<(u64, bool)> {
         .iter()
         .filter_map(|j| {
             let picked = app.tree.picked_joints.contains(&j.id);
-            (picked || app.session.joint_visible(j.id)).then_some((j.id, picked))
+            (picked || app.session.joint_drawn(j.id)).then_some((j.id, picked))
         })
         .collect()
 }

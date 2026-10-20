@@ -22,6 +22,7 @@ pub struct DocSlot {
     pre_sketch_cam: Option<Camera>,
     pre_sketch_marker: Option<Option<usize>>,
     view: DocView,
+    occurrence_move: Option<crate::browser::OccMove>,
 }
 
 /// The per-design part of the UI state (what is hidden, shown or locked).
@@ -36,7 +37,7 @@ struct DocView {
 
 impl DocSlot {
     fn new(session: Session) -> DocSlot {
-        DocSlot { session, cam: Camera::default(), pre_sketch_cam: None, pre_sketch_marker: None, view: DocView::default() }
+        DocSlot { session, cam: Camera::default(), pre_sketch_cam: None, pre_sketch_marker: None, view: DocView::default(), occurrence_move: None }
     }
 }
 
@@ -96,6 +97,7 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
     app.tool = None;
     app.params = None;
     app.design_properties = None;
+    app.bom = None;
     app.cancel_view_animation();
     app.viewport.orbit_snap = None;
     app.viewport.orbit_free = None;
@@ -110,6 +112,7 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
         pre_sketch_cam: std::mem::replace(&mut app.pre_sketch_cam, slot.pre_sketch_cam),
         pre_sketch_marker: std::mem::replace(&mut app.pre_sketch_marker, slot.pre_sketch_marker),
         view: take_view(app),
+        occurrence_move: std::mem::replace(&mut app.tree.occurrence_move, slot.occurrence_move),
     };
     put_view(app, slot.view);
     // Preferences the session holds go with the user, not the tab (#680).
@@ -402,8 +405,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         }
         tab_shape(ui.painter(), &t, tr, active, resp.hovered());
         let ink = if active { t.text } else { t.app_bar_text };
-        let name_display = if name == "Untitled" { app.tr("ui.untitled") } else { name };
-        let label = format!("{name_display}{}", if *dirty { " •" } else { "" });
+        let label = format!("{}{}", crate::i18n::Locale::for_language(&app.preferences.language).given_name(name), if *dirty { " •" } else { "" });
         let g = ui.painter().layout_no_wrap(label, FontId::proportional(13.0), ink);
         let text_w = (tr.width() - 30.0).max(10.0);
         let clip = Rect::from_min_size(tr.min, vec2(text_w + 10.0, tr.height()));
@@ -528,7 +530,7 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
     quit_step(app);
     let Some(i) = app.docs.closing else { return };
     let name = tabs_info(app).get(i).map(|x| x.0.clone()).unwrap_or_default();
-    let name_display = if name == "Untitled" { crate::i18n::tr("ui.untitled") } else { &name };
+    let name_display = crate::i18n::tr_name(&name);
     let mut answer: Option<Answer> = None;
     // Left and Right move between the buttons (Save is picked first); Enter gives the picked one.
     let order = [Answer::Save, Answer::DontSave, Answer::Cancel];
@@ -552,14 +554,14 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
     if enter {
         answer = Some(choice);
     }
-    let title = crate::i18n::format("document.save_changes", &[("name", name_display)]);
+    let title = crate::i18n::format("document.save_changes", &[("name", &name_display)]);
     crate::frame::window(ctx, title, crate::frame::Width::Normal)
         .id(egui::Id::new("sc_close_prompt"))
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
         .show(ctx, |ui| {
-            ui.label(crate::i18n::format("document.unsaved_changes", &[("name", name_display)]));
+            ui.label(crate::i18n::format("document.unsaved_changes", &[("name", &name_display)]));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.add(egui::Button::new(crate::i18n::tr("ui.save")).selected(choice == Answer::Save)).clicked() {
@@ -759,6 +761,7 @@ mod tests {
         assert_eq!(a.docs.closing, Some(0), "the first unsaved design is asked about first");
         assert_eq!(a.docs.active, 0, "and shown");
         answer_prompt(&mut a, Answer::Save);
+        crate::save_job::tick(&mut a, true);
         assert!(!dirty(&a, 0), "saved");
         assert_eq!(
             std::fs::read(&file).ok().and_then(|b| solidcraft_engine::io::read_design(&b).ok()).map(|d| d.features.len()),
@@ -800,6 +803,7 @@ mod tests {
         answer_prompt(&mut a, Answer::Save);
         assert!(!a.quit_requested && a.file_picker_busy());
         crate::file_picker::tick(&mut a, &egui::Context::default());
+        crate::save_job::tick(&mut a, true);
         assert!(a.quit_requested && file.exists());
         let _ = std::fs::remove_file(&file);
     }

@@ -5,8 +5,9 @@
 //! - `engine.script {commands: [...]}`: run a command script
 //! - `engine.batch {commands: [...], rollback?}`: the steps in one request, each as
 //!   `engine.execute` runs it; stops at the first failure and goes back to the checkpoint
-//!   (per-step results, `failed`, `undone`). Refused (`engine.batch unavailable: …`) while the
-//!   agent cursor is shown or when a step loads a file
+//!   (per-step results, `failed`, `undone`, `rolled_back`). Refused (`engine.batch unavailable: …`)
+//!   when a step loads a file; with the agent cursor shown, the pointer acts out a short summary
+//!   of it first
 //! - `engine.commands`: every command with tab, panel, params and enablement
 //! - `document.inspect {measure?}`: the design (parameters, timeline, bodies, sketches)
 //! - `ui.inspect`: UI state, viewport rect, camera, tool and dialog
@@ -97,7 +98,7 @@ fn key_from(name: &str) -> Option<egui::Key> {
 fn execute(app: &mut SolveApp, id: &str, params: Value) -> Result<Value, String> {
     let r = app.run(id, params);
     if r.is_ok()
-        && id != "view.navigate"
+        && !matches!(id, "view.navigate" | "view.ambient_occlusion" | "view.graphics_preset")
         && app.session.active_sketch.is_none()
         && app.session.world_state().bodies.len() == 1
         && app.session.undo.len() <= 2
@@ -122,6 +123,18 @@ const MAX_BATCH: usize = 10_000;
 /// bypass.
 const LOADS_A_FILE: [&str; 3] = ["doc.open", "file.insert_step", "file.insert_mesh"];
 
+/// Why `engine.batch` refuses these steps before running any: a step loads a file (send such
+/// steps one by one).
+pub(crate) fn batch_refusal(steps: &[Value]) -> Option<String> {
+    let (i, c) = steps.iter().enumerate().find_map(|(i, step)| command(step).filter(|c| LOADS_A_FILE.contains(c)).map(|c| (i, c)))?;
+    Some(format!("engine.batch unavailable: step {i} ({c}) loads a file"))
+}
+
+/// A batch step's command id (the agent cursor points at its toolbar button).
+pub(crate) fn batch_step_command(step: &Value) -> Option<&str> {
+    command(step)
+}
+
 /// `engine.batch {commands, rollback?, timings?, profile?}`: the steps in one request, so in one
 /// frame (#743). With `timings` the reply adds each step's time and `total_ms`, with `profile`
 /// each step's kernel share too (`solidcraft_engine::timing`, #1833). Each
@@ -133,12 +146,10 @@ fn batch(app: &mut SolveApp, p: &Value) -> Outcome {
     let Some(steps) = p.get("commands").and_then(Value::as_array).filter(|s| s.len() <= MAX_BATCH) else {
         return err(format!("engine.batch: commands must be an array of at most {MAX_BATCH} steps"));
     };
-    // The agent cursor acts out each `engine.execute` on its own.
-    if app.ui.agent_cursor.show {
-        return err("engine.batch unavailable: the agent cursor is shown");
-    }
-    if let Some((i, c)) = steps.iter().enumerate().find_map(|(i, step)| command(step).filter(|c| LOADS_A_FILE.contains(c)).map(|c| (i, c))) {
-        return err(format!("engine.batch unavailable: step {i} ({c}) loads a file"));
+    // (With the agent cursor shown, the pointer has already acted out a short summary of the
+    // batch: `agent_cursor::intercept`.)
+    if let Some(why) = batch_refusal(steps) {
+        return err(why);
     }
     let rollback = p.get("rollback").and_then(Value::as_bool).unwrap_or(true);
     let profile = p.get("profile").and_then(Value::as_bool).unwrap_or(false);
@@ -160,7 +171,9 @@ fn batch(app: &mut SolveApp, p: &Value) -> Outcome {
             Err(e) => {
                 let restored = checkpoint.is_some_and(|id| app.run("edit.restore_checkpoint", json!({"checkpoint": id})).is_ok());
                 let failed = json!({"index": i, "command": command(step), "error": e});
-                let reply = json!({"completed": i, "results": results, "failed": failed, "undone": if restored { i } else { 0 }});
+                // `rolled_back`: the design really is back at its checkpoint.
+                let reply =
+                    json!({"completed": i, "results": results, "failed": failed, "undone": if restored { i } else { 0 }, "rolled_back": restored});
                 return ok(with_timings(reply, timed, rows, clock.ms()));
             }
         }
@@ -208,7 +221,10 @@ pub(crate) fn view_scene(app: &SolveApp, guides: solidcraft_engine::view::Guides
 
 /// The grid and the origin's axes as the window shows them (the Grid and Origin switches).
 pub(crate) fn window_guides(app: &SolveApp) -> solidcraft_engine::view::Guides {
-    solidcraft_engine::view::Guides { grid: app.ui.show_grid && !crate::viewport::active_view(app).hide_grid, axes: app.origin_visible() }
+    solidcraft_engine::view::Guides {
+        grid: app.session.active_sketch.is_some() || (app.ui.show_grid && !crate::viewport::active_view(app).hide_grid),
+        axes: app.origin_visible(),
+    }
 }
 
 /// A picture of the view as the window shows it, RGBA, drawn on the GPU with the viewport's
@@ -281,6 +297,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         }
         "engine.commands" => wrap(app.session.execute("engine.commands", &json!({})).map_err(|e| e.to_string())),
         "document.inspect" => wrap(app.session.execute("document.inspect", p).map_err(|e| e.to_string())),
+        "ui.messages" => ok(crate::messages::control(app, p)),
         "ui.inspect" => ok(json!({
             "ui": serde_json::to_value(&app.ui).unwrap_or_default(),
             "visibility": app.session.visibility,
@@ -300,6 +317,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             "preview": {"active": app.preview.active, "busy": app.preview.busy, "error": app.preview.error, "ms": app.preview.ms, "replaced": app.preview.replaced},
             "home": app.home.open,
             "recent_thumbnails_ready": app.home.ready_recents(),
+            "sample_thumbnails_ready": app.home.ready_samples(),
             "documents": app.docs.count(),
             "quit_requested": app.quit_requested,
             "quitting": app.docs.quitting.is_some(),
@@ -330,12 +348,13 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         }
         "ui.set" => {
             // What is hidden lives in the session (`browser.visibility`); `ui.set` still sets it.
-            const VIS: [(&str, &str); 5] = [
+            const VIS: [(&str, &str); 6] = [
                 ("hiddenBodies", "hidden_bodies"),
                 ("hiddenOrigin", "hidden_origin"),
                 ("hiddenSketches", "hidden_sketches"),
                 ("shownSketches", "shown_sketches"),
                 ("hiddenJoints", "hidden_joints"),
+                ("hiddenFolders", "hidden_folders"),
             ];
             let mut cur = serde_json::to_value(&app.ui).unwrap_or(json!({}));
             let mut vis = serde_json::to_value(&app.session.visibility).unwrap_or(json!({}));
@@ -1219,13 +1238,26 @@ mod tests {
     }
 
     #[test]
-    fn engine_batch_is_refused_while_the_agent_cursor_is_shown() {
+    fn engine_batch_runs_while_the_agent_cursor_is_shown() {
         let mut h = crate::scenario::Harness::new();
         assert_eq!(h.call("ui.agent_cursor", json!({"show": true}))["ok"], true);
         let v = batch(&mut h, json!({"commands": [{"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}]}));
-        assert_eq!(v["ok"], false, "{v}");
-        assert!(v["error"].as_str().is_some_and(|e| e.starts_with("engine.batch unavailable")), "{v}");
-        assert_eq!(inspect(&mut h)["bodies"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["result"]["completed"], 1, "{v}");
+        assert_eq!(inspect(&mut h)["bodies"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// A failed batch says whether the design really went back (`rolled_back`), not just whether
+    /// it was asked to.
+    #[test]
+    fn engine_batch_reports_whether_it_rolled_back() {
+        let mut h = crate::scenario::Harness::new();
+        let steps = json!([{"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}, {"command": "NoSuchCommand"}]);
+        let v = batch(&mut h, json!({"commands": steps.clone()}));
+        assert_eq!((&v["result"]["rolled_back"], &v["result"]["undone"]), (&json!(true), &json!(1)), "{v}");
+        let v = batch(&mut h, json!({"commands": steps, "rollback": false}));
+        assert_eq!((&v["result"]["rolled_back"], &v["result"]["undone"]), (&json!(false), &json!(0)), "{v}");
+        assert_eq!(inspect(&mut h)["bodies"].as_array().map(Vec::len), Some(1));
     }
 
     /// Every step of a batch from an MCP server stays inside the agent's folders (#205), as an

@@ -621,13 +621,17 @@ impl PolyBoundaryPiece {
     }
 }
 
-fn abs_diff(previous: f64) -> impl Fn(&f64, &f64) -> std::cmp::Ordering {
-    let f = move |x: &f64| f64::abs(x - previous);
-    move |x: &f64, y: &f64| f(x).partial_cmp(&f(y)).unwrap()
-}
+/// SolidCraft: `u` moved by whole periods `up` to within half a period of `u0`, however many
+/// periods away it is (on a tie, the lower one, as before). A hinted search on a revolved
+/// surface can return an angle millions of turns from its hint, the same point; moving it by two
+/// periods at most left a face's boundary loop spanning those turns, and the polyline that closes
+/// it across the seam then had millions of points: meshing it never finished (#1985).
 fn get_mindiff(u: f64, u0: f64, up: f64) -> f64 {
-    let closure = |i| u + i as f64 * up;
-    (-2..=2).map(closure).min_by(abs_diff(u0)).unwrap()
+    let d = (u - u0).rem_euclid(up);
+    if !d.is_finite() {
+        return u;
+    }
+    u0 + if d >= 0.5 * up { d - up } else { d }
 }
 
 /// SolidCraft: the second field holds each loop's parameter box, so `include` skips loops that
@@ -877,8 +881,9 @@ impl PolyBoundary {
             .unwrap_or(false)
     }
 
-    /// Inserts points and adds constraint into triangulation.
-    fn insert_to(&self, triangulation: &mut Cdt) {
+    /// Inserts points and adds constraint into triangulation. SolidCraft: whether every segment
+    /// went in.
+    fn insert_to(&self, triangulation: &mut Cdt) -> bool {
         let poly2tri: Vec<_> = self
             .0
             .iter()
@@ -890,6 +895,7 @@ impl PolyBoundary {
             .collect();
         let mut prev: Option<usize> = None;
         let mut counter = 0;
+        let mut complete = true;
         self.0
             .iter()
             .map(Vec::len)
@@ -911,11 +917,61 @@ impl PolyBoundary {
                     if triangulation.can_add_constraint(vi, vj) {
                         triangulation.add_constraint(vi, vj);
                     } else {
+                        complete = false;
                         prev = Some(i);
                     }
                 }
             });
+        complete
     }
+}
+
+/// SolidCraft: most boundary points [`pinched`] compares with every segment, and most points it
+/// puts into segments.
+const MAX_PINCH_POINTS: usize = 8192;
+
+/// SolidCraft: `loops` with every point that lies within `TOLERANCE` of a segment, away from its
+/// ends, put into that segment (in order along it): where a loop touches itself or another,
+/// both pass through the same point. `None` when no point does, or the loops have more than
+/// [`MAX_PINCH_POINTS`] points, or more than that would be put in.
+fn pinched(loops: &[Vec<Point2>]) -> Option<Vec<Vec<Point2>>> {
+    if loops.iter().map(Vec::len).sum::<usize>() > MAX_PINCH_POINTS {
+        return None;
+    }
+    let mut extra: Vec<Vec<Vec<(f64, Point2)>>> = loops.iter().map(|l| vec![Vec::new(); l.len()]).collect();
+    let mut found = 0;
+    for (l, extra) in loops.iter().zip(&mut extra) {
+        let n = l.len();
+        for (i, extra) in extra.iter_mut().enumerate() {
+            let (q0, q1) = (l[i], l[(i + 1) % n]);
+            let d = q1 - q0;
+            let len2 = d.magnitude2();
+            if len2 <= TOLERANCE2 {
+                continue;
+            }
+            for &p in loops.iter().flatten() {
+                if p.distance2(q0) <= TOLERANCE2 || p.distance2(q1) <= TOLERANCE2 {
+                    continue;
+                }
+                let t = (p - q0).dot(d) / len2;
+                if t > 0.0 && t < 1.0 && p.distance2(q0 + d * t) <= TOLERANCE2 {
+                    if found == MAX_PINCH_POINTS {
+                        return None;
+                    }
+                    extra.push((t, p));
+                    found += 1;
+                }
+            }
+            extra.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
+    }
+    (found > 0).then(|| {
+        loops
+            .iter()
+            .zip(extra)
+            .map(|(l, extra)| l.iter().zip(extra).flat_map(|(p, e)| std::iter::once(*p).chain(e.into_iter().map(|(_, q)| q))).collect())
+            .collect()
+    })
 }
 
 fn spade_round(x: f64) -> f64 {
@@ -959,7 +1015,17 @@ pub(super) fn preview_face<S: RobustMeshableSurface>(surface: &S, loops: &[Vec<P
 // SolidCraft: the normal entry point supplies None, preserving adaptive meshing.
 fn trimming_with_steps<S: PreMeshableSurface>(surface: &S, polyboundary: &PolyBoundary, tol: Deflection, cap: usize, steps: Option<usize>) -> PolygonMesh {
     let mut triangulation = Cdt::new();
-    polyboundary.insert_to(&mut triangulation);
+    // SolidCraft: a loop that touches itself or another loop within `TOLERANCE` (a face pinched
+    // to a point where a body touches its edge, #1648) can cross there by less than that. A
+    // segment that would cross one already added is left out, the fallback in `insert_to` then
+    // joins the next point across the face, and the face came out with no triangles. Its
+    // segments are then taken through the points they pass, and it is triangulated again.
+    if !polyboundary.insert_to(&mut triangulation) {
+        if let Some(loops) = pinched(&polyboundary.0) {
+            triangulation = Cdt::new();
+            PolyBoundary(loops, Vec::new(), Vec::new()).insert_to(&mut triangulation);
+        }
+    }
     insert_surface(&mut triangulation, surface, polyboundary, tol, cap, steps);
     let mut mesh = triangulation_into_polymesh(
         triangulation.vertices(),
@@ -967,8 +1033,128 @@ fn trimming_with_steps<S: PreMeshableSurface>(surface: &S, polyboundary: &PolyBo
         surface,
         polyboundary,
     );
+    // SolidCraft: a face that came out with no triangles at all, though its boundary encloses
+    // an area in space (a lens thinner than the tolerance: its two edges are different curves,
+    // but sampled as they are, in the face's parameters they run along the same line), left a
+    // hole in the shell's mesh. Its boundary points are triangulated as they are, so it still
+    // meets the faces on either side of it.
+    if steps.is_none() && mesh.faces().is_empty() {
+        if let Some(filled) = loop_triangles(surface, polyboundary) {
+            mesh = filled;
+        }
+    }
     mesh.make_face_compatible_to_normal();
     mesh
+}
+
+/// SolidCraft: most points of a loop [`loop_triangles`] triangulates.
+const MAX_LOOP_POINTS: usize = 256;
+
+/// SolidCraft: the triangles of a face's one boundary loop, taken in space on the plane the loop
+/// lies near and with no point added, for a face whose parameters give none (see
+/// [`trimming_with_steps`]). `None` when the face has several loops, too many points, or no
+/// area in space.
+fn loop_triangles(surface: &impl ParametricSurface3D, polyline: &PolyBoundary) -> Option<PolygonMesh> {
+    let [curve] = polyline.0.as_slice() else { return None };
+    if !(3..=MAX_LOOP_POINTS).contains(&curve.len()) {
+        return None;
+    }
+    let positions: Vec<Point3> = curve.iter().map(|p| surface.subs(p.x, p.y)).collect();
+    if positions.iter().any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())) {
+        return None;
+    }
+    let normal = newell_normal(&positions);
+    if normal.magnitude() * 0.5 <= TOLERANCE {
+        return None;
+    }
+    // The loop seen along the axis its normal points along most.
+    let axis = (0..3).max_by(|&i, &j| normal[i].abs().total_cmp(&normal[j].abs()))?;
+    let flat: Vec<[f64; 2]> = positions
+        .iter()
+        .map(|p| match axis {
+            0 => [p.y, p.z],
+            1 => [p.z, p.x],
+            _ => [p.x, p.y],
+        })
+        .collect();
+    let triangles: Vec<[StandardVertex; 3]> = ear_clipping(&flat)?
+        .into_iter()
+        .filter(|&[a, b, c]| (positions[b] - positions[a]).cross(positions[c] - positions[a]).magnitude() * 0.5 > TOLERANCE)
+        .map(|corners| corners.map(|i| (i, Some(i), Some(i)).into()))
+        .collect();
+    if triangles.is_empty() {
+        return None;
+    }
+    // The normals orient the triangles ([`NormalFilters::make_face_compatible_to_normal`]).
+    let normals = curve.iter().map(|p| surface.normal(p.x, p.y)).collect();
+    let uv_coords = curve.iter().map(|p| Vector2::new(p.x, p.y)).collect();
+    Some(PolygonMesh::debug_new(
+        StandardAttributes { positions, uv_coords, normals },
+        Faces::from_tri_and_quad_faces(triangles, Vec::new()),
+    ))
+}
+
+/// SolidCraft: twice the vector area of a closed polygon: the direction of its plane, as long as
+/// it is large.
+fn newell_normal(points: &[Point3]) -> Vector3 {
+    let next = points.iter().cycle().skip(1);
+    points.iter().zip(next).fold(Vector3::zero(), |sum, (p, q)| {
+        sum + Vector3::new((p.y - q.y) * (p.z + q.z), (p.z - q.z) * (p.x + q.x), (p.x - q.x) * (p.y + q.y))
+    })
+}
+
+/// SolidCraft: twice the signed area of the triangle `a b c`: positive when it turns left.
+fn turn(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+/// SolidCraft: whether two sides of the closed polygon that do not share a corner cross each other.
+/// Ears of a polygon that crosses itself overlap, so it is not triangulated.
+fn crosses_itself(points: &[[f64; 2]]) -> bool {
+    let n = points.len();
+    let side = |i: usize| (points[i], points[(i + 1) % n]);
+    (0..n).any(|i| {
+        let (a, b) = side(i);
+        (i + 2..n).filter(|&j| !(i == 0 && j == n - 1)).any(|j| {
+            let (c, d) = side(j);
+            turn(a, b, c) * turn(a, b, d) < 0.0 && turn(c, d, a) * turn(c, d, b) < 0.0
+        })
+    })
+}
+
+/// SolidCraft: the triangles of a simple polygon, as indices into its points, by clipping ears.
+/// `None` when no ear is left to clip (the polygon crosses itself) or it has no area.
+fn ear_clipping(points: &[[f64; 2]]) -> Option<Vec<[usize; 3]>> {
+    if points.len() < 3 {
+        return None;
+    }
+    let next = points.iter().cycle().skip(1);
+    let area2: f64 = points.iter().zip(next).map(|(p, q)| p[0] * q[1] - q[0] * p[1]).sum();
+    if area2 == 0.0 || crosses_itself(points) {
+        return None;
+    }
+    // Every turn of an ear, and of a point inside it, is on the polygon's own side.
+    let side = area2.signum();
+    let is_ear = |left: &[usize], k: usize| {
+        let m = left.len();
+        let corner = [left[(k + m - 1) % m], left[k], left[(k + 1) % m]];
+        let [a, b, c] = corner.map(|i| points[i]);
+        turn(a, b, c) * side > 0.0
+            && left.iter().filter(|q| !corner.contains(q)).all(|&q| {
+                let p = points[q];
+                [turn(a, b, p), turn(b, c, p), turn(c, a, p)].iter().any(|t| t * side < 0.0)
+            })
+    };
+    let mut left: Vec<usize> = (0..points.len()).collect();
+    let mut triangles = Vec::with_capacity(points.len() - 2);
+    while left.len() > 3 {
+        let m = left.len();
+        let k = (0..m).find(|&k| is_ear(&left, k))?;
+        triangles.push([left[(k + m - 1) % m], left[k], left[(k + 1) % m]]);
+        left.remove(k);
+    }
+    triangles.push([left[0], left[1], left[2]]);
+    Some(triangles)
 }
 
 /// Inserts parameter divisions into triangulation.
@@ -1548,5 +1734,19 @@ pub mod include_test_hooks {
     fn hook_passes() {
         let n = include_answers_as_before(0..120);
         assert!(matches!(n, Ok(n) if n > 100_000), "{n:?}");
+    }
+}
+
+/// SolidCraft: the fallback that triangulates a face's boundary loop when the face has no
+/// triangle, for kernel tests (the vendored crates' own tests do not run in CI).
+///
+/// Not part of the API. Built only for tests, or with the `test-hooks` feature.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod loop_fill_test_hooks {
+    /// The triangles of a closed polygon, as indices into its points, or `None` when it has no
+    /// area, fewer than three points, or crosses itself.
+    pub fn ear_clipping(points: &[[f64; 2]]) -> Option<Vec<[usize; 3]>> {
+        super::ear_clipping(points)
     }
 }

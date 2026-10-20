@@ -30,7 +30,9 @@ Lines and polylines (L), rectangles (two-point R, three-point, centre), circles 
 two-point, three-point, tangent), arcs (three-point, centre, tangent), polygons, slots, ellipses,
 fit-point and control-point splines, conics, points and text. **Construction** (X) turns curves
 into reference geometry that doesn't form profiles. Modify tools include trim (T), extend, break,
-fillet, chamfer, offset (O), mirror, patterns, move/copy and scale.
+fillet, chamfer, offset (O), mirror, patterns, move/copy and scale. With trim on, click a
+piece to remove it, or press and drag a path across several pieces: the ones it crosses light up
+and all go when you let go, in one undo step (`sketch.trim.path`).
 
 The Sketch Palette's **Construction Geometries** option hides construction curves while you
 work. A hidden construction curve cannot be picked by a click or by a box. Nothing invisible
@@ -129,6 +131,9 @@ error bound of 0.002 mm. Singular tangents, curvature cusps, possible self-inter
 excessive subdivisions are refused. Offset these curves individually: mixed chain junctions
 currently require separate geometry. `sketch.offset.break` releases an offset for independent
 editing, and undo restores its association. Older independently sampled offsets remain independent.
+The fit points of such an offset stay hidden, except the two ends of an open one: lines and
+arcs snap to them and stay coincident with them as the offset follows its source, so the gap
+between a spline and its offset can be closed into a profile.
 Smooth open and newly created smooth closed offsets can be offset again, including bounded
 refinement after a source edit. New closed outputs use a periodic cubic fit with continuous
 tangent and curvature at the seam. Break Offset Association preserves that interpolation,
@@ -174,7 +179,8 @@ or vertical alignment from their current positions. Esc cancels a pending first 
 The solver is SolidCraft's own (damped Gauss–Newton with degree-of-freedom analysis). Constraints:
 coincident, horizontal/vertical, parallel, perpendicular, tangent, equal, concentric, collinear,
 midpoint, symmetry, fix, curvature (G2) and polygon. **Sketch Dimension** (D) adds linear,
-aligned, horizontal, vertical, radius, diameter and angle dimensions. Each is a parameter
+aligned, horizontal, vertical, point-to-line, line-to-circle, radius, diameter and angle
+dimensions. Each is a parameter
 (`d1`, `d2`, …), so it can hold an expression.
 
 Press D, click what you want to measure and type the value: as soon as the click settles the
@@ -193,6 +199,13 @@ text.
 Between two points, or on a line, that don't line up with an axis, where you place the
 dimension picks what it measures: across from them, the distance between them; above or below
 them, the horizontal distance; beside them, the vertical distance.
+
+A line and a circle or arc (click the line, then the circle's edge, or the other way round)
+measure from the line to the circle's edge, square to the line: the gap between them, 0 when
+the circle touches the line. When the line cuts through the circle, the dimension measures how
+far the edge reaches past the line instead. An arc is measured to the circle it lies on. For
+the distance to the centre, click the centre point instead of the edge. In scripts:
+`{"command": "sketch.dimension", "params": {"entities": ["l1", "c1"], "value": 5}}`.
 
 A dimension the sketch can't take, because the geometry is already fixed by other constraints
 and dimensions, is added as a driven (reference) dimension instead: it is shown in

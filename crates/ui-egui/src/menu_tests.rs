@@ -286,18 +286,23 @@ fn folder_and_group_menus_make_rename_and_drop_groups() {
     let names: Vec<String> = app.session.model.state().bodies.iter().map(|b| b.name.clone()).collect();
     let items: Vec<_> = names.iter().map(|n| json!({"type": "body", "name": n})).collect();
     app.run("select.set", json!({ "items": items })).unwrap();
-    let folder = Target::Folder { component: 0, folder: "bodies".into() };
+    let folder = Target::Folder { component: 0, folder: "bodies".into(), scope: "c0".into() };
     act(&mut app, &folder, "Group Selected");
     let g = app.session.doc.browser_groups[0].clone();
     assert_eq!(g.items.len(), 2);
     // A body's menu offers grouping too while several are selected.
     assert!(context_menu::items(&app, &Target::Body { name: names[0].clone() }).iter().any(|i| i.label == "Group Selected"));
-    let t = Target::Group { id: g.id };
+    let t = Target::Group { id: g.id, scope: "c0".into() };
     act(&mut app, &t, "Rename");
     assert!(context_menu::finish_rename(&mut app, Some("Parts"), true));
     assert_eq!(app.session.doc.browser_groups[0].name, "Parts");
+    // Show/Hide hides the group itself: its bodies keep their own state but aren't drawn.
     act(&mut app, &t, "Show/Hide");
-    assert_eq!(app.session.visibility.hidden_bodies.len(), 2);
+    assert!(app.session.visibility.hidden_bodies.is_empty());
+    assert!(app.session.folder_hidden(&format!("c0/g{}", g.id)));
+    assert!(g.items.iter().all(|b| !app.session.body_visible(b)));
+    act(&mut app, &t, "Show/Hide");
+    assert!(g.items.iter().all(|b| app.session.body_visible(b)));
     act(&mut app, &t, "Ungroup");
     assert!(app.session.doc.browser_groups.is_empty());
     act(&mut app, &folder, "New Group");
@@ -419,7 +424,7 @@ fn canvas_menu_hides_renames_calibrates_and_deletes() {
     assert!(app.session.doc.canvases.is_empty());
 }
 
-/// The canvas and browser menus keep Fusion's items in Fusion's order (the ones we have).
+/// The canvas and browser menus keep their items in a fixed order.
 #[test]
 fn menus_follow_fusion_order() {
     let mut app = sample_app();
@@ -484,7 +489,7 @@ fn menus_follow_fusion_order() {
             "Find in Timeline",
         ],
     );
-    let folder = context_menu::items(&app, &Target::Folder { component: 0, folder: "bodies".into() });
+    let folder = context_menu::items(&app, &Target::Folder { component: 0, folder: "bodies".into(), scope: "c0".into() });
     order(&folder, &["Create Components from Bodies", "New Group", "Show/Hide", "Show All"]);
     let origin = context_menu::items(&app, &Target::Origin);
     order(&origin, &["Show/Hide", "Show All", "Hide Planes", "Hide Axes"]);
@@ -799,4 +804,57 @@ fn menus_near_the_window_corner_open_inward() {
             h.frames(2);
         }
     }
+}
+
+#[test]
+fn contribution_picked_faces_open_their_own_feature_after_later_modifiers() {
+    use solidcraft_engine::{Sel, geom::Vec3};
+    for expected in [1, 2, 3] {
+        let mut app = SolveApp::new(Session::default(), Services::default());
+        app.run("solid.box", json!({"length":40,"width":30,"height":20,"body_name":"Plate"})).unwrap();
+        app.run("solid.hole", json!({"position":[20,15,20],"diameter":8})).unwrap();
+        app.run("solid.fillet", json!({"edges":[[0,0,10]],"radius":2})).unwrap();
+        app.run("solid.hole", json!({"position":[32,20,20],"diameter":4})).unwrap();
+        let state = app.session.world_state();
+        let b = state.body("Plate").unwrap();
+        let names = solidcraft_engine::doc::naming::face_names(b);
+        let index = names.iter().position(|n| n.starts_with(&format!("F{expected}:"))).unwrap();
+        let mesh = b.mesh();
+        let point = mesh
+            .triangles
+            .iter()
+            .enumerate()
+            .find_map(|(i, t)| (mesh.tri_face.get(i).copied() == Some(index as u32)).then(|| mesh.tri(t)).flatten())
+            .map(|t| (t[0] + t[1] + t[2]) / 3.0)
+            .unwrap_or(Vec3::ZERO);
+        let pick = Sel::Face { body: "Plate".into(), index, point };
+        app.session.selection = vec![pick.clone()];
+        let items = context_menu::items(&app, &Target::Viewport);
+        for label in ["Edit Feature", "Find in Timeline", "Find in Browser"] {
+            let item = find(&items, label);
+            assert!(item.enabled, "{label}, {expected}: {names:?}");
+            assert_eq!(item.params.as_ref().unwrap()["feature"], json!(expected));
+        }
+        act(&mut app, &Target::Viewport, "Find in Timeline");
+        assert_eq!(app.session.selection, vec![Sel::Feature { id: expected }]);
+        app.session.selection = vec![pick.clone()];
+        act(&mut app, &Target::Viewport, "Find in Browser");
+        assert_eq!(app.session.selection, vec![Sel::Feature { id: expected }]);
+        assert_eq!(app.tree.reveal_feature.as_ref().unwrap().id, expected);
+        app.session.selection = vec![pick];
+        act(&mut app, &Target::Viewport, "Edit Feature");
+        assert_eq!(app.dialog.as_ref().unwrap().editing.unwrap().0, expected);
+    }
+}
+
+#[test]
+fn contribution_unresolvable_face_does_not_edit_the_body_creator() {
+    let mut app = SolveApp::new(Session::default(), Services::default());
+    app.run("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Plate"})).unwrap();
+    app.session.selection =
+        vec![solidcraft_engine::Sel::Face { body: "Plate".into(), index: usize::MAX, point: solidcraft_engine::geom::Vec3::ZERO }];
+    let items = context_menu::items(&app, &Target::Viewport);
+    assert!(!find(&items, "Edit Feature").enabled);
+    assert!(!find(&items, "Find in Timeline").enabled);
+    assert!(!find(&items, "Find in Browser").enabled);
 }

@@ -41,6 +41,16 @@ Changes:
   a moved vertex), across the passes that fold in the operands' extra shells. `and` / `or` are
   wrappers that drop the history; the `*_with_history` forms return the same solid with the
   history as an `Option` (`None` where a face or edge went unrecorded).
+- `transversal/integrate/mod.rs`: `meshes` and `and_with_history_meshed` take the first
+  operand's shell meshes made beforehand (copied for each use, since the loops stores cut their
+  edges): a large body cut down to the regions of many small ones is meshed once, which was most
+  of each operation's time.
+- `transversal/integrate/mod.rs`: in an AND, a face no intersection divides (a shell that meets
+  nothing of the other) is placed by the crossings of a ray with the other shell counted as each
+  face is oriented, not by its surface alone, and an inward shell (a void, a cut's inverted tool)
+  holds what lies outside it. Faces with reversed surfaces (a revolved body's) counted the wrong
+  way, and a void dropped every face outside it: a cut beside a sealed void came out empty or
+  with the body gone. An OR keeps truck's count.
 
 ## truck-geometry 0.5.0 (Apache-2.0, © RICOS Co. Ltd., https://github.com/ricosjp/truck)
 
@@ -127,6 +137,12 @@ Changes:
 - `tessellation/triangulation.rs`: meshed faces and edges are built unchecked: faces whose loop
   runs along a seam edge both ways and closed edges (a full circle on one vertex) are valid,
   but the debug-build checks rejected them (debug builds could not mesh them).
+- `tessellation/triangulation.rs`: on a periodic surface, a boundary point's projected parameter
+  is moved by whole periods to within half a period of the point before it, however many periods
+  away the search put it (it was moved by two periods at most). A hinted search on a revolved
+  surface can return an angle millions of turns from its hint; the loop then spanned those turns,
+  the polyline closing it across the seam had millions of points, and meshing never finished,
+  which hung the STEP export that reads its own file back (#1985).
 - `tessellation/triangulation.rs`: parameter searches that land outside a surface's bounded,
   non-periodic domain are rejected (a hinted B-spline search can run off and extrapolate to
   thousands of parameter units, and meshing that grid never finishes); the last-resort nearest
@@ -180,6 +196,14 @@ Changes:
   point of the face's edges now goes to that point, when it is within the chord tolerance
   (`onto_edges`). Points within `TOLERANCE` stay on the surface, so exact geometry meshes as
   before. The meshes Boolean operations intersect keep truck's points.
+- `tessellation/triangulation.rs`: a face whose boundary touches itself or another of its loops
+  within `TOLERANCE` (pinched to a point where a body touches its edge, #1648) can cross there by
+  less than that. A segment that would cross one already added was left out of the triangulation,
+  and the fallback that joins the next point instead cut across the face: such a face came out
+  with no triangles, or without those at the pinch, depending on which segment went in first.
+  When a segment is left out, every boundary point within `TOLERANCE` of a segment, away from its
+  ends, is put into it (`pinched`: at most 8192 boundary points, and at most 8192 put in), and
+  the face is triangulated again. Faces whose segments all go in are triangulated as before.
 
 - `tessellation/triangulation.rs`: in display and export meshes (`Deflection::rulings`), a
   direction left undivided along the rulings of a face ruled one way also gets a grid line
@@ -191,6 +215,17 @@ Changes:
   the face, many degrees round: those triangles cut through the surface and folded over each
   other (a cone face with a small hole meshed several mm² too large, and the boolean that made
   it was refused for its volume).
+- `tessellation/triangulation.rs`: a face that comes out of the triangulation with no triangle
+  at all, though the points of its one boundary loop enclose an area in space, is given the
+  triangles of that loop (ears clipped on the plane of the loop, no point added, so the faces on
+  either side of its edges still meet it). Its two edges can be different curves that, sampled
+  as they are, run along the same line in the face's parameters (a lens thinner than the
+  tolerance), and the loop then has no area there. The shell's mesh had a hole. Faces that
+  mesh are untouched, and so are preview meshes (they have their own step grid). Only a face
+  with one loop of at most 256 points is filled, and not one whose loop crosses itself, whose
+  ears would overlap (the pinched face of #1648 is one): it stays as it was.
+  `crates/kernel/src/thin_face_tests.rs` holds it, `crates/kernel/tests/tess_loop_fill.rs` the
+  ear clipping (through the `test-hooks` feature).
 
 ## matext4cgmath 0.1.0 (Apache-2.0, © RICOS Co. Ltd., https://github.com/ricosjp/matext4cgmath)
 
@@ -234,3 +269,14 @@ SolidCraft changes:
   an unsupported surface no longer unwrap.
 - `src/winit.rs`: acquire a drawable before preparing paint callbacks, so a skipped
   surface frame cannot discard initialization commands for cached viewport meshes.
+- `src/lib.rs`, `src/winit.rs`: surfaces are configured under `capture_errors` (error scopes):
+  a configuration the device refuses (D3D12 "Failed to wait for GPU to come idle before
+  reconfiguring the Surface", #1935) is logged, the frame is skipped and the configure is tried
+  again, instead of the device's uncaptured-error handler panicking. A streak of refusals warns
+  once (debug after), waits 16 ms doubling up to 1 s between tries and recreates the surface
+  every `SURFACE_RECREATE_AFTER` refusals (`ConfigureRetry`). Each surface keeps the deadline of
+  its next try: until it is due, no configure or recreate happens, whether the repaint comes
+  from input, an animation, a resize (its size is kept for the retry) or an outdated surface,
+  and the frame is skipped with a repaint asked for when it is due. The streak and the deadline
+  survive a recreate; a configure the device takes ends the streak, a recreate it asked for
+  included. A recreate for a lost surface goes ahead as before.

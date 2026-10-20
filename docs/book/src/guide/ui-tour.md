@@ -16,7 +16,7 @@
   origin, bodies, sketches, construction planes, canvases, joints and components. The eye shows or
   hides an item, a component's radio button makes it the active component, and right-clicking any
   row gives that item's menu. Rows drag into groups and other components.
-- **Viewport.** Click to select, Shift or Ctrl to add, drag for a window or crossing box. To
+- **Viewport.** Click to select, Shift or Ctrl to add (Preferences › Selection), drag for a window or crossing box. While sketching, Ctrl/Cmd or Alt/Option suppress auto-snap by default; Shift prefers a midpoint. To
   reach something under something else (two lines drawn on top of each other, coincident points,
   an edge in front of a face, overlapping bodies), hold the left button still for half a second
   (long-press on a touch screen) or right-click › **Select Other…**: a list of everything under
@@ -32,6 +32,15 @@
   in the default and Inventor presets. In every preset, Ctrl+left drag (Cmd on macOS) that starts
   on empty space orbits; a Ctrl+click still adds to the selection. Shift+right-drag snaps to the nearest standard or
   diagonal view; Shift does not request snapping when the preset already requires it to orbit.
+  **Mouse gestures** (Preferences › Navigation, off by default) work with the SolidWorks mouse preset
+  only (the wheel orbits, Ctrl + wheel pans) and take over the right button, which then no longer
+  orbits: hold it and move the pointer 4 pt to open a ring of tools (280 pt inside, 350 pt outside), even
+  while a tool is active, and touch a tool's zone to take it. A right-click that does not move still
+  opens the usual context menu. Each studio has its own
+  tools, and **Customize…** sets how many tools a studio's ring holds and in which place. Zones
+  alternate between two tints, three when the number of tools is odd. The optional radial context
+  menu is a separate setting, and gestures take the right button from it while they are on.
+
   With **Touchpad** selected in Preferences › Navigation, hold **Shift** and move the pointer to
   pan, or hold **Alt** (**Option** on macOS) and move it to orbit—no mouse button is needed.
   Vertical two-finger scrolling zooms in this preset, regardless of the saved two-finger pan
@@ -63,8 +72,47 @@ Preferences (File › Preferences) hold the theme, the units of new designs, the
 visual style and autosave. Graphics › Colour vision gives the colours that carry a meaning (sketch
 states, axes, bends, analyses, icons) values for a weak red, green or blue sense: Protan, Deutan or
 Tritan. In a mode, the faces Draft and Accessibility Analysis mark as failing are striped too.
+Command messages and errors show for a few seconds in the status chip at the bottom left of the view. Click the chip, or choose Help › **Messages…**, for every message of the session: newest first, errors in red, each line selectable, with **Copy all** for a bug report.
 Help › Keyboard Shortcuts lists every key, and File › Keyboard
 Shortcuts changes them.
+
+### Colour themes
+
+General › **Theme** lists Dark, Light and System (follows the operating system), the built-in
+Gruvbox themes (dark and light, each in hard, normal and soft contrast) and any themes you have
+imported. A choice applies at once.
+
+A theme is a small JSON file that starts from the Dark or Light palette and changes any of its
+colours by name:
+
+```json
+{
+  "format": "solidcraft-theme/1",
+  "name": "My Theme",
+  "base": "dark",
+  "colors": {
+    "panel": "#282828",
+    "text": "#ebdbb2",
+    "accent": "#83a598",
+    "viewport_top": "#32302f",
+    "viewport_bottom": "#32302f",
+    "triad": ["#fb4934", "#b8bb26", "#83a598"]
+  }
+}
+```
+
+Colours are `#rrggbb`, or `#rrggbbaa` for translucent ones. A few colours, such as the view
+triad's X, Y and Z, take a list. Any colour the file leaves out keeps the base palette's value.
+
+- **Import…** adds a theme file and turns it on. Importing a file with the same name again updates
+  that theme. A file with an unknown colour name or a malformed colour is refused, and the message
+  names every problem.
+- **Export…** saves the theme on now as a complete file listing every colour. It is a good starting
+  point for your own theme.
+- **Remove** deletes the selected imported theme.
+
+Imported themes are kept with your preferences, so they work in the browser app too. Colour
+vision modes still apply on top of any theme.
 
 Navigation › **Smooth wheel zoom** is on by default. Turn it off to apply each wheel or
 trackpad event immediately, with no smoothing tail. It is independent of **Animate view

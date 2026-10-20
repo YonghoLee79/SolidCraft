@@ -37,6 +37,10 @@ pub enum Target {
     Plane {
         id: u64,
     },
+    /// A native feature row in a component's Features folder.
+    Feature {
+        id: u64,
+    },
     /// An origin plane (XY, XZ or YZ).
     OriginPlane {
         name: String,
@@ -47,9 +51,10 @@ pub enum Target {
     Occurrence {
         path: Vec<u64>,
     },
-    /// A browser group of items.
+    /// A browser group of items, under the design (`scope` `c0`) or a placement (`o:<path>`).
     Group {
         id: u64,
+        scope: String,
     },
     /// The Origin folder.
     Origin,
@@ -78,10 +83,12 @@ pub enum Target {
     },
     /// The Section Analysis in the browser's Analysis folder.
     Section,
-    /// A component's Bodies, Sketches or Construction folder.
+    /// A component's Bodies, Sketches or Construction folder, under the design (`scope` `c0`)
+    /// or a placement (`o:<path>`).
     Folder {
         component: u64,
         folder: String,
+        scope: String,
     },
 }
 
@@ -122,7 +129,7 @@ impl Item {
     pub fn on_if(self, enabled: bool) -> Item {
         self.on(enabled)
     }
-    fn on(mut self, enabled: bool) -> Item {
+    pub(crate) fn on(mut self, enabled: bool) -> Item {
         self.enabled &= enabled;
         self
     }
@@ -133,7 +140,7 @@ impl Item {
 }
 
 /// A command entry: label, icon, shortcut and enablement come from the registry.
-fn cmd(app: &SolveApp, id: &str, label: &str) -> Item {
+pub(crate) fn cmd(app: &SolveApp, id: &str, label: &str) -> Item {
     let info = solidcraft_engine::find_command(id).map(|c| c.info(&app.session));
     let shortcut = match id {
         "edit.undo" => "Ctrl+Z".to_string(),
@@ -151,7 +158,7 @@ fn cmd(app: &SolveApp, id: &str, label: &str) -> Item {
 }
 
 /// A view action (`ui.*`).
-fn act(id: &str, label: &str, icon: &str) -> Item {
+pub(crate) fn act(id: &str, label: &str, icon: &str) -> Item {
     Item { id: id.into(), label: label.into(), shortcut: String::new(), enabled: true, icon: icon.into(), params: None }
 }
 
@@ -265,8 +272,9 @@ pub fn target_bodies(app: &SolveApp, target: &Target) -> Vec<String> {
         Target::Body { name } => vec![name.clone()],
         Target::Component { id } => component_bodies(app, *id),
         Target::Occurrence { path } => app.session.occurrence_bodies(path, true).unwrap_or_default(),
-        Target::Group { id } => crate::browser::group_bodies(app, *id),
+        Target::Group { id, .. } => crate::browser::group_bodies(app, *id),
         Target::Sketch { .. }
+        | Target::Feature { .. }
         | Target::Plane { .. }
         | Target::OriginPlane { .. }
         | Target::Folder { .. }
@@ -326,12 +334,16 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::Viewport => viewport_items(app),
         Target::Body { name } => body_items(app, std::slice::from_ref(name), true),
         Target::Sketch { id } => sketch_items(app, *id),
+        Target::Feature { id } => vec![
+            act("ui.editFeature", "Edit Feature", "").with(json!({"feature":id})).on(app.session.doc.feature(*id).is_some()),
+            act("ui.findTimeline", "Find in Timeline", "").with(json!({"feature":id})).on(app.session.doc.feature(*id).is_some()),
+        ],
         Target::Plane { id } => plane_items(app, *id),
         Target::OriginPlane { name } => origin_plane_items(app, name),
         Target::Component { id } => component_items(app, *id),
         Target::Occurrence { path } => occurrence_items(app, path),
-        Target::Group { id } => crate::browser::group_items(app, *id),
-        Target::Folder { component, folder } => crate::browser::folder_items(app, *component, folder),
+        Target::Group { id, scope } => crate::browser::group_items(app, *id, scope),
+        Target::Folder { component, folder, scope } => crate::browser::folder_items(app, *component, folder, scope),
         Target::Canvas { id } => crate::browser::canvas_items(app, *id),
         Target::Origin => crate::browser::origin_items(app),
         Target::NamedViews => vec![act("ui.newView", "New Named View", "perspective")],
@@ -370,9 +382,30 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
     v
 }
 
-/// The feature a body was made by, and that feature's sketch if it has one.
-fn body_feature_and_sketch(app: &SolveApp, body: &str) -> (Option<u64>, Option<u64>) {
-    let f = body_feature(app, body);
+/// Resolve the picked face's creator, rather than the feature that first made its body.
+/// Persistent face names retain their creator through later trims and placements.
+fn picked_face_feature(app: &SolveApp) -> Option<u64> {
+    let (body, index) = app.session.selection.iter().find_map(|s| match s {
+        Sel::Face { body, index, .. } => Some((body, *index)),
+        _ => None,
+    })?;
+    let state = app.session.world_state();
+    let body = state.body(body)?;
+    let names = solidcraft_engine::doc::naming::face_names(body);
+    let name = names.get(index)?;
+    let (creator, _) = name.strip_prefix('F')?.split_once(':')?;
+    let id = creator.parse::<u64>().ok()?;
+    let owner = app.session.doc.feature(body.feature)?;
+    if matches!(owner.kind, solidcraft_engine::doc::FeatureKind::Import { .. } | solidcraft_engine::doc::FeatureKind::MeshImport { .. })
+        && id != owner.id
+    {
+        return None;
+    }
+    app.session.doc.feature(id).filter(|f| f.component == app.session.doc.model_body_component(body)).map(|f| f.id)
+}
+
+/// A feature and its profile sketch, if it has one.
+fn feature_and_sketch(app: &SolveApp, f: Option<u64>) -> (Option<u64>, Option<u64>) {
     let sketch = f
         .and_then(|f| app.session.doc.feature(f))
         .and_then(|f| serde_json::to_value(&f.kind).ok())
@@ -380,7 +413,7 @@ fn body_feature_and_sketch(app: &SolveApp, body: &str) -> (Option<u64>, Option<u
     (f, sketch)
 }
 
-/// The canvas menus follow Fusion's (`plan/fusion/ui/NOTES.md`, feature names only): Repeat on
+/// The canvas menus put Repeat on
 /// top, then what fits the selection, our extras after a separator.
 fn viewport_items(app: &SolveApp) -> Vec<Item> {
     let sel = &app.session.selection;
@@ -418,7 +451,7 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         v.extend(sketch_items(app, sketch));
     } else if has(|s| matches!(s, Sel::Face { .. })) {
         let face = sel.iter().find_map(|s| if let Sel::Face { body, .. } = s { Some(body.clone()) } else { None }).unwrap_or_default();
-        let (feature, sketch) = body_feature_and_sketch(app, &face);
+        let (feature, sketch) = feature_and_sketch(app, picked_face_feature(app));
         let hidden = app.session.visibility.hidden_bodies.contains(&face);
         v.push(cmd(app, "sketch.create", "Create Sketch"));
         v.push(cmd(app, "solid.extrude", "Extrude"));
@@ -434,8 +467,8 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         v.push(act("ui.delete", "Delete", "delete").key("Del"));
         v.push(act(if hidden { "ui.show" } else { "ui.hide" }, "Show/Hide", "eye").key("V").with(json!({ "bodies": [face] })));
         v.push(Item::sep());
-        v.push(act("ui.findBrowser", "Find in Browser", "").with(json!({ "body": face })));
-        v.push(act("ui.findTimeline", "Find in Timeline", "").with(json!({ "body": face })));
+        v.push(act("ui.findBrowser", "Find in Browser", "").with(json!({ "body": face, "feature": feature })).on(feature.is_some()));
+        v.push(act("ui.findTimeline", "Find in Timeline", "").with(json!({ "feature": feature })).on(feature.is_some()));
         v.push(Item::sep());
         v.push(cmd(app, "solid.press_pull", "Press Pull"));
         v.push(cmd(app, "inspect.measure", "Measure"));
@@ -470,7 +503,9 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         v.push(act("ui.fit", "Fit", "fit"));
         v.push(act("ui.home", "Home View", "home"));
         v.push(Item::sep());
-        let anything_hidden = !app.session.visibility.hidden_bodies.is_empty() || !app.session.visibility.hidden_sketches.is_empty();
+        let anything_hidden = !app.session.visibility.hidden_bodies.is_empty()
+            || !app.session.visibility.hidden_sketches.is_empty()
+            || !app.session.visibility.hidden_folders.is_empty();
         v.push(act("ui.showAll", "Show All", "eye").on(anything_hidden));
         v.push(act("ui.showAll", "Unisolate", "").on(!app.session.visibility.hidden_bodies.is_empty()));
         v.push(Item::sep());
@@ -487,6 +522,11 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         return v;
     }
     if !sel.is_empty() {
+        if !v.iter().any(|item| item.id == "parts.resize")
+            && let Some(component) = crate::dialogs_part_size::selected_component(app)
+        {
+            v.push(cmd(app, "parts.resize", "Change Part Size").with(json!({"component":component})));
+        }
         v.push(Item::sep());
         v.push(act("ui.clear", "Clear Selection", "").key("Esc"));
     }
@@ -520,6 +560,9 @@ fn body_items(app: &SolveApp, bodies: &[String], browser: bool) -> Vec<Item> {
     ];
     if one {
         let b = bodies.first().cloned().unwrap_or_default();
+        if let Some(component) = crate::dialogs_part_size::component_for_bodies(app, bodies) {
+            v.push(cmd(app, "parts.resize", "Change Part Size").with(json!({"component":component})));
+        }
         v.push(Item::sep());
         if !browser {
             v.push(act("ui.findBrowser", "Find in Browser", "").with(json!({ "body": b })));
@@ -600,7 +643,7 @@ fn joint_items(app: &SolveApp, id: u64) -> Vec<Item> {
         act("ui.findJoint", "Find in Window", "").with(json!({ "joint": id })),
         cmd(app, "joint.edit", if j.suppressed { "Unsuppress" } else { "Suppress" }).with(json!({ "joint": id, "suppressed": !j.suppressed })),
         Item::sep(),
-        cmd(app, "joint.delete", "Delete").key("Del").with(json!({ "joint": id })),
+        act("ui.delete", "Delete", "delete").key("Del").with(json!({ "joints": [id] })),
         act("ui.rename", "Rename", "").with(json!({ "joint": id })),
         Item::sep(),
         // Hiding a joint hides only its glyph: it still constrains and moves the parts.
@@ -664,6 +707,9 @@ fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
     let hidden = !bodies.is_empty() && bodies.iter().all(|b| app.session.visibility.hidden_bodies.contains(b));
     let names = json!(bodies);
     let mut v = Vec::new();
+    if doc.parts.contains_key(&id) {
+        v.push(cmd(app, "parts.resize", "Edit").with(json!({"component":id})));
+    }
     if id != 0 {
         let grounded = occ.is_some_and(|o| o.grounded);
         let oid = occ.map(|o| o.id).unwrap_or(0);
@@ -687,6 +733,8 @@ fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
     }
     v.push(cmd(app, "component.create", "New Component").with(json!({ "parent": id })));
     if id == 0 {
+        v.push(act("ui.copyDesign", "Copy", "").key("Ctrl+C"));
+        v.push(act("ui.paste", "Paste", "").key("Ctrl+V").on(crate::edit_clipboard::can_paste(app)));
         v.push(cmd(app, "component.from_bodies", "Create Components from Bodies").with(json!({ "bodies": names })).on(!bodies.is_empty()));
     }
     v.push(Item::sep());
@@ -698,6 +746,9 @@ fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
             .on(id != 0 || !bodies.is_empty()),
     );
     v.push(act("ui.properties", "Properties", "measure").with(json!({ "component": id })));
+    if doc.links.contains_key(&id) {
+        v.push(act("ui.relinkSource", "Relink Source (All Instances)…", "update").with(json!({"component": id})));
+    }
     if id == 0 {
         v.push(act("ui.designProperties", "Design Properties", "settings"));
     }
@@ -872,6 +923,13 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
     let p = item.params.clone().unwrap_or(Value::Null);
     let bodies = strs(&p, "bodies");
     match item.id.as_str() {
+        "parts.resize" => {
+            if let Some(component) = id_of(&p, "component") {
+                crate::dialogs_part_size::open(app, component);
+            } else {
+                app.start("parts.resize");
+            }
+        }
         "ui.repeat" => {
             if let Some((id, _)) = app.last_command.clone() {
                 app.start(&id);
@@ -883,7 +941,13 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.delete" if item.params.is_some() => crate::delete::request(app, p),
         "ui.delete" => delete(app),
         "ui.finishSketch" => app.finish_sketch(),
+        "ui.relinkSource" => {
+            if let Some(component) = id_of(&p, "component") {
+                crate::linked_source::start(app, component);
+            }
+        }
         "ui.copy" => drop(crate::edit_clipboard::copy(app)),
+        "ui.copyDesign" => drop(crate::edit_clipboard::copy_design(app)),
         "ui.cut" => drop(crate::edit_clipboard::cut(app)),
         "ui.paste" => drop(crate::edit_clipboard::paste(app, Some(at))),
         "ui.editSketchPattern" => {
@@ -902,6 +966,9 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.showAll" => {
             let _ = app.run("browser.visibility", json!({"folder":"bodies", "visible":true}));
             app.session.visibility.hidden_sketches.clear();
+            // Hidden folders and groups too, so everything really shows.
+            app.session.visibility.hidden_folders.clear();
+            app.ui.show_sketches = true;
         }
         "ui.isolate" => {
             app.session.visibility.hidden_bodies =
@@ -966,8 +1033,16 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             app.pick_save_command(&format!("{name}.step"), &["step", "stp", "igs", "stl", "3mf", "obj"], "file.export", json!({"bodies": bodies}));
         }
         "ui.findBrowser" => {
+            if let Some(feature) = id_of(&p, "feature") {
+                if let Some(body) = p.get("body").and_then(Value::as_str) {
+                    crate::browser::reveal_feature(app, feature, body);
+                }
+                return;
+            }
             if let Some(b) = p.get("body").and_then(Value::as_str) {
                 app.ui.show_browser = true;
+                app.preferences.timeline_left_browser_collapsed = false;
+                app.tree.reveal_feature = None;
                 app.tree.reveal = Some(b.to_string());
                 let _ = app.run("select.set", json!({"items": [{"type": "body", "name": b}]}));
             }
@@ -987,7 +1062,7 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             drop(app.run("inspect.section", json!({"clear": true})));
         }
         "ui.editSection" => app.start("inspect.section"),
-        "ui.sectionVisible" => crate::browser::set_section_visible(app, p.get("visible").and_then(Value::as_bool).unwrap_or(true)),
+        "ui.sectionVisible" => crate::browser::set_section_shown(app, p.get("visible").and_then(Value::as_bool).unwrap_or(true)),
         "ui.fit" => app.animate_view("fit"),
         "ui.home" => app.animate_view("home"),
         // One command for the whole selection: all fixed unless all already are.
@@ -1088,8 +1163,8 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             }
         }
         "ui.folderVisible" => {
-            if let Some(f) = p.get("folder").and_then(Value::as_str) {
-                crate::browser::toggle_folder(app, id_of(&p, "component").unwrap_or(0), f);
+            if let Some(key) = p.get("key").and_then(Value::as_str) {
+                crate::browser::toggle_folder(app, key);
             }
         }
         "ui.originAll" => {
@@ -1158,8 +1233,7 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.lookAt" => {
             let st = app.session.world_state();
             if let Some(ss) = id_of(&p, "sketch").and_then(|id| st.sketch(id)) {
-                let mut to = app.cam.looking_from(ss.plane.normal());
-                to.target = ss.plane.origin;
+                let to = crate::dialogs::onto_sketch(app.cam.looking_from(ss.plane.normal()), ss);
                 app.animate_to(to);
             }
         }
@@ -1530,7 +1604,7 @@ fn slot_rect(c: Pos2, k: usize, size: Vec2) -> Rect {
 /// Press-and-hold of the right button in the viewport opens the menu; releasing over a
 /// direction picks it.
 fn track_hold(app: &mut SolveApp, ctx: &egui::Context) {
-    if !app.preferences.radial_context_menu {
+    if !app.preferences.radial_context_menu || crate::mouse_gesture::active(app) {
         app.menu.press = None;
         app.menu.flick = false;
         app.menu.radial = false;
