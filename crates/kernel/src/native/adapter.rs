@@ -331,7 +331,7 @@ fn load_surface(s: b::Surface) -> Result<mt::Surface> {
 mod tests {
     use super::*;
     use crate::body::CurveRange;
-    use mt::{BoundedCurve, InnerSpace, ParametricCurve, Transformed};
+    use mt::{InnerSpace, ParametricCurve, Transformed};
 
     #[test]
     fn refuses_domain_or_axis_changes_instead_of_approximating() {

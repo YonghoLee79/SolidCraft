@@ -6,7 +6,7 @@
 //! the most area), never from the order the loops are stored in: an imported face can list
 //! its holes first.
 
-use mt::{BoundedCurve, Cut, InnerSpace, Invertible, MetricSpace, ParametricCurve, ParametricSurface, SearchNearestParameter, Transformed};
+use mt::{Cut, InnerSpace, Invertible, MetricSpace, ParametricCurve, ParametricSurface, SearchNearestParameter, Transformed};
 use solidcraft_geom::tess::EvalSurface;
 use solidcraft_geom::{Ring, Vec3};
 use truck_modeling as mt;

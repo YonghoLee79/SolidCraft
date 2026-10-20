@@ -416,7 +416,7 @@ fn refined_with_cache(pm: &PolygonMesh, surf: &mt::Surface, tol: f64, memoize: b
 /// or 2π, which confuses the boolean's loop projection. Each revolved face's surface is turned
 /// (same geometry) so the face sits around angle π, well away from the wrap.
 fn rephase_revolved(solid: Solid) -> Solid {
-    use mt::{BoundedCurve, ParametricCurve, SearchNearestParameter};
+    use mt::{ParametricCurve, SearchNearestParameter};
     #[cfg(test)]
     REPHASED.with(|n| n.set(n.get() + 1));
     let r = guard("rephase", || {

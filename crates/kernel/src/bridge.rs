@@ -235,10 +235,10 @@ impl ChainLine {
         let count = self.curves.len();
         let tol = self.length() * 1e-9 + 1e-12;
         let Some(curve) = self.curves.get(edge) else { return [Some(edge), None, None] };
-        let (t0, t1) = curve.range_tuple();
+        let r = curve.range();
         let at = |t: f64| from_p3(curve.subs(t)).dist(p) <= tol;
-        let before = at(t0).then(|| edge.checked_sub(1).or(self.closed.then(|| count.saturating_sub(1)))).flatten();
-        let after = at(t1).then(|| Some(edge + 1).filter(|e| *e < count).or(self.closed.then_some(0))).flatten();
+        let before = at(r.lo()).then(|| edge.checked_sub(1).or(self.closed.then(|| count.saturating_sub(1)))).flatten();
+        let after = at(r.hi()).then(|| Some(edge + 1).filter(|e| *e < count).or(self.closed.then_some(0))).flatten();
         [Some(edge), before, after]
     }
 
@@ -264,9 +264,9 @@ impl ChainLine {
         }
         let (chord, s, edge, hint) = best;
         let on_curve = self.curves.get(edge).and_then(|c| {
-            let (t0, t1) = c.range_tuple();
+            let r = c.range();
             let t = c.search_nearest_parameter(p3(p), Some(hint), 100)?;
-            (t0..=t1).contains(&t).then(|| from_p3(c.subs(t)).dist(p))
+            r.contains(t).then(|| from_p3(c.subs(t)).dist(p))
         });
         (s, on_curve.map_or(chord, |d| d.min(chord)))
     }

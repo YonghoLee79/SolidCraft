@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
+use mt::{InnerSpace, MetricSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
 use solidcraft_geom::{Plane, Region2, Seg2, UnitVec3, Vec2, Vec3};
 use truck_modeling as mt;
 
