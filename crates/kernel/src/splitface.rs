@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::{Plane, Polyline, Seg2, Segment, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Plane, Polyline, Ring, Seg2, Segment, UnitVec3, Vec2, Vec3};
 use truck_meshalgo::tessellation::RobustMeshableShape;
 use truck_modeling as mt;
 
@@ -84,8 +84,7 @@ impl Field {
                 if *closed {
                     // Distance to the loop, positive inside it.
                     let d = pts.distance_to(q);
-                    let uv: Vec<(f64, f64)> = pts.iter().map(|p| (p.x, p.y)).collect();
-                    return if inside(&uv, (q.x, q.y)) { d } else { -d };
+                    return if Ring::new(pts.to_vec()).contains(q) { d } else { -d };
                 }
                 // Signed distance to the polyline, its end segments extended as lines.
                 let n = pts.len();
@@ -655,7 +654,7 @@ fn face_like(like: &mt::Face, wires: Vec<mt::Wire>) -> mt::Face {
 }
 
 /// Polygon of a loop in the surface's parameters (for inside tests).
-fn loop_uv(s: &mt::Surface, w: &mt::Wire) -> Vec<(f64, f64)> {
+fn loop_uv(s: &mt::Surface, w: &mt::Wire) -> Ring<(f64, f64)> {
     let mut out = Vec::new();
     let mut hint = None;
     for e in w.edge_iter() {
@@ -669,19 +668,7 @@ fn loop_uv(s: &mt::Surface, w: &mt::Wire) -> Vec<(f64, f64)> {
             }
         }
     }
-    out
-}
-
-fn inside(poly: &[(f64, f64)], q: (f64, f64)) -> bool {
-    let mut c = false;
-    let n = poly.len();
-    for i in 0..n {
-        let (Some(a), Some(b)) = (poly.get(i), poly.get((i + 1) % n)) else { continue };
-        if (a.1 > q.1) != (b.1 > q.1) && q.0 < a.0 + (b.0 - a.0) * (q.1 - a.1) / (b.1 - a.1) {
-            c = !c;
-        }
-    }
-    c
+    Ring::new(out)
 }
 
 /// Split one face (index `fi` in `faces`) by one field; `faces` is updated (the face replaced
@@ -713,17 +700,12 @@ fn split_one(faces: &mut Vec<mt::Face>, fi: usize, g: &Field, size: f64, new_edg
             let v = mt::Vertex::new(p0);
             let e = mt::Edge::new_unchecked(&v, &v, curve);
             new_edges.push(e.clone());
-            let uv: Vec<(f64, f64)> = ch.pts.iter().map(|x| x.1).collect();
-            let area: f64 = (0..uv.len())
-                .map(|i| {
-                    let (a, b) = (uv[i], uv[(i + 1) % uv.len()]);
-                    a.0 * b.1 - b.0 * a.1
-                })
-                .sum();
+            let uv: Ring<(f64, f64)> = ch.pts.iter().map(|x| x.1).collect();
+            let area = uv.signed_area();
             let s = face.surface();
             let Some(pi) = pieces.iter().position(|f| {
                 let ws = f.absolute_boundaries();
-                ws.first().is_some_and(|o| inside(&loop_uv(&s, o), uv0)) && !ws.iter().skip(1).any(|h| inside(&loop_uv(&s, h), uv0))
+                ws.first().is_some_and(|o| loop_uv(&s, o).contains(uv0)) && !ws.iter().skip(1).any(|h| loop_uv(&s, h).contains(uv0))
             }) else {
                 continue;
             };
@@ -736,7 +718,7 @@ fn split_one(faces: &mut Vec<mt::Face>, fi: usize, g: &Field, size: f64, new_edg
             let mut inner_ws = vec![ccw.clone()];
             for (k, w) in ws.iter().enumerate() {
                 let q = loop_uv(&s, w).first().copied();
-                if k > 0 && q.is_some_and(|q| inside(&uv, q)) {
+                if k > 0 && q.is_some_and(|q| uv.contains(q)) {
                     inner_ws.push(w.clone());
                 } else {
                     outer_ws.push(w.clone());
@@ -878,8 +860,8 @@ fn split_one(faces: &mut Vec<mt::Face>, fi: usize, g: &Field, size: f64, new_edg
             }
             let q = loop_uv(&s, other).first().copied();
             match q {
-                Some(q) if inside(&pa_poly, q) => la.push(other.clone()),
-                Some(q) if inside(&pb_poly, q) => lb.push(other.clone()),
+                Some(q) if pa_poly.contains(q) => la.push(other.clone()),
+                Some(q) if pb_poly.contains(q) => lb.push(other.clone()),
                 _ => return Err(KernelError::Failed("a hole meets the split line".into())),
             }
         }
@@ -1387,24 +1369,16 @@ pub fn split_body(body: &Body, tool: &SplitTool) -> Result<Vec<Body>> {
         // The section: loops of the new edges on the tool surface, outer loops counter-clockwise
         // about its normal and holes inside them.
         let loops = chain_loops(&new_edges)?;
-        let polys: Vec<Vec<(f64, f64)>> = loops.iter().map(|l| loop_uv(&surface, &l.clone().into())).collect();
-        let signed = |p: &[(f64, f64)]| {
-            (0..p.len())
-                .map(|i| {
-                    let (a, b) = (p[i], p[(i + 1) % p.len()]);
-                    a.0 * b.1 - b.0 * a.1
-                })
-                .sum::<f64>()
-        };
+        let polys: Vec<Ring<(f64, f64)>> = loops.iter().map(|l| loop_uv(&surface, &l.clone().into())).collect();
         let depth: Vec<usize> = (0..loops.len())
             .map(|i| {
                 let q = polys.get(i).and_then(|p| p.first()).copied().unwrap_or((0.0, 0.0));
-                (0..loops.len()).filter(|&j| j != i && polys.get(j).is_some_and(|p| inside(p, q))).count()
+                (0..loops.len()).filter(|&j| j != i && polys.get(j).is_some_and(|p| p.contains(q))).count()
             })
             .collect();
         let wire = |i: usize, ccw: bool| -> mt::Wire {
             let w: mt::Wire = loops.get(i).cloned().unwrap_or_default().into();
-            let is_ccw = polys.get(i).is_some_and(|p| signed(p) > 0.0);
+            let is_ccw = polys.get(i).is_some_and(|p| p.signed_area() > 0.0);
             if is_ccw == ccw { w } else { w.inverse() }
         };
         let mut section = Vec::new();
@@ -1429,11 +1403,12 @@ pub fn split_body(body: &Body, tool: &SplitTool) -> Result<Vec<Body>> {
             };
             let mut bands: Vec<(f64, usize)> = Vec::new();
             for (i, l) in loops.iter().enumerate() {
-                let pts = samples(&l.clone().into());
+                let pts = Ring::new(samples(&l.clone().into()));
                 let ang = |p: &mt::Point3| (p - o).dot(ey).atan2((p - o).dot(ex));
-                let turn: f64 = (0..pts.len())
-                    .map(|k| {
-                        let d = ang(&pts[(k + 1) % pts.len()]) - ang(&pts[k]);
+                let turn: f64 = pts
+                    .edges()
+                    .map(|(a, b)| {
+                        let d = ang(b) - ang(a);
                         d - tau * (d / tau).round()
                     })
                     .sum();
@@ -1468,7 +1443,7 @@ pub fn split_body(body: &Body, tool: &SplitTool) -> Result<Vec<Body>> {
             let mut ws = vec![wire(i, true)];
             for (j, dj) in depth.iter().enumerate() {
                 let q = polys.get(j).and_then(|p| p.first()).copied().unwrap_or((0.0, 0.0));
-                if *dj == d + 1 && polys.get(i).is_some_and(|p| inside(p, q)) {
+                if *dj == d + 1 && polys.get(i).is_some_and(|p| p.contains(q)) {
                     ws.push(wire(j, false));
                 }
             }
