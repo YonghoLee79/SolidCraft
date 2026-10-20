@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
 use solidcraft_geom::{Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
@@ -57,6 +57,9 @@ pub struct ModelBody {
     bytes: usize,
     /// In a world state: the [`ModelBody::geometry_key`] of the model body this one places (0: none).
     source_key: u64,
+    /// [`Body::outline_bounds`] of `body` (with the body it was measured on), worked out once
+    /// and shared by clones.
+    outline: Arc<OnceLock<(Body, solidcraft_geom::Aabb3)>>,
 }
 
 impl ModelBody {
@@ -79,6 +82,16 @@ impl ModelBody {
             imported: None,
             bytes: 0,
             source_key: 0,
+            outline: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// A box around the body without meshing it ([`Body::outline_bounds`]), worked out once.
+    pub fn outline_bounds(&self) -> solidcraft_geom::Aabb3 {
+        match self.outline.get_or_init(|| (self.body.clone(), self.body.outline_bounds())) {
+            (measured, b) if measured.same(&self.body) => *b,
+            // The body was replaced in this cell's holder since: measure it again.
+            _ => self.body.outline_bounds(),
         }
     }
 
@@ -150,6 +163,40 @@ impl ModelBody {
             .clone()
     }
 
+    /// [`ModelBody::plan_mesh`] if it is made already; otherwise it is made on a worker thread
+    /// (once, however often this is asked) and `None` comes back meanwhile, so a caller drawing a
+    /// frame (a face highlighted under the pointer) is not held up by a large body's plan
+    /// (#3745): the plan mesh of a long modelled thread takes most of a second. The browser
+    /// build has no threads: there it is made now.
+    pub fn plan_mesh_soon(&self) -> Option<Arc<Mesh>> {
+        let q = crate::display_quality::current();
+        let cell = self.plan_mesh.get(q.index())?;
+        if let Some(mesh) = cell.get() {
+            return mesh.clone();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            static WARMING: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+            let key = Arc::as_ptr(&self.plan_mesh) as usize + q.index();
+            let Ok(mut warming) = WARMING.lock() else { return None };
+            if warming.contains(&key) {
+                return None;
+            }
+            let body = self.clone();
+            let started = std::thread::Builder::new().name("plan-mesh".into()).spawn(move || {
+                let _ = body.plan_mesh_at(q);
+                if let Ok(mut warming) = WARMING.lock() {
+                    warming.retain(|k| *k != key);
+                }
+            });
+            if started.is_ok() {
+                warming.push(key);
+                return None;
+            }
+        }
+        self.plan_mesh_at(q)
+    }
+
     /// The display plan and its mesh `k` steps finer than `q` (view-dependent refinement, #1320;
     /// see [`crate::display_quality::refinement_for`]). Step 0 is the cached plan at `q`; finer
     /// steps are made on each call and kept by the viewport, which evicts them when it runs over
@@ -195,7 +242,7 @@ pub struct SolvedSketch {
 }
 
 /// A cosmetic thread: on which cylinder, its size, and the threaded part of the axis.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThreadInfo {
     pub feature: u64,
     pub body: String,
@@ -602,7 +649,7 @@ impl ModelState {
     /// [`quantize`]); the rest keep theirs.
     fn stamp(&mut self, before: &Arc<ModelState>, f: &Feature, key: u64, mats: Vec<Mat>) {
         let feature = f.id;
-        let depth = before.bodies.iter().filter_map(|b| b.names.origin.as_ref().map(|o| o.depth)).max().unwrap_or(0) + 1;
+        let depth = before.bodies.iter().filter_map(|b| b.names.depth()).max().unwrap_or(0) + 1;
         let sheets = if f.kind.is_sheet() { self.sheets.clone() } else { Vec::new() };
         let origin = Arc::new(crate::naming::NamingOrigin { feature: f.clone(), before: before.clone(), depth, mats, sheets });
         // Pieces a cut left are named after their faces, not the kernel's shell order (unless
@@ -1071,23 +1118,26 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
     };
     let wired = |id: &crate::SketchId| doc.sketch(id.0).is_ok_and(|sketch| !sketch.wires.is_empty());
     let rails: &[crate::SweepRail] = match &f.kind {
-        FeatureKind::Sweep { rails, .. } | FeatureKind::SurfaceSweep { rails, .. } => rails,
+        FeatureKind::Sweep { rails, .. }
+        | FeatureKind::SurfaceSweep { rails, .. }
+        | FeatureKind::Loft { rails, .. }
+        | FeatureKind::SurfaceLoft { rails, .. } => rails,
         _ => &[],
     };
-    if let Some(path) = path
-        && (wired(&path) || rails.iter().any(|r| wired(&r.sketch)))
-    {
+    if path.as_ref().is_some_and(wired) || rails.iter().any(|r| wired(&r.sketch)) {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        let owner = doc.feature(path.0).map(|feature| feature.component).unwrap_or(0);
+        let owner = path.and_then(|path| doc.feature(path.0)).map(|feature| feature.component).unwrap_or(0);
         for frame in [doc.component_transform(f.component), doc.component_transform(owner)] {
             frame.iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
         }
-        if let FeatureKind::Sweep { sketch, rails, .. } | FeatureKind::SurfaceSweep { sketch, rails, .. } = &f.kind {
-            // The profile's and the rails' components place them too.
-            for sketch in std::iter::once(sketch).chain(rails.iter().map(|r| &r.sketch)) {
-                let owner = doc.feature(sketch.0).map(|feature| feature.component).unwrap_or(0);
-                doc.component_transform(owner).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
-            }
+        // A sweep's profile and the rails' components place them too.
+        let profile = match &f.kind {
+            FeatureKind::Sweep { sketch, .. } | FeatureKind::SurfaceSweep { sketch, .. } => Some(sketch),
+            _ => None,
+        };
+        for sketch in profile.into_iter().chain(rails.iter().map(|r| &r.sketch)) {
+            let owner = doc.feature(sketch.0).map(|feature| feature.component).unwrap_or(0);
+            doc.component_transform(owner).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
         }
         return hash.finish();
     }
@@ -1237,6 +1287,23 @@ impl Model {
     pub fn edited_sketches<'a>(&'a self, doc: &'a Document) -> impl Iterator<Item = &'a SolvedSketch> + 'a {
         self.results.iter().filter(|r| !r.skipped && r.error.is_none()).filter_map(|r| r.state.sketch(r.id)).filter(|s| {
             s.report.keeps_orientation() && doc.sketch(s.feature).is_ok_and(|stored| stored.driving_values() != s.sketch.driving_values())
+        })
+    }
+
+    /// Whether the results are `doc`'s evaluation: one per feature, each on the inputs `doc`
+    /// gives it, none stale, so [`Model::evaluate`] would keep every one of them. A document
+    /// changed without an evaluation since is not.
+    pub fn is_current(&self, doc: &Document) -> bool {
+        if self.results.len() != doc.features.len() || self.is_stale() {
+            return false;
+        }
+        let vals = evaluation_values(doc).0;
+        let steps = StepDigests::of(doc, &self.step_digests);
+        let marker = doc.marker.unwrap_or(usize::MAX);
+        let mut prev = 0;
+        doc.features.iter().zip(&self.results).enumerate().all(|(i, (f, r))| {
+            prev = chain_fingerprint(doc, &vals, f, prev, i >= marker, &steps);
+            r.id == f.id && r.fingerprint == prev
         })
     }
 
@@ -1396,6 +1463,7 @@ impl Model {
                 if let Some(note) = boolean_diagnostics.warning() {
                     append_warning(&mut warning, note);
                 }
+                track_altered_sheets(&state, &mut next, f, &mut warning);
             } else {
                 boolean_diagnostics = Default::default();
             }
@@ -1457,6 +1525,107 @@ impl Model {
         self.results = out;
         self.last_recomputed = recomputed;
         self.last_restored = restored;
+    }
+}
+
+impl Model {
+    /// Follow a rename of body `old` to `new` without evaluating anything (#3044): `doc` is the
+    /// design after the rename, which changed nothing but names, so every result keeps its
+    /// geometry and meshes and only the body's name (and the names worked out from it) changes.
+    /// False, leaving the model as it was, when the rename can't be followed that way and the
+    /// design must be evaluated: the model isn't the design's, the body is changed by a later
+    /// feature, or is sheet metal, threaded, or named in a later feature's face references.
+    pub fn rename_body(&mut self, doc: &Document, old: &str, new: &str) -> bool {
+        if self.results.len() != doc.features.len() || self.results.iter().zip(&doc.features).any(|(r, f)| r.id != f.id || r.stale) {
+            return false;
+        }
+        let Some(at) = self.results.iter().position(|r| r.state.body(old).is_some()) else { return false };
+        let Some(made) = self.results.get(at).and_then(|r| r.state.body(old)).map(|b| Arc::as_ptr(&b.mesh)) else { return false };
+        // Untouched from the feature that made it to the end, and nothing else holds its name.
+        let untouched = self.results.iter().skip(at).all(|r| r.state.body(old).is_some_and(|b| Arc::as_ptr(&b.mesh) == made));
+        let named_elsewhere = self
+            .results
+            .iter()
+            .any(|r| r.state.body(new).is_some() || r.state.sheets.iter().any(|x| x.body == old) || r.state.threads.iter().any(|t| t.body == old));
+        let faces_named = doc.features.iter().skip(at + 1).any(|f| f.face_names.iter().any(|n| n.contains(old)));
+        if !untouched || named_elsewhere || faces_named {
+            return false;
+        }
+        // States shared between results stay shared.
+        let mut renamed: std::collections::HashMap<*const ModelState, Arc<ModelState>> = std::collections::HashMap::new();
+        for r in self.results.iter_mut().skip(at) {
+            let state = renamed
+                .entry(Arc::as_ptr(&r.state))
+                .or_insert_with(|| {
+                    let mut st = (*r.state).clone();
+                    for b in st.bodies.iter_mut().filter(|b| b.name == old) {
+                        b.name = new.to_string();
+                        b.names = b.names.renamed();
+                    }
+                    Arc::new(st)
+                })
+                .clone();
+            r.state = state;
+        }
+        self.refingerprint(doc);
+        true
+    }
+
+    /// Follow a rename of feature `id` to `doc`'s name for it without evaluating anything: a
+    /// feature's name labels it (its result, its sketch, its construction geometry) but builds
+    /// nothing. False, leaving the model as it was, when the model isn't the design's, the
+    /// feature failed, or a later failed feature's error quotes its old name: evaluate then.
+    pub fn rename_feature(&mut self, doc: &Document, id: u64) -> bool {
+        if self.results.len() != doc.features.len() || self.results.iter().zip(&doc.features).any(|(r, f)| r.id != f.id || r.stale) {
+            return false;
+        }
+        let Some(name) = doc.feature(id).map(|f| f.name.clone()) else { return false };
+        let Some(at) = self.results.iter().position(|r| r.id == id) else { return false };
+        // An error may quote the old name: the feature's own, or a later one's that refers to it
+        // by id (a pattern of it: "{name} cannot be patterned or mirrored yet").
+        let old = self.results.get(at).map(|r| r.name.clone()).unwrap_or_default();
+        if self.results.iter().skip(at).any(|r| r.error.as_deref().is_some_and(|e| r.id == id || e.contains(&old))) {
+            return false;
+        }
+        if let Some(r) = self.results.get_mut(at) {
+            r.name.clone_from(&name);
+        }
+        let mut renamed: std::collections::HashMap<*const ModelState, Arc<ModelState>> = std::collections::HashMap::new();
+        for r in self.results.iter_mut().skip(at) {
+            let labels = r.state.sketches.iter().any(|k| k.feature == id) || r.state.construct.iter().any(|c| c.feature == id);
+            if !labels {
+                continue;
+            }
+            let state = renamed
+                .entry(Arc::as_ptr(&r.state))
+                .or_insert_with(|| {
+                    let mut st = (*r.state).clone();
+                    for k in st.sketches.iter_mut().filter(|k| k.feature == id) {
+                        Arc::make_mut(k).name.clone_from(&name);
+                    }
+                    for c in st.construct.iter_mut().filter(|c| c.feature == id) {
+                        c.name.clone_from(&name);
+                    }
+                    Arc::new(st)
+                })
+                .clone();
+            r.state = state;
+        }
+        self.refingerprint(doc);
+        true
+    }
+
+    /// Set every result's fingerprint to `doc`'s, so the next evaluation reuses every result
+    /// (after a change that builds nothing differently).
+    fn refingerprint(&mut self, doc: &Document) {
+        let (vals, _) = evaluation_values(doc);
+        let marker = doc.marker.unwrap_or(usize::MAX);
+        self.step_digests = StepDigests::of(doc, &self.step_digests);
+        let mut prev = 0;
+        for (i, (r, f)) in self.results.iter_mut().zip(&doc.features).enumerate() {
+            prev = chain_fingerprint(doc, &vals, f, prev, i >= marker, &self.step_digests);
+            r.fingerprint = prev;
+        }
     }
 }
 
@@ -1600,6 +1769,52 @@ fn pattern_copy_name(state: &ModelState, f: &Feature, k: usize, source: &str) ->
 fn copy_body_name(state: &ModelState, f: &Feature, k: usize, source: &str) -> String {
     let base = f.body_names.get(k).filter(|name| !name.trim().is_empty()).map(String::as_str).unwrap_or(source);
     unique_body_name(state, base)
+}
+
+/// Keeps each sheet metal body's flat pattern true to the body (see `SheetBody::altered_by`).
+/// A feature that changes a sheet body's material but not its sheet model (a fillet, a join, a
+/// mirror combined into it) marks the sheet with its name, and says so. A feature that rebuilds
+/// the body from the model (a sheet metal feature, or machining the model keeps as cut-outs,
+/// which changes the model) clears the mark, and says that the change it drops is not kept.
+/// Features that move whole bodies or only mark their faces (a cosmetic thread, not a modelled
+/// one, which cuts material) leave the flat pattern as it was.
+fn track_altered_sheets(before: &ModelState, after: &mut ModelState, f: &Feature, warning: &mut Option<String>) {
+    if matches!(
+        f.kind,
+        FeatureKind::Move { .. }
+            | FeatureKind::Align { .. }
+            | FeatureKind::Rest { .. }
+            | FeatureKind::BodyTransfer { .. }
+            | FeatureKind::SplitFace { .. }
+            | FeatureKind::Thread { modeled: false, .. }
+    ) {
+        return;
+    }
+    let ModelState { sheets, bodies, .. } = after;
+    for sh in sheets.iter_mut() {
+        let Some(old) = before.sheets.iter().find(|s| s.body == sh.body) else { continue };
+        let (Some(was), Some(now)) = (before.body(&sh.body), bodies.iter().find(|b| b.name == sh.body)) else { continue };
+        if was.body.same_shape(&now.body) {
+            continue;
+        }
+        if f.kind.is_sheet() || sh != old {
+            if let Some(lost) = sh.altered_by.take() {
+                append_warning(
+                    warning,
+                    format!("`{}` is rebuilt from its sheet metal features: what {lost} changed is not kept (not supported yet)", sh.body),
+                );
+            }
+        } else if sh.altered_by.is_none() {
+            sh.altered_by = Some(f.name.clone());
+            append_warning(
+                warning,
+                format!(
+                    "`{}` is sheet metal: its flat pattern, DXF and bend table can't include this change yet and are refused; a later sheet metal feature rebuilds the body without it",
+                    sh.body
+                ),
+            );
+        }
+    }
 }
 
 /// Add tool bodies to the model according to the operation.
@@ -1924,12 +2139,7 @@ pub fn through_all_distance(st: &ModelState, plane: &Plane, targets: &[String]) 
 /// Sample points inside a region (sketch coordinates).
 fn region_samples(r: &Region2) -> Vec<Vec2> {
     let mut out = vec![r.interior_point()];
-    let pts = r.outer.polyline(1e-2);
-    let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
-    for p in &pts {
-        lo = Vec2::new(lo.x.min(p.x), lo.y.min(p.y));
-        hi = Vec2::new(hi.x.max(p.x), hi.y.max(p.y));
-    }
+    let solidcraft_geom::Aabb2 { min: lo, max: hi } = r.outer.polyline(1e-2).bounds();
     for i in 0..5 {
         for j in 0..5 {
             let p = Vec2::new(lo.x + (hi.x - lo.x) * (0.1 + 0.2 * i as f64), lo.y + (hi.y - lo.y) * (0.1 + 0.2 * j as f64));
@@ -3752,8 +3962,11 @@ fn feature_tools_with_constructor(
             let m = crate::rigid(Vec3::ZERO, origin_w, axis_w, -start);
             regions.iter().zip(bodies).map(|(r, body)| Ok(tool(r, kernel::transform_matrix(&body, m)?, Some(&body)))).collect()
         }
-        FeatureKind::Loft { sections, .. } if sections.iter().any(|s| s.point.is_some()) => {
+        FeatureKind::Loft { sections, rails, .. } if sections.iter().any(|s| s.point.is_some()) => {
             // A profile lofted to a sketch point (an apex).
+            if !rails.is_empty() {
+                return Err(DocError::Invalid("not supported yet: guide rails on a loft to a point".into()));
+            }
             let [a, b] = &sections[..] else { return Err(DocError::Invalid("not supported yet: a point section in a loft of more than two".into())) };
             let (prof, pt) = if a.point.is_some() { (b, a) } else { (a, b) };
             let ss = st.sketch(prof.sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {}", prof.sketch)))?;
@@ -3806,7 +4019,7 @@ fn feature_tools_with_constructor(
             let pitch = if *clockwise { -p } else { p };
             Ok(unnamed(vec![kernel::sweep_helix(&plane, &region, *base, axis, pitch, n)?]))
         }
-        FeatureKind::Loft { sections, .. } => {
+        FeatureKind::Loft { sections, rails, rail_fit, .. } => {
             let mut secs = Vec::new();
             let mut sketches = Vec::new();
             for sec in sections {
@@ -3820,7 +4033,19 @@ fn feature_tools_with_constructor(
             }
             // Its caps are the first and last sections, its sides named by the curves they run
             // between.
-            let body = kernel::loft_regions(&secs)?;
+            let body = if rails.is_empty() {
+                kernel::loft_regions(&secs)?
+            } else {
+                // Rails shape the sections' outlines; sections with holes wait for rails that
+                // carry the holes too.
+                if secs.iter().any(|(_, r)| !r.holes.is_empty()) {
+                    return Err(DocError::Invalid("not supported yet: guide rails on a loft whose sections have holes".into()));
+                }
+                let outlines: Vec<_> = secs.iter().map(|(p, r)| (*p, r.outer.clone())).collect();
+                // The rails run from the end at the first section.
+                let start = outlines.first().and_then(|(p, lp)| lp.segs.first().map(|seg| p.to_world(seg.start()))).unwrap_or_default();
+                kernel::loft_with_rails(&outlines, &rail_polylines(doc, st, rails, f.component, start)?, kernel_rail_fit(*rail_fit))?
+            };
             let roles = crate::lineage::SectionRoles {
                 sections: sketches.into_iter().zip(secs.iter().map(|(_, r)| std::iter::once(&r.outer).chain(&r.holes).collect())).collect(),
             };
@@ -3933,20 +4158,24 @@ pub(crate) fn sweep_control(
         Some(k) => val(vals, k, Kind::Unitless)?,
         None => 1.0,
     };
-    let rail_fit = match rail_fit {
-        crate::RailFit::Scale => kernel::RailFit::Scale,
-        crate::RailFit::Stretch => kernel::RailFit::Stretch,
-    };
-    let ctl = kernel::SweepControl { orientation, twist, scale, rails, rail_fit };
+    let ctl = kernel::SweepControl { orientation, twist, scale, rails, rail_fit: kernel_rail_fit(rail_fit) };
     ctl.check()?;
     Ok(ctl)
 }
 
-/// A sweep's guide rails as polylines in the feature's frame, each a chain of its sketch's curves
-/// (planar or 3D) from the end nearest `start`, the start of the path.
+/// How guide rails reshape a sweep's profile or a loft's sections, for the kernel.
+pub(crate) fn kernel_rail_fit(fit: crate::RailFit) -> kernel::RailFit {
+    match fit {
+        crate::RailFit::Scale => kernel::RailFit::Scale,
+        crate::RailFit::Stretch => kernel::RailFit::Stretch,
+    }
+}
+
+/// A sweep's or a loft's guide rails as polylines in the feature's frame, each a chain of its sketch's curves
+/// (planar or 3D) from the end nearest `start` (the start of the path, the loft's first section).
 pub(crate) fn rail_polylines(doc: &Document, st: &ModelState, rails: &[crate::SweepRail], consumer: u64, start: Vec3) -> Result<Vec<Vec<Vec3>>> {
     if rails.len() > 2 {
-        return Err(DocError::Invalid("a sweep takes one or two guide rails".into()));
+        return Err(DocError::Invalid("a sweep or a loft takes one or two guide rails".into()));
     }
     rails
         .iter()
@@ -4502,8 +4731,11 @@ fn replay(
     Ok(())
 }
 
+#[path = "model_cache.rs"]
+mod model_cache;
 #[path = "eval_more.rs"]
 mod more;
+pub use model_cache::SavedModel;
 #[path = "eval_surface.rs"]
 mod surface;
 
@@ -5820,7 +6052,7 @@ impl PlacedBodies {
                 fresh.plan_mesh = placed.plan_mesh.clone();
                 fresh
             }
-            None => match kernel::transform_matrix(&b.body, *m) {
+            None => match kernel::place_matrix(&b.body, *m) {
                 Ok(body) => {
                     let mut fresh = ModelBody::new(name, body, b.feature);
                     fresh.mesh_placement = placed_mesh::PlacedMesh::new(b, m).map(Arc::new);
