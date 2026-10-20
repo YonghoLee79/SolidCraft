@@ -240,7 +240,7 @@ fn hex_nut(hole: f64) -> Session {
 /// Two threaded screws crossing each other, cut and joined (#1983, the hang half of #2038): each
 /// is thousands of flat faces, and the boolean went through every B-rep retry on them for many
 /// minutes. It now takes the exact polygon route alone and answers in seconds, with a result or
-/// a clear refusal.
+/// a clear refusal. A cross hole through one of them (a curved tool) is still drilled.
 #[test]
 fn booleans_of_two_modelled_threads_finish() {
     let mut s = Session::default();
@@ -264,6 +264,10 @@ fn booleans_of_two_modelled_threads_finish() {
             assert!(e.to_string().contains("not supported yet"), "{op}: {e}");
         }
     }
+    let before = volume(&mut s, "B");
+    run(&mut s, "solid.cylinder", json!({"radius": 0.8, "height": 10, "base": [-1.5, 0, 9], "axis": "X", "operation": "cut", "targets": ["B"]}));
+    let after = volume(&mut s, "B");
+    assert!(after < before - 1.0, "the cross hole is drilled: {before} -> {after}");
 }
 
 /// Issue 602: rounding the edges of a hex boss on a threaded shaft froze the app. The thread's
