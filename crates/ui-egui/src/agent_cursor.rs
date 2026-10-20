@@ -197,7 +197,8 @@ const NOT_PLACES: [&str; 14] =
 /// A command's toolbar button, or its panel when the button sits in a drop-down.
 fn button(command: &str) -> Option<Pos2> {
     let spec = solidcraft_engine::find_command(command)?;
-    crate::scenario::handle_at(&format!("toolbar:{}", spec.id)).or_else(|| crate::scenario::handle_at(&format!("panel:{}:{}", spec.tab, spec.panel)))
+    crate::scenario::handle_at(&format!("toolbar:{}", spec.id))
+        .or_else(|| crate::workspace::destination(spec).and_then(|(t, p)| crate::scenario::handle_at(&format!("panel:{t}:{p}"))))
 }
 
 /// Where the pointer goes for a command: its toolbar button (or its panel), then its picks on

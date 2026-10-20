@@ -1362,6 +1362,14 @@ fn modelled_thread_preview_updates_reports_errors_and_cancels_without_changes() 
     }
     assert!(h.app.preview.error.as_deref().is_some_and(|e| e.contains("does not fit")), "{:?}", h.app.preview.error);
     designation(&mut h, "M8x1.3");
+    // The M6 error stays until the new preview starts; wait for it to go, or
+    // `wait_feature_preview` would stop at the stale error on a host that schedules the
+    // preview a few frames later.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while h.app.preview.error.is_some() && std::time::Instant::now() < deadline {
+        h.frames(2);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     wait_feature_preview(&mut h);
     assert!(h.app.preview.error.is_none());
     assert_eq!(h.app.session.doc.to_json(), saved);

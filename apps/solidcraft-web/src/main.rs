@@ -8,6 +8,8 @@
 
 #[cfg(target_arch = "wasm32")]
 mod api;
+#[cfg(any(target_arch = "wasm32", test))]
+mod disk;
 #[cfg(target_arch = "wasm32")]
 mod files;
 #[cfg(target_arch = "wasm32")]
@@ -25,6 +27,7 @@ mod web {
     use wasm_bindgen::JsCast as _;
 
     use crate::api::Api;
+    use crate::disk::{self, SaveTarget};
     use crate::files::{self, Files, Intent};
     use crate::space_mouse::SpaceMouse;
 
@@ -121,6 +124,18 @@ mod web {
                 return;
             }
             files::flush(&self.files);
+            // A write to the computer's disk that failed: the design is not saved after all.
+            for path in self.files.unsaved.borrow_mut().drain(..) {
+                if self.app.session.path.as_deref() == Some(path.as_str()) {
+                    self.app.session.mark_unsaved();
+                }
+            }
+            // Designs opened from the computer's disk (the files window): open them.
+            let opened: Vec<_> = self.files.opened.borrow_mut().drain(..).collect();
+            for path in opened {
+                self.app.open_path(&path);
+                self.files.panel.set(false);
+            }
             for (text, error) in self.files.messages.borrow_mut().drain(..) {
                 self.app.set_status(text, error);
             }
@@ -224,6 +239,9 @@ mod web {
                             act = Some(("download_open", String::new()));
                         }
                     });
+                    if !disk::supported() {
+                        ui.weak("This browser can't save to a folder: designs stay in this browser. Download design saves a file.");
+                    }
                     ui.separator();
                     if !self.files.ready.get() {
                         ui.horizontal(|ui| {
@@ -270,6 +288,13 @@ mod web {
                                         self.renaming = Some((e.name.clone(), e.name.clone()));
                                         self.rename_focus = true;
                                     }
+                                    if ui
+                                        .small_button("Save to computer…")
+                                        .on_hover_text("A copy in a file you choose; the stored design stays here")
+                                        .clicked()
+                                    {
+                                        act = Some(("save_copy", e.name.clone()));
+                                    }
                                     if ui.small_button("Download").clicked() {
                                         act = Some(("download", e.name.clone()));
                                     }
@@ -303,6 +328,10 @@ mod web {
                             self.app.set_status(e, true);
                         }
                     }
+                    Err(e) => self.app.set_status(e.to_string(), true),
+                },
+                "save_copy" => match vfs::read(&path, solidcraft_engine::io::MAX_DESIGN_BYTES) {
+                    Ok(b) => disk::save_copy(&self.files, &name, b),
                     Err(e) => self.app.set_status(e.to_string(), true),
                 },
                 "download_open" => {
@@ -533,18 +562,33 @@ mod web {
                         solidcraft_ui_egui::fonts::setup_fonts(&cc.egui_ctx);
                         let files = Rc::new(Files::default());
                         files::start(&files);
-                        let panel = files.clone();
+                        let (panel, opener, saver, shown) = (files.clone(), files.clone(), files.clone(), files.clone());
                         let services = Services {
-                            // Open shows the browser's files (and the computer's, from there).
-                            pick_open: Some(Box::new(move |_: &[&str]| {
+                            // Open shows the browser's open dialog for a design where it has one
+                            // (the file keeps its handle, so Save writes back to it); otherwise,
+                            // and for inserting STEP or meshes, the browser's files window.
+                            pick_open: Some(Box::new(move |exts: &[&str]| {
+                                if disk::handles_open(exts) {
+                                    return Box::pin(disk::pick_open(&opener));
+                                }
                                 panel.panel.set(true);
                                 Box::pin(std::future::ready(None))
                             })),
-                            // Designs are kept in the browser; everything else is downloaded.
-                            pick_save: Some(Box::new(|name: &str, exts: &[&str]| {
+                            // A design is saved to a file the user picks, or kept in the browser
+                            // where the browser can't pick one; everything else is downloaded.
+                            pick_save: Some(Box::new(move |name: &str, exts: &[&str]| {
                                 let design = exts.contains(&solidcraft_engine::io::DESIGN_EXT);
-                                Box::pin(std::future::ready(Some(format!("{}{name}", if design { files::OPFS } else { files::DOWNLOADS }))))
+                                match disk::save_target(disk::supported(), design) {
+                                    SaveTarget::Disk => Box::pin(disk::pick_save(&saver, name)),
+                                    SaveTarget::Browser => {
+                                        saver.say("This browser can't save to a folder: the design is kept in this browser. File > Download design saves a file.", false);
+                                        Box::pin(std::future::ready(Some(format!("{}{name}", files::OPFS))))
+                                    }
+                                    SaveTarget::Download => Box::pin(std::future::ready(Some(format!("{}{name}", files::DOWNLOADS)))),
+                                }
                             })),
+                            download_design: Some(Box::new(files::download)),
+                            browser_files: Some(Box::new(move || shown.panel.set(true))),
                             install_app: Some(crate::install::service(&cc.egui_ctx)),
                             ..Default::default()
                         };

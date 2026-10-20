@@ -316,7 +316,7 @@ impl SheetSettings {
 
 /// The shape of the relief cut where two bends meet at a corner of the base (a rule's
 /// `corner_relief_shape`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReliefShape {
     /// Nothing is cut: the bends end square at the corner.
@@ -418,7 +418,7 @@ impl Document {
 }
 
 /// A flange: a bend along a panel edge and the flat panel past it (flat coordinates).
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetFlange {
     /// The flange it hangs off (None = the base panel).
     pub parent: Option<usize>,
@@ -469,7 +469,7 @@ pub struct EdgeFlange {
 }
 
 /// A sheet metal body (see the module docs).
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetBody {
     pub body: String,
     pub rule: String,
@@ -483,21 +483,21 @@ pub struct SheetBody {
     pub holes: Vec<Region2>,
     /// Planar machining in flat coordinates, with depths measured from the flat bottom.
     /// Derived from feature history; these records are not a document schema change.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pockets: Vec<SheetPocket>,
     /// Straight bores drilled into a panel along its plane (a hole into a rim), in flat
     /// coordinates, each kept inside its own panel's material so the folded part and its flat
     /// pattern both carry it (#560). Derived from feature history, like `pockets`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bores: Vec<SheetBore>,
     /// Perforation fields (#732), flat coordinates; their holes are computed on demand and never cut into the B-rep.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub perforations: Vec<SheetPerforation>,
     /// Regions (flat coordinates) that text cut or machined, letters with their counters as
     /// holes: a record of where the sheet's text went, so that its DXF can write the letters on
     /// layers of their own (see [`SheetBody::letters`]). The cut-outs and pockets themselves are
     /// in `holes` and `pockets`. Derived from feature history, like `pockets`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<Region2>,
     /// Unfolded.
     pub flat: bool,
@@ -524,7 +524,7 @@ pub struct SheetBody {
 
 /// A straight round bore of one panel (None = the base), in flat coordinates: a cylinder from
 /// `base` along the unit `axis` for `height`, cut only from that panel's material.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetBore {
     pub panel: Option<usize>,
     pub base: Vec3,
@@ -534,7 +534,7 @@ pub struct SheetBore {
 }
 
 /// A perforation field from a `sheet.perforate` feature (#732).
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetPerforation {
     pub feature: u64,
     pub diameter: f64,
@@ -543,7 +543,7 @@ pub struct SheetPerforation {
     pub square: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetPocket {
     pub region: Region2,
     pub z0: f64,
@@ -2320,6 +2320,25 @@ impl SheetBody {
                 return Err(DocError::Invalid("pick an edge of the sheet's top or bottom face".into()));
             }
             let d = (b - a).normalized().ok_or_else(|| DocError::Invalid("edge".into()))?;
+            // A bend line is no free edge: the base's or the parent panel's edge where a flange
+            // starts, or the flange panel's edge where its bend ends.
+            let outward = Vec2::new(d.y, -d.x);
+            let on_bend = self.flanges.iter().enumerate().any(|(i, f)| {
+                let (at, facing) = if panel == f.parent {
+                    (f.p, 1.0)
+                } else if panel == Some(i) {
+                    (f.p + f.n * self.allowance(f), -1.0)
+                } else {
+                    return false;
+                };
+                let along = |p: Vec2| p.dot(f.d);
+                outward.dot(f.n) * facing > 0.99
+                    && (a - at).dot(f.n).abs() < 1e-6
+                    && along(a).max(along(b)).min(along(f.p) + f.len) - along(a).min(along(b)).max(along(f.p)) > 1e-6
+            });
+            if on_bend {
+                return Err(DocError::Invalid(format!("{}that edge is the bend line of a flange; pick a free edge of the sheet", on(k))));
+            }
             let (s0, s1) = self
                 .edge_left(panel, a, b, e.pick, &cuts)
                 .ok_or_else(|| DocError::Invalid(format!("{}a cut-out has taken that edge away; pick an edge the sheet still has", on(k))))?;

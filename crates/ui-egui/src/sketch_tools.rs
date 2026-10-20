@@ -86,40 +86,78 @@ thread_local! {
     static ISO: RefCell<Vec<Vec<[Vec3; 2]>>> = const { RefCell::new(Vec::new()) };
     /// Center of Mass has just started: measure everything on the next frame.
     static DEFERRED: Cell<bool> = const { Cell::new(false) };
+    /// A Trim drag: the pieces its path would remove (sketch polylines), and where the path's
+    /// last point is on screen.
+    static TRIM_REMOVED: RefCell<Vec<Vec<Vec2>>> = const { RefCell::new(Vec::new()) };
+    static TRIM_LAST: Cell<Option<Pos2>> = const { Cell::new(None) };
 }
 
-/// Commands registered on one panel that another panel also lists: the analyses (sketch
-/// INSPECT) on SOLID INSPECT, and Interference (SOLID INSPECT) on sketch INSPECT.
-const ALSO_IN: &[(&str, &str, &str)] = &[
-    ("SOLID", "INSPECT", "inspect.zebra"),
-    ("SOLID", "INSPECT", "inspect.draft"),
-    ("SOLID", "INSPECT", "inspect.curvature_map"),
-    ("SOLID", "INSPECT", "inspect.environment_map"),
-    ("SOLID", "INSPECT", "inspect.accessibility"),
-    ("SOLID", "INSPECT", "inspect.minimum_radius"),
-    ("SOLID", "INSPECT", "inspect.isocurve"),
-    ("SOLID", "INSPECT", "inspect.curvature_comb"),
-    ("SOLID", "INSPECT", "inspect.center_of_mass"),
-    ("SKETCH", "INSPECT", "inspect.interference"),
-];
+/// Screen distance the pointer moves before a Trim drag's path takes another point.
+const TRIM_STEP_PX: f32 = 4.0;
 
-/// A panel's commands plus the ones it shares with another panel (see [`ALSO_IN`]).
-pub fn also_in<'a>(
-    tab: &str,
-    panel: &str,
-    mut cmds: Vec<&'a solidcraft_engine::CommandSpec>,
-    specs: &[&'a solidcraft_engine::CommandSpec],
-) -> Vec<&'a solidcraft_engine::CommandSpec> {
-    for (t, p, id) in ALSO_IN {
-        if *t == tab
-            && *p == panel
-            && !cmds.iter().any(|c| c.id == *id)
-            && let Some(c) = specs.iter().find(|c| c.id == *id)
-        {
-            cmds.push(c);
-        }
+/// The sketch-plane position under screen position `pos`.
+fn on_sketch_plane(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<Vec2> {
+    let st = app.session.world_state();
+    let ss = st.sketch(active_sketch(app)?)?;
+    let (o, d) = proj.ray(pos);
+    ss.plane.intersect_ray(o, d).map(|w| ss.plane.to_local(w))
+}
+
+/// A press and drag with Trim draws a path from `press`; true when it started one. Each piece
+/// the path crosses is trimmed when it is let go (`sketch.trim.path`).
+pub fn trim_drag_start(app: &mut SolveApp, proj: &Proj, press: Pos2) -> bool {
+    let Some(q) = on_sketch_plane(app, proj, press) else { return false };
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim") else { return false };
+    tool.pts = vec![(q, None)];
+    TRIM_LAST.with(|c| c.set(Some(press)));
+    TRIM_REMOVED.with(|r| r.borrow_mut().clear());
+    true
+}
+
+/// The Trim drag's path reaches `pos`: the pieces it would remove light up (a dry run of the
+/// command the release runs).
+pub fn trim_drag_to(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
+    if TRIM_LAST.with(Cell::get).is_some_and(|last| last.distance(pos) < TRIM_STEP_PX) {
+        return;
     }
-    cmds
+    let Some(q) = on_sketch_plane(app, proj, pos) else { return };
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim" && !t.pts.is_empty()) else { return };
+    if tool.pts.len() >= TRIM_PATH_MAX {
+        return;
+    }
+    tool.pts.push((q, None));
+    TRIM_LAST.with(|c| c.set(Some(pos)));
+    let points: Vec<[f64; 2]> = tool.pts.iter().map(|p| [p.0.x, p.0.y]).collect();
+    let removed = app
+        .session
+        .execute("sketch.trim.path", &json!({"points": points, "dry_run": true}))
+        .map(|v| {
+            v["removed"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|piece| piece.as_array().into_iter().flatten().filter_map(solidcraft_engine::params::vec2).collect())
+                .collect()
+        })
+        .unwrap_or_default();
+    TRIM_REMOVED.with(|r| *r.borrow_mut() = removed);
+}
+
+/// Most points a Trim drag's path keeps (the command's limit).
+const TRIM_PATH_MAX: usize = 2_000;
+
+/// The Trim drag is let go: trim every piece its path crossed, in one undo step. False when the
+/// path crossed nothing (the caller takes the release as a click).
+pub fn trim_drag_end(app: &mut SolveApp) -> bool {
+    TRIM_LAST.with(|c| c.set(None));
+    let crossed = TRIM_REMOVED.with(|r| !std::mem::take(&mut *r.borrow_mut()).is_empty());
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim") else { return false };
+    let points: Vec<[f64; 2]> = std::mem::take(&mut tool.pts).iter().map(|p| [p.0.x, p.0.y]).collect();
+    if !crossed || points.len() < 2 {
+        return false;
+    }
+    let _ = app.run("sketch.trim.path", json!({"points": points}));
+    true
 }
 
 /// Run an analysis and keep its result as a marker.
@@ -506,6 +544,7 @@ pub fn tool_for(id: &str) -> Option<Tool> {
         pts: Vec::new(),
         hover: None,
         picks: Vec::new(),
+        point_picks: Vec::new(),
         dims: Vec::new(),
         dim_history: Vec::new(),
         dims_stage: usize::MAX,
@@ -528,7 +567,7 @@ pub fn hint(id: &str) -> Option<String> {
             "inspect.continuity" => "Continuity: click an edge for its numbers (the button again turns the colours off)",
             "canvas.insert" => "Canvas: click a plane or a planar face where the image's centre goes",
             "canvas.decal" => "Decal: click a planar face where the image's centre goes",
-            "sketch.trim" => "Trim: click the piece of a curve to remove",
+            "sketch.trim" => "Trim: click the piece of a curve to remove, or drag across the pieces to remove",
             "sketch.extend" => "Extend: click a curve near the end to extend",
             "sketch.break" => "Break: click a curve where it should split",
             "sketch.line.midpoint" => "Midpoint line: click the middle, then an end",
@@ -1042,6 +1081,18 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
         crate::tools::paint_sketch_path(&world, 0, painter, proj, Stroke::new(4.5, tk.error));
     }
     let stroke = Stroke::new(1.5, tk.rubber_band);
+    // A Trim drag: the pieces it will remove, then the path drawn so far.
+    if t.cmd == "sketch.trim" && !t.pts.is_empty() {
+        TRIM_REMOVED.with(|r| {
+            for piece in r.borrow().iter() {
+                let line: Vec<Pos2> = piece.iter().filter_map(|p| to(*p)).collect();
+                painter.add(egui::Shape::line(line, Stroke::new(4.0, tk.error.gamma_multiply(0.8))));
+            }
+        });
+        let path: Vec<Pos2> = t.pts.iter().filter_map(|p| to(p.0)).collect();
+        painter.add(egui::Shape::line(path, stroke));
+        return;
+    }
     if let Some((hp, snap)) = &t.hover
         && let Some(sp) = to(*hp)
     {
@@ -1320,3 +1371,7 @@ mod corner_ui_tests;
 #[cfg(test)]
 #[path = "sketch_continuity_tests.rs"]
 mod continuity_tests;
+
+#[cfg(test)]
+#[path = "sketch_trim_drag_ui_tests.rs"]
+mod trim_drag_ui_tests;
