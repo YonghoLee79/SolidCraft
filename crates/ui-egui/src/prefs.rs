@@ -1380,7 +1380,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
 fn space_mouse_section(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let open = app.space_mouse.device.is_some();
-    ui_kit::section(ui, "sc_prefs_space_mouse", crate::i18n::tr_label("3D mouse"), open, |ui| {
+    ui_kit::section(ui, "sc_prefs_space_mouse", crate::i18n::tr("ui.space_mouse_section"), open, |ui| {
         setting::space_mouse_enabled(app, ui);
         setting::space_mouse_in_view(app, ui).on_hover_text(crate::i18n::tr("ui.space_mouse_show_in_view_tip"));
         setting::space_mouse_speed(app, ui);
