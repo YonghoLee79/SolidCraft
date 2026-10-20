@@ -423,30 +423,35 @@ fn lip_swept_flush_round_a_corner_joins() {
 
 /// A column joined into a housing's channel, standing on its floor and along its curved wall,
 /// failed (`Union: no result`): run on into the floor, the tool defeated the boolean that the
-/// column as drawn passes. It joins as drawn now, adding what the same column made as a new body
-/// and combined adds.
+/// column as drawn passes. It joins as drawn now, within a budget of attempts, and the result
+/// says so. The column only touches the housing, so the join adds the column's volume as a new
+/// body (no union needed to check it: on some platforms that union is the slow one). The housing
+/// is measured before and after at one chord tolerance: [`volume`]'s, relative to its size, leaves
+/// the difference some tenths of a cubic millimetre out.
 #[test]
 fn column_standing_in_a_channel_joins_as_drawn() {
+    let housing = |s: &Session| s.model.state().body("Body7").unwrap().body.tessellate(5e-5).unwrap().measure().volume;
     let script: Value = serde_json::from_str(include_str!("../../../examples/regressions/join_column_in_channel.json")).unwrap();
     let steps = script.get("commands").and_then(Value::as_array).unwrap();
     let (join, before) = steps.split_last().unwrap();
     let mut s = Session::default();
     s.run_script(&Value::Array(before.to_vec())).unwrap();
-    let housing = volume(&s, "Body7");
+    let before_join = housing(&s);
     let mut column = join.get("params").unwrap().clone();
     column["operation"] = json!("new");
     column["body_name"] = json!("Column");
     column.as_object_mut().unwrap().remove("targets");
     s.execute("solid.extrude", &column).unwrap();
-    s.execute("solid.combine", &json!({"target": "Body7", "tools": ["Column"], "operation": "join"})).unwrap();
-    let combined = volume(&s, "Body7");
+    let column = volume(&s, "Column");
     s.execute("edit.undo", &json!({})).unwrap();
-    s.execute("edit.undo", &json!({})).unwrap();
-    assert!((volume(&s, "Body7") - housing).abs() < 1e-6);
+    assert!(column > 1.0, "{column}");
     s.run_script(&Value::Array(vec![join.clone()])).unwrap();
-    let joined = volume(&s, "Body7");
-    assert!(joined > housing + 1.0, "{housing} -> {joined}");
-    assert!((joined - combined).abs() < 1e-3, "joined {joined}, combined {combined}");
+    let added = housing(&s) - before_join;
+    assert!((added - column).abs() < 1e-2, "the join added {added}, the column is {column}");
+    let result = s.model.results.last().unwrap();
+    let strategies: Vec<_> = result.boolean_diagnostics.events.iter().map(|e| e.strategy).collect();
+    assert!(strategies.contains(&solidcraft_kernel::BooleanStrategy::JoinAsDrawn), "{strategies:?}");
+    assert!(result.warning.is_none(), "{:?}", result.warning);
 }
 
 /// #1275: an Extrude Cut of a whole face of a rounded-rectangle block with a bottom chamfer. The

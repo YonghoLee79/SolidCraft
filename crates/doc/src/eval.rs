@@ -3377,9 +3377,15 @@ pub(crate) fn thin_regions(vals: &BTreeMap<String, Value>, ss: &SolvedSketch, th
 /// How far apart (mm) profiles must stay for their extruded tools to be cut as one.
 const APART_GAP: f64 = 1e-3;
 
+/// The kernel's intersection attempts a Join taken as drawn may use, after the Join of its
+/// adjusted tools failed: past them it reports that first failure rather than try on. (A column
+/// in a channel takes 12 as drawn, after its adjusted tool failed in 108.)
+const JOIN_AS_DRAWN_ATTEMPTS: usize = 32;
+
 /// The tool bodies a feature adds or removes (extrude, revolve, primitives), in the current state.
 /// With `as_drawn`, an untapered Join extrude's tools are its profiles over the extent as given,
-/// not run on into the target, grown past or trimmed at the faces they touch.
+/// not run on into the target, grown past or trimmed at the faces they touch. `adjusted` is set
+/// when an extrude's tool was built otherwise (so taking it as drawn would change it).
 fn feature_tools_with_constructor(
     doc: &Document,
     vals: &BTreeMap<String, Value>,
@@ -3387,6 +3393,7 @@ fn feature_tools_with_constructor(
     st: &ModelState,
     constructor: &mut Option<ExtrudeConstructor>,
     as_drawn: bool,
+    adjusted: &mut bool,
 ) -> Result<Vec<Traced>> {
     let unnamed = |bodies: Vec<Body>| -> Vec<Traced> { bodies.into_iter().map(Traced::unnamed).collect() };
     match &f.kind {
@@ -3664,7 +3671,9 @@ fn feature_tools_with_constructor(
                         r = loose;
                     }
                 }
-                untrimmed &= l2 == lo + off && h2 == hi + off && &r == original;
+                let as_given = l2 == lo + off && h2 == hi + off && &r == original;
+                untrimmed &= as_given;
+                *adjusted |= !as_given;
                 tools.extend(built?);
                 footprints.push(r);
                 extents.push((l2, h2));
@@ -4633,7 +4642,7 @@ fn replay(
             }
         } else {
             // Each copy's faces are named as the source feature's, with the instance.
-            let tools = feature_tools_with_constructor(doc, vals, src, st, &mut None, false)?;
+            let tools = feature_tools_with_constructor(doc, vals, src, st, &mut None, false, &mut false)?;
             for (k, m) in mats.iter().enumerate() {
                 for t in &tools {
                     copies.push(t.copied(kernel::transform_matrix(&t.body, *m)?, src.id, k + 1));
@@ -5066,17 +5075,29 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
         | FeatureKind::Coil { operation, targets, .. }
         | FeatureKind::Sweep { operation, targets, .. } => {
             let mut constructor = None;
-            let tools = feature_tools_with_constructor(doc, vals, f, st, &mut constructor, false)?;
+            let mut adjusted = false;
+            let tools = feature_tools_with_constructor(doc, vals, f, st, &mut constructor, false, &mut adjusted)?;
             // A Join tool run on into its target (or grown past the faces it touches), so that the
             // boolean meets no touching faces, can defeat the boolean itself where the tool as
             // drawn, standing on those faces, joins: a column in a channel whose floor it runs into
-            // and whose curved wall it lies along. Then it joins as drawn.
-            if *operation == Operation::Join && matches!(&f.kind, FeatureKind::Extrude { extent, .. } if extent.taper.is_none()) {
+            // and whose curved wall it lies along. Then it joins as drawn, within a budget: on some
+            // platforms that union is the one that does not finish.
+            if adjusted && *operation == Operation::Join && matches!(&f.kind, FeatureKind::Extrude { extent, .. } if extent.taper.is_none()) {
+                let plain = crate::plain(targets);
                 let before = st.clone();
-                let Err(e) = apply_traced(st, f, tools, *operation, &crate::plain(targets)) else { return Ok(()) };
+                // The retries of an attempt given up on are not the result's.
+                let (first, report) = kernel::capture_boolean_diagnostics(|| apply_traced(st, f, tools, *operation, &plain));
+                let Err(e) = first else {
+                    kernel::merge_boolean_diagnostics(report);
+                    return Ok(());
+                };
                 let mut drawn = before;
-                let tools = feature_tools_with_constructor(doc, vals, f, &drawn, &mut None, true)?;
-                apply_traced(&mut drawn, f, tools, *operation, &crate::plain(targets)).map_err(|_| e)?;
+                kernel::with_attempt_budget(JOIN_AS_DRAWN_ATTEMPTS, || {
+                    let tools = feature_tools_with_constructor(doc, vals, f, &drawn, &mut None, true, &mut false)?;
+                    apply_traced(&mut drawn, f, tools, *operation, &plain)
+                })
+                .map_err(|_| e)?;
+                kernel::record_boolean_fallback(kernel::BooleanFallback::new(kernel::BooleanStrategy::JoinAsDrawn));
                 *st = drawn;
                 return Ok(());
             }
