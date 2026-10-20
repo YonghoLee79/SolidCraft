@@ -452,6 +452,9 @@ impl SolveApp {
         if let Err(e) = session.set_render_job_host(image_host.clone()) {
             log::error!("render image host: {e}");
         }
+        // Airflow studies run on a GPU device of their own, opened when the first one runs.
+        #[cfg(all(not(test), not(target_arch = "wasm32")))]
+        session.set_flow_backend(Some(std::sync::Arc::new(solidcraft_gpu::flow::Lazy::default())));
         let mut render_workspace = render_workspace::State::default();
         render_workspace.image_host = image_host;
         SolveApp {

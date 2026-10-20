@@ -397,6 +397,46 @@ impl solidcraft_sim::Backend for Backend {
     }
 }
 
+/// A study backend that opens its own GPU device the first time a study runs (native only), and
+/// runs studies on the CPU reference when no GPU opens: what the app and the CLI install, so
+/// starting them costs nothing until a study runs.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+pub struct Lazy {
+    gpu: std::sync::OnceLock<std::result::Result<Backend, String>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Lazy {
+    fn gpu(&self) -> &std::result::Result<Backend, String> {
+        self.gpu.get_or_init(|| match FlowGpu::headless() {
+            Ok(g) => Ok(Backend(std::sync::Arc::new(g))),
+            Err(e) => {
+                log::warn!("Airflow studies run on the CPU: {e}");
+                Err(e.to_string())
+            }
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl solidcraft_sim::Backend for Lazy {
+    fn name(&self) -> String {
+        match self.gpu.get() {
+            Some(Ok(g)) => solidcraft_sim::Backend::name(g),
+            Some(Err(_)) => "CPU (no GPU)".into(),
+            None => "GPU".into(),
+        }
+    }
+
+    fn stepper(&self, lattice: &Lattice) -> solidcraft_sim::Result<Box<dyn solidcraft_sim::Stepper>> {
+        match self.gpu() {
+            Ok(g) => g.stepper(lattice),
+            Err(_) => solidcraft_sim::Cpu.stepper(lattice),
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn sim_error(e: GpuError) -> solidcraft_sim::SimError {
     solidcraft_sim::SimError::Backend(e.to_string())

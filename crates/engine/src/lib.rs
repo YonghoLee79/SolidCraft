@@ -11,6 +11,7 @@ pub mod capture;
 pub mod cmd;
 pub mod control_auth;
 pub mod crash;
+pub mod flow;
 pub mod frames;
 pub mod fuzz;
 pub mod licences;
@@ -256,6 +257,8 @@ pub struct Session {
     /// Host-owned viewport metadata, never saved or included in history.
     render_viewport: Option<Arc<render::ExecutorDescriptor>>,
     render_jobs: render_jobs::Jobs,
+    /// Airflow studies (`sim.flow.*`): kept beside the design, never saved in it.
+    pub(crate) flow: flow::Studies,
     /// The visibility the design file holds (what `is_dirty` compares with).
     saved_visibility: Visibility,
     /// States to go back to (`edit.checkpoint`, `edit.restore_checkpoint`): how batches of
@@ -386,6 +389,7 @@ impl Session {
             camera: None,
             render_viewport: None,
             render_jobs: Default::default(),
+            flow: Default::default(),
             #[cfg(test)]
             evaluations: 0,
             crash_journal: false,
@@ -398,10 +402,48 @@ impl Session {
         let auto_project = self.auto_project;
         let render_viewport = self.render_viewport.clone();
         let render_jobs = self.render_jobs.scratch();
+        let flow = self.flow.scratch();
         *self = fresh;
         self.auto_project = auto_project;
         self.render_viewport = render_viewport;
         self.render_jobs = render_jobs;
+        self.flow = flow;
+    }
+
+    /// The solver Airflow studies run on (the app's GPU); `None`: the CPU reference.
+    pub fn set_flow_backend(&mut self, backend: Option<flow::FlowBackend>) {
+        self.flow.backend = backend;
+    }
+
+    /// The name of the solver studies run on.
+    pub fn flow_backend_name(&self) -> String {
+        self.flow.backend.as_ref().map_or_else(|| "CPU".to_string(), |b| b.name())
+    }
+
+    /// This session's Airflow studies.
+    pub fn flow_studies(&self) -> &flow::Studies {
+        &self.flow
+    }
+
+    /// Take in finished runs: a study whose run has finished gets its results. True when any
+    /// study's results changed (views redraw them).
+    pub fn poll_flow(&mut self) -> bool {
+        let mut changed = false;
+        for st in &mut self.flow.list {
+            let Some(job) = &st.job else { continue };
+            let done = job.progress.lock().ok().and_then(|p| match &p.done {
+                Some(Ok(r)) => Some(r.clone()),
+                _ => None,
+            });
+            if let Some(r) = done
+                && st.result.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &r))
+            {
+                st.result = Some(r);
+                st.revision += 1;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// The design has changes not in its file: in the document, or in what is hidden.
@@ -857,6 +899,7 @@ impl Session {
             camera: self.camera,
             render_viewport: self.render_viewport.clone(),
             render_jobs: self.render_jobs.scratch(),
+            flow: self.flow.scratch(),
             saved_visibility: self.saved_visibility.clone(),
             #[cfg(test)]
             evaluations: 0,
