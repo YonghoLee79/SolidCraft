@@ -85,7 +85,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "MODIFY")
         .icon("sketch_move")
         .enabled(in_sketch)
-        .params(concat!("entities: [ids], translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool; picking a text outline or linked point transforms its whole text source once, and copies remain editable text", created_doc!())),
+        .params(concat!("entities: [ids], translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool, z?: mm along the sketch's normal (3D sketches: the moved lines and fit-point splines become drawn 3D curves that far off the plane); picking a text outline or linked point transforms its whole text source once, and copies remain editable text", created_doc!())),
     CommandSpec::new("sketch.mirror", "Mirror", mirror)
         .at("SKETCH", "PATTERN")
         .icon("sketch_mirror")
@@ -1993,6 +1993,18 @@ fn move_copy(s: &mut Session, p: &Value) -> Result<Value> {
         cs.extend(text_curves);
         Ok(ids_of(sk, &cs))
     })?;
+    let z = match p.get("z") {
+        None => 0.0,
+        Some(v) => v.as_f64().filter(|z| z.is_finite() && z.abs() <= 1e6).ok_or_else(|| bad(cmd, "`z` must be a distance in mm"))?,
+    };
+    if z != 0.0 {
+        // Off the plane: what moved (or its copy) becomes drawn 3D curves `z` along the normal.
+        let id = super::sketch::target_sketch(s, p, cmd)?;
+        let n = s.world_state().sketch(id).map(|ss| ss.plane.normal()).ok_or_else(|| bad(cmd, "the sketch has no plane"))?;
+        let names: Vec<String> = out.clone();
+        let (wires, _, info) = super::sketch_3d::lift(s, p, cmd, &names, n * z, None)?;
+        return Ok(json!({"curves": wires, "sketch": info}));
+    }
     Ok(json!({"curves": out, "sketch": info}))
 }
 

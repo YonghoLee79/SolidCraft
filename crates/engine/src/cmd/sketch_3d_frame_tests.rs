@@ -313,3 +313,86 @@ fn wire_frame_three_owner_sweep_profile_move_invalidates_warm_cache() {
     assert_eq!(s.doc.to_json(), saved);
     measure(&s, 4.0);
 }
+
+fn plane_sketch() -> (Session, u64) {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane":"XY","name":"Lifted"}));
+    run(&mut s, "sketch.options", json!({"sketch_3d":true}));
+    let id = s.active_sketch.unwrap();
+    (s, id)
+}
+
+/// A spline drawn on the plane of a 3D sketch moves off it point by point: the grabbed fit point
+/// lifts the spline into a drawn 3D curve through the same points, then moves; undo puts the
+/// plane spline back.
+#[test]
+fn a_plane_spline_in_a_3d_sketch_lifts_off_the_plane_point_by_point() {
+    let (mut s, sketch) = plane_sketch();
+    let spline = run(&mut s, "sketch.spline.fit_point", json!({"points":[[0,0],[10,5],[20,0]]}))["curves"][0].as_str().unwrap().to_string();
+    let sk = s.doc.sketch(sketch).unwrap();
+    let ci = sk.curve_index(&spline).unwrap();
+    let solidcraft_sketch::CurveKind::Spline { pts, .. } = &sk.curves[ci].kind else { panic!("a spline") };
+    let middle = sk.points[pts[1]].id.clone();
+    let before = s.doc.to_json();
+    let r = run(&mut s, "sketch.move3d", json!({"point": middle, "by": [0, 0, 7]}));
+    assert_eq!(r["index"], 1);
+    let wire = r["wire"].as_str().unwrap().to_string();
+    let sk = s.doc.sketch(sketch).unwrap();
+    assert!(sk.curve_index(&spline).is_none(), "the plane spline is gone");
+    let w = &sk.wires[sk.wire_index(&wire).unwrap()];
+    near(w.fit[0], Vec3::new(0.0, 0.0, 0.0));
+    near(w.fit[1], Vec3::new(10.0, 5.0, 7.0));
+    near(w.fit[2], Vec3::new(20.0, 0.0, 0.0));
+    // From then on it is a drawn 3D curve like any other.
+    run(&mut s, "sketch.move3d", json!({"wire": wire, "index": 2, "by": [0, 0, -3]}));
+    near(s.doc.sketch(sketch).unwrap().wires.iter().find(|x| x.id == wire).unwrap().fit[2], Vec3::new(20.0, 0.0, -3.0));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), before);
+}
+
+/// Lines joined at the grabbed point lift together and stay joined; their far ends stay put.
+#[test]
+fn lines_through_a_lifted_point_stay_joined() {
+    let (mut s, sketch) = plane_sketch();
+    let lines = run(&mut s, "sketch.line", json!({"points":[[0,0],[10,0],[10,10]]}));
+    let first = lines["curves"][0].as_str().unwrap().to_string();
+    let r = run(&mut s, "sketch.move3d", json!({"point": format!("{first}.end"), "to": [10, 0, 5]}));
+    assert_eq!(r["lifted"].as_array().unwrap().len(), 2);
+    let sk = s.doc.sketch(sketch).unwrap();
+    let fits: Vec<Vec<Vec3>> = sk.wires.iter().map(|w| w.fit.clone()).collect();
+    assert!(fits.iter().all(|f| f.iter().any(|p| p.dist(Vec3::new(10.0, 0.0, 5.0)) < 1e-9)), "{fits:?}");
+    assert!(
+        fits.iter().flatten().any(|p| p.dist(Vec3::new(0.0, 0.0, 0.0)) < 1e-9)
+            && fits.iter().flatten().any(|p| p.dist(Vec3::new(10.0, 10.0, 0.0)) < 1e-9)
+    );
+}
+
+/// Move/Copy's `z` takes what moved off the plane as drawn 3D curves.
+#[test]
+fn move_with_z_lifts_the_moved_curves() {
+    let (mut s, sketch) = plane_sketch();
+    let line = run(&mut s, "sketch.line", json!({"points":[[3,3],[13,3]]}))["curves"][0].as_str().unwrap().to_string();
+    let r = run(&mut s, "sketch.move", json!({"entities":[line], "translate":[1,2], "z": 4}));
+    let wire = r["curves"][0].as_str().unwrap().to_string();
+    let sk = s.doc.sketch(sketch).unwrap();
+    let w = &sk.wires[sk.wire_index(&wire).unwrap()];
+    near(w.fit[0], Vec3::new(4.0, 5.0, 4.0));
+    near(w.fit[1], Vec3::new(14.0, 5.0, 4.0));
+}
+
+#[test]
+fn what_cannot_leave_the_plane_says_so() {
+    let (mut s, _) = plane_sketch();
+    let circle = run(&mut s, "sketch.circle.center", json!({"center":[3,3],"radius":5}))["curves"][0].as_str().unwrap().to_string();
+    let e = s.execute("sketch.move3d", &json!({"point": format!("{circle}.center"), "by": [0, 0, 1]})).unwrap_err().to_string();
+    assert!(e.contains("not supported yet") && e.contains("circle"), "{e}");
+    assert!(s.execute("sketch.move3d", &json!({"point": "nope", "by": [0, 0, 1]})).is_err());
+    assert!(s.execute("sketch.move3d", &json!({"point": "origin", "by": [0, 0, 1]})).is_err());
+    // Not a 3D sketch: the plane is where it stays.
+    let mut flat = Session::default();
+    run(&mut flat, "sketch.create", json!({"plane":"XY"}));
+    let l = run(&mut flat, "sketch.line", json!({"points":[[0,0],[10,0]]}))["curves"][0].as_str().unwrap().to_string();
+    let e = flat.execute("sketch.move3d", &json!({"point": format!("{l}.end"), "by": [0, 0, 1]})).unwrap_err().to_string();
+    assert!(e.contains("3D Sketch"), "{e}");
+}

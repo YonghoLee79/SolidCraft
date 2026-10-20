@@ -194,3 +194,38 @@ fn second_occurrence_drawn_wire_fit_picks_and_world_triad_drag_stay_aligned() {
     let restored = h.app.session.model.state();
     assert!(restored.sketch(sketch).unwrap().sketch.wires[0].fit[0].dist(Vec3::new(2.0, 3.0, 5.0)) < 1e-6);
 }
+
+/// A spline clicked out on the plane of a 3D sketch is an ordinary plane spline; its fit point
+/// still takes the triad, and dragging the Z arrow lifts it off the plane (the spline becomes a
+/// drawn 3D curve), as one undo step.
+#[test]
+fn a_plane_spline_point_takes_the_triad_and_its_z_arrow_lifts_it() {
+    let mut h = crate::scenario::Harness::new();
+    let sketch = h.app.run("sketch.create", json!({"plane":"XY","name":"Lift"})).unwrap()["sketch"].as_u64().unwrap();
+    h.app.ui.show_origin = false;
+    h.settle();
+    h.step(&json!({"widget":"3D Sketch"})).unwrap();
+    assert!(crate::sketch3d::active(&h.app));
+    h.app.run("sketch.spline.fit_point", json!({"points":[[0,0],[10,5],[20,0]]})).unwrap();
+    h.call("ui.view", json!({"view":"iso"}));
+    h.call("ui.view", json!({"view":"fit"}));
+    h.settle();
+    h.step(&json!({"click":{"world":[10,5,0]}})).unwrap();
+    let [x0, y0] = h.at(&json!({"handle":"triad_z"})).expect("a plane point has the triad");
+    let before = h.at(&json!({"world":[10,5,0]})).unwrap();
+    let after = h.at(&json!({"world":[10,5,6]})).unwrap();
+    let history = h.app.session.undo.len();
+    h.call("ui.drag", json!({"x0":x0,"y0":y0,"x1":x0+after[0]-before[0],"y1":y0+after[1]-before[1],"steps":8}));
+    let st = h.app.session.model.state();
+    let sk = &st.sketch(sketch).unwrap().sketch;
+    assert!(sk.curves.iter().all(|c| !matches!(c.kind, solidcraft_engine::sketch::CurveKind::Spline { .. })), "the plane spline became a 3D curve");
+    let fit = &sk.wires.first().expect("a drawn 3D spline").fit;
+    assert_eq!(fit.len(), 3);
+    assert!(fit[1].dist(Vec3::new(10.0, 5.0, 6.0)) < 0.05, "{fit:?}");
+    assert!(fit[0].dist(Vec3::new(0.0, 0.0, 0.0)) < 1e-6 && fit[2].dist(Vec3::new(20.0, 0.0, 0.0)) < 1e-6, "{fit:?}");
+    assert_eq!(h.app.session.undo.len(), history + 1, "the whole drag is one step");
+    h.app.run("edit.undo", json!({})).unwrap();
+    let back = h.app.session.model.state();
+    let sk = &back.sketch(sketch).unwrap().sketch;
+    assert!(sk.wires.is_empty() && sk.curves.iter().any(|c| matches!(c.kind, solidcraft_engine::sketch::CurveKind::Spline { .. })));
+}
