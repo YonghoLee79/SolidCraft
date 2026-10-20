@@ -186,6 +186,9 @@ pub struct Found {
     pub argv: Vec<String>,
     pub version: Option<String>,
     pub login: Login,
+    /// The folder of the Node.js that runs it, when the first `node` on the search path is too
+    /// old for it and a newer one was found further on ([`node_dir_for`]); `None`: the PATH as it is.
+    pub node_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -255,9 +258,231 @@ pub fn runnable_sibling(program: &Path) -> Option<PathBuf> {
     names_for(name, true).into_iter().map(|n| dir.join(n)).find(|p| p.is_file())
 }
 
+/// Whether Node.js `major.minor` can run the npm ACP adapters. They load JSON with import
+/// attributes (`import … with { type: "json" }`), which Node reads from 18.20, 20.10 and 21 on;
+/// an older one stops at once with `SyntaxError: Unexpected token 'with'`.
+fn node_runs_adapters((major, minor): (u32, u32)) -> bool {
+    match major {
+        18 => minor >= 20,
+        20 => minor >= 10,
+        m => m >= 21,
+    }
+}
+
+/// `v18.19.1` (what `node --version` prints, and the `Node.js v18.19.1` line Node ends an
+/// uncaught error with) as `(18, 19)`.
+fn node_version_of(text: &str) -> Option<(u32, u32)> {
+    let v = text.trim().strip_prefix("Node.js").unwrap_or(text).trim().strip_prefix('v')?;
+    let mut parts = v.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Whether `program` is a script that asks `env` for `node` (`#!/usr/bin/env node`, as npm's
+/// adapters are), so the PATH decides which Node runs it.
+fn runs_on_env_node(program: &Path) -> bool {
+    let mut head = [0u8; 256];
+    let n = std::fs::File::open(program).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+    let first = head.get(..n).unwrap_or_default().split(|&b| b == b'\n').next().unwrap_or_default();
+    let Some(line) = std::str::from_utf8(first).ok().and_then(|l| l.strip_prefix("#!")) else { return false };
+    let mut words = line.split_whitespace();
+    if !words.next().is_some_and(|w| w.ends_with("/env")) {
+        return false;
+    }
+    // `env -S node --flag` and `env node` both name it as the first word that isn't an option.
+    words.find(|w| !w.starts_with('-')).is_some_and(|w| w == "node")
+}
+
+/// One alternative of an npm `engines.node` range, by its lower bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NodeRange {
+    /// `>=22`, `>20.10`, `>=18 <23` (the upper bound is not checked).
+    AtLeast((u32, u32)),
+    /// `^20.10`, `20`, `20.x`: that major version, from that minor on.
+    SameMajor((u32, u32)),
+    /// `~20.10`, `20.10.x`: that major and minor version.
+    SameMinor((u32, u32)),
+}
+
+impl NodeRange {
+    fn allows(self, v: (u32, u32)) -> bool {
+        match self {
+            NodeRange::AtLeast(min) => v >= min,
+            NodeRange::SameMajor(min) => v.0 == min.0 && v >= min,
+            NodeRange::SameMinor(min) => v == min,
+        }
+    }
+
+    fn min(self) -> (u32, u32) {
+        match self {
+            NodeRange::AtLeast(m) | NodeRange::SameMajor(m) | NodeRange::SameMinor(m) => m,
+        }
+    }
+}
+
+/// An npm `engines.node` range (`>=22`, `^20.10.0 || >=22`) as its alternatives, or `None` when
+/// any part is not understood: then only the syntax the adapters need is checked.
+fn node_ranges_of(range: &str) -> Option<Vec<NodeRange>> {
+    let number = |s: &str| -> Option<(u32, u32, bool)> {
+        let mut parts = s.trim_start_matches('v').split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = match parts.next() {
+            None | Some("x" | "X" | "*") => return Some((major, 0, false)),
+            Some(m) => m.parse().ok()?,
+        };
+        Some((major, minor, true))
+    };
+    let mut out = Vec::new();
+    for alt in range.split("||").take(8) {
+        // The first comparator is the lower bound (`>=18 <23` → `>=18`); npm allows a space after
+        // its operator (`>= 20.10.0`).
+        let alt = alt.trim();
+        let op_len = alt.len() - alt.trim_start_matches(['>', '=', '^', '~']).len();
+        let (op, rest) = alt.split_at_checked(op_len)?;
+        let version = rest.split_whitespace().next()?;
+        let r = match op {
+            ">=" | ">" => {
+                let (a, b, _) = number(version)?;
+                NodeRange::AtLeast((a, b))
+            }
+            "^" => {
+                let (a, b, _) = number(version)?;
+                NodeRange::SameMajor((a, b))
+            }
+            "~" => {
+                let (a, b, _) = number(version)?;
+                NodeRange::SameMinor((a, b))
+            }
+            "" | "=" => match number(version)? {
+                (a, b, true) => NodeRange::SameMinor((a, b)),
+                (a, _, false) => NodeRange::SameMajor((a, 0)),
+            },
+            _ => return None,
+        };
+        out.push(r);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The `engines.node` range of the npm package `program` belongs to (`claude-agent-acp` asks for
+/// `>=22`): the `package.json` in the nearest folder above the script it points to. Only files are
+/// read; nothing is started.
+fn node_ranges_for(program: &Path) -> Option<Vec<NodeRange>> {
+    let script = std::fs::canonicalize(program).ok()?;
+    let manifest = script.ancestors().skip(1).take(6).map(|d| d.join("package.json")).find(|p| p.is_file())?;
+    if std::fs::metadata(&manifest).ok()?.len() > 1 << 20 {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    node_ranges_of(json.get("engines")?.get("node")?.as_str()?)
+}
+
+/// Whether Node `v` can run a program needing `ranges` (from [`node_ranges_for`]).
+fn node_can_run(ranges: Option<&[NodeRange]>, v: (u32, u32)) -> bool {
+    node_runs_adapters(v) && ranges.is_none_or(|r| r.iter().any(|a| a.allows(v)))
+}
+
+/// The lowest Node.js version that runs a program needing `ranges`, for the panel (`22`, `20.10`).
+fn node_needed(ranges: Option<&[NodeRange]>) -> String {
+    let min = ranges.and_then(|r| r.iter().map(|a| a.min()).min()).map_or((20, 10), |m| m.max((18, 20)));
+    if min.1 == 0 { min.0.to_string() } else { format!("{}.{}", min.0, min.1) }
+}
+
+/// The Node.js version in an agent's last stderr lines and the version `program` needs, when the
+/// one it ran on can't run it: the panel then says so instead of leaving only Node's own error.
+pub(super) fn node_too_old_in(tail: &[String], program: &Path) -> Option<(String, String)> {
+    let line = tail.iter().rev().map(|l| l.trim()).find(|l| l.starts_with("Node.js v"))?;
+    let v = node_version_of(line)?;
+    let ranges = node_ranges_for(program);
+    (!node_can_run(ranges.as_deref(), v)).then(|| (line.trim_start_matches("Node.js ").to_string(), node_needed(ranges.as_deref())))
+}
+
+/// The most `node`s looked at for one program.
+const MAX_NODES: usize = 16;
+/// How long one `node --version` may take, and all of them in one detection together.
+const NODE_PROBE: Duration = Duration::from_secs(2);
+const NODE_PROBE_TOTAL: Duration = Duration::from_secs(4);
+
+/// The folder to put first on `program`'s PATH: when `program` runs on `env node` and the first
+/// `node` in `dirs` is too old for it (Ubuntu's packaged Node ahead of a newer one from nvm, say),
+/// the folder of the first `node` that can run it. "Can run" is the syntax the adapters use and
+/// the package's own `engines.node` (`claude-agent-acp` asks for 22). `None` when nothing needs to
+/// move. `probe` reads a `node`'s version (`None`: unknown, so it is not chosen).
+pub(super) fn node_dir_for(program: &Path, dirs: &[PathBuf], mut probe: impl FnMut(&Path) -> Option<(u32, u32)>) -> Option<PathBuf> {
+    if !cfg!(unix) || !runs_on_env_node(program) {
+        return None;
+    }
+    let ranges = node_ranges_for(program);
+    let mut ok = |node: &Path| probe(node).is_some_and(|v| node_can_run(ranges.as_deref(), v));
+    let mut nodes = dirs.iter().filter(|d| d.join("node").is_file()).take(MAX_NODES);
+    let first = nodes.next()?;
+    if ok(&first.join("node")) {
+        return None;
+    }
+    nodes.find(|d| ok(&d.join("node"))).cloned()
+}
+
+/// `dirs` with `node_dir` (from [`node_dir_for`]) moved to the front; everything else keeps its order.
+fn dirs_with(mut dirs: Vec<PathBuf>, node_dir: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(n) = node_dir {
+        dirs.retain(|d| d != n);
+        dirs.insert(0, n.to_path_buf());
+    }
+    dirs
+}
+
+/// Reads `node --version`s for one detection: each `node` at most once, each within
+/// [`NODE_PROBE`], all within [`NODE_PROBE_TOTAL`] (after that, versions are unknown).
+struct NodeProbe {
+    deadline: Instant,
+    seen: Vec<(PathBuf, Option<(u32, u32)>)>,
+}
+
+impl NodeProbe {
+    fn new(total: Duration) -> NodeProbe {
+        NodeProbe { deadline: Instant::now() + total, seen: Vec::new() }
+    }
+
+    fn version(&mut self, node: &Path) -> Option<(u32, u32)> {
+        if let Some((_, v)) = self.seen.iter().find(|(p, _)| p == node) {
+            return *v;
+        }
+        let left = self.deadline.saturating_duration_since(Instant::now()).min(NODE_PROBE);
+        let v = if left.is_zero() {
+            None
+        } else {
+            let mut cmd = Command::new(node);
+            cmd.arg("--version");
+            first_line(cmd, left).as_deref().and_then(node_version_of)
+        };
+        self.seen.push((node.to_path_buf(), v));
+        v
+    }
+}
+
+/// The Node folders [`detect`] chose, by program: [`command_for`] reads them and never starts a
+/// `node` itself, as Connect calls it on the window thread.
+static NODE_DIRS: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+
+fn remember_node_dir(program: &Path, node_dir: Option<&Path>) {
+    if let Ok(mut m) = NODE_DIRS.lock() {
+        m.retain(|(p, _)| p != program);
+        if let Some(n) = node_dir {
+            m.push((program.to_path_buf(), n.to_path_buf()));
+        }
+    }
+}
+
+fn remembered_node_dir(program: &Path) -> Option<PathBuf> {
+    NODE_DIRS.lock().ok()?.iter().find(|(p, _)| p == program).map(|(_, n)| n.clone())
+}
+
 /// Start probes and sessions with the same PATH used for discovery. Desktop launchers often
 /// omit Node's install folder even when we found an adapter with a `#!/usr/bin/env node` shebang.
-/// Only the child's environment changes; inherited absolute PATH entries keep precedence.
+/// Only the child's environment changes; inherited absolute PATH entries keep precedence, except
+/// that a Node too old to run the adapter gives way to the newer one [`detect`] chose. Nothing is
+/// started here: this runs on the window thread.
 pub(super) fn command_for(program: &Path) -> Command {
     // Older saved Windows commands may name npm's bare Unix script rather than its .cmd shim.
     let shim = if cfg!(windows) { runnable_sibling(program) } else { None };
@@ -269,7 +494,7 @@ pub(super) fn command_for(program: &Path) -> Command {
     } else {
         Command::new(program)
     };
-    if let Ok(path) = std::env::join_paths(search_dirs()) {
+    if let Ok(path) = std::env::join_paths(dirs_with(search_dirs(), remembered_node_dir(program).as_deref())) {
         cmd.env("PATH", path);
     }
     cmd
@@ -278,13 +503,19 @@ pub(super) fn command_for(program: &Path) -> Command {
 /// `program --version`'s first line, or `None` after `limit` (the probe is then stopped).
 fn version(program: &Path, limit: Duration) -> Option<String> {
     let mut cmd = command_for(program);
+    cmd.arg("--version");
+    first_line(cmd, limit).map(|line| version_of(&line))
+}
+
+/// The first non-empty line `cmd` prints, or `None` after `limit` (it is then stopped).
+fn first_line(mut cmd: Command, limit: Duration) -> Option<String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW: probing a console agent doesn't flash a terminal window.
         cmd.creation_flags(0x0800_0000);
     }
-    let mut child = cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -299,8 +530,7 @@ fn version(program: &Path, limit: Duration) -> Option<String> {
     }
     let mut out = String::new();
     std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-    let line = out.lines().map(str::trim).find(|l| !l.is_empty())?;
-    Some(version_of(line))
+    out.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
 }
 
 /// The version number in a `--version` line (`codex-cli 0.162.1`, `2.1.295 (Claude Code)`,
@@ -335,6 +565,7 @@ pub fn detect() -> Detection {
 fn detect_in(dirs: &[PathBuf], home: Option<&Path>) -> Detection {
     let t0 = Instant::now();
     let mut d = Detection::default();
+    let mut nodes = NodeProbe::new(NODE_PROBE_TOTAL);
     for k in KNOWN {
         let Some(path) = k.programs.iter().find_map(|p| find_in(p, dirs)) else {
             if !k.retired {
@@ -345,8 +576,11 @@ fn detect_in(dirs: &[PathBuf], home: Option<&Path>) -> Detection {
         let login = login_of(k, home);
         let mut argv = vec![path.to_string_lossy().into_owned()];
         argv.extend(k.args.iter().map(|a| a.to_string()));
+        // Chosen before the version probe, which then runs on the same Node the session will.
+        let node_dir = node_dir_for(&path, dirs, |n| nodes.version(n));
+        remember_node_dir(&path, node_dir.as_deref());
         let version = if k.reports_version { version(&path, Duration::from_secs(3)) } else { None };
-        d.found.push(Found { id: k.id, name: k.name, version, argv, login });
+        d.found.push(Found { id: k.id, name: k.name, version, argv, login, node_dir });
     }
     d.took_ms = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
     d
@@ -396,6 +630,174 @@ mod tests {
         assert_eq!(version_of("goose v1.9.0"), "v1.9.0");
         assert_eq!(version_of("grok 1.0.58 (26283d10dd58) [alpha]"), "1.0.58");
         assert_eq!(version_of("dev build"), "dev build");
+    }
+
+    #[test]
+    fn node_versions_that_read_import_attributes() {
+        assert_eq!(node_version_of("v18.19.1"), Some((18, 19)));
+        assert_eq!(node_version_of("Node.js v22.11.0"), Some((22, 11)));
+        assert_eq!(node_version_of("v20.10.0-nightly"), Some((20, 10)));
+        assert_eq!(node_version_of("node: not found"), None);
+        // Ubuntu 24.04's packaged Node (18.19) stops at `with`; 18.20, 20.10 and 21 on read it.
+        for (v, ok) in [((18, 19), false), ((18, 20), true), ((19, 9), false), ((20, 9), false), ((20, 10), true), ((21, 0), true), ((24, 1), true)] {
+            assert_eq!(node_runs_adapters(v), ok, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn an_agents_stderr_tells_when_its_node_is_too_old() {
+        let tail = |last: &str| {
+            ["SyntaxError: Unexpected token 'with'", "    at ModuleLoader.moduleStrategy (node:internal/modules/esm/translators:152:18)", "", last]
+                .map(String::from)
+        };
+        let unknown = Path::new("/nonexistent/claude-agent-acp");
+        let old = |v: &str, need: &str| Some((v.to_string(), need.to_string()));
+        assert_eq!(node_too_old_in(&tail("Node.js v18.19.1"), unknown), old("v18.19.1", "20.10"));
+        assert_eq!(node_too_old_in(&tail("Node.js v22.11.0"), unknown), None, "a new enough Node failed for another reason");
+        assert_eq!(node_too_old_in(&tail("error: not signed in"), unknown), None);
+        assert_eq!(node_too_old_in(&[], unknown), None);
+
+        // An adapter whose package asks for Node 22: 20.11 reads the syntax but is still too old.
+        let root = std::env::temp_dir().join(format!("sc-agent-node-engines-{}", std::process::id()));
+        let pkg = root.join("lib/node_modules/@agentclientprotocol/claude-agent-acp");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(pkg.join("package.json"), r#"{"name":"claude-agent-acp","engines":{"node":">=22"}}"#).unwrap();
+        std::fs::write(pkg.join("dist/index.js"), "#!/usr/bin/env node\n").unwrap();
+        let script = pkg.join("dist/index.js");
+        assert_eq!(node_too_old_in(&tail("Node.js v20.11.1"), &script), old("v20.11.1", "22"));
+        assert_eq!(node_too_old_in(&tail("Node.js v22.11.0"), &script), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn engines_ranges_read_by_their_lower_bound() {
+        use NodeRange::*;
+        assert_eq!(node_ranges_of(">=22"), Some(vec![AtLeast((22, 0))]));
+        assert_eq!(node_ranges_of(">= 20.10.0"), Some(vec![AtLeast((20, 10))]));
+        assert_eq!(node_ranges_of("<23"), None, "no lower bound");
+        assert_eq!(node_ranges_of(">=18 <23"), Some(vec![AtLeast((18, 0))]));
+        assert_eq!(node_ranges_of("^20.10.0 || >=22"), Some(vec![SameMajor((20, 10)), AtLeast((22, 0))]));
+        assert_eq!(node_ranges_of("~20.10 || 22.x"), Some(vec![SameMinor((20, 10)), SameMajor((22, 0))]));
+        assert_eq!(node_ranges_of("lts/*"), None);
+        assert_eq!(node_ranges_of(""), None);
+
+        let need = node_ranges_of("^20.10.0 || >=22");
+        for (v, ok) in [((20, 9), false), ((20, 12), true), ((21, 0), false), ((22, 1), true), ((18, 20), false)] {
+            assert_eq!(node_can_run(need.as_deref(), v), ok, "{v:?}");
+        }
+        // No range known: only the syntax decides.
+        assert!(node_can_run(None, (18, 20)) && !node_can_run(None, (18, 19)));
+        // A range below what the syntax needs never lets an older Node through.
+        assert!(!node_can_run(node_ranges_of(">=16").as_deref(), (18, 19)));
+        assert_eq!(node_needed(node_ranges_of(">=22").as_deref()), "22");
+        assert_eq!(node_needed(node_ranges_of("^20.10.0 || >=22").as_deref()), "20.10");
+        assert_eq!(node_needed(node_ranges_of(">=16").as_deref()), "18.20");
+        assert_eq!(node_needed(None), "20.10");
+    }
+
+    /// Ubuntu's packaged Node 18.19 in /usr/bin comes before nvm's folders in the desktop PATH,
+    /// and an adapter with `#!/usr/bin/env node` would run on it and stop at its first import.
+    /// The first `node` that can run it is moved to the front; nothing else changes.
+    #[test]
+    #[cfg(unix)]
+    fn an_env_node_adapter_skips_a_node_too_old_for_it() {
+        let root = std::env::temp_dir().join(format!("sc-agent-node-{}", std::process::id()));
+        let (old, other, new, bin) = (root.join("usr-bin"), root.join("other"), root.join("nvm-22"), root.join("adapters"));
+        for d in [&old, &other, &new, &bin] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(old.join("node"), "18").unwrap();
+        std::fs::write(new.join("node"), "22").unwrap();
+        let adapter = bin.join("claude-agent-acp");
+        std::fs::write(&adapter, "#!/usr/bin/env node\nimport pkg from './package.json' with { type: 'json' };\n").unwrap();
+        let native = bin.join("goose");
+        std::fs::write(&native, "\x7fELF").unwrap();
+        // The fake `node`s hold their major version; nothing is started.
+        let probe = |p: &Path| std::fs::read_to_string(p).ok().and_then(|s| s.parse().ok()).map(|m| (m, if m == 18 { 19 } else { 11 }));
+        let dirs = vec![old.clone(), other.clone(), new.clone()];
+
+        let chosen = node_dir_for(&adapter, &dirs, probe);
+        assert_eq!(chosen.as_deref(), Some(new.as_path()));
+        assert_eq!(dirs_with(dirs.clone(), chosen.as_deref()), [new.clone(), old.clone(), other.clone()]);
+        // A new enough first Node, a program that isn't a Node script, or no better Node: unchanged.
+        assert_eq!(node_dir_for(&adapter, &[new.clone(), old.clone()], probe), None);
+        assert_eq!(node_dir_for(&native, &dirs, probe), None);
+        assert_eq!(node_dir_for(&adapter, &[old.clone(), other.clone()], probe), None);
+        assert_eq!(dirs_with(dirs.clone(), None), dirs);
+
+        // The package asks for Node 22 (as claude-agent-acp does): a 20.11 first on the PATH reads
+        // the syntax but is still passed over for the 22 further on.
+        let pkg = root.join("lib/node_modules/claude-agent-acp");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(pkg.join("package.json"), r#"{"engines":{"node":">=22"}}"#).unwrap();
+        std::fs::write(pkg.join("dist/index.js"), "#!/usr/bin/env node\n").unwrap();
+        let mid = root.join("usr-bin-20");
+        std::fs::create_dir_all(&mid).unwrap();
+        std::fs::write(mid.join("node"), "20").unwrap();
+        let script = pkg.join("dist/index.js");
+        assert_eq!(node_dir_for(&script, &[mid.clone(), new.clone()], probe).as_deref(), Some(new.as_path()));
+        assert_eq!(node_dir_for(&adapter, &[mid.clone(), new.clone()], probe), None, "without a package range 20.11 is enough");
+
+        std::fs::write(&adapter, "#!/usr/bin/env -S node --no-warnings\n").unwrap();
+        assert!(runs_on_env_node(&adapter));
+        std::fs::write(&adapter, "#!/bin/sh\nexec node \"$0\"\n").unwrap();
+        assert!(!runs_on_env_node(&adapter), "a shell script picks its Node itself");
+        assert!(!runs_on_env_node(&root.join("missing")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Review of #2208: Connect calls `command_for` on the window thread, so it must not start a
+    /// `node`. It uses only the folder detection chose, and a program detection never saw keeps
+    /// the search path as it is.
+    #[test]
+    #[cfg(unix)]
+    fn starting_an_agent_uses_the_node_detection_chose_and_starts_none() {
+        let root = std::env::temp_dir().join(format!("sc-agent-node-cache-{}", std::process::id()));
+        let (new, bin) = (root.join("nvm-22"), root.join("adapters"));
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let adapter = bin.join("claude-agent-acp");
+        std::fs::write(&adapter, "#!/usr/bin/env node\n").unwrap();
+        let path_of = |cmd: &Command| {
+            cmd.get_envs().find(|(k, _)| *k == "PATH").and_then(|(_, v)| v).map(|v| std::env::split_paths(v).collect::<Vec<_>>()).unwrap_or_default()
+        };
+
+        assert_eq!(path_of(&command_for(&adapter)), search_dirs(), "nothing chosen yet: the search path as it is");
+        remember_node_dir(&adapter, Some(&new));
+        assert_eq!(path_of(&command_for(&adapter)).first(), Some(&new));
+        assert_eq!(path_of(&command_for(&bin.join("codex-acp"))), search_dirs(), "chosen for one program only");
+        remember_node_dir(&adapter, None);
+        assert_eq!(path_of(&command_for(&adapter)), search_dirs(), "a later detection that found the PATH fine clears it");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Review of #2208: hanging `node`s can't hold detection up for long. Each is asked once, for
+    /// at most two seconds, and all of them together within the total.
+    #[test]
+    #[cfg(unix)]
+    fn hanging_nodes_are_probed_within_the_total_time() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("sc-agent-node-hang-{}", std::process::id()));
+        let mut dirs = Vec::new();
+        for i in 0..MAX_NODES {
+            let d = root.join(format!("n{i}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("node"), "#!/bin/sh\nexec sleep 30\n").unwrap();
+            std::fs::set_permissions(d.join("node"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            dirs.push(d);
+        }
+        let adapter = root.join("claude-agent-acp");
+        std::fs::write(&adapter, "#!/usr/bin/env node\n").unwrap();
+
+        let mut probe = NodeProbe::new(Duration::from_millis(600));
+        let t0 = Instant::now();
+        assert_eq!(node_dir_for(&adapter, &dirs, |n| probe.version(n)), None);
+        // A second adapter in the same detection asks none of them again.
+        assert_eq!(node_dir_for(&adapter, &dirs, |n| probe.version(n)), None);
+        let took = t0.elapsed();
+        assert!(took < Duration::from_secs(3), "16 hanging nodes took {took:?}");
+        assert_eq!(probe.seen.len(), MAX_NODES, "each node asked once");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -1156,6 +1156,7 @@
   "ui.agent_chat_no_cli": "在应用旁边未找到 solidcraft-cli，因此智能体无法访问设计。",
   "ui.agent_chat_no_control": "智能体聊天的端点未能启动，因此智能体无法访问设计。",
   "ui.agent_chat_no_images": "该智能体不接收图片",
+  "ui.agent_chat_node_too_old": "Node.js {version} 对此智能体来说版本过旧，它需要 Node.js {required} 或更高版本（推荐 22 LTS）。请安装并使其在 PATH 中排在最前，或替换系统自带的 Node，然后再次点击“连接”。",
   "ui.agent_chat_no_picture": "剪贴板上没有图片",
   "ui.agent_chat_none_found": "未找到编程智能体。请安装以下之一，然后点击刷新：",
   "ui.agent_chat_none_found_short": "未找到智能体",

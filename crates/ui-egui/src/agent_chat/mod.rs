@@ -384,6 +384,13 @@ pub struct AgentChat {
     detection: Option<discover::Detection>,
     #[cfg(not(target_arch = "wasm32"))]
     detecting: Option<Receiver<discover::Detection>>,
+    /// The agent stopped on a Node too old for it: the next Connect first looks for agents (and
+    /// their Node) again, so a Node installed after the notice is used.
+    #[cfg(not(target_arch = "wasm32"))]
+    redetect: bool,
+    /// Connect once the search running now has finished.
+    #[cfg(not(target_arch = "wasm32"))]
+    connect_after_detect: bool,
 }
 
 impl Drop for AgentChat {
@@ -614,9 +621,20 @@ impl AgentChat {
             Event::Exited { tail } => {
                 self.state = Some(State::Exited);
                 self.steering = false;
+                #[cfg(not(target_arch = "wasm32"))]
+                let old_node = self.argv.first().and_then(|p| discover::node_too_old_in(&tail, std::path::Path::new(p)));
+                #[cfg(target_arch = "wasm32")]
+                let old_node: Option<(String, String)> = None;
                 let last: Vec<String> = tail.into_iter().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
                 let detail = if last.is_empty() { String::new() } else { format!("\n{}", last.join("\n")) };
                 self.notice(format!("{}{detail}", tr("ui.agent_chat_exited")), true);
+                if let Some((found, required)) = old_node {
+                    self.notice(trf("ui.agent_chat_node_too_old", &[("version", &found), ("required", &required)]), true);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        self.redetect = true;
+                    }
+                }
                 self.stop_backend(false);
                 return Some(Outcome::TurnEnd);
             }
@@ -733,6 +751,13 @@ fn working_dir() -> std::path::PathBuf {
 /// Start the agent: the chat's control endpoint for its MCP bridge if needed, the process.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
+    // The last start stopped on a Node too old for the agent: look again first (a newer Node may
+    // be installed by now), then connect when the search is done.
+    if std::mem::take(&mut app.agent_chat.redetect) {
+        app.agent_chat.connect_after_detect = true;
+        refresh(app, ctx);
+        return;
+    }
     disconnect(app);
     let Some(entry) = agents::current(app) else {
         app.agent_chat.notice(tr("ui.agent_chat_none_found"), true);
@@ -1424,6 +1449,9 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     {
         app.agent_chat.detection = Some(d);
         app.agent_chat.detecting = None;
+        if std::mem::take(&mut app.agent_chat.connect_after_detect) {
+            connect(app, ctx);
+        }
     }
     // AI features turned off: nothing keeps running, nothing is looked for.
     if !shown(app) {
@@ -1685,7 +1713,7 @@ pub fn status(app: &SolveApp) -> Value {
     #[cfg(not(target_arch = "wasm32"))]
     let detection = c.detection.as_ref().map(|d| {
         json!({
-            "found": d.found.iter().map(|f| json!({"id": f.id, "name": f.name, "argv": f.argv, "version": f.version, "login": f.login.id()})).collect::<Vec<_>>(),
+            "found": d.found.iter().map(|f| json!({"id": f.id, "name": f.name, "argv": f.argv, "version": f.version, "login": f.login.id(), "node_dir": f.node_dir})).collect::<Vec<_>>(),
             "missing": d.missing.iter().map(|m| json!({"id": m.id, "install": m.install})).collect::<Vec<_>>(),
             "ms": d.took_ms,
         })

@@ -124,7 +124,17 @@ global folder, nvm, Volta, bun, `~/.local/bin`, `~/.grok/bin`, Homebrew, `%APPDA
 shows its **version** (from `--version`, given three seconds) and whether it looks **signed in**.
 Version checks and agent sessions also use those folders on their `PATH`, so adapters can find
 runtimes such as Node when SolidCraft is opened from Finder or the Dock. Existing absolute
-`PATH` entries keep their order; no shell startup files are run.
+`PATH` entries keep their order; no shell startup files are run. One exception: for an adapter
+started through `#!/usr/bin/env node` (the npm ones), the search also asks each `node` in those
+folders for its version (at most two seconds each, four in all). If the first one is too old for
+the adapter, the folder of the first `node` that can run it goes to the front of that adapter's
+`PATH`. Ubuntu's packaged Node 18 in `/usr/bin`, for example, then gives way to a newer one from nvm.
+"Can run" means a Node that reads the imports the adapters use (18.20, 20.10, 21 or newer) and meets whatever the
+adapter's own `package.json` asks for in `engines.node` (Claude Code's adapter asks for 22). If
+the agent still stops on a Node that is too old, the chat says which version it found and which
+one it needs; the next **Connect** first looks for agents again, so a Node installed after
+that message is used. A `node` installed with fnm, mise, asdf or nodenv, or with nvm outside `~/.nvm`, is
+found only when it is on the `PATH` SolidCraft was started with.
 SolidCraft only checks whether the agent's own login file (`~/.claude/.credentials.json`,
 `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, …) or one of its key variables exists. It never
 reads the file and never starts the agent to find out. On macOS Claude Code keeps its login in
