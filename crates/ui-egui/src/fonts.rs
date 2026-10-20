@@ -164,7 +164,7 @@ pub fn with_symbol_fallback(mut fonts: egui::FontDefinitions) -> egui::FontDefin
 
 /// UI languages whose text needs the CJK font. The web app's bundled font covers Japanese only;
 /// add Chinese or Korean here together with a font that covers them.
-pub const CJK_LANGUAGES: &[&str] = &["ja", "zh", "ko"];
+pub const CJK_LANGUAGES: &[&str] = &["ja", "zh", "zh-TW", "ko"];
 
 /// Whether the UI language needs a CJK font (the web app fetches one only then).
 pub fn needs_cjk_font(language: &str) -> bool {
@@ -648,7 +648,7 @@ fn find_system_cjk_font() -> Option<Vec<u8>> {
 /// Thai comes last whatever the language: no other face draws it.
 pub fn fallback_order(language: &str) -> [&'static str; 4] {
     match language {
-        "zh" => [CHINESE_FALLBACK, CJK_FALLBACK, HANGUL_FALLBACK, THAI_FALLBACK],
+        "zh" | "zh-TW" => [CHINESE_FALLBACK, CJK_FALLBACK, HANGUL_FALLBACK, THAI_FALLBACK],
         "ko" => [HANGUL_FALLBACK, CJK_FALLBACK, CHINESE_FALLBACK, THAI_FALLBACK],
         _ => [CJK_FALLBACK, CHINESE_FALLBACK, HANGUL_FALLBACK, THAI_FALLBACK],
     }
@@ -991,6 +991,7 @@ mod tests {
     #[test]
     fn a_chinese_ui_puts_the_chinese_face_before_the_japanese_one() {
         assert_eq!(fallback_order("zh"), [CHINESE_FALLBACK, CJK_FALLBACK, HANGUL_FALLBACK, THAI_FALLBACK]);
+        assert_eq!(fallback_order("zh-TW"), fallback_order("zh"));
         assert_eq!(fallback_order("ko"), [HANGUL_FALLBACK, CJK_FALLBACK, CHINESE_FALLBACK, THAI_FALLBACK]);
         for lang in ["en", "ja", "de"] {
             assert_eq!(

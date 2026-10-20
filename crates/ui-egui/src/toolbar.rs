@@ -507,7 +507,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                 }
                 crate::ui_kit::Menu::button(ui, app.tr("ui.open_recent"), |ui| {
                     for path in app.home.recent.clone() {
-                        let missing = !solidcraft_engine::io::vfs::exists(&path);
+                        let missing = !crate::home::available(app, &path);
                         let label = format!("{path}{}", if missing { " (missing)" } else { "" });
                         if crate::context_menu::button(ui, &label, "open").clicked() {
                             crate::home::open_recent(app, &path);

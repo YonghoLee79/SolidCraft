@@ -454,8 +454,17 @@ pub fn open_sample(app: &mut SolveApp, i: usize) {
     }
 }
 
+/// Is this recent design there to open: in memory, or something the host can bring back?
+pub fn available(app: &SolveApp, path: &str) -> bool {
+    solidcraft_engine::io::vfs::exists(path) || app.services.can_restore.as_ref().is_some_and(|can| can(path))
+}
+
 pub fn open_recent(app: &mut SolveApp, path: &str) {
     if !solidcraft_engine::io::vfs::exists(path) {
+        if let Some(restore) = app.services.restore_file.as_ref().filter(|_| available(app, path)) {
+            restore(path);
+            return;
+        }
         app.set_status(format!("{path} is no longer there"), true);
         return;
     }
@@ -558,9 +567,12 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let Some(p) = recent.get(i) else { return };
                     let path = std::path::Path::new(p);
                     let name = path.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| p.clone());
-                    let missing = !solidcraft_engine::io::vfs::exists(p);
+                    let missing = !available(app, p);
                     let mut sub = if missing {
                         app.tr("home.missing").to_string()
+                    } else if p.starts_with("/disk/") {
+                        // The web build remembers files it saved on the computer.
+                        crate::i18n::tr_label("On your computer").to_string()
                     } else if p.starts_with("/opfs/") {
                         // The web build keeps designs in the browser's own storage.
                         app.tr("home.in_this_browser").to_string()
@@ -733,6 +745,24 @@ mod tests {
             assert_eq!(sample_picture(i).unwrap().size, THUMB);
         }
         assert!(sample_picture(samples.len()).is_none());
+    }
+
+    /// A recent design the host can bring back (the browser build's remembered files) is not
+    /// "missing": choosing it asks the host to restore it, and one the host doesn't know still is.
+    #[test]
+    fn a_recent_design_the_host_can_restore_is_asked_for_not_reported_missing() {
+        let mut h = crate::scenario::Harness::new();
+        let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = asked.clone();
+        h.app.services.can_restore = Some(Box::new(|p| p.starts_with("/disk/known/")));
+        h.app.services.restore_file = Some(Box::new(move |p| sink.borrow_mut().push(p.to_string())));
+        assert!(available(&h.app, "/disk/known/Bracket.solidcraft"));
+        assert!(!available(&h.app, "/disk/other/Bracket.solidcraft"));
+        open_recent(&mut h.app, "/disk/known/Bracket.solidcraft");
+        assert_eq!(*asked.borrow(), ["/disk/known/Bracket.solidcraft"]);
+        open_recent(&mut h.app, "/disk/other/Bracket.solidcraft");
+        assert_eq!(asked.borrow().len(), 1, "a file the host doesn't remember is not asked for");
+        assert!(h.app.status.as_ref().is_some_and(|(text, _, error)| *error && text.contains("no longer there")));
     }
 
     /// Rebuild the shipped pictures from the authoritative sample command scripts.
