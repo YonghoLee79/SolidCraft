@@ -59,6 +59,10 @@ pub struct Lattice {
     /// viscosity). Above the shear one it damps sound waves, which at a low viscosity otherwise
     /// ring for a long time, and leaves the incompressible flow alone.
     bulk: Option<f64>,
+    /// Per cell: how much of the Smagorinsky length scale applies there, 0..65535 for 0..1 (the
+    /// wall damping, Van Driest's 1 − exp(−y⁺/26)); none: all of it everywhere. Stored as the GPU
+    /// reads it, so both apply the same factor.
+    damping: Option<Vec<u16>>,
     solid: Vec<bool>,
     f: Vec<f64>,
     next: Vec<f64>,
@@ -131,6 +135,7 @@ impl Lattice {
             regularized: false,
             sponge: None,
             bulk: None,
+            damping: None,
         })
     }
 
@@ -177,6 +182,20 @@ impl Lattice {
         self.bulk
     }
 
+    /// Scale the Smagorinsky length scale cell by cell (`damping`, one per cell, 65535 = 1): near
+    /// a wall the model's eddy viscosity would swamp the wall's own shear.
+    pub fn with_damping(mut self, damping: Vec<u16>) -> Result<Lattice> {
+        if damping.len() != self.solid.len() {
+            return Err(SimError::BadPopulations);
+        }
+        self.damping = Some(damping);
+        Ok(self)
+    }
+
+    pub fn damping(&self) -> Option<&[u16]> {
+        self.damping.as_deref()
+    }
+
     pub fn sponge(&self) -> Option<(usize, f64)> {
         self.sponge
     }
@@ -215,10 +234,11 @@ impl Lattice {
 
     /// The relaxation time of a cell with density `rho` whose populations are `dist` around the
     /// equilibrium `feq`: the molecular one plus the Smagorinsky eddy viscosity's share.
-    fn local_tau(&self, base: f64, dist: &[f64], feq: &[f64; Q], rho: f64) -> f64 {
+    fn local_tau(&self, cell: usize, base: f64, dist: &[f64], feq: &[f64; Q], rho: f64) -> f64 {
         if self.smagorinsky == 0.0 {
             return base;
         }
+        let g = self.damping.as_ref().and_then(|d| d.get(cell)).map_or(1.0, |g| f64::from(f32::from(*g) / 65535.0));
         let mut pi = [[0.0f64; 3]; 3];
         for q in 0..Q {
             let neq = dist.get(q).copied().unwrap_or(0.0) - feq[q];
@@ -229,7 +249,7 @@ impl Lattice {
             }
         }
         let norm = pi.iter().flatten().map(|v| v * v).sum::<f64>().sqrt();
-        let cs2 = self.smagorinsky * self.smagorinsky;
+        let cs2 = self.smagorinsky * self.smagorinsky * g * g;
         0.5 * (base + (base * base + 18.0 * std::f64::consts::SQRT_2 * cs2 * norm / rho).sqrt())
     }
 
@@ -391,7 +411,7 @@ impl Lattice {
                     for (q, e) in feq.iter_mut().enumerate() {
                         *e = equilibrium(q, rho, u);
                     }
-                    let tau = self.local_tau(self.base_tau([i, j, k]), dist, &feq, rho);
+                    let tau = self.local_tau(cell, self.base_tau([i, j, k]), dist, &feq, rho);
                     let pi = if self.regularized { Self::stress(dist, &feq) } else { [0.0; 6] };
                     for q in 0..Q {
                         let c = C[q].map(f64::from);

@@ -40,6 +40,7 @@ pub use solidcraft_geom as geom;
 pub use solidcraft_io as io;
 pub use solidcraft_kernel as kernel;
 pub use solidcraft_render as render;
+pub use solidcraft_sim as sim;
 pub use solidcraft_sketch as sketch;
 
 /// Longest accepted request line on the JSON-lines channels (MCP over stdio and the control

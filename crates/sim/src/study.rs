@@ -409,6 +409,61 @@ fn thin_walls(grid: &Grid, bodies: &[&Mesh], max: usize) -> Vec<Vec3> {
     out
 }
 
+/// Van Driest's damping of the Smagorinsky length scale, 1 − exp(−y⁺/26), per cell (65535 = 1):
+/// y is the distance to the nearest wall (counted in cells through the air, up to 16), and the
+/// friction velocity comes from the Blasius friction factor for air at `speed` (m/s) through a
+/// duct of diameter `diameter` (m).
+fn wall_damping(grid: &Grid, speed: f64, diameter: f64, viscosity: f64) -> Vec<u16> {
+    const FAR: u8 = 16;
+    let n = grid.len();
+    let [nx, ny, nz] = grid.dims;
+    let mut dist = vec![FAR; n];
+    let mut queue = std::collections::VecDeque::new();
+    for (idx, cell) in grid.cells.iter().enumerate() {
+        if *cell == Cell::Solid {
+            if let Some(d) = dist.get_mut(idx) {
+                *d = 0;
+            }
+            queue.push_back(idx);
+        }
+    }
+    while let Some(at) = queue.pop_front() {
+        let here = dist.get(at).copied().unwrap_or(FAR);
+        if here + 1 >= FAR {
+            continue;
+        }
+        let [i, j, k] = grid.coords(at);
+        let near = [
+            (i > 0).then(|| at - 1),
+            (i + 1 < nx).then(|| at + 1),
+            (j > 0).then(|| at - nx),
+            (j + 1 < ny).then(|| at + nx),
+            (k > 0).then(|| at - nx * ny),
+            (k + 1 < nz).then(|| at + nx * ny),
+        ];
+        for m in near.into_iter().flatten() {
+            if let Some(d) = dist.get_mut(m)
+                && *d > here + 1
+            {
+                *d = here + 1;
+                queue.push_back(m);
+            }
+        }
+    }
+    let re = (speed * diameter / viscosity).max(2300.0);
+    let u_tau = speed * (0.316 * re.powf(-0.25) / 8.0).sqrt();
+    let per_cell = grid.spacing * 1e-3 * u_tau / viscosity;
+    dist.iter()
+        .map(|d| {
+            if *d == 0 {
+                return 0;
+            }
+            let y_plus = (f64::from(*d) - 0.5) * per_cell;
+            ((1.0 - (-y_plus / 26.0).exp()).clamp(0.0, 1.0) * 65535.0).round() as u16
+        })
+        .collect()
+}
+
 /// The lattice for `setup` around `bodies` (closed triangle meshes, mm).
 pub fn prepare(bodies: &[&Mesh], setup: &FlowSetup) -> Result<Prepared> {
     if bodies.is_empty() {
@@ -518,6 +573,10 @@ pub fn prepare(bodies: &[&Mesh], setup: &FlowSetup) -> Result<Prepared> {
     }
     let mut lattice =
         Lattice::new(&grid, tau, [0.0; 3], [false; 3])?.with_smagorinsky(setup.turbulence)?.regularized().with_bulk(tau.max(BULK_TAU))?;
+    if setup.turbulence > 0.0 {
+        let largest = inlet_cells.iter().map(|(_, c)| c.len()).max().unwrap_or(0) as f64 * units_dx * units_dx;
+        lattice = lattice.with_damping(wall_damping(&grid, fastest, (4.0 * largest / std::f64::consts::PI).sqrt(), setup.air.viscosity))?;
+    }
     // A sponge over the outer part of the padding (never reaching the bodies) damps what would
     // otherwise reflect off the box's faces.
     let pad_cells = (setup.pad / s).floor() as usize;

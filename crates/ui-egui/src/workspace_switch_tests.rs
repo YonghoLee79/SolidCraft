@@ -94,12 +94,12 @@ fn control_channel_names_the_simulation_workspace() {
 }
 
 #[test]
-fn both_studies_open_their_docked_dialog_and_ok_reports_the_missing_solver() {
+fn the_unbuilt_studies_open_their_docked_dialog_and_ok_reports_the_missing_solver() {
     let mut h = harness_with_body();
     let before = design_of(&h);
     enter(&mut h.app, Workspace::Simulation).unwrap();
     h.frames(2);
-    for (id, title) in [("sim.flow.new", "AIRFLOW STUDY"), ("sim.aero.new", "AERODYNAMICS STUDY"), ("sim.gas.new", "GAS DYNAMICS STUDY")] {
+    for (id, title) in [("sim.aero.new", "AERODYNAMICS STUDY"), ("sim.gas.new", "GAS DYNAMICS STUDY")] {
         h.step(&json!({"start": id})).unwrap();
         h.frames(3);
         let d = h.app.dialog.as_ref().unwrap_or_else(|| panic!("{id} opens a dialog"));
@@ -121,6 +121,84 @@ fn both_studies_open_their_docked_dialog_and_ok_reports_the_missing_solver() {
         assert!(h.app.dialog.is_none());
     }
     assert_eq!(design_of(&h), before, "an unbuilt study changes nothing");
+}
+
+/// The Airflow dialog end to end: a duct's body and its two rims picked, a set speed, OK. The
+/// study runs in the background (the CPU reference here), the results panel shows its flows,
+/// and the view draws the result inside see-through bodies. The design never changes.
+#[test]
+fn an_airflow_study_runs_from_its_dialog_and_shows_its_result() {
+    let mut h = Harness::new();
+    h.app.run("solid.box", json!({"length": 24, "width": 12, "height": 12, "body_name": "Duct"})).unwrap();
+    h.app.run("solid.box", json!({"corner": [-1, 2, 2], "length": 26, "width": 8, "height": 8, "operation": "cut", "targets": ["Duct"]})).unwrap();
+    h.app.session.mark_saved();
+    h.frames(3);
+    let before = design_of(&h);
+    enter(&mut h.app, Workspace::Simulation).unwrap();
+    h.step(&json!({"start": "sim.flow.new"})).unwrap();
+    h.frames(3);
+    assert_eq!(crate::dialogs::title(&h.app.dialog.as_ref().unwrap().kind), "AIRFLOW STUDY");
+    for label in ["Inlets", "Outlets"] {
+        assert!(h.widget(crate::i18n::tr_label(label)).is_some(), "the {label} picker shows");
+    }
+    // OK with nothing picked asks for the body, then for the inlets.
+    h.step(&json!({"widget": "OK"})).unwrap();
+    h.frames(2);
+    assert!(h.app.dialog.as_ref().and_then(|d| d.error.clone()).unwrap_or_default().contains("select the body"));
+    let st = h.app.session.world_state();
+    let duct = st.body("Duct").unwrap();
+    let rim = |x: f64| {
+        let point = solidcraft_engine::geom::Vec3::new(x, 1.0, 6.0);
+        let index = solidcraft_engine::doc::appearance::face_index_at(duct, point).unwrap();
+        solidcraft_engine::Sel::Face { body: "Duct".into(), index, point }
+    };
+    {
+        let d = h.app.dialog.as_mut().unwrap();
+        d.inputs[0].items = vec![solidcraft_engine::Sel::Body { name: "Duct".into() }];
+        d.inputs[1].items = vec![rim(0.0)];
+        d.inputs[2].items = vec![rim(24.0)];
+        let crate::dialogs::Kind::Sim(k) = &mut d.kind else { panic!("the study dialog") };
+        k.flow.drive = crate::dialogs_sim::Drive::Speed;
+        k.flow.speed = "0.05".into();
+        k.flow.cell = "1".into();
+        k.flow.pad = "4".into();
+        k.flow.turbulence = false;
+    }
+    // A frame for the dialog to take the picks in (and drop the earlier error).
+    h.frames(1);
+    h.step(&json!({"widget": "OK"})).unwrap();
+    // OK applies on a worker, so the dialog closes a few frames later.
+    for _ in 0..600 {
+        if h.app.dialog.is_none() {
+            break;
+        }
+        h.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(h.app.dialog.is_none(), "OK sets the study up and closes: {:?} {:?}", h.app.status, h.app.dialog.as_ref().and_then(|d| d.error.clone()));
+    assert!(h.app.session.flow_studies().get("Airflow 1").is_some());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while h.app.session.flow_studies().get("Airflow 1").and_then(|s| s.result.as_ref()).is_none() {
+        assert!(std::time::Instant::now() < deadline, "the study finishes");
+        h.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.frames(3);
+    assert_eq!(h.app.simulation.shown.as_deref(), Some("Airflow 1"), "a finished study is shown");
+    assert!(h.widget(crate::i18n::tr("sim.results")).is_some(), "the results panel is up");
+    assert!(crate::simulation_workspace::see_through(&h.app));
+    let mut sc = crate::gpu::GpuScene::default();
+    crate::simulation_workspace::draw(&h.app, &mut sc);
+    assert!(!sc.tris.is_empty() && !sc.lines.is_empty(), "a section plane and streamlines are drawn");
+    // Turning both off draws nothing; leaving the workspace hides the result.
+    h.app.simulation.display.section = None;
+    h.app.simulation.display.streamlines = false;
+    let mut none = crate::gpu::GpuScene::default();
+    crate::simulation_workspace::draw(&h.app, &mut none);
+    assert!(none.tris.is_empty() && none.lines.is_empty());
+    enter(&mut h.app, Workspace::Design).unwrap();
+    assert!(!crate::simulation_workspace::see_through(&h.app));
+    assert_eq!(design_of(&h), before, "a study never touches the design");
 }
 
 #[test]

@@ -352,7 +352,7 @@ pub enum Kind {
     Part(crate::dialogs_parts::Pt),
     PartSize(crate::dialogs_part_size::Resize),
     /// A Simulation workspace study's setup (`dialogs_sim`).
-    Sim(crate::dialogs_sim::Study),
+    Sim(Box<crate::dialogs_sim::Sim>),
     /// Edit Text: a sketch text's content and placement (`sketch_text`).
     Text(Box<crate::sketch_text::Tx>),
     TextMove(crate::sketch_text_move::TextMove),
@@ -3155,7 +3155,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     Kind::Motion(k) => enter |= crate::dialogs_motion::rows(app, ui, k, &mut d.inputs),
                     Kind::Part(k) => enter |= crate::dialogs_parts::rows(app, ui, k, &d.inputs),
                     Kind::PartSize(k) => enter |= crate::dialogs_part_size::rows(app, ui, k),
-                    Kind::Sim(k) => enter |= crate::dialogs_sim::rows(ui, *k),
+                    Kind::Sim(k) => enter |= crate::dialogs_sim::rows(app, ui, k),
                     Kind::Text(k) => enter |= crate::sketch_text::rows(ui, k, &mut d.inputs, &mut d.active),
                     Kind::TextMove(k) => enter |= crate::sketch_text_move::rows(ui, k),
                     Kind::ConfirmDelete { with, fail, .. } => {
@@ -4494,7 +4494,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
         Kind::Motion(k) => return crate::dialogs_motion::commands(app, k, &d.inputs),
         Kind::Part(k) => return crate::dialogs_parts::commands(app, k, &d.inputs),
         Kind::PartSize(k) => return crate::dialogs_part_size::commands(app, k),
-        Kind::Sim(k) => return crate::dialogs_sim::commands(*k, &d.inputs),
+        Kind::Sim(k) => return crate::dialogs_sim::commands(app, k, &d.inputs),
         Kind::Text(k) => return crate::sketch_text::commands(app, k),
         Kind::TextMove(k) => return crate::sketch_text_move::commands(app, k),
     };

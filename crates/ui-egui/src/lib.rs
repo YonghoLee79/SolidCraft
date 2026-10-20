@@ -325,6 +325,8 @@ pub struct SolveApp {
     saving: Option<save_job::Saving>,
     pub viewport: viewport::ViewportState,
     pub render_workspace: render_workspace::State,
+    /// The Simulation workspace's results panel and what the view draws of a result.
+    pub simulation: simulation_workspace::State,
     pub tool: Option<tools::Tool>,
     pub dialog: Option<dialogs::Dialog>,
     /// The Change Parameters window, when open.
@@ -470,6 +472,7 @@ impl SolveApp {
             saving: None,
             viewport: viewport::ViewportState::default(),
             render_workspace,
+            simulation: Default::default(),
             tool: None,
             dialog: None,
             params: None,
@@ -1317,6 +1320,7 @@ impl SolveApp {
         file_picker::tick(self, ctx);
         render_workspace::sync_backend(self);
         render_workspace::tick(self, ctx);
+        simulation_workspace::tick(self, ctx);
         file_load::tick(self, ctx);
         save_job::tick(self, false);
         if self.saving.is_some() {
@@ -1471,6 +1475,9 @@ impl SolveApp {
         }
         if workspace_switch::current(self) == Workspace::Render {
             render_workspace::panel(self, ui);
+        }
+        if workspace_switch::current(self) == Workspace::Simulation {
+            simulation_workspace::panel(self, ui);
         }
         agent_chat::show(self, ui);
         preview::update(self, ui.ctx());

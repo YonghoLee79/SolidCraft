@@ -220,7 +220,15 @@ impl FlowGpu {
                 }
             }
         }
-        let solid_words: Vec<u8> = solid.iter().flat_map(|s| u32::from(*s).to_le_bytes()).collect();
+        let damping = lattice.damping();
+        let solid_words: Vec<u8> = solid
+            .iter()
+            .enumerate()
+            .flat_map(|(i, s)| {
+                let g = damping.and_then(|d| d.get(i)).copied().unwrap_or(u16::MAX);
+                (u32::from(*s) | (u32::from(g) << 16)).to_le_bytes()
+            })
+            .collect();
 
         let scope = d.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;

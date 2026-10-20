@@ -26,7 +26,7 @@ pub const MAX_CELLS: u64 = 40_000_000;
 #[derive(Default)]
 pub struct Studies {
     pub(crate) backend: Option<FlowBackend>,
-    pub(crate) list: Vec<Study>,
+    pub list: Vec<Study>,
 }
 
 impl Studies {

@@ -48,6 +48,8 @@ struct Opening {
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
+// Per cell: bit 0 solid; bits 16..31 the Smagorinsky length scale's share there (wall damping,
+// 65535 = all of it).
 @group(0) @binding(1) var<storage, read> solid: array<u32>;
 @group(0) @binding(2) var<storage, read> src: array<f32>;
 @group(0) @binding(3) var<storage, read_write> dst: array<f32>;
@@ -110,7 +112,8 @@ fn collide_stream(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (cell >= params.cells) {
         return;
     }
-    if (solid[cell] != 0u) {
+    let word = solid[cell];
+    if ((word & 1u) != 0u) {
         return;
     }
     let n = params.cells;
@@ -164,7 +167,8 @@ fn collide_stream(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if (params.cs > 0.0) {
         let norm = sqrt(dot(d, d) + 2.0 * dot(o, o));
-        tau = 0.5 * (tau + sqrt(tau * tau + 18.0 * sqrt(2.0) * params.cs * params.cs * norm / (1.0 + drho)));
+        let cs = params.cs * (f32(word >> 16u) / 65535.0);
+        tau = 0.5 * (tau + sqrt(tau * tau + 18.0 * sqrt(2.0) * cs * cs * norm / (1.0 + drho)));
     }
     let keep = 1.0 - 0.5 / tau;
     let relax = 1.0 - 1.0 / tau;
@@ -187,7 +191,7 @@ fn collide_stream(@builtin(global_invocation_id) gid: vec3<u32>) {
         let to = neighbour(i, j, k, q);
         var slot = OPP[q] * n + cell;
         if (to != NONE) {
-            if (solid[to] == 0u) {
+            if ((solid[to] & 1u) == 0u) {
                 slot = q * n + to;
             }
         }

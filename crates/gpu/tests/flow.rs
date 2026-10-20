@@ -64,6 +64,9 @@ fn duct_with(grid: &Grid, tau: f64, u0: f64, cs: f64, regularized: bool) -> (Lat
     let mut lattice = ok(ok(Lattice::new(grid, tau, [0.0; 3], [false; 3])).with_smagorinsky(cs));
     if regularized {
         lattice = ok(lattice.regularized().with_bulk(0.9));
+        // And a wall damping that varies from cell to cell.
+        let n = lattice.solid().len();
+        lattice = ok(lattice.with_damping((0..n).map(|i| ((i * 7919) % 65536) as u16).collect()));
     }
     let inlet: Vec<[usize; 3]> = bore.iter().map(|&(j, k)| [0, j, k]).collect();
     let outlet: Vec<[usize; 3]> = bore.iter().map(|&(j, k)| [nx - 1, j, k]).collect();
