@@ -94,6 +94,23 @@ fn a_live_text_edit_keeps_full_diagnostics_when_it_publishes_without_evaluation(
     assert!(shown.report.redundant.contains(&redundant), "live publication must retain redundant IDs for unrelated geometry");
 }
 
+#[test]
+fn a_live_text_batch_keeps_full_diagnostics_when_it_publishes_without_evaluation() {
+    let (mut s, id, redundant) = session(false);
+    let a = s.execute("sketch.text", &json!({"text": "T", "at": [30, 20], "height": 5})).unwrap();
+    let b = s.execute("sketch.text", &json!({"text": "I", "at": [50, 20], "height": 5})).unwrap();
+    let out =
+        s.execute("sketch.edit_text", &json!({"edits": [{"link": a["link"], "height": 8}, {"link": b["link"], "height": 9}], "live": true})).unwrap();
+    assert_eq!(out["edits"][0]["link"], a["link"]);
+    assert_eq!(out["edits"][1]["link"], b["link"]);
+    let state = s.model.state();
+    let shown = state.sketch(id).unwrap();
+    let expected = solidcraft_sketch::solve(&mut s.doc.sketch(id).unwrap().clone());
+    assert!(shown.report.ok());
+    assert!(shown.report.redundant.contains(&redundant));
+    assert_eq!(serde_json::to_value(&shown.report).unwrap(), serde_json::to_value(expected).unwrap());
+}
+
 fn compare_document_levels(doc: &solidcraft_doc::Document, id: u64, expected_ok: bool) {
     let input = doc.sketch(id).unwrap();
     let stored = input.driving_values();
