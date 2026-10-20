@@ -221,6 +221,47 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             st.bodies.push(ModelBody::new(name, made, f.id));
             Ok(())
         }
+        FeatureKind::SurfaceFillet { body, at, with, with_at, radius, trim } => {
+            let r = val(vals, radius, Kind::Length)?;
+            let find = |n: &crate::BodyName| st.bodies.iter().position(|b| &b.name == n).ok_or_else(|| DocError::Unknown(format!("body `{n}`")));
+            let (i, j) = (find(body)?, find(with)?);
+            if i == j {
+                return Err(DocError::Invalid("not supported yet: a fillet between two faces of one body".into()));
+            }
+            let (Some(a), Some(b)) = (st.bodies.get(i).cloned(), st.bodies.get(j).cloned()) else { return Err(DocError::Invalid("body".into())) };
+            let k = match trim {
+                crate::FilletTrim::Both => kernel::FilletTrim::Both,
+                crate::FilletTrim::First => kernel::FilletTrim::First,
+                crate::FilletTrim::Second => kernel::FilletTrim::Second,
+                crate::FilletTrim::None => kernel::FilletTrim::None,
+            };
+            let out = kernel::surface_fillet(
+                kernel::FilletFace { body: &a.body, pick: at.0 },
+                kernel::FilletFace { body: &b.body, pick: with_at.0 },
+                r,
+                k,
+            )?;
+            match trim {
+                crate::FilletTrim::Both | crate::FilletTrim::First => {
+                    if let Some(slot) = st.bodies.get_mut(i) {
+                        *slot = ModelBody::new(a.name, out, a.feature);
+                    }
+                    if *trim == crate::FilletTrim::Both {
+                        st.bodies.retain(|x| x.name != b.name);
+                    }
+                }
+                crate::FilletTrim::Second => {
+                    if let Some(slot) = st.bodies.get_mut(j) {
+                        *slot = ModelBody::new(b.name, out, b.feature);
+                    }
+                }
+                crate::FilletTrim::None => {
+                    let name = new_name(st, f, 0);
+                    st.bodies.push(ModelBody::new(name, out, f.id));
+                }
+            }
+            Ok(())
+        }
         FeatureKind::SurfaceMatch { body, faces, target, edges, order } => {
             let i = st.bodies.iter().position(|b| &b.name == body).ok_or_else(|| DocError::Unknown(format!("body `{body}`")))?;
             let Some(mb) = st.bodies.get(i).cloned() else { return Err(DocError::Invalid("body".into())) };

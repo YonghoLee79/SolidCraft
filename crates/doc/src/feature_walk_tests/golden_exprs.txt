@@ -344,6 +344,10 @@ surface_blend
 surface_boundary
 surface_network
 surface_match
+surface_fillet
+  inputs:
+    Radius = sfillet.radius (Length)
+  expressions: sfillet.radius
 surface_fair
   inputs:
     Tolerance = sfair.tolerance (Length)

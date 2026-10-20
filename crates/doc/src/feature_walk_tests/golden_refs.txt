@@ -188,6 +188,8 @@ surface_network
   remap_bodies: u[1].body
 surface_match
   remap_bodies: body
+surface_fillet
+  remap_bodies: body
 surface_fair
   remap_bodies: body
 unstitch

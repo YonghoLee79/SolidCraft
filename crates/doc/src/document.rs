@@ -1510,6 +1510,22 @@ pub enum FeatureKind {
         #[serde(default = "match_order")]
         order: Continuity,
     },
+    /// A rolling-ball fillet of `radius` between the face of `body` at `at` and the face of
+    /// `with` at `with_at`, which share no edge (`surface.fillet`): the ball sits on the side of
+    /// each face the other's point is on, and runs until it leaves either face. `trim` names the
+    /// faces cut back to the fillet and stitched to it: `both` makes `body` the one sheet and
+    /// removes `with`, `first` makes it `body` and keeps `with` whole, `second` makes it `with`,
+    /// and `none` adds the fillet alone as a new body.
+    SurfaceFillet {
+        body: BodyName,
+        at: Position,
+        with: BodyName,
+        with_at: Position,
+        #[walk(length = "Radius")]
+        radius: Expr,
+        #[serde(default, skip_serializing_if = "FilletTrim::is_both")]
+        trim: FilletTrim,
+    },
     /// The B-spline faces at `faces` of `body` faired (`surface.fair`): each face's interior
     /// control vertices move to flatten the thin-plate (curvature-variation) energy of the face,
     /// `strength` of the full least-squares step at a time, for at most `iterations` steps.
@@ -1615,6 +1631,23 @@ pub enum FilletCorner {
 impl FilletCorner {
     pub fn is_rolling(&self) -> bool {
         matches!(self, FilletCorner::Rolling)
+    }
+}
+
+/// Which faces a surface fillet trims back to itself and stitches to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilletTrim {
+    #[default]
+    Both,
+    First,
+    Second,
+    None,
+}
+
+impl FilletTrim {
+    pub fn is_both(&self) -> bool {
+        *self == FilletTrim::Both
     }
 }
 
@@ -2187,6 +2220,7 @@ impl FeatureKind {
             FeatureKind::SurfaceBlend { .. } => "BlendFeature",
             FeatureKind::SurfaceBoundary { .. } | FeatureKind::SurfaceNetwork { .. } => "BoundaryFeature",
             FeatureKind::SurfaceMatch { .. } => "MatchFeature",
+            FeatureKind::SurfaceFillet { .. } => "SurfaceFilletFeature",
             FeatureKind::SurfaceFair { .. } => "FairFeature",
             FeatureKind::Stitch { .. } => "StitchFeature",
             FeatureKind::Thicken { .. } => "ThickenFeature",
@@ -2267,6 +2301,7 @@ impl FeatureKind {
             FeatureKind::SurfaceBlend { .. } => "Blend",
             FeatureKind::SurfaceBoundary { .. } | FeatureKind::SurfaceNetwork { .. } => "Boundary",
             FeatureKind::SurfaceMatch { .. } => "Match",
+            FeatureKind::SurfaceFillet { .. } => "SurfaceFillet",
             FeatureKind::SurfaceFair { .. } => "Fair",
             FeatureKind::Stitch { .. } => "Stitch",
             FeatureKind::Thicken { .. } => "Thicken",
