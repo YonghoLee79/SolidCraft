@@ -232,6 +232,8 @@ pub enum Kind {
     },
     /// Move planar faces onto a target plane or face.
     ReplaceFace,
+    /// Take faces off a body; the neighbouring faces close the gap (#2167).
+    DeleteFaces,
     /// Boundary Fill: the cells the tool bodies make (a point inside, a description, filled
     /// or not), found again when the tools change.
     BoundaryFill {
@@ -408,6 +410,10 @@ pub struct Dialog {
     pub refused: Option<Refused>,
     /// Create Sketch opened by a sketch tool's shortcut: that tool starts once the sketch is open.
     pub then_start: Option<&'static str>,
+    /// Edges picked by hand in a Fillet or Chamfer dialog, before tangent-chain expansion.
+    pub(crate) picked_edges: Vec<Sel>,
+    /// Whether `inputs[0]` currently includes the tangent chains of `picked_edges`.
+    pub(crate) chain_applied: bool,
 }
 
 /// OK computing off the window thread: the dialog's commands evaluated on a scratch copy of the
@@ -447,10 +453,16 @@ fn begin_applying(app: &SolveApp, d: &Dialog) -> Option<Applying> {
     let scratch = app.session.scratch();
     let (tx, rx) = std::sync::mpsc::channel();
     let computed = cmds.clone();
+    #[cfg(test)]
+    let gate = app.apply_gate.clone();
     std::thread::Builder::new()
         .name("apply".into())
         .spawn(move || {
             let _ = scratch.preview(&computed);
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                let _ = gate.lock().unwrap().recv();
+            }
             let _ = tx.send(());
         })
         .ok()?;
@@ -507,6 +519,7 @@ impl Dialog {
     }
 
     pub(crate) fn new(kind: Kind, inputs: Vec<SelInput>) -> Dialog {
+        let chain_applied = matches!(kind, Kind::Fillet { chain: true, .. });
         Dialog {
             kind,
             inputs,
@@ -519,6 +532,8 @@ impl Dialog {
             extra: serde_json::Map::new(),
             refused: None,
             then_start: None,
+            picked_edges: Vec::new(),
+            chain_applied,
         }
     }
 
@@ -578,6 +593,7 @@ impl Dialog {
                 Kind::ReplaceFace,
                 vec![SelInput::new("Faces", PLANAR_FACES, true), SelInput::new("Target", PLANES | PLANAR_FACES, false)],
             ),
+            "face.delete" => Dialog::new(Kind::DeleteFaces, vec![SelInput::new("Faces", FACES, true)]),
             "solid.boundary_fill" => {
                 Dialog::new(Kind::BoundaryFill { operation: 0, cells: Vec::new(), of: Vec::new() }, vec![SelInput::new("Tools", BODIES, true)])
             }
@@ -765,20 +781,16 @@ impl Dialog {
                 fits(i.accept, sel) && (i.multi || i.items.is_empty()) && (planar_ok || i.accept & FACES != 0 || !matches!(sel, Sel::Face { .. }))
             };
             if let Some(inp) = d.inputs.iter_mut().find(|i| takes(i)) {
+                if matches!(d.kind, Kind::Fillet { .. }) {
+                    for x in crate::viewport::grouped_selection(s, sel) {
+                        if !d.picked_edges.iter().any(|y| selection::same_item(y, &x)) {
+                            d.picked_edges.push(x);
+                        }
+                    }
+                }
                 // Fillets and chamfers take an edge with its tangent chain, as a pick does.
                 let picked = match (&d.kind, sel) {
-                    (Kind::Fillet { chain: true, .. }, Sel::Edge { body, index, .. }) => s
-                        .model
-                        .state()
-                        .body(body)
-                        .map(|b| {
-                            let m = b.mesh();
-                            m.tangent_chain(*index, 2f64.to_radians())
-                                .into_iter()
-                                .filter_map(|i| m.edges.get(i).map(|e| Sel::Edge { body: body.clone(), index: i, point: polyline_mid(e) }))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_else(|| vec![sel.clone()]),
+                    (Kind::Fillet { chain, .. }, _) => fillet_edges(s, sel, *chain),
                     (Kind::Measure { .. }, _) => vec![crate::viewport::measurement_selection(s, sel)],
                     _ if inp.multi => crate::viewport::grouped_selection(s, sel),
                     _ => vec![sel.clone()],
@@ -882,6 +894,7 @@ impl Dialog {
                 | Kind::Rib { .. }
                 | Kind::Emboss { .. }
                 | Kind::ReplaceFace
+                | Kind::DeleteFaces
                 | Kind::Align { .. }
                 | Kind::Remove
                 | Kind::PathPattern { .. }
@@ -1050,20 +1063,10 @@ impl Dialog {
         let measure = matches!(self.kind, Kind::Measure { .. });
         let sel = if measure { crate::viewport::measurement_selection(s, &sel) } else { sel };
         let chain = matches!(self.kind, Kind::Fillet { chain: true, .. });
-        let mut picked =
+        let single =
             if !measure && self.active_input().is_some_and(|i| i.multi) { crate::viewport::picked_selection(s, &sel) } else { vec![sel.clone()] };
         // Tangent chain: an edge brings the edges that continue it smoothly.
-        if chain
-            && let Sel::Edge { body, index, .. } = &sel
-            && let Some(b) = s.world_state().body(body)
-        {
-            let m = b.mesh();
-            picked = m
-                .tangent_chain(*index, 2f64.to_radians())
-                .into_iter()
-                .filter_map(|i| m.edges.get(i).map(|e| Sel::Edge { body: body.clone(), index: i, point: polyline_mid(e) }))
-                .collect();
-        }
+        let picked = if chain { fillet_edges(s, &sel, true) } else { single.clone() };
         // Extrude and revolve take profiles of one sketch.
         if let Sel::Profile { sketch, .. } = &sel
             && !matches!(self.kind, Kind::Loft { .. })
@@ -1071,7 +1074,20 @@ impl Dialog {
         {
             inp.items.retain(|x| !matches!(x, Sel::Profile { sketch: s2, .. } if s2 != sketch));
         }
+        let is_fillet = matches!(self.kind, Kind::Fillet { .. }) && self.active == 0;
         let Some(inp) = self.inputs.get_mut(self.active) else { return };
+        if is_fillet {
+            self.chain_applied = chain;
+            if picked.iter().all(|p| inp.items.iter().any(|x| selection::same_item(x, p))) {
+                self.picked_edges.retain(|x| !picked.iter().any(|p| selection::same_item(x, p)));
+            } else {
+                for p in single {
+                    if !self.picked_edges.iter().any(|x| selection::same_item(x, &p)) {
+                        self.picked_edges.push(p);
+                    }
+                }
+            }
+        }
         inp.toggle(picked);
         self.focus = true;
         // A measurement is between two items: a third pick starts over from the last one.
@@ -1096,6 +1112,11 @@ impl Dialog {
             self.profile_selection_changed = true;
         }
         let measure = matches!(self.kind, Kind::Measure { .. });
+        let is_fillet = matches!(self.kind, Kind::Fillet { .. }) && self.active == 0;
+        let chain = matches!(self.kind, Kind::Fillet { chain: true, .. });
+        if is_fillet && !add {
+            self.picked_edges.clear();
+        }
         let Some(inp) = self.inputs.get_mut(self.active) else { return };
         if !add {
             inp.items.clear();
@@ -1110,12 +1131,62 @@ impl Dialog {
                 inp.items.push(x);
                 break;
             }
-            if !inp.items.iter().any(|y| selection::same_item(y, &x)) {
+            if is_fillet {
+                if !self.picked_edges.iter().any(|y| selection::same_item(y, &x)) {
+                    self.picked_edges.push(x.clone());
+                }
+                for y in fillet_edges(s, &x, chain) {
+                    if !inp.items.iter().any(|z| selection::same_item(z, &y)) {
+                        inp.items.push(y);
+                    }
+                }
+            } else if !inp.items.iter().any(|y| selection::same_item(y, &x)) {
                 inp.items.push(x);
             }
         }
         self.sync_thread(s);
     }
+
+    /// Rebuild a Fillet or Chamfer dialog's edge input from the edges that were picked when
+    /// Tangent Chain is ticked or unticked.
+    pub fn sync_fillet_chain(&mut self, s: &Session) {
+        let Kind::Fillet { chain, .. } = &self.kind else { return };
+        if *chain == self.chain_applied {
+            return;
+        }
+        self.chain_applied = *chain;
+        let Some(inp) = self.inputs.first_mut() else { return };
+        let mut items = Vec::new();
+        for pick in &self.picked_edges {
+            for x in fillet_edges(s, pick, *chain) {
+                if !items.iter().any(|y| selection::same_item(y, &x)) {
+                    items.push(x);
+                }
+            }
+        }
+        inp.items = items;
+        self.error = None;
+    }
+}
+
+/// The edges a Fillet or Chamfer pick stands for: its tangent chain when `chain` is on, else
+/// the picked edge (both halves of a split circular rim).
+fn fillet_edges(s: &Session, sel: &Sel, chain: bool) -> Vec<Sel> {
+    let mut picked = crate::viewport::picked_selection(s, sel);
+    if chain
+        && let Sel::Edge { body, index, .. } = sel
+        && let Some(b) = s.world_state().body(body)
+    {
+        let m = b.mesh();
+        for i in m.tangent_chain(*index, 2f64.to_radians()) {
+            if !picked.iter().any(|x| matches!(x, Sel::Edge { index: j, .. } if *j == i))
+                && let Some(e) = m.edges.get(i)
+            {
+                picked.push(Sel::Edge { body: body.clone(), index: i, point: polyline_mid(e) });
+            }
+        }
+    }
+    picked
 }
 
 /// Profiles of the sketch a feature would use, when there is just one: the active sketch's, else
@@ -1329,6 +1400,36 @@ pub(crate) fn take_snap_work() -> (usize, usize) {
 mod face_snap_tests {
     use super::*;
 
+    /// A planar face's plane is found once per model state: an open Section Analysis on a face
+    /// asks for it several times a frame, and each lookup tessellates the body.
+    #[test]
+    fn a_planar_face_is_looked_up_once_per_model_state() {
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length":40,"width":30,"height":20})).unwrap();
+        let top = |s: &Session| {
+            let st = s.world_state();
+            let b = st.bodies.first().unwrap();
+            let faces = b.body.faces(1e-3).unwrap();
+            let f = faces.iter().max_by(|a, b| a.centroid.z.total_cmp(&b.centroid.z)).unwrap();
+            (b.name.clone(), f.index)
+        };
+        let (body, face) = top(&s);
+        take_snap_work();
+        let first = planar_face(&s, &body, face).expect("the top face is planar");
+        for _ in 0..5 {
+            assert_eq!(planar_face(&s, &body, face), Some(first));
+        }
+        assert_eq!(take_snap_work().0, 1, "the same model state looks the face up once");
+        assert!((first.0.z - 20.0).abs() < 1e-9 && (first.1 - Vec3::Z).len() < 1e-9, "{first:?}");
+
+        // A changed model is looked at again.
+        s.execute("solid.box", &json!({"length":10,"width":10,"height":50,"operation":"join"})).unwrap();
+        let (body, face) = top(&s);
+        let again = planar_face(&s, &body, face).expect("the new top face is planar");
+        assert_eq!(take_snap_work().0, 1);
+        assert!((again.0.z - 50.0).abs() < 1e-9, "{again:?}");
+    }
+
     #[test]
     fn a_point_more_than_a_micrometre_off_a_sliver_is_off_the_face() {
         // A triangle with half-micrometre legs. Points 2 µm below its lower side and 1.6 µm past
@@ -1381,13 +1482,42 @@ fn profiles_used(s: &Session, sketch: u64) -> bool {
 
 /// The plane of a planar body face: (point on it, unit normal).
 pub fn planar_face(s: &Session, body: &str, face: usize) -> Option<(Vec3, Vec3)> {
+    let st = s.world_state();
+    let known = FACE_PLANES.with(|c| {
+        let c = c.borrow();
+        c.0.as_ref().filter(|k| std::sync::Arc::ptr_eq(k, &st)).and_then(|_| c.1.iter().find(|(b, f, _)| b == body && *f == face).map(|x| x.2))
+    });
+    if let Some(found) = known {
+        return found;
+    }
     #[cfg(test)]
     SNAP_WORK.with(|w| w.set((w.get().0 + 1, w.get().1)));
-    let st = s.world_state();
-    let b = st.body(body)?;
-    let tol = (b.body.size() * 1e-3).max(1e-3);
-    let f = b.body.faces(tol).ok()?.into_iter().find(|f| f.index == face)?;
-    Some((f.centroid, f.plane_normal?))
+    let found = st.body(body).and_then(|b| {
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        let f = b.body.faces(tol).ok()?.into_iter().find(|f| f.index == face)?;
+        Some((f.centroid, f.plane_normal?))
+    });
+    FACE_PLANES.with(|c| {
+        let mut c = c.borrow_mut();
+        if !c.0.as_ref().is_some_and(|k| std::sync::Arc::ptr_eq(k, &st)) {
+            *c = (Some(st.clone()), Vec::new());
+        }
+        if c.1.len() >= 8 {
+            c.1.remove(0);
+        }
+        c.1.push((body.to_string(), face, found));
+    });
+    found
+}
+
+thread_local! {
+    /// The planar faces looked up last, with the model state they were found in (kept, so the
+    /// pointer stays its own). Each lookup tessellates the whole body, about 0.1 s for an
+    /// imported part of a few million triangles, and an open Section Analysis on a face asks
+    /// for its plane several times a frame.
+    #[allow(clippy::type_complexity)]
+    static FACE_PLANES: std::cell::RefCell<(Option<std::sync::Arc<solidcraft_engine::doc::ModelState>>, Vec<(String, usize, Option<(Vec3, Vec3)>)>)> =
+        const { std::cell::RefCell::new((None, Vec::new())) };
 }
 
 fn polyline_mid(pts: &[Vec3]) -> Vec3 {
@@ -1514,6 +1644,7 @@ fn title(k: &Kind) -> &'static str {
         Kind::Rib { web: true, .. } => "WEB",
         Kind::Emboss { .. } => "EMBOSS",
         Kind::ReplaceFace => "REPLACE FACE",
+        Kind::DeleteFaces => "DELETE FACE",
         Kind::Align { .. } => "ALIGN",
         Kind::BoundaryFill { .. } => "BOUNDARY FILL",
         Kind::Remove => "REMOVE",
@@ -1868,6 +1999,7 @@ fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, range: std::
         inp.items.clear();
         if i == 0 {
             d.profile_selection_changed = true;
+            d.picked_edges.clear();
         }
         d.active = i;
     }
@@ -2436,6 +2568,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     ui.label(tr("dialog.selection_guidance"));
                     ui.end_row();
                 }
+                d.sync_fillet_chain(&app.session);
                 input_rows(&mut d, ui, &app.session);
                 match &mut d.kind {
                     Kind::Sketch => {
@@ -2791,7 +2924,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             d.extra.insert("radii".into(), json!(radii));
                         }
                         row_label(ui, "Tangent Chain");
-                        ui.checkbox(chain, "");
+                        let r = ui.checkbox(chain, "");
+                        publish_row(&r);
                         ui.end_row();
                     }
                     Kind::Shell { thickness } => {
@@ -2844,7 +2978,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         enter |= field(ui, t);
                         ui.end_row();
                     }
-                    Kind::Split | Kind::ReplaceFace | Kind::Remove | Kind::Midplane | Kind::Construct { t: None, .. } => {}
+                    Kind::Split | Kind::ReplaceFace | Kind::DeleteFaces | Kind::Remove | Kind::Midplane | Kind::Construct { t: None, .. } => {}
                     Kind::MeshConvert { tolerance } => {
                         row_label(ui, "Tolerance");
                         enter |= field(ui, tolerance);
@@ -3174,6 +3308,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         }
                     }
                 }
+                d.sync_fillet_chain(&app.session);
                 error_rows(app, ctx, &mut d, ui, false);
             });
         });
@@ -3697,9 +3832,29 @@ fn look_at_sketch_from(app: &mut SolveApp, again: bool) {
             let x = ss.plane.x;
             to.yaw = if n.z > 0.0 { (-x.y).atan2(x.x) } else { x.y.atan2(x.x) };
         }
-        to.target = ss.plane.origin;
-        app.animate_to(to);
+        app.animate_to(onto_sketch(to, ss));
     }
+}
+
+/// `to` (already facing the sketch) moved onto sketch `ss` (#3198): centred on its geometry, and
+/// zoomed out when that would not fit in the view; it never zooms in, so a zoom the user chose
+/// stays. A sketch without geometry keeps its plane's origin. Centring on the origin alone left a
+/// sketch drawn away from it (a part placed far from the origin, as imports often are) out of view.
+pub(crate) fn onto_sketch(mut to: solidcraft_engine::render::Camera, ss: &solidcraft_engine::doc::SolvedSketch) -> solidcraft_engine::render::Camera {
+    let Some((lo, hi)) = ss.sketch.bounds() else {
+        to.target = ss.plane.origin;
+        return to;
+    };
+    let mut b = Aabb3::default();
+    for p in [lo, hi, solidcraft_engine::geom::Vec2::new(lo.x, hi.y), solidcraft_engine::geom::Vec2::new(hi.x, lo.y)] {
+        b.add(ss.plane.to_world(p));
+    }
+    let keep = to.distance;
+    to.fit(&b);
+    if keep.is_finite() && keep > to.distance {
+        to.distance = keep;
+    }
+    to
 }
 
 /// The side to look from at a plane with normal `n`: its own side, or with `again` the other
@@ -4234,6 +4389,10 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 _ => return Err("pick a plane or planar face".into()),
             }
             ("solid.replace_face", p)
+        }
+        Kind::DeleteFaces => {
+            need(0, "faces")?;
+            ("face.delete", json!({"faces": face_points(0)}))
         }
         Kind::Align { flip } => {
             need(0, "bodies")?;
@@ -5088,7 +5247,9 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = edges.iter().filter_map(|p| edge_sel(s, p.0)).collect();
+                d.picked_edges = inp.items.clone();
             }
+            d.chain_applied = false;
             d
         }
         FeatureKind::Shell { faces, thickness, direction, tangent_chain, .. } => {
@@ -5581,6 +5742,17 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             if let Some(b) = body {
                 d.extra.insert("body".into(), json!(b));
             }
+            d
+        }
+        FeatureKind::DeleteFace { faces, body, heal } => {
+            let mut d = start("face.delete")?;
+            if let Some(inp) = d.inputs.first_mut() {
+                inp.items = faces.iter().filter_map(|p| face_sel(s, p.0)).collect();
+            }
+            if let Some(b) = body {
+                d.extra.insert("body".into(), json!(b));
+            }
+            d.extra.insert("heal".into(), json!(heal));
             d
         }
         FeatureKind::Remove { bodies } => {

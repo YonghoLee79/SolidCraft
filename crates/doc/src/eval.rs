@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
 use solidcraft_geom::{Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
@@ -57,6 +57,9 @@ pub struct ModelBody {
     bytes: usize,
     /// In a world state: the [`ModelBody::geometry_key`] of the model body this one places (0: none).
     source_key: u64,
+    /// [`Body::outline_bounds`] of `body` (with the body it was measured on), worked out once
+    /// and shared by clones.
+    outline: Arc<OnceLock<(Body, solidcraft_geom::Aabb3)>>,
 }
 
 impl ModelBody {
@@ -79,6 +82,16 @@ impl ModelBody {
             imported: None,
             bytes: 0,
             source_key: 0,
+            outline: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// A box around the body without meshing it ([`Body::outline_bounds`]), worked out once.
+    pub fn outline_bounds(&self) -> solidcraft_geom::Aabb3 {
+        match self.outline.get_or_init(|| (self.body.clone(), self.body.outline_bounds())) {
+            (measured, b) if measured.same(&self.body) => *b,
+            // The body was replaced in this cell's holder since: measure it again.
+            _ => self.body.outline_bounds(),
         }
     }
 
@@ -195,7 +208,7 @@ pub struct SolvedSketch {
 }
 
 /// A cosmetic thread: on which cylinder, its size, and the threaded part of the axis.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThreadInfo {
     pub feature: u64,
     pub body: String,
@@ -602,7 +615,7 @@ impl ModelState {
     /// [`quantize`]); the rest keep theirs.
     fn stamp(&mut self, before: &Arc<ModelState>, f: &Feature, key: u64, mats: Vec<Mat>) {
         let feature = f.id;
-        let depth = before.bodies.iter().filter_map(|b| b.names.origin.as_ref().map(|o| o.depth)).max().unwrap_or(0) + 1;
+        let depth = before.bodies.iter().filter_map(|b| b.names.depth()).max().unwrap_or(0) + 1;
         let sheets = if f.kind.is_sheet() { self.sheets.clone() } else { Vec::new() };
         let origin = Arc::new(crate::naming::NamingOrigin { feature: f.clone(), before: before.clone(), depth, mats, sheets });
         // Pieces a cut left are named after their faces, not the kernel's shell order (unless
@@ -1416,6 +1429,7 @@ impl Model {
                 if let Some(note) = boolean_diagnostics.warning() {
                     append_warning(&mut warning, note);
                 }
+                track_altered_sheets(&state, &mut next, f, &mut warning);
             } else {
                 boolean_diagnostics = Default::default();
             }
@@ -1477,6 +1491,58 @@ impl Model {
         self.results = out;
         self.last_recomputed = recomputed;
         self.last_restored = restored;
+    }
+}
+
+impl Model {
+    /// Follow a rename of body `old` to `new` without evaluating anything (#3044): `doc` is the
+    /// design after the rename, which changed nothing but names, so every result keeps its
+    /// geometry and meshes and only the body's name (and the names worked out from it) changes.
+    /// False, leaving the model as it was, when the rename can't be followed that way and the
+    /// design must be evaluated: the model isn't the design's, the body is changed by a later
+    /// feature, or is sheet metal, threaded, or named in a later feature's face references.
+    pub fn rename_body(&mut self, doc: &Document, old: &str, new: &str) -> bool {
+        if self.results.len() != doc.features.len() || self.results.iter().zip(&doc.features).any(|(r, f)| r.id != f.id || r.stale) {
+            return false;
+        }
+        let Some(at) = self.results.iter().position(|r| r.state.body(old).is_some()) else { return false };
+        let Some(made) = self.results.get(at).and_then(|r| r.state.body(old)).map(|b| Arc::as_ptr(&b.mesh)) else { return false };
+        // Untouched from the feature that made it to the end, and nothing else holds its name.
+        let untouched = self.results.iter().skip(at).all(|r| r.state.body(old).is_some_and(|b| Arc::as_ptr(&b.mesh) == made));
+        let named_elsewhere = self
+            .results
+            .iter()
+            .any(|r| r.state.body(new).is_some() || r.state.sheets.iter().any(|x| x.body == old) || r.state.threads.iter().any(|t| t.body == old));
+        let faces_named = doc.features.iter().skip(at + 1).any(|f| f.face_names.iter().any(|n| n.contains(old)));
+        if !untouched || named_elsewhere || faces_named {
+            return false;
+        }
+        // States shared between results stay shared.
+        let mut renamed: std::collections::HashMap<*const ModelState, Arc<ModelState>> = std::collections::HashMap::new();
+        for r in self.results.iter_mut().skip(at) {
+            let state = renamed
+                .entry(Arc::as_ptr(&r.state))
+                .or_insert_with(|| {
+                    let mut st = (*r.state).clone();
+                    for b in st.bodies.iter_mut().filter(|b| b.name == old) {
+                        b.name = new.to_string();
+                        b.names = b.names.renamed();
+                    }
+                    Arc::new(st)
+                })
+                .clone();
+            r.state = state;
+        }
+        // The fingerprints of the renamed design, so the next evaluation reuses every result.
+        let (vals, _) = evaluation_values(doc);
+        let marker = doc.marker.unwrap_or(usize::MAX);
+        self.step_digests = StepDigests::of(doc, &self.step_digests);
+        let mut prev = 0;
+        for (i, (r, f)) in self.results.iter_mut().zip(&doc.features).enumerate() {
+            prev = chain_fingerprint(doc, &vals, f, prev, i >= marker, &self.step_digests);
+            r.fingerprint = prev;
+        }
+        true
     }
 }
 
@@ -1620,6 +1686,52 @@ fn pattern_copy_name(state: &ModelState, f: &Feature, k: usize, source: &str) ->
 fn copy_body_name(state: &ModelState, f: &Feature, k: usize, source: &str) -> String {
     let base = f.body_names.get(k).filter(|name| !name.trim().is_empty()).map(String::as_str).unwrap_or(source);
     unique_body_name(state, base)
+}
+
+/// Keeps each sheet metal body's flat pattern true to the body (see `SheetBody::altered_by`).
+/// A feature that changes a sheet body's material but not its sheet model (a fillet, a join, a
+/// mirror combined into it) marks the sheet with its name, and says so. A feature that rebuilds
+/// the body from the model (a sheet metal feature, or machining the model keeps as cut-outs,
+/// which changes the model) clears the mark, and says that the change it drops is not kept.
+/// Features that move whole bodies or only mark their faces (a cosmetic thread, not a modelled
+/// one, which cuts material) leave the flat pattern as it was.
+fn track_altered_sheets(before: &ModelState, after: &mut ModelState, f: &Feature, warning: &mut Option<String>) {
+    if matches!(
+        f.kind,
+        FeatureKind::Move { .. }
+            | FeatureKind::Align { .. }
+            | FeatureKind::Rest { .. }
+            | FeatureKind::BodyTransfer { .. }
+            | FeatureKind::SplitFace { .. }
+            | FeatureKind::Thread { modeled: false, .. }
+    ) {
+        return;
+    }
+    let ModelState { sheets, bodies, .. } = after;
+    for sh in sheets.iter_mut() {
+        let Some(old) = before.sheets.iter().find(|s| s.body == sh.body) else { continue };
+        let (Some(was), Some(now)) = (before.body(&sh.body), bodies.iter().find(|b| b.name == sh.body)) else { continue };
+        if was.body.same_shape(&now.body) {
+            continue;
+        }
+        if f.kind.is_sheet() || sh != old {
+            if let Some(lost) = sh.altered_by.take() {
+                append_warning(
+                    warning,
+                    format!("`{}` is rebuilt from its sheet metal features: what {lost} changed is not kept (not supported yet)", sh.body),
+                );
+            }
+        } else if sh.altered_by.is_none() {
+            sh.altered_by = Some(f.name.clone());
+            append_warning(
+                warning,
+                format!(
+                    "`{}` is sheet metal: its flat pattern, DXF and bend table can't include this change yet and are refused; a later sheet metal feature rebuilds the body without it",
+                    sh.body
+                ),
+            );
+        }
+    }
 }
 
 /// Add tool bodies to the model according to the operation.
@@ -4536,8 +4648,11 @@ fn replay(
     Ok(())
 }
 
+#[path = "model_cache.rs"]
+mod model_cache;
 #[path = "eval_more.rs"]
 mod more;
+pub use model_cache::SavedModel;
 #[path = "eval_surface.rs"]
 mod surface;
 
@@ -5854,7 +5969,7 @@ impl PlacedBodies {
                 fresh.plan_mesh = placed.plan_mesh.clone();
                 fresh
             }
-            None => match kernel::transform_matrix(&b.body, *m) {
+            None => match kernel::place_matrix(&b.body, *m) {
                 Ok(body) => {
                     let mut fresh = ModelBody::new(name, body, b.feature);
                     fresh.mesh_placement = placed_mesh::PlacedMesh::new(b, m).map(Arc::new);
