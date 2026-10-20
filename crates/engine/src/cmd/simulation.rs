@@ -810,7 +810,6 @@ mod tests {
         }
     }
 
-
     /// Studies and goal seeks live beside the design: saving writes `<design>.sim.json` (the design
     /// file is the same with or without them), opening the design brings them back, the seek with
     /// its cycles.
@@ -828,7 +827,15 @@ mod tests {
         if let Some(k) = s.flow.seeks.first_mut() {
             for (i, v) in [6.0, 8.0].into_iter().enumerate() {
                 let m = [("Out".to_string(), crate::seek::Measured { flow: 1e-6 * (i + 1) as f64, ..Default::default() })].into();
-                k.cycles.push(crate::seek::Cycle { values: vec![v], measures: m, score: -(i as f64), feasible: true, error: None, steps: 100, seconds: 1.0 });
+                k.cycles.push(crate::seek::Cycle {
+                    values: vec![v],
+                    measures: m,
+                    score: -(i as f64),
+                    feasible: true,
+                    error: None,
+                    steps: 100,
+                    seconds: 1.0,
+                });
             }
         }
         s.execute("file.save", &json!({"path": path})).unwrap();

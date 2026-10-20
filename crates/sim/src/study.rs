@@ -21,6 +21,9 @@ pub const LATTICE_SPEED: f64 = 0.08;
 /// The relaxation time at the box's faces, where the sponge is most viscous.
 const SPONGE_TAU: f64 = 0.9;
 
+/// The least share of the Smagorinsky length scale wall damping leaves a cell.
+const DAMPING_FLOOR: f64 = 0.25;
+
 /// The bulk relaxation time: sound waves die out within a few passes instead of ringing.
 const BULK_TAU: f64 = 1.0;
 
@@ -459,7 +462,9 @@ fn wall_damping(grid: &Grid, speed: f64, diameter: f64, viscosity: f64) -> Vec<u
                 return 0;
             }
             let y_plus = (f64::from(*d) - 0.5) * per_cell;
-            ((1.0 - (-y_plus / 26.0).exp()).clamp(0.0, 1.0) * 65535.0).round() as u16
+            // A floor keeps some eddy viscosity in the first cells, where the lattice is least
+            // stable at a relaxation time this close to ½.
+            ((1.0 - (-y_plus / 26.0).exp()).clamp(DAMPING_FLOOR, 1.0) * 65535.0).round() as u16
         })
         .collect()
 }
@@ -564,6 +569,26 @@ pub fn prepare(bodies: &[&Mesh], setup: &FlowSetup) -> Result<Prepared> {
         let (start, max) = source_speeds(&inlet.source, area)?;
         speeds.push(start);
         fastest = fastest.max(max);
+    }
+    // Air leaving through outlets smaller than the inlets goes faster than it came in: by
+    // continuity at least the inlets' flow over the outlets' area, and a small outlet of several
+    // takes more than its share. Time the lattice on that too, or the jets outrun it.
+    let inflow: f64 = setup
+        .inlets
+        .iter()
+        .zip(&inlet_cells)
+        .zip(&speeds)
+        .map(|((inlet, (_, cells)), start)| {
+            let area = cells.len() as f64 * units_dx * units_dx;
+            match &inlet.source {
+                Source::Fan(curve) => curve.free_flow(),
+                Source::Speed(_) => start * area,
+            }
+        })
+        .sum();
+    let outlet_area: f64 = outlet_layers.iter().map(|l| l.cells.len() as f64 * units_dx * units_dx).sum();
+    if outlet_area > 0.0 {
+        fastest = fastest.max(1.5 * inflow / outlet_area);
     }
     let dt = LATTICE_SPEED * units_dx / fastest;
     let units = Units { dx: units_dx, dt, density: setup.air.density };
