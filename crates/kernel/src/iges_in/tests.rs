@@ -85,10 +85,16 @@ fn hostile_iges_never_panics() {
 
 /// An IGES file from (type, form, parameters) entities, in order (pointers are 2k + 1).
 fn iges_file(ents: &[(i64, i64, String)]) -> String {
+    let placed: Vec<(i64, i64, String, i64)> = ents.iter().map(|(t, f, p)| (*t, *f, p.clone(), 0)).collect();
+    iges_file_placed(&placed)
+}
+
+/// Like [`iges_file`], with each entity's transformation matrix pointer (0 for none).
+fn iges_file_placed(ents: &[(i64, i64, String, i64)]) -> String {
     let mut out = vec![format!("{:<72}S{:>7}", "test", 1), format!("{:<72}G{:>7}", "1H,,1H;,,,,,,,,,,,1.,2,2HMM,,,,1.E-6;", 1)];
     let mut p_lines: Vec<(usize, String)> = Vec::new();
     let mut starts = Vec::new();
-    for (k, (t, _, p)) in ents.iter().enumerate() {
+    for (k, (t, _, p, _)) in ents.iter().enumerate() {
         starts.push(p_lines.len() + 1);
         let text = format!("{t},{p};");
         let chars: Vec<char> = text.chars().collect();
@@ -96,9 +102,9 @@ fn iges_file(ents: &[(i64, i64, String)]) -> String {
             p_lines.push((2 * k + 1, c.iter().collect()));
         }
     }
-    for (k, (t, form, _)) in ents.iter().enumerate() {
+    for (k, (t, form, _, xf)) in ents.iter().enumerate() {
         let count = p_lines.iter().filter(|(d, _)| *d == 2 * k + 1).count();
-        out.push(format!("{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}D{:>7}", t, starts[k], 0, 0, 0, 0, 0, 0, "00000000", 2 * k + 1));
+        out.push(format!("{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}D{:>7}", t, starts[k], 0, 0, 0, 0, xf, 0, "00000000", 2 * k + 1));
         out.push(format!("{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}D{:>7}", t, 0, 0, count, form, 0, 0, "", 0, 2 * k + 2));
     }
     for (i, (d, l)) in p_lines.iter().enumerate() {
@@ -106,6 +112,48 @@ fn iges_file(ents: &[(i64, i64, String)]) -> String {
     }
     out.push(format!("{:<72}T{:>7}", "", 1));
     out.join("\n")
+}
+
+/// A spherical cap written the way analytic IGES exports write one: a surface of revolution
+/// (120) whose generatrix is a short circular arc (100) centred on the axis, turned into the
+/// meridian plane by its transformation matrix (124), trimmed by a circle round the axis. The arc
+/// is only the part of the circle the cap needs; read as the whole circle, the revolution was a
+/// whole sphere twice over and the cap meshed as the full ball.
+#[test]
+fn an_arc_revolved_about_its_centre_is_a_cap_not_a_ball() {
+    let (r, polar) = (50.0f64, 30f64.to_radians());
+    let (rim_r, rim_z) = (r * polar.sin(), r * polar.cos());
+    let ents: Vec<(i64, i64, String, i64)> = vec![
+        // 1: the meridian plane: local x stays x, local y becomes z.
+        (124, 0, "1.,0.,0.,0.,0.,0.,-1.,0.,0.,1.,0.,0.".into(), 0),
+        // 3: the axis, 5: the arc from the rim (60° in its plane) to the pole (90°).
+        (110, 0, "0.,0.,0.,0.,0.,1.".into(), 0),
+        (100, 0, format!("0.,0.,0.,{:?},{:?},0.,{r:?}", rim_r, rim_z), 1),
+        // 7: the surface, 9: the rim (a full circle at the cap's height), 11: on the surface.
+        (120, 0, format!("3,5,0.,{:?}", std::f64::consts::TAU), 0),
+        (100, 0, format!("{rim_z:?},0.,0.,{rim_r:?},0.,{rim_r:?},0."), 0),
+        (142, 0, "0,7,0,9,2".into(), 0),
+        // 13: the cap.
+        (144, 0, "7,1,0,11".into(), 0),
+    ];
+    let imp = iges_import(&iges_file_placed(&ents)).unwrap();
+    assert_eq!(imp.bodies.len(), 1, "{:?}", imp.warnings);
+    let mesh = imp.bodies[0].body.tessellate(0.01).unwrap();
+    let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for p in &mesh.positions {
+        for (k, x) in [p.x, p.y, p.z].into_iter().enumerate() {
+            lo[k] = lo[k].min(x);
+            hi[k] = hi[k].max(x);
+        }
+    }
+    for k in 0..2 {
+        assert!((lo[k] + rim_r).abs() < 0.1 && (hi[k] - rim_r).abs() < 0.1, "cap is {lo:?} .. {hi:?}");
+    }
+    assert!((lo[2] - rim_z).abs() < 0.1 && (hi[2] - r).abs() < 0.1, "cap is {lo:?} .. {hi:?}");
+    // Area of a cap: 2π r h.
+    let area = measure(&imp.bodies[0].body).unwrap().area;
+    let cap = std::f64::consts::TAU * r * (r - rim_z);
+    assert!(rel(area, cap) < 1e-3, "area {area} vs {cap}");
 }
 
 /// A unit-cube-like box (10 × 20 × 30) made of six trimmed bilinear B-spline patches whose
@@ -208,4 +256,89 @@ fn directory_entries_cannot_share_their_way_past_the_file_size() {
     let error = iges_to_step(&out.join("\n")).unwrap_err();
     assert!(error.contains("parameter data is too large"), "{error}");
     assert!(t.elapsed() < std::time::Duration::from_secs(10), "took {:?}", t.elapsed());
+}
+
+/// A curve on a surface (142) for a trimmed patch: model-space lines through `corners` with the
+/// pieces `reversed` written end to start (as some exporters write composite trim curves), and
+/// the same loop in the patch's parameter space through `uv`. Returns the 142's pointer.
+fn trim_loop(ents: &mut Vec<(i64, i64, String)>, surface: usize, corners: &[[f64; 3]], uv: &[[f64; 2]], reversed: &[usize]) -> usize {
+    let fmt = |p: [f64; 3]| format!("{:?},{:?},{:?}", p[0], p[1], p[2]);
+    let mut model = Vec::new();
+    let mut param = Vec::new();
+    for k in 0..corners.len() {
+        let (p0, p1) = (corners[k], corners[(k + 1) % corners.len()]);
+        let (p0, p1) = if reversed.contains(&k) { (p1, p0) } else { (p0, p1) };
+        ents.push((110, 0, format!("{},{}", fmt(p0), fmt(p1))));
+        model.push(2 * ents.len() - 1);
+        let (q0, q1) = (uv[k], uv[(k + 1) % uv.len()]);
+        ents.push((110, 0, format!("{},{}", fmt([q0[0], q0[1], 0.0]), fmt([q1[0], q1[1], 0.0]))));
+        param.push(2 * ents.len() - 1);
+    }
+    let list = |v: &[usize]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+    ents.push((102, 0, format!("{},{}", model.len(), list(&model))));
+    let c = 2 * ents.len() - 1;
+    ents.push((102, 0, format!("{},{}", param.len(), list(&param))));
+    let b = 2 * ents.len() - 1;
+    // Created by projection, preferring the parameter-space curve (PREF 1).
+    ents.push((142, 0, format!("0,{surface},{b},{c},1")));
+    2 * ents.len() - 1
+}
+
+/// A bilinear B-spline patch through corners `a` (u, v = 0), `b` (u = 1), `c` (u, v = 1) and
+/// `d` (v = 1).
+fn bilinear_patch(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> (i64, i64, String) {
+    let fmt = |p: [f64; 3]| format!("{:?},{:?},{:?}", p[0], p[1], p[2]);
+    (128, 0, format!("1,1,1,1,0,0,1,0,0,0.,0.,1.,1.,0.,0.,1.,1.,1.,1.,1.,1.,{},{},{},{},0.,1.,0.,1.", fmt(a), fmt(b), fmt(d), fmt(c)))
+}
+
+/// The box of `trimmed_surfaces_sew_into_a_solid` with some pieces of every trim curve written
+/// end to start (the first piece on half the faces): each face's loop still closes and the box
+/// is a solid.
+#[test]
+fn trim_curves_with_reversed_pieces_still_close_their_faces() {
+    let c =
+        |i: usize| -> [f64; 3] { [if i & 1 != 0 { 10.0 } else { 0.0 }, if i & 2 != 0 { 20.0 } else { 0.0 }, if i & 4 != 0 { 30.0 } else { 0.0 }] };
+    let quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+    let mut ents: Vec<(i64, i64, String)> = Vec::new();
+    for (fi, q) in quads.iter().enumerate() {
+        let corners = q.map(c);
+        ents.push(bilinear_patch(corners[0], corners[1], corners[2], corners[3]));
+        let surface = 2 * ents.len() - 1;
+        let reversed: &[usize] = if fi % 2 == 0 { &[0, 2] } else { &[1, 3] };
+        let cos = trim_loop(&mut ents, surface, &corners, &[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], reversed);
+        ents.push((144, 0, format!("{surface},1,0,{cos}")));
+    }
+    let imp = iges_import(&iges_file(&ents)).unwrap();
+    assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+    assert!(imp.bodies[0].closed);
+    let m = measure(&imp.bodies[0].body).unwrap();
+    assert!(rel(m.volume, 6000.0) < 1e-6 && rel(m.area, 2200.0) < 1e-6, "{} {}", m.volume, m.area);
+}
+
+/// A plate with a square hole whose trim curve starts with a reversed piece: where the
+/// parameter-space curve starts decides which way the hole runs, so it stays a hole.
+#[test]
+fn a_hole_whose_first_trim_piece_is_reversed_stays_a_hole() {
+    let mut ents: Vec<(i64, i64, String)> = vec![bilinear_patch([0.0; 3], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0])];
+    let outer = trim_loop(
+        &mut ents,
+        1,
+        &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+        &[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        &[],
+    );
+    // Clockwise about the patch's normal, as a hole runs.
+    let hole = trim_loop(
+        &mut ents,
+        1,
+        &[[3.0, 3.0, 0.0], [3.0, 7.0, 0.0], [7.0, 7.0, 0.0], [7.0, 3.0, 0.0]],
+        &[[0.3, 0.3], [0.3, 0.7], [0.7, 0.7], [0.7, 0.3]],
+        &[0],
+    );
+    ents.push((144, 0, format!("1,1,1,{outer},{hole}")));
+    let imp = iges_import(&iges_file(&ents)).unwrap();
+    assert_eq!(imp.bodies.len(), 1);
+    assert!(!imp.warnings.iter().any(|w| w.contains("not read") || w.contains("face #")), "{:?}", imp.warnings);
+    let m = measure(&imp.bodies[0].body).unwrap();
+    assert!(rel(m.area, 84.0) < 1e-6, "area {}", m.area);
 }
