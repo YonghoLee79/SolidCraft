@@ -549,6 +549,104 @@ fn slider_crank_moves_the_piston() {
     }
 }
 
+/// A slotted-arm drive: a clamp turns about the origin (Yaw) and carries a pin 26 from it; an arm
+/// turns about a shaft 52 out on a motor fixed to the ground, and the pin slides in the arm's slot
+/// (Slot: its frame at the shaft, x along the slot towards the pin). Every joint of the loop
+/// moves when it does, the slot's included. The pin's face sits `gap` mm off the arm's along
+/// the axes: a gap no value of the loop takes out, within the conflict check.
+fn slotted_arm(yaw_first: bool, gap: f64) -> Session {
+    let mut s = Session::default();
+    for (name, x) in [("Ground", 0.0), ("Clamp", 26.0), ("Motor", 52.0), ("Arm", 40.0)] {
+        part(&mut s, name, [x - 1.0, -1.0, -5.0]);
+    }
+    let g = occ(&s, "Ground");
+    run(&mut s, "occurrence.ground", json!({"occurrence": g, "grounded": true}));
+    // The joint order sets the tree: with the yaw first, the arm hangs from the clamp through the
+    // slot and the arm's shaft closes the loop; with the motor first, the slot closes it.
+    if yaw_first {
+        pin(&mut s, "revolute", "Yaw", "Ground", "Clamp", Vec3::ZERO, Vec3::Z);
+    }
+    pin(&mut s, "rigid", "Mount", "Ground", "Motor", Vec3::new(52.0, 0.0, 0.0), Vec3::Z);
+    if !yaw_first {
+        pin(&mut s, "revolute", "Yaw", "Ground", "Clamp", Vec3::ZERO, Vec3::Z);
+    }
+    pin(&mut s, "revolute", "Shaft", "Arm", "Motor", Vec3::new(52.0, 0.0, 0.0), Vec3::Z);
+    let r = run(
+        &mut s,
+        "joint.create",
+        json!({"type": "pin_slot", "a": framed("Arm", [52.0, 0.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]),
+            "b": framed("Clamp", [26.0, 0.0, gap], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]), "flip": true, "values": [0, 26], "name": "Slot"}),
+    );
+    assert_eq!(r["conflicts"].as_array().map(Vec::len), Some(0), "{r}");
+    s
+}
+
+/// A joint's stored values.
+fn values_of(s: &Session, joint: &str) -> Vec<f64> {
+    s.doc.assembly.joints.iter().find(|j| j.name == joint).map(|j| j.values.clone()).unwrap_or_default()
+}
+
+/// Driving either end of the slotted arm moves the other: the arm turns atan(26 sin θ / (52 −
+/// 26 cos θ)) for a yaw θ, and the pin slides out from 26 to √(26² + 52² − 2·26·52 cos θ).
+#[test]
+fn slotted_arm_drives_both_ways() {
+    for (yaw_first, gap) in [(false, 0.0), (true, 0.0), (false, 3e-8), (true, 3e-8)] {
+        slotted_arm_drives(yaw_first, gap);
+    }
+}
+
+fn slotted_arm_drives(yaw_first: bool, gap: f64) {
+    let mut s = slotted_arm(yaw_first, gap);
+    let (shaft, pin_at) = (Vec3::new(52.0, 0.0, 0.0), Vec3::new(26.0, 0.0, 0.0));
+    let check = |s: &Session, what: &str| {
+        let th = values_of(s, "Yaw").first().copied().unwrap_or(f64::NAN);
+        let p = Vec3::new(26.0 * th.cos(), 26.0 * th.sin(), 0.0);
+        assert!(near(place(s, "Clamp", pin_at), p), "{what}: pin {:?} wants {p:?}", place(s, "Clamp", pin_at));
+        let arm = values_of(s, "Shaft").first().copied().unwrap_or(f64::NAN);
+        let want = (26.0 * th.sin()).atan2(52.0 - 26.0 * th.cos());
+        assert!((arm.abs() - want.abs()).abs() < 1e-6, "{what}: arm {arm} wants ±{want}");
+        // The arm's slot points at the pin, which sits as far out as the slot says.
+        let tip = place(s, "Arm", Vec3::new(40.0, 0.0, 0.0));
+        let along = (p - shaft) * (1.0 / (p - shaft).len());
+        assert!(near(tip, shaft + along * 12.0), "{what}: arm tip {tip:?}");
+        let slide = values_of(s, "Slot").get(1).copied().unwrap_or(f64::NAN);
+        assert!((slide.abs() - (p - shaft).len()).abs() < 1e-6, "{what}: slide {slide} wants {}", (p - shaft).len());
+    };
+    check(&s, &format!("yaw first {yaw_first}, gap {gap}, at rest"));
+    for v in [10.0, 40.0, -40.0, 0.0] {
+        let r = run(&mut s, "joint.drive", json!({"joint": "Yaw", "value": v}));
+        assert!(
+            r["stopped_by_loop"].is_null() && r["conflicts"].as_array().map(Vec::len) == Some(0),
+            "yaw first {yaw_first}, gap {gap}, yaw {v}°: {r}"
+        );
+        assert!((values_of(&s, "Yaw").first().copied().unwrap_or(f64::NAN) - f64::to_radians(v)).abs() < 1e-9);
+        check(&s, &format!("yaw first {yaw_first}, gap {gap}, yaw {v}°"));
+    }
+    let slide = values_of(&s, "Slot").get(1).copied().unwrap_or(f64::NAN).abs();
+    assert!((slide - 26.0).abs() < 1e-6, "{slide}");
+    for v in [15.0, -27.0, 27.0] {
+        let r = run(&mut s, "joint.drive", json!({"joint": "Shaft", "value": v}));
+        assert!(
+            r["stopped_by_loop"].is_null() && r["conflicts"].as_array().map(Vec::len) == Some(0),
+            "yaw first {yaw_first}, gap {gap}, arm {v}°: {r}"
+        );
+        assert!((values_of(&s, "Shaft").first().copied().unwrap_or(f64::NAN) - f64::to_radians(v)).abs() < 1e-9);
+        check(&s, &format!("yaw first {yaw_first}, gap {gap}, arm {v}°"));
+    }
+    // The clamp's pin reaches a point on its circle, the arm following.
+    let (th, at) = (20f64.to_radians(), place(&s, "Clamp", pin_at));
+    let r = run(&mut s, "joint.reach", json!({"occurrence": "Clamp", "at": [at.x, at.y, at.z], "point": [26.0 * th.cos(), 26.0 * th.sin(), 0.0]}));
+    assert!(r["reached"] == json!(true) && r["stopped_by_loop"].is_null(), "yaw first {yaw_first}, gap {gap}, reach: {r}");
+    check(&s, &format!("yaw first {yaw_first}, gap {gap}, reach"));
+    // A limit on the arm stops the yaw where the arm meets it.
+    run(&mut s, "joint.limits", json!({"joint": "Shaft", "min": -20, "max": 20}));
+    let r = run(&mut s, "joint.drive", json!({"joint": "Yaw", "value": 40}));
+    assert!(r["stopped_by_loop"].is_object() && r["conflicts"].as_array().map(Vec::len) == Some(0), "yaw first {yaw_first}, gap {gap}, limit: {r}");
+    check(&s, &format!("yaw first {yaw_first}, gap {gap}, limit"));
+    let arm = values_of(&s, "Shaft").first().copied().unwrap_or(f64::NAN).abs().to_degrees();
+    assert!(arm > 19.9 && arm <= 20.0 + 1e-9, "yaw first {yaw_first}, gap {gap}: the arm stopped at {arm}°");
+}
+
 /// A joint frame on an occurrence, by origin and axes.
 fn framed(o: &str, origin: [f64; 3], z: [f64; 3], x: [f64; 3]) -> Value {
     json!({"occurrence": o, "frame": {"origin": origin, "z": z, "x": x}})
