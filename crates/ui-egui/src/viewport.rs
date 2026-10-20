@@ -60,6 +60,9 @@ pub struct ViewportState {
     lod_view: u64,
     /// Each body mesh's box (the mesh held, so its address stays its own), from the last state.
     mesh_bounds: std::sync::Mutex<std::collections::HashMap<usize, (std::sync::Arc<solidcraft_engine::geom::Mesh>, solidcraft_engine::geom::Aabb3)>>,
+    /// Each shown body mesh's section index for the cut's normal (the mesh held, so its address
+    /// stays its own): a Section Analysis dragged along its normal cuts through it.
+    section_index: std::sync::Mutex<Vec<(std::sync::Arc<solidcraft_engine::geom::Mesh>, std::sync::Arc<solidcraft_engine::view::SectionIndex>)>>,
     /// Each body mesh's picking index (made the first time a pick reaches the body), kept while
     /// the mesh is part of the world state.
     pub(crate) pick_index: crate::pick_index::PickIndexes,
@@ -705,10 +708,21 @@ fn build_scene(app: &SolveApp) -> GpuScene {
     // Section: the outline of each body where the plane cuts it.
     if let Some((o, n)) = section_plane(app) {
         let col = c4(tk.text.gamma_multiply(0.9));
+        let mut kept = app.viewport.section_index.lock().map(|mut k| std::mem::take(&mut *k)).unwrap_or_default();
+        let mut made = Vec::new();
         for b in st.bodies.iter().filter(|b| app.session.body_visible(&b.name)) {
-            for (a, c) in solidcraft_engine::view::section_segments(&b.mesh(), o, n) {
+            let mesh = b.mesh();
+            let index = match kept.iter().position(|(m, i)| std::sync::Arc::ptr_eq(m, &mesh) && i.normal() == n) {
+                Some(k) => kept.swap_remove(k).1,
+                None => std::sync::Arc::new(solidcraft_engine::view::SectionIndex::new(&mesh, n)),
+            };
+            for (a, c) in index.segments(&mesh, o) {
                 sc.line(a.to_f32(), c.to_f32(), col, 1.8, false);
             }
+            made.push((mesh, index));
+        }
+        if let Ok(mut k) = app.viewport.section_index.lock() {
+            *k = made;
         }
     }
     // Continuity analysis: each seam `inspect.continuity` measured, drawn over the model in the

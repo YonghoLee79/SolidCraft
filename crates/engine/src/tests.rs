@@ -1543,6 +1543,31 @@ fn section_analysis() {
     assert_eq!(s.undo.len(), undo);
 }
 
+/// A section index finds the same cut segments, in the same order, as cutting every triangle:
+/// tilted and axis normals, cuts through vertices, at the ends and beyond the part.
+#[test]
+fn section_index_cuts_like_every_triangle() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": 12, "height": 30}));
+    run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 8, "operation": "join"}));
+    let st = s.model.state();
+    let m = st.bodies.first().unwrap().mesh();
+    assert!(m.triangles.len() > 64, "enough triangles for several slabs: {}", m.triangles.len());
+    for n in [Vec3::Z, -Vec3::Y, Vec3::new(1.0, 2.0, 3.0).normalized().unwrap(), Vec3::new(-0.3, 0.1, 0.9).normalized().unwrap()] {
+        let index = view::SectionIndex::new(&m, n);
+        let heights: Vec<f64> = m.positions.iter().map(|p| n.dot(*p)).collect();
+        let (lo, hi) = heights.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), h| (a.min(*h), b.max(*h)));
+        let mut cuts: Vec<f64> = (0..=40).map(|k| lo - 1.0 + (hi - lo + 2.0) * k as f64 / 40.0).collect();
+        cuts.extend(heights.iter().step_by(7).copied());
+        cuts.extend([lo, hi]);
+        for at in cuts {
+            let o = n * at;
+            let segments = view::section_segments(&m, o, n);
+            assert_eq!(index.segments(&m, o), segments, "{n:?} at {at}");
+        }
+    }
+}
+
 /// Press Pull: positive pulls a face out, negative pushes it in (a cut), edges get a fillet.
 #[test]
 fn press_pull() {
