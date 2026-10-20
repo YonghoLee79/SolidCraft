@@ -1374,8 +1374,9 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
     }
 }
 
-/// The 3D mouse's settings under Navigation, folded away while no 3D mouse is connected so they
-/// don't take the page from everyone without one: whether it moves the view and shows in it, its
+/// The 3D mouse's settings under Navigation. The section starts folded without a 3D mouse, so it
+/// doesn't take the page from everyone without one, and open with one; once the user folds or
+/// unfolds it, it stays as they left it: whether it moves the view and shows in it, its
 /// speed and each axis, its calibration and dead zone, and what its buttons do.
 fn space_mouse_section(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();

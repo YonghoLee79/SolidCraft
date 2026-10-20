@@ -97,8 +97,10 @@ pub fn button_jobs(app: &SolveApp, device: &str) -> std::collections::BTreeMap<u
 }
 
 /// The printed keys' jobs on a device we have measured (`solidcraft_space_mouse::buttons`), from
-/// its key (`hid 046d:c62b`, `web 046d:c62b`); nothing for any other device, spacenavd included,
-/// which numbers buttons its own way. Keys with no job here (Roll, the rotation lock) start empty.
+/// its key (`hid 046d:c62b`, `web 046d:c62b`). Only a key with vendor and product ids gets them,
+/// which in practice is a raw HID device: the `spacenavd` and `3dxware` keys carry no ids, and
+/// spacenavd numbers its buttons from 0, not 1 as the table here does. Keys with no job here (Roll,
+/// the rotation lock) start empty.
 pub fn default_button_jobs(device: &str) -> std::collections::BTreeMap<u8, ButtonJob> {
     use solidcraft_space_mouse::buttons::{Action, defaults};
     let ids = device.split_once(' ').and_then(|(_, ids)| ids.split_once(':'));

@@ -162,26 +162,27 @@ pub(crate) fn ball_rate(travel: [f32; 6]) -> [f32; 4] {
     [-travel[1], travel[0], travel[5], travel[2]]
 }
 
-/// A trackball kept in `ui`'s memory under `id`, rolled by `travel` since the last frame: unlike a
-/// cap, its ball and scroll ring keep their turn from frame to frame.
-fn rolled(ui: &egui::Ui, id: &str, travel: [f32; 6]) -> ball::Ball {
+/// A trackball kept in `ui`'s memory for one call `site` (`ui` and `site` together are its key, so
+/// the Preferences picture, the corner and the demo each roll their own once a frame), rolled by
+/// `travel` since the last frame: unlike a cap, its ball and scroll ring keep their turn from frame to frame.
+fn rolled(ui: &egui::Ui, site: &str, travel: [f32; 6]) -> ball::Ball {
     let (rate, seconds) = (ball_rate(travel), ui.input(|i| i.stable_dt));
     if rate.iter().any(|&v| v != 0.0) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
     ui.data_mut(|data| {
-        let ball = data.get_temp_mut_or_insert_with(egui::Id::new(id), ball::Ball::new);
+        let ball = data.get_temp_mut_or_insert_with(ui.id().with(("sc_space_mouse_ball", site)), ball::Ball::new);
         ball.roll(rate, seconds);
         *ball
     })
 }
 
 /// Draws a device of `kind` in `rect` moved by `travel`, its markers lit by `moving`.
-fn draw(ui: &egui::Ui, rect: egui::Rect, kind: Kind, travel: [f32; 6], moving: [bool; 6]) {
+fn draw(ui: &egui::Ui, site: &str, rect: egui::Rect, kind: Kind, travel: [f32; 6], moving: [bool; 6]) {
     match kind {
         Kind::ReturnToCenter => paint(ui, rect, &Pose::new(travel), moving),
         Kind::Trackball => {
-            let shown = rolled(ui, "sc_space_mouse_ball", travel);
+            let shown = rolled(ui, site, travel);
             ball::paint(ui, rect, &shown, moving[0] || moving[1] || moving[5], moving[2]);
         }
     }
@@ -190,12 +191,13 @@ fn draw(ui: &egui::Ui, rect: egui::Rect, kind: Kind, travel: [f32; 6], moving: [
 /// A device of `kind`, still.
 pub(crate) fn rest(ui: &mut egui::Ui, kind: Kind) {
     let (rect, _) = ui.allocate_exact_size(SIZE, egui::Sense::hover());
-    draw(ui, rect, kind, [0.0; 6], [false; 6]);
+    draw(ui, "rest", rect, kind, [0.0; 6], [false; 6]);
 }
 
 /// The device in the 3D view's lower left corner, see-through so it doesn't hide the design:
 /// cap or trackball as `calibration` says, moving as the device does. A device without a
-/// calibration is read as it reports, on 3Dconnexion's axes and range.
+/// calibration is read as it reports: each axis as a share of the full deflection a reading is
+/// scaled to (`FULL_SCALE`).
 pub(crate) fn corner(ui: &mut egui::Ui, view: egui::Rect, calibration: Option<&Calibration>, raw: [i16; 6]) {
     const CORNER: egui::Vec2 = egui::vec2(160.0, 120.0);
     let rect = egui::Rect::from_min_size(view.left_bottom() + egui::vec2(12.0, -12.0 - CORNER.y), CORNER);
@@ -207,9 +209,9 @@ pub(crate) fn corner(ui: &mut egui::Ui, view: egui::Rect, calibration: Option<&C
         }
     };
     let travel = still_unless_moving(kind, travel, moving);
-    let mut corner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    let mut corner = ui.new_child(egui::UiBuilder::new().id_salt("sc_space_mouse_corner").max_rect(rect));
     corner.set_opacity(0.6);
-    draw(&corner, rect, kind, travel, moving);
+    draw(&corner, "corner", rect, kind, travel, moving);
 }
 
 /// A trackball's reading is a speed: within the dead zone it is noise, and rolling the picture by
@@ -231,7 +233,7 @@ fn still_unless_moving(kind: Kind, mut travel: [f32; 6], moving: [bool; 6]) -> [
 pub(crate) fn live(ui: &mut egui::Ui, calibration: &Calibration, raw: [i16; 6]) {
     let (rect, _) = ui.allocate_exact_size(SIZE, egui::Sense::hover());
     let (travel, moving) = (calibration.travel(raw), calibration.apply(raw).map(|value| value != 0));
-    draw(ui, rect, calibration.kind, still_unless_moving(calibration.kind, travel, moving), moving);
+    draw(ui, "live", rect, calibration.kind, still_unless_moving(calibration.kind, travel, moving), moving);
 }
 
 /// One showing of a step's motion, in seconds: easing out to full deflection, holding there,
@@ -278,7 +280,7 @@ pub(crate) fn demo(ui: &mut egui::Ui, step: Step, kind: Kind) {
         *live = swing > 0.15;
     }
     let (rect, _) = ui.allocate_exact_size(SIZE, egui::Sense::hover());
-    draw(ui, rect, kind, travel, moving);
+    draw(ui, "demo", rect, kind, travel, moving);
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
 }
 

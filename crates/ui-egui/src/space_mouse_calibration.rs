@@ -152,7 +152,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     Kind::Trackball => ("ui.space_mouse_looks_like_trackball", "ui.space_mouse_switch_trackball"),
                     Kind::ReturnToCenter => ("ui.space_mouse_looks_like_cap", "ui.space_mouse_switch_cap"),
                 };
-                ui.label(egui::RichText::new(app.tr(hint)).color(ui.visuals().warn_fg_color));
+                crate::ui_kit::text(ui, app.tr(hint), crate::ui_kit::Text::Hint("space_mouse_kind_mismatch"));
                 if crate::ui_kit::button(ui, app.tr(switch), crate::ui_kit::Button::Normal).clicked() {
                     chosen = Some(other);
                 }

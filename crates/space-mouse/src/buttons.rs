@@ -34,7 +34,7 @@ type Row = (u16, u16, usize, Option<Action>);
 /// The only place button numbers live. To add a key, add a row from a measurement; don't
 /// guess a number from memory or from anyone else's code.
 const MEASURED: &[Row] = &[
-    // SpaceMouse Pro (046d:c62b): our own measurement on Anthony's SpaceMouse Pro, 2026-10-16.
+    // SpaceMouse Pro (046d:c62b): our own measurement on a SpaceMouse Pro, 2026-10-16.
     // Each row is one printed key.
     (0x046d, 0xc62b, 1, Some(Action::Menu)),
     (0x046d, 0xc62b, 2, Some(Action::Fit)),
@@ -109,7 +109,7 @@ mod tests {
             // Synthetic numbers, not real mappings: zero and past MAX_BUTTONS are dropped.
             (1, 2, 0, Some(Action::Esc)),
             // Synthetic numbers, not real mappings.
-            (1, 2, 33, Some(Action::Alt)),
+            (1, 2, MAX_BUTTONS + 1, Some(Action::Alt)),
             // Synthetic numbers, not real mappings: a device with only no-action rows.
             (1, 4, 7, None),
         ];
