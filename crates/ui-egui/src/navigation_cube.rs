@@ -2,6 +2,7 @@
 //! 26 views (6 faces, 12 edges, 8 corners) is one flat facet that picks it.
 use super::*;
 use crate::icons::navigation::{Facet, arrow, curved_arrow, paint_cube};
+use solidcraft_engine::geom::Ring;
 
 pub(super) const SIZE: f32 = 112.0;
 // Paint and picking use the same original coordinate space, scaled as a group.
@@ -106,12 +107,12 @@ fn facets(cam: &Camera, c: Pos2, half: f64) -> Vec<Facet> {
     out
 }
 
-fn contains(points: &[Pos2], p: Pos2) -> bool {
+fn contains(points: &Ring<Pos2>, p: Pos2) -> bool {
     if !p.is_finite() || points.len() < 3 {
         return false;
     }
     let mut sign = 0.0_f32;
-    for (a, b) in points.iter().zip(points.iter().cycle().skip(1)).take(points.len()) {
+    for (a, b) in points.edges() {
         let edge = *b - *a;
         let offset = p - *a;
         let cross = edge.x * offset.y - edge.y * offset.x;
