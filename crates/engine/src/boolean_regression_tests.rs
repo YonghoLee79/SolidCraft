@@ -34,6 +34,34 @@ fn check_partial_face_contact_pattern() {
     println!("#674 volume {volume:.6} / {expected_volume:.6} mm³; area {area:.6} / {expected_area:.6} mm²; {shells} shells");
 }
 
+/// A cylinder intersected with a disc carrying a tooth whose corners stand 0.27 mm out of it
+/// (radius 16.92 for 16.65): the general boolean can't intersect them, and the sampled answer
+/// (the disc is inside the cylinder) used to be kept with a warning, corners and all. The
+/// intersection must trim them or fail and leave the body as it was (#3244).
+#[test]
+fn intersection_never_keeps_material_outside_the_trimming_cylinder() {
+    let mut s = Session::default();
+    let (a, b) = ([-0.1706475844770042, 7.63270030627277], [0.1706475844770042, 7.63270030627277]);
+    for (command, params) in [
+        ("solid.cylinder", json!({"radius": 16.65, "height": 5, "body_name": "Base"})),
+        ("sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [-1, 0, 0], "y_dir": [0, 0, 1]}})),
+        ("sketch.line", json!({"points": [a, [-3, 4.99], [3, 4.99], b]})),
+        ("sketch.arc.three_point", json!({"start": b, "through": [0, 7.7], "end": a})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"distance": 1.6875953835063608, "start_offset": 14.962404616493638, "operation": "join", "targets": ["Base"]})),
+    ] {
+        s.execute(command, &params).unwrap();
+    }
+    let before = volume(&s, "Base");
+    let r = s.execute("solid.cylinder", &json!({"radius": 16.65, "height": 14.59, "operation": "intersect", "targets": ["Base"]}));
+    let state = s.model.state();
+    let reach = state.body("Base").unwrap().body.tessellate(1e-3).unwrap().positions.iter().map(|p| p.x.hypot(p.y)).fold(0.0, f64::max);
+    match r {
+        Ok(_) => assert!(reach < 16.65 + 1e-2, "kept material out to radius {reach}"),
+        Err(e) => assert!((volume(&s, "Base") - before).abs() < 1e-9 && reach > 16.9, "{e}"),
+    }
+}
+
 fn replay(script: &str) -> Session {
     let mut s = Session::default();
     let script: Value = serde_json::from_str(script).unwrap();
@@ -996,4 +1024,98 @@ fn prism_edge_in_a_round_cornered_slab_end_face_joins() {
         let got = volume(&s, "Prism");
         assert!((got - (prism + slab - shared)).abs() < 1e-3 * got, "r {r}: {got} vs {}", prism + slab - shared);
     }
+}
+
+/// A cut from a face up to the plate's top face, its tool's end lying in that face: the boolean
+/// of the bodies as they lie left the hole closed by a skin of no thickness (the plate's top face
+/// whole over the hole, the tool's end face under it), which no volume shows and which was kept.
+/// The hole is open, and the cut takes the whole tool: the circle of radius 3.04 the two
+/// profiles make, from the barrel cut's floor at z 1.6 up to the plate's top at z 2.8.
+#[test]
+fn cut_up_to_the_plate_top_face_opens_the_hole() {
+    let mut script: Value = serde_json::from_str(include_str!("../../../examples/regressions/cut_up_to_face_leaves_skin.json")).unwrap();
+    let s = replay_value(&script);
+    assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results);
+    let state = s.model.state();
+    let body = &state.body("Body7").unwrap().body;
+    assert!(body.validity().is_empty(), "{:?}", body.validity());
+    let skin: Vec<f64> = body
+        .faces(1e-4)
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.plane_normal.is_some_and(|n| n.z < -0.999) && (f.centroid.z - 2.8).abs() < 1e-6)
+        .map(|f| f.area)
+        .collect();
+    assert!(skin.is_empty(), "faces at z 2.8 facing down, areas {skin:?} mm²");
+    // The same design without the cut.
+    script["commands"].as_array_mut().unwrap().pop();
+    let before = replay_value(&script);
+    let fine = |s: &Session| s.model.state().body("Body7").unwrap().body.tessellate(1e-5).unwrap().measure().volume;
+    let (removed, want) = (fine(&before) - fine(&s), std::f64::consts::PI * 3.04 * 3.04 * 1.2);
+    assert!((removed - want).abs() < 0.01, "removed {removed} mm³, want {want}");
+}
+
+fn replay_value(script: &Value) -> Session {
+    let mut s = Session::default();
+    s.run_script(script).unwrap();
+    s
+}
+
+/// A revolved cylinder (r 24) with a sealed spherical void (r 2) on its axis, cut over its bottom
+/// edge. The cut came out empty: refused for a box tool, and taken silently, the body gone, for a
+/// large rotated box whose bounding box covers the target. Both keep the body and its void, and an
+/// intersection with the box keeps the segment.
+#[test]
+fn cut_beside_a_sealed_void_keeps_the_body() {
+    use std::f64::consts::PI;
+    let r: f64 = 24.0;
+    // The circle's segment beyond a chord at `d` from the centre, and its integral over `d`.
+    let segment = |d: f64| r * r * (d / r).acos() - d * (r * r - d * d).sqrt();
+    let wedge = |d: f64| r * r * (d * (d / r).acos() - (r * r - d * d).sqrt()) + (r * r - d * d).powf(1.5) / 3.0;
+    let sphere = 4.0 / 3.0 * PI * 8.0;
+    let combine = |z: [f64; 2], tool: &[(&str, Value)], operation: &str| {
+        let mut s = Session::default();
+        s.execute("sketch.create", &json!({"plane": "YZ"})).unwrap();
+        s.execute("sketch.rectangle.two_point", &json!({"p0": [0, z[0]], "p1": [r, z[1]]})).unwrap();
+        s.execute("sketch.finish", &json!({})).unwrap();
+        s.execute("solid.revolve", &json!({"axis": "y", "operation": "new", "body_name": "B"})).unwrap();
+        let mid = (z[0] + z[1]) / 2.0;
+        s.execute("solid.sphere", &json!({"radius": 2, "center": [0, 0, mid], "operation": "new", "body_name": "V"})).unwrap();
+        s.execute("solid.combine", &json!({"target": "B", "tools": ["V"], "operation": "cut"})).unwrap();
+        for (command, params) in tool {
+            s.execute(command, params).unwrap();
+        }
+        s.execute("solid.combine", &json!({"target": "B", "tools": ["K"], "operation": operation})).unwrap_or_else(|e| panic!("{e}"));
+        let state = s.model.state();
+        let body = &state.body("B").unwrap().body;
+        assert_eq!(body.shell_count(), if operation == "cut" { 2 } else { 1 });
+        assert!(body.validity().is_empty(), "{:?}", body.validity());
+        // The revolved side's mesh stays 0.3 mm³ under its cylinder at any finer tolerance.
+        body.tessellate(1e-5).unwrap().measure().volume
+    };
+    // A box over the bottom edge: the segment beyond x = 15, 5 high.
+    let edge_box = [("solid.box", json!({"length": 15, "width": 60, "height": 10, "corner": [15, -30, -5], "operation": "new", "body_name": "K"}))];
+    let got = combine([0.0, 60.0], &edge_box, "cut");
+    let want = PI * r * r * 60.0 - sphere - 5.0 * segment(15.0);
+    println!("box beside a void: {got:.6} mm³, expected {want:.6}");
+    assert!((got - want).abs() < 1e-5 * want, "{got} vs {want}");
+    let got = combine([0.0, 60.0], &edge_box, "intersect");
+    let want = 5.0 * segment(15.0);
+    println!("box beside a void, intersected: {got:.6} mm³, expected {want:.6}");
+    assert!((got - want).abs() < 1e-5 * want, "{got} vs {want}");
+    // A 600 mm box rotated 45° about Y, its face on x - z = 116: the wedge beyond chords from
+    // x = 10 (z = -106) to x = 24 (z = -92).
+    let shift = (300.0 + 116.0 / 2f64.sqrt()) / 2f64.sqrt();
+    let got = combine(
+        [-106.0, -43.5],
+        &[
+            ("solid.box", json!({"length": 600, "width": 600, "height": 600, "center": [0, 0, 0], "operation": "new", "body_name": "K"})),
+            ("solid.move", json!({"bodies": ["K"], "axis": [0, 1, 0], "angle": -45})),
+            ("solid.move", json!({"bodies": ["K"], "translate": [shift, 0, -shift]})),
+        ],
+        "cut",
+    );
+    let want = PI * r * r * 62.5 - sphere - (wedge(r) - wedge(10.0));
+    println!("rotated box beside a void: {got:.6} mm³, expected {want:.6}");
+    assert!((got - want).abs() < 1e-5 * want, "{got} vs {want}");
 }

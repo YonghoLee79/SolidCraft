@@ -101,6 +101,10 @@ mod web {
         /// On-demand CJK font: fetched only when a CJK language is selected.
         font: solidcraft_ui_egui::fonts::CjkFontLoader,
         font_result: FontLoadResult,
+        /// The fetched CJK font's bytes: kept so a language change can re-order the fallbacks.
+        cjk_bytes: Option<Vec<u8>>,
+        /// The language the fonts were last set up for (a CJK UI leads with the CJK face).
+        font_language: String,
         space_mouse: SpaceMouse,
     }
 
@@ -375,7 +379,10 @@ mod web {
             let done = self.font_result.borrow_mut().take();
             if let Some(res) = done {
                 let installed = match res {
-                    Ok(bytes) => solidcraft_ui_egui::fonts::install_cjk_font(ctx, bytes),
+                    Ok(bytes) => {
+                        self.cjk_bytes = Some(bytes);
+                        true
+                    }
                     Err(err) => {
                         log::warn!("failed to fetch CJK font from {JAPANESE_FONT_PATH}: {err}");
                         false
@@ -387,11 +394,29 @@ mod web {
                     log::warn!("CJK font unavailable; showing English for this session");
                 }
                 self.font.finished(installed, &mut self.app.preferences.language);
+                self.apply_fonts(ctx);
                 ctx.request_repaint();
             }
             if self.font.tick(&mut self.app.preferences.language) {
                 self.fetch_font(ctx);
             }
+            // The CJK face leads only a CJK UI: its Cyrillic glyphs are full-width, so switching
+            // to Ukrainian (or English) must put the Latin face back in front.
+            if self.app.preferences.language != self.font_language {
+                self.apply_fonts(ctx);
+            }
+        }
+
+        /// Set up the UI fonts for the live language, keeping the fetched CJK font as a fallback
+        /// (it leads only for a CJK UI, see [`solidcraft_ui_egui::fonts::install_cjk_font_for`]).
+        fn apply_fonts(&mut self, ctx: &egui::Context) {
+            match self.cjk_bytes.clone() {
+                Some(bytes) => {
+                    solidcraft_ui_egui::fonts::install_cjk_font_for(ctx, bytes, &self.app.preferences.language);
+                }
+                None => solidcraft_ui_egui::fonts::setup_fonts(ctx),
+            }
+            self.font_language.clone_from(&self.app.preferences.language);
         }
 
         /// CJK text on screen with no CJK font yet (an English UI showing a Japanese name):
@@ -549,6 +574,7 @@ mod web {
                             app.home.show(rev);
                         }
                         let api = Api::install(sender, cc.egui_ctx.clone()).map_err(|e| format!("SolidCraft browser API: {e:?}"))?;
+                        let font_language = app.preferences.language.clone();
                         Ok(Box::new(Shell {
                             app,
                             api,
@@ -560,6 +586,8 @@ mod web {
                             recents_synced: false,
                             font: Default::default(),
                             font_result: Rc::new(std::cell::RefCell::new(None)),
+                            cjk_bytes: None,
+                            font_language,
                             space_mouse: SpaceMouse::default(),
                         }))
                     }),

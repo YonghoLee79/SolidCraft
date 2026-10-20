@@ -513,6 +513,13 @@ pub struct SheetBody {
     /// The base sketch's lines (id, ends in flat coordinates), naming the base panel's edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub base_curves: Vec<(String, Vec2, Vec2)>,
+    /// The feature (its name) that changed this body's material without changing its sheet
+    /// model: a fillet or chamfer, a join, a mirror combined into it, any feature that is not
+    /// sheet metal machining. The flat pattern, its DXF and the bend table no longer describe the
+    /// body while it is set, so they are refused. Cleared when a sheet metal feature rebuilds the
+    /// body from the model. Derived from feature history, like `pockets`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub altered_by: Option<String>,
 }
 
 /// A straight round bore of one panel (None = the base), in flat coordinates: a cylinder from
@@ -849,6 +856,20 @@ struct ReturnCorner {
 }
 
 impl SheetBody {
+    /// Whether the flat pattern still describes the body: refused, naming the feature, once a
+    /// feature that is not sheet metal changed the body's material (see `altered_by`). The flat
+    /// pattern, its DXF and the bend table all check it, so none of them makes a part other than
+    /// the one in the design.
+    pub fn flat_matches_body(&self) -> Result<()> {
+        match &self.altered_by {
+            None => Ok(()),
+            Some(feature) => Err(DocError::Invalid(format!(
+                "not supported yet: the flat pattern of `{}` can't include {feature}, which changed the body after its sheet metal features, so the flat pattern, DXF and bend table would not match the part; remove or suppress {feature}, or make that shape with sheet metal features",
+                self.body
+            ))),
+        }
+    }
+
     /// Bend allowance of a flange.
     pub fn allowance(&self, f: &SheetFlange) -> f64 {
         f.angle.abs() * (f.radius + self.k * self.t)
@@ -943,27 +964,32 @@ impl SheetBody {
 
     /// The part of a bend along its parent's edge: where a later flange trimmed that edge back
     /// (a corner) or a corner relief cut into it, the bend stops and the flange panel runs on
-    /// alone.
+    /// alone. A setback on the flange panel's side also limits the bend to that panel's edge.
     pub fn zone_span(&self, f: &SheetFlange) -> (f64, f64) {
-        if f.parent.is_some() {
-            return (0.0, f.len);
-        }
-        let pts = self.base.outer.ccw().polyline(1e-3);
-        let m = pts.len();
-        let mut span: Option<(f64, f64)> = None;
-        for k in 0..m {
-            let (Some(&a), Some(&b)) = (pts.get(k), pts.get((k + 1) % m)) else { continue };
-            let on = (a - f.p).dot(f.n).abs() < 1e-6 && (b - f.p).dot(f.n).abs() < 1e-6;
-            if !on {
-                continue;
+        let edge_span = |pts: &[Vec2], origin: Vec2| {
+            let m = pts.len();
+            let mut span: Option<(f64, f64)> = None;
+            for k in 0..m {
+                let (Some(&a), Some(&b)) = (pts.get(k), pts.get((k + 1) % m)) else { continue };
+                let on = (a - origin).dot(f.n).abs() < 1e-6 && (b - origin).dot(f.n).abs() < 1e-6;
+                if !on {
+                    continue;
+                }
+                let (ua, ub) = ((a - f.p).dot(f.d), (b - f.p).dot(f.d));
+                let (lo, hi) = (ua.min(ub).max(0.0), ua.max(ub).min(f.len));
+                if hi > lo + 1e-9 {
+                    span = Some(span.map_or((lo, hi), |(x, y)| (x.min(lo), y.max(hi))));
+                }
             }
-            let (ua, ub) = ((a - f.p).dot(f.d), (b - f.p).dot(f.d));
-            let (lo, hi) = (ua.min(ub).max(0.0), ua.max(ub).min(f.len));
-            if hi > lo + 1e-9 {
-                span = Some(span.map_or((lo, hi), |(x, y)| (x.min(lo), y.max(hi))));
-            }
+            span
+        };
+        let span = if f.parent.is_none() { edge_span(&self.base.outer.ccw().polyline(1e-3), f.p) } else { None }.unwrap_or((0.0, f.len));
+        if let Some(shape) = &f.shape
+            && let Some((lo, hi)) = edge_span(shape, f.p + f.n * self.allowance(f))
+        {
+            return (span.0.max(lo), span.1.min(hi));
         }
-        span.unwrap_or((0.0, f.len))
+        span
     }
 
     fn frame_mat(&self) -> Mat {
@@ -2175,15 +2201,37 @@ impl SheetBody {
                 self.base = Region2 { outer: exact.unwrap_or_else(|| Loop2::polygon(&cut).ccw()), holes: self.base.holes.clone() };
             }
             Some(i) => {
-                // A flange panel: its far edge shortens the leg; side edges are not trimmed.
+                let original = self.flanges.get(i).ok_or_else(|| DocError::Invalid("flange".into()))?;
+                let side = inward.dot(original.n * -1.0) <= 0.99;
+                if inward.dot(original.n) > 0.99 {
+                    return Err(DocError::Invalid("pick a free panel edge, not its connection to the existing bend".into()));
+                }
+                if side && (cut_at.0 || cut_at.1) {
+                    return Err(DocError::Invalid("not supported yet: a partial side-edge flange beside a cut-out".into()));
+                }
+                let clipped = if side || original.shape.is_some() || original.exact.is_some() {
+                    let region = self.panel(original);
+                    if !region.outer.segs.iter().all(|s| matches!(s, Seg2::Line { .. })) {
+                        return Err(DocError::Invalid("not supported yet: a flange setback on a curved flange panel".into()));
+                    }
+                    let points = clip(&region.outer.ccw().polyline(1e-3), a + inward * by, inward);
+                    if points.len() < 3 {
+                        return Err(DocError::Invalid("the flange's setback removes the whole panel".into()));
+                    }
+                    Some(points)
+                } else {
+                    None
+                };
                 let Some(f) = self.flanges.get_mut(i) else { return Err(DocError::Invalid("flange".into())) };
-                if inward.dot(f.n * -1.0) > 0.99 {
+                if !side {
                     f.leg -= by;
                     if f.leg < -1e-9 {
                         return Err(DocError::Invalid("the flange's setback is longer than the panel".into()));
                     }
-                } else {
-                    return Err(DocError::Invalid("not supported yet: a flange on the side of another flange".into()));
+                }
+                if let Some(points) = clipped {
+                    f.shape = Some(points);
+                    f.exact = None;
                 }
             }
         }
@@ -2272,6 +2320,25 @@ impl SheetBody {
                 return Err(DocError::Invalid("pick an edge of the sheet's top or bottom face".into()));
             }
             let d = (b - a).normalized().ok_or_else(|| DocError::Invalid("edge".into()))?;
+            // A bend line is no free edge: the base's or the parent panel's edge where a flange
+            // starts, or the flange panel's edge where its bend ends.
+            let outward = Vec2::new(d.y, -d.x);
+            let on_bend = self.flanges.iter().enumerate().any(|(i, f)| {
+                let (at, facing) = if panel == f.parent {
+                    (f.p, 1.0)
+                } else if panel == Some(i) {
+                    (f.p + f.n * self.allowance(f), -1.0)
+                } else {
+                    return false;
+                };
+                let along = |p: Vec2| p.dot(f.d);
+                outward.dot(f.n) * facing > 0.99
+                    && (a - at).dot(f.n).abs() < 1e-6
+                    && along(a).max(along(b)).min(along(f.p) + f.len) - along(a).min(along(b)).max(along(f.p)) > 1e-6
+            });
+            if on_bend {
+                return Err(DocError::Invalid(format!("{}that edge is the bend line of a flange; pick a free edge of the sheet", on(k))));
+            }
             let (s0, s1) = self
                 .edge_left(panel, a, b, e.pick, &cuts)
                 .ok_or_else(|| DocError::Invalid(format!("{}a cut-out has taken that edge away; pick an edge the sheet still has", on(k))))?;
@@ -2310,21 +2377,28 @@ impl SheetBody {
                         .copied()
                         .ok_or_else(|| DocError::Invalid("the flange's edge was trimmed away".into()))?
                 }
-                Some(i) => {
+                Some(i) if self.flanges.get(i).is_some_and(|f| d.dot(f.d) > 1.0 - 1e-9 && f.shape.is_none()) => {
                     let f = self.flanges.get(i).ok_or_else(|| DocError::Invalid("flange".into()))?;
                     let tip = f.p + f.n * (self.allowance(f) + f.leg);
-                    if f.shape.is_some() {
-                        let u0 = (line_o - f.p).dot(f.d).clamp(0.0, f.len);
-                        (tip + f.d * u0, f.len)
-                    } else {
-                        // The panel's far edge, end to end: where a closed corner ran the panel on
-                        // or cut it back (slanted or not), the flange on it follows.
-                        let (lo, hi) = self.far_edge(f);
-                        if !(hi - lo > 1e-9) {
-                            return Err(DocError::Invalid("the flange's edge was trimmed away".into()));
-                        }
-                        (tip + f.d * lo, hi - lo)
+                    let (lo, hi) = self.far_edge(f);
+                    if !(hi - lo > 1e-9) {
+                        return Err(DocError::Invalid("the flange's edge was trimmed away".into()));
                     }
+                    (tip + f.d * lo, hi - lo)
+                }
+                Some(i) => {
+                    let f = self.flanges.get(i).ok_or_else(|| DocError::Invalid("flange".into()))?;
+                    let points = self.panel(f).outer.ccw().polyline(1e-3);
+                    let count = points.len();
+                    (0..count)
+                        .filter_map(|index| {
+                            let (p0, p1) = (*points.get(index)?, *points.get((index + 1) % count)?);
+                            let edge = p1 - p0;
+                            let on = (p0 - line_o).dot(outward).abs() < 1e-6 && (p1 - line_o).dot(outward).abs() < 1e-6;
+                            (on && edge.dot(d) > 1e-9).then_some((p0, edge.len()))
+                        })
+                        .find(|(p0, len)| (p0.dot(d) + len).min(b.dot(d)) - p0.dot(d).max(a.dot(d)) > 1e-9)
+                        .ok_or_else(|| DocError::Invalid("the flange's edge was trimmed away".into()))?
                 }
             };
             // Where a cut-out ends the edge, the flange ends with it.
@@ -2367,7 +2441,101 @@ impl SheetBody {
         }
         notes.extend(self.close_corners(&made, relief));
         notes.extend(self.close_return_corners(&made));
+        notes.extend(self.close_side_corners(&made, relief));
         Ok((made, notes))
+    }
+
+    fn close_side_corners(&mut self, made: &[usize], relief: ReliefOverride) -> Vec<String> {
+        let mut pairs = Vec::new();
+        for &child in made {
+            let Some(flange) = self.flanges.get(child) else { continue };
+            let Some(parent) = flange.parent.and_then(|index| self.flanges.get(index)) else { continue };
+            if flange.d.dot(parent.d).abs() > 1e-6 {
+                continue;
+            }
+            let allowance = self.allowance(parent);
+            for (child_end, cb) in [(false, flange.p), (true, flange.p + flange.d * flange.len)] {
+                if ((cb - parent.p).dot(parent.n) - allowance).abs() > 1e-6 {
+                    continue;
+                }
+                let ca = cb - parent.n * allowance;
+                for &other in made {
+                    let Some(neighbour) = self.flanges.get(other) else { continue };
+                    if other == child || neighbour.parent != parent.parent || neighbour.d.dot(parent.d).abs() > 1e-6 {
+                        continue;
+                    }
+                    for (other_end, end) in [(false, neighbour.p), (true, neighbour.p + neighbour.d * neighbour.len)] {
+                        if end.dist(ca) < 1e-6 {
+                            pairs.push(ReturnCorner { a: other, a_end: other_end, b: child, b_end: child_end, ca, cb });
+                        }
+                    }
+                }
+            }
+        }
+        let mut notes = Vec::new();
+        for corner in pairs {
+            match self.close_returns(&corner) {
+                Ok(true) => {
+                    if let Err(why) = self.relieve_side_corner(&corner, relief) {
+                        notes.push(format!("no corner relief at {}: {why}", self.shown(corner.ca)));
+                    }
+                }
+                Ok(false) => {}
+                Err(why) => notes.push(format!("the flanges at {} are left open: {why}", self.shown(corner.ca))),
+            }
+        }
+        notes
+    }
+
+    fn relieve_side_corner(&mut self, corner: &ReturnCorner, relief: ReliefOverride) -> std::result::Result<(), String> {
+        let shape = relief.shape.unwrap_or(self.relief);
+        if shape == ReliefShape::Notch {
+            return Ok(());
+        }
+        if shape == ReliefShape::Tear {
+            return Err("a tear across an existing bend is not supported yet; the corner keeps its notch".into());
+        }
+        let size = relief.size.unwrap_or(self.relief_size);
+        if !(size >= MIN_CORNER_RELIEF && size.is_finite()) {
+            return Err(format!("the relief size {size:.4} mm is below {MIN_CORNER_RELIEF} mm or is not finite"));
+        }
+        let (Some(first), Some(second)) = (self.flanges.get(corner.a), self.flanges.get(corner.b)) else {
+            return Err("a flange is missing".into());
+        };
+        let Some(parent) = second.parent.and_then(|index| self.flanges.get(index)) else {
+            return Err("the supporting bend is missing".into());
+        };
+        let radius = size / 2.0;
+        if radius >= first.len.min(second.len).min(parent.leg) - 1e-6 {
+            return Err(format!("a relief {size:.3} mm across would take a whole bend or panel away"));
+        }
+        let (start, end, along, across) = (corner.ca, corner.cb, parent.n, parent.d);
+        let outer = match shape {
+            ReliefShape::Round => Loop2 {
+                segs: vec![
+                    Seg2::Line { a: start - across * radius, b: end - across * radius },
+                    Seg2::Arc { center: end, radius, start: (across * -1.0).angle(), sweep: std::f64::consts::PI },
+                    Seg2::Line { a: end + across * radius, b: start + across * radius },
+                    Seg2::Arc { center: start, radius, start: across.angle(), sweep: std::f64::consts::PI },
+                ],
+            }
+            .ccw(),
+            ReliefShape::Rectangular => Loop2::polygon(&[
+                start - across * radius - along * radius,
+                end - across * radius + along * radius,
+                end + across * radius + along * radius,
+                start + across * radius - along * radius,
+            ])
+            .ccw(),
+            ReliefShape::Notch | ReliefShape::Tear => return Ok(()),
+        };
+        let mut relieved = self.clone();
+        relieved.holes.push(Region2 { outer, holes: Vec::new() });
+        if relieved.flat_regions().map_err(|error| error.to_string())?.len() != 1 {
+            return Err("the relief would split the flat pattern".into());
+        }
+        self.holes = relieved.holes;
+        Ok(())
     }
 
     /// Where the bend of flange `i` on the base ends beside more of the base (the flange's edge
@@ -2827,22 +2995,22 @@ impl SheetBody {
                         Err(why) => notes.push(format!("no corner relief at {}: {why}", self.shown(k.c))),
                     }
                 }
-                // The reliefs at the two ends of one edge must not overlap: the one planned later
-                // is left out, with a note.
+                // Two reliefs must not overlap. Two corners that share an edge never come here:
+                // each relief reaches exactly `r` along that edge, and `plan_relief` refuses
+                // unless `2r` fits in it. Two corners that do not share one can: the square
+                // relief at a corner of 120° reaches `2r` from it, along the bisector. Two that
+                // would overlap are left out together, each with a note naming the other, so
+                // that which of them is cut does not depend on the order the corners come in.
                 let mut kept: Vec<PlannedRelief> = Vec::with_capacity(planned.len());
-                for p in planned {
-                    let mut clash = None;
-                    for q in &kept {
-                        if convex_overlap(&q.cut, &p.cut) > 1e-9 {
-                            clash = Some(q.corner.c);
-                            break;
-                        }
-                    }
+                for (i, p) in planned.iter().enumerate() {
+                    let clash = planned.iter().enumerate().find(|(j, q)| *j != i && convex_overlap(&q.cut, &p.cut) > 1e-9);
                     match clash {
-                        Some(at) => {
-                            notes.push(format!("no corner relief at {}: it would overlap the relief at {}", self.shown(p.corner.c), self.shown(at)))
-                        }
-                        None => kept.push(p),
+                        Some((_, q)) => notes.push(format!(
+                            "no corner relief at {}: it would overlap the relief at {}",
+                            self.shown(p.corner.c),
+                            self.shown(q.corner.c)
+                        )),
+                        None => kept.push(p.clone()),
                     }
                 }
                 for p in &kept {
@@ -4215,6 +4383,7 @@ pub fn base_flange(body: &str, rule: &str, rv: &RuleValues, plane: Plane, region
         relief_size: rv.corner_relief,
         bend_relief: (rv.relief_width, rv.relief_depth),
         base_curves: Vec::new(),
+        altered_by: None,
     }
 }
 
@@ -4273,6 +4442,7 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
         relief_size: rv.corner_relief,
         bend_relief: (rv.relief_width, rv.relief_depth),
         base_curves: Vec::new(),
+        altered_by: None,
     };
     let (y0, y1) = if ysign > 0.0 { (0.0, width) } else { (-width, 0.0) };
     // First segment: the base panel.
@@ -5465,6 +5635,54 @@ mod tests {
         c + bisector * (s0 / (alpha / 2.0).sin())
     }
 
+    /// Two corner reliefs that would overlap are both left out. The two corners do not share an
+    /// edge: they are the 120° ones opposite each other in a rhombus, and the square relief at
+    /// each reaches 2r from it along the bisector, so the two reach each other.
+    #[test]
+    fn two_reliefs_that_would_overlap_are_both_left_out() {
+        // A rhombus of 120° and 60° corners, with a flange on each of its four edges. The two
+        // 120° corners are 12 mm apart in the trimmed base; a square relief 8 mm across reaches
+        // 4 mm along the edge it starts on and 8 mm along the bisector, so the two meet.
+        let l = 12.0 + 4.0 * 3.0f64.sqrt();
+        let u = Vec2::from_angle(std::f64::consts::FRAC_PI_3);
+        let pts = [Vec2::new(0.0, 0.0), Vec2::new(l / 2.0, l * u.y), Vec2::new(l, 0.0), Vec2::new(l / 2.0, -l * u.y)];
+        let base = || Region2 { outer: Loop2::polygon(&pts).ccw(), holes: vec![] };
+        let picks = [
+            Vec3::new(l / 4.0, l * u.y / 2.0, 2.0),
+            Vec3::new(l * 0.75, l * u.y / 2.0, 2.0),
+            Vec3::new(l * 0.75, -l * u.y / 2.0, 2.0),
+            Vec3::new(l / 4.0, -l * u.y / 2.0, 2.0),
+        ];
+        let flange = |i: usize| EdgeFlange { pick: picks[i], height: 38.6, angle: 90f64.to_radians() };
+        // The round relief reaches r from its corner and the two are 12 mm apart: it fits at both.
+        for shape in [ReliefShape::Round, ReliefShape::Rectangular] {
+            let what = format!("{shape:?} at two corners opposite each other");
+            let rv = RuleValues { corner_relief_shape: shape, corner_relief: 8.0, ..alu() };
+            // The same four flanges, made in another order: the corners that keep their relief
+            // must not depend on it.
+            for order in [[0, 1, 2, 3], [3, 2, 1, 0]] {
+                let each: Vec<EdgeFlange> = order.iter().map(|&i| flange(i)).collect();
+                let (s, notes) = flanges_each(base(), &rv, &each);
+                if shape == ReliefShape::Round {
+                    assert!(notes.is_empty(), "{what}: {order:?}: {notes:?}");
+                    // A round at each of the four corners.
+                    assert_eq!(s.base.outer.segs.len(), 8, "{what}: {order:?}: {:?}", s.base.outer.segs);
+                    continue;
+                }
+                // The two reliefs that would overlap are both left out, each with a note naming
+                // the other.
+                assert_eq!(notes.len(), 2, "{what}: {order:?}: {notes:?}");
+                for n in &notes {
+                    assert!(n.starts_with("no corner relief at (") && n.contains("it would overlap the relief at ("), "{what}: {notes:?}");
+                }
+                // The two kites at the 60° corners are cut, the ones at the 120° corners are
+                // not: the base keeps four of its edges and gains the two kites.
+                assert_eq!(s.base.outer.segs.len(), 8, "{what}: {order:?}: {:?}", s.base.outer.segs);
+                holds_the_flat_material(&s, &what);
+            }
+        }
+    }
+
     /// The corner reliefs at the corners that are not square: a 60° and a 120° one, each of the
     /// four shapes. The relief is cut `size / 2` from the corner along both edges, the bends stop
     /// there, and the flat pattern keeps one clean loop.
@@ -5660,6 +5878,113 @@ mod tests {
         let (s, notes) = triangle(130.0);
         assert!(notes.is_empty() && s.base.outer.segs.len() == 4, "{notes:?}");
         holds_the_flat_material(&s, "the triangle");
+    }
+
+    #[test]
+    fn edge_flange_on_a_folded_panels_side_keeps_its_flat_material() {
+        let base = rect(Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0));
+        let mut s = base_flange("Body1", "AL2", &alu(), Plane::XY, base);
+        let angle = std::f64::consts::FRAC_PI_2;
+        let wall = s.add_flange(Vec3::new(60.0, 0.0, 2.0), 30.0, angle, 1.0, "inside", false).unwrap();
+        let parent = s.flanges.get(wall).unwrap().clone();
+        let flat = parent.p + parent.d * parent.len + parent.n * (s.allowance(&parent) + parent.leg * 0.5);
+        let pick = apply_point(&s.world(Some(wall)), Vec3::new(flat.x, flat.y, s.t));
+        let child = s.add_flange(pick, 20.0, angle, 1.0, "inside", false).unwrap();
+        let flange = s.flanges.get(child).unwrap();
+        assert_eq!(flange.parent, Some(wall));
+        assert!(flange.d.dot(parent.n).abs() > 0.99);
+        assert!((flange.len - parent.leg).abs() < 1e-6);
+        holds_the_flat_material(&s, "a flange on a folded panel's side");
+    }
+
+    #[test]
+    fn edge_flanges_across_an_existing_bend_close_their_corner() {
+        for position in ["inside", "outside", "middle"] {
+            for reverse in [false, true] {
+                for flip in [false, true] {
+                    for right in [false, true] {
+                        for wall_angle in [60.0_f64, 90.0, 120.0] {
+                            let base = rect(Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0));
+                            let mut s = base_flange("Body1", "AL2", &alu(), Plane::XY, base);
+                            let angle = std::f64::consts::FRAC_PI_2;
+                            let wall = s.add_flange(Vec3::new(60.0, 0.0, 2.0), 60.0, wall_angle.to_radians(), 1.0, "inside", false).unwrap();
+                            let parent = s.flanges.get(wall).unwrap();
+                            let flat =
+                                parent.p + parent.d * if right { parent.len } else { 0.0 } + parent.n * (s.allowance(parent) + parent.leg * 0.5);
+                            let side = apply_point(&s.world(Some(wall)), Vec3::new(flat.x, flat.y, s.t));
+                            let mut picks = [Vec3::new(if right { 120.0 } else { 0.0 }, 45.0, 2.0), side];
+                            if reverse {
+                                picks.reverse();
+                            }
+                            let what = format!("{position}, reverse={reverse}, flip={flip}, right={right}, wall={wall_angle}");
+                            let (made, notes) = s.add_flanges_noted(&picks, 20.0, angle, 1.0, position, flip).unwrap();
+                            if flip && !notes.is_empty() {
+                                assert!(
+                                    notes.iter().all(|note| note.contains("overlap in the flat pattern") || note.contains("cut a panel away")),
+                                    "{what}: {notes:?}"
+                                );
+                                holds_the_flat_material(&s, &what);
+                                continue;
+                            }
+                            assert!(notes.is_empty(), "{what}: {notes:?}");
+                            assert!(
+                                made.iter().any(|&index| {
+                                    let flange = s.flanges.get(index).unwrap();
+                                    flange.slope.0.abs() > 0.1 || flange.slope.1.abs() > 0.1
+                                }),
+                                "the corner was not mitred: {what}"
+                            );
+                            holds_the_flat_material(&s, &what);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_side_flange_setback_also_limits_the_existing_bend() {
+        for (position, right) in [("middle", false), ("middle", true), ("inside", false), ("inside", true)] {
+            let base = rect(Vec2::new(-110.0, -214.0), Vec2::new(110.0, -214.0), Vec2::new(110.0, 73.22), Vec2::new(-110.0, 73.22));
+            let rule = RuleValues { thickness: 5.0, bend_radius: 5.0, gap: 5.0, k_factor: 0.44, ..alu() };
+            let mut s = base_flange("Body1", "AL2", &rule, Plane::XY, base);
+            let angle = std::f64::consts::FRAC_PI_2;
+            let wall = s.add_flange(Vec3::new(0.0, -214.0, 5.0), 550.0, angle, 5.0, "middle", false).unwrap();
+            s.add_flanges(&[Vec3::new(110.0, -50.0, 0.0), Vec3::new(-110.0, -50.0, 0.0)], 50.0, angle, 5.0, "middle", false).unwrap();
+            let parent = s.flanges.get(wall).unwrap();
+            let point = parent.p + parent.d * if right { parent.len } else { 0.0 } + parent.n * (s.allowance(parent) + parent.leg * 0.5);
+            let side = apply_point(&s.world(Some(wall)), Vec3::new(point.x, point.y, 0.0));
+            let (_, notes) = s.add_flanges_noted(&[side], 40.0, angle, 5.0, position, false).unwrap();
+            assert!(notes.is_empty(), "{notes:?}");
+            let parent = s.flanges.get(wall).unwrap();
+            let panel = s.panel(parent).outer.ccw().polyline(1e-3);
+            let panel_start = panel.iter().map(|point| (*point - parent.p).dot(parent.d)).fold(f64::INFINITY, f64::min);
+            let panel_end = panel.iter().map(|point| (*point - parent.p).dot(parent.d)).fold(f64::NEG_INFINITY, f64::max);
+            let (bend_start, bend_end) = s.zone_span(parent);
+            assert!(bend_start >= panel_start - 1e-6, "{position}: bend starts at {bend_start}, before panel at {panel_start}");
+            assert!(bend_end <= panel_end + 1e-6, "{position}: bend ends at {bend_end}, beyond panel at {panel_end}");
+            assert!(s.solid().is_ok());
+            assert_eq!(s.flat_regions().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn corners_across_a_bend_cut_the_selected_relief_in_the_flat_material() {
+        for shape in [ReliefShape::Round, ReliefShape::Rectangular] {
+            let base = rect(Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0));
+            let mut s = base_flange("Body1", "AL2", &alu(), Plane::XY, base);
+            let angle = std::f64::consts::FRAC_PI_2;
+            let wall = s.add_flange(Vec3::new(60.0, 0.0, 2.0), 30.0, angle, 1.0, "inside", false).unwrap();
+            let parent = s.flanges.get(wall).unwrap();
+            let point = parent.p + parent.d * parent.len + parent.n * (s.allowance(parent) + parent.leg * 0.5);
+            let side = apply_point(&s.world(Some(wall)), Vec3::new(point.x, point.y, s.t));
+            let edges = [Vec3::new(120.0, 45.0, 2.0), side].map(|pick| EdgeFlange { pick, height: 20.0, angle });
+            let (_, notes) = s.add_flanges_each(&edges, 1.0, "inside", false, ReliefOverride { shape: Some(shape), size: Some(4.0) }).unwrap();
+            assert!(notes.is_empty(), "{shape:?}: {notes:?}");
+            assert_eq!(s.holes.len(), 1);
+            assert!(!s.flat_regions().unwrap().iter().any(|region| region.contains(Vec2::new(116.0, 1.5))));
+            holds_the_flat_material(&s, &format!("{shape:?} relief across a bend"));
+        }
     }
 
     #[test]

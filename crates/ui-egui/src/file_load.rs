@@ -737,13 +737,14 @@ fn compute(
     phase.store(1, Ordering::Relaxed);
     let world = session.world_state();
     let placement_ms = view_began.elapsed().as_secs_f64() * 1000.0;
-    let mesh_began = std::time::Instant::now();
-    // Fit, picking and the first viewport frame must not trigger cold tessellation on the UI.
-    world.warm_meshes(|| !progress.is_cancelled());
-    if progress.is_cancelled() {
-        return cancelled();
-    }
-    let tessellation_ms = mesh_began.elapsed().as_secs_f64() * 1000.0;
+    // The display meshes are made once the design is in the window, which shows its bodies as
+    // they come ([`crate::open_meshing`]): framing, picking and drawing never mesh on the UI.
+    // Its outlines frame it in the window until it is meshed: measured here, not there.
+    solidcraft_engine::kernel::for_each_on_threads(&world.bodies, 16, |b| {
+        let _ = b.outline_bounds();
+    });
+    drop(world);
+    let tessellation_ms = 0.0;
     phase.store(2, Ordering::Relaxed);
     let view_ms = view_began.elapsed().as_secs_f64() * 1000.0;
     if profile {
@@ -794,6 +795,9 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             }
             _ if running.cancelled() => request.answer(Err("file operation cancelled".into())),
             Ok(made) if running.matches(&app.session) => {
+                // Not meshed yet: framing it while it goes in must not mesh it here.
+                app.open_meshing_next = true;
+                crate::frame_watch::step(app, "before the open");
                 if request.insert() {
                     app.session.accept_computed(made.session);
                     app.big_operation = true;
@@ -801,17 +805,19 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
                     crate::documents::adopt(app, made.session);
                     if request.kind == Kind::Open {
                         app.home.add_recent(&request.path);
-                        if made.thumbnail {
-                            crate::home::remember_source(&mut app.home, &app.session, &request.path);
-                        }
                     }
                 }
                 app.home.open = false;
-                app.fit_view();
+                crate::frame_watch::step(app, "adopt the design");
+                // Shown as its bodies are meshed, framed from their outlines meanwhile; its Home
+                // picture is drawn once they all are.
+                crate::open_meshing::start(app, (request.kind == Kind::Open && made.thumbnail).then(|| request.path.clone()));
+                crate::frame_watch::step(app, "start meshing and frame");
                 // A caller that said which way is up has been answered: no offer to stand the part up.
                 if (request.kind == Kind::Open || request.insert()) && !request.options.contains_key("up") {
                     crate::stand_up::offer(app, &request.path, &running.before, Some(&made.result));
                 }
+                crate::frame_watch::step(app, "stand-up offer");
                 let warnings = made.result.get("warnings").and_then(Value::as_array);
                 if let Kind::Recover { .. } = request.kind {
                     recovered(app, request);
@@ -855,6 +861,17 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
 /// The light overlay over everything under the title bar while a file loads. The title bar,
 /// its window buttons and the window's resize edges stay live; the design underneath takes no
 /// pointer input until the file is in.
+/// What a file operation under way is doing (for the frame watch), if one is.
+pub(crate) fn phase(app: &SolveApp) -> Option<&'static str> {
+    let r = app.file_load.running.as_ref()?;
+    Some(match (r.staged.is_some(), r.phase.load(Ordering::Relaxed)) {
+        (true, 0) => "reading the file (staged)",
+        (_, 0) => "reading the file",
+        (_, 1) => "preparing the view",
+        _ => "finishing the open",
+    })
+}
+
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(r) = &app.file_load.running else { return };
     let cancelled = r.cancelled();
