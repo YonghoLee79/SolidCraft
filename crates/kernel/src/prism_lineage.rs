@@ -293,8 +293,8 @@ impl<'a> Context<'a> {
     /// `t1`) runs into the second (`t2`), between levels `lo` and `hi`: the operand's edge there
     /// between its walls (along the line through the operand vertex the segments meet at, else
     /// the one edge between them), where two operands' walls meet, or none within one wall (a
-    /// segment split there).
-    fn junction(&self, t1: Tag, t2: Tag, lo: f64, hi: f64) -> Option<Vec<EdgeOrigin>> {
+    /// segment split there). The edge stands at `near` in plan.
+    fn junction(&self, t1: Tag, t2: Tag, lo: f64, hi: f64, near: Vec2) -> Option<Vec<EdgeOrigin>> {
         let (p, q) = (Self::wall(t1)?, Self::wall(t2)?);
         if t1.operand != t2.operand {
             return Some(vec![EdgeOrigin::meet(p, q)]);
@@ -303,12 +303,12 @@ impl<'a> Context<'a> {
         match (t1.end, t2.start) {
             // At that vertex: the operand's edge there (a seam, within one wall), else two edges
             // of one wall's cap outline running on through it.
-            (Some(v), Some(u)) if v == u => self.edge_over(x, [w1, w2], Some(v), lo, hi).or_else(|| (w1 == w2).then(Vec::new)),
+            (Some(v), Some(u)) if v == u => self.edge_over(x, [w1, w2], Some(v), lo, hi, near).or_else(|| (w1 == w2).then(Vec::new)),
             _ if w1 == w2 => Some(Vec::new()),
             // Elsewhere (a segment split off there, or read off another cap): only the operand's
             // walls are around the edge, so the operand has its edge between them there, and
             // that is the one edge between them over these levels where there is one.
-            _ => self.edge_over(x, [w1, w2], None, lo, hi),
+            _ => self.edge_over(x, [w1, w2], None, lo, hi, near),
         }
     }
 
@@ -316,8 +316,9 @@ impl<'a> Context<'a> {
     /// when it has exactly one; with `at`, among the edges between them chained to that vertex.
     /// The segments' vertex was read at one level and carried through others, and the line
     /// between two walls is in several edges where vertices an earlier operation left (stations)
-    /// split it: the levels say which of them a slab's edge runs along.
-    fn edge_over(&self, operand: usize, faces: [usize; 2], at: Option<usize>, lo: f64, hi: f64) -> Option<Vec<EdgeOrigin>> {
+    /// split it: the levels say which of them a slab's edge runs along. Two walls meeting at both
+    /// ends (two halves of one cylinder, #2844) have two such edges: the one at `near` in plan.
+    fn edge_over(&self, operand: usize, faces: [usize; 2], at: Option<usize>, lo: f64, hi: f64, near: Vec2) -> Option<Vec<EdgeOrigin>> {
         let index = self.index.get(operand)?;
         let between = self.edges_between(operand, faces);
         if between.len() > 4096 {
@@ -337,13 +338,23 @@ impl<'a> Context<'a> {
             }
         }
         let height = |v: Option<usize>| v.and_then(|v| index.points.get(v)).map(|p| self.plane.height(*p));
-        let mut over = between.iter().zip(&ends).zip(chained).filter_map(|((e, (front, back)), chained)| {
-            let (a, b) = (height(*front)?, height(*back)?);
-            (chained && a.min(b) <= lo + self.tol && a.max(b) >= hi - self.tol).then_some(*e)
-        });
-        match (over.next(), over.next()) {
-            (Some(edge), None) => Some(vec![EdgeOrigin::Edge { operand, edge }]),
-            _ => None,
+        let over: Vec<(usize, Option<usize>)> = between
+            .iter()
+            .zip(&ends)
+            .zip(chained)
+            .filter_map(|((e, (front, back)), chained)| {
+                let (a, b) = (height(*front)?, height(*back)?);
+                (chained && a.min(b) <= lo + self.tol && a.max(b) >= hi - self.tol).then_some((*e, *front))
+            })
+            .collect();
+        let here = |v: &Option<usize>| v.and_then(|v| index.points.get(v)).is_some_and(|p| self.plane.to_local(*p).dist(near) < self.tol * 10.0);
+        match over.as_slice() {
+            [(edge, _)] => Some(vec![EdgeOrigin::Edge { operand, edge: *edge }]),
+            [_, _, ..] => match over.iter().filter(|(_, front)| here(front)).collect::<Vec<_>>().as_slice() {
+                [(edge, _)] => Some(vec![EdgeOrigin::Edge { operand, edge: *edge }]),
+                _ => None,
+            },
+            [] => None,
         }
     }
 
@@ -456,7 +467,7 @@ impl<'a> Context<'a> {
                         let (t, u) = (tag(layer, s)?, tag(layer, next)?);
                         // A segment the extrude split in two runs on through the vertex between.
                         let (t, u) = if split { (Tag { end: None, ..t }, Tag { start: None, ..t }) } else { (t, u) };
-                        o.extend(self.junction(t, u, *lo, *hi)?);
+                        o.extend(self.junction(t, u, *lo, *hi, self.plane.to_local(from_p3(e.absolute_front().point())))?);
                     }
                     o.into_iter().collect()
                 }
@@ -522,9 +533,9 @@ impl<'a> Context<'a> {
                     let p = self.plane.to_local(front);
                     let at = |q: &Vec2| p.dist(*q) < self.tol * 10.0;
                     if s.next == j && at(&s.at) {
-                        self.junction(s.tag, t.tag, lo, hi)?
+                        self.junction(s.tag, t.tag, lo, hi, p)?
                     } else if t.next == i && at(&t.at) {
-                        self.junction(t.tag, s.tag, lo, hi)?
+                        self.junction(t.tag, s.tag, lo, hi, p)?
                     } else {
                         return None;
                     }
