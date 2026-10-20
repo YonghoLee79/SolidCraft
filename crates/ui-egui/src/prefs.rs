@@ -361,21 +361,21 @@ pub struct Prefs {
     pub check_updates: bool,
     /// When the last update check ran, and the versions skipped or put off (`update::Memo`).
     pub update: crate::update::Memo,
-    /// Save as mesh: the last format (`stl` or `3mf`), whether it was sent to a slicer, which one
-    /// (an installed slicer's id or a program path), and the programs the user added (newest first).
+    /// Save as mesh: the last format (`stl` or `3mf`). Older versions also kept a "send to slicer"
+    /// choice here (`save_mesh_send`, `save_mesh_slicer`); a settings file that still has them loads,
+    /// and they are ignored.
     pub save_mesh_format: String,
     /// Hidden edges in the current-view DXF export (false: omit, true: dashed).
     pub view_dxf_dashed: bool,
     /// Model-space chord tolerance for current-view DXF curves, in millimetres.
     pub view_dxf_tolerance: f64,
-    pub save_mesh_send: bool,
-    pub save_mesh_slicer: String,
-    /// Open in Slicer: the last slicer used (same kind of key as `save_mesh_slicer`).
+    /// Open in Slicer: the last slicer used (an installed slicer's id or a program path).
     pub open_slicer: String,
     /// Slicers that can load a file into the window that is already open do so (default on).
     pub slicer_single_instance: bool,
     /// The line about sending again replacing the slicer's file has been shown.
     pub slicer_resend_hint_seen: bool,
+    /// The programs the user added to the slicer list, newest first.
     pub custom_slicers: Vec<String>,
     /// AI features (docs/agent-chat.md): the master switch. Off: no AI button, shortcut, menu
     /// entry or panel, and nothing is looked for or started.
@@ -498,8 +498,6 @@ impl Default for Prefs {
             save_mesh_format: "stl".into(),
             view_dxf_dashed: false,
             view_dxf_tolerance: 0.01,
-            save_mesh_send: false,
-            save_mesh_slicer: String::new(),
             open_slicer: String::new(),
             slicer_single_instance: true,
             slicer_resend_hint_seen: false,
