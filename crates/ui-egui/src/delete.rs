@@ -21,11 +21,11 @@ pub fn selection_params(app: &SolveApp) -> Value {
     let items: Vec<&solidcraft_engine::Sel> =
         app.session.selection.iter().filter(|s| !matches!(s, solidcraft_engine::Sel::Body { name } if app.ui.locked_bodies.contains(name))).collect();
     let occurrences: Vec<u64> = app.tree.picked_components.iter().filter_map(|c| app.session.doc.occurrence_of(*c).map(|o| o.id)).collect();
-    json!({ "items": items, "occurrences": occurrences, "canvases": app.tree.picked_canvases })
+    json!({ "items": items, "occurrences": occurrences, "canvases": app.tree.picked_canvases, "joints": app.tree.picked_joints })
 }
 
 fn is_empty(p: &Value) -> bool {
-    ["items", "occurrences", "components", "canvases"].iter().all(|k| p.get(*k).and_then(Value::as_array).is_none_or(|a| a.is_empty()))
+    ["items", "occurrences", "components", "canvases", "joints"].iter().all(|k| p.get(*k).and_then(Value::as_array).is_none_or(|a| a.is_empty()))
 }
 
 fn shared_occurrences(app: &SolveApp, params: &Value) -> bool {
@@ -53,6 +53,11 @@ pub fn delete_selection(app: &mut SolveApp) {
 /// other features go with it or would fail. The dry run that finds out evaluates the history
 /// after what is deleted, so it may compute off the window thread (#2678).
 pub fn request(app: &mut SolveApp, params: Value) {
+    if params.get("joints").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
+        && (app.dialog.is_some() || app.tool.is_some() || app.computing_since().is_some() || app.file_load.busy())
+    {
+        return;
+    }
     if is_empty(&params) {
         return;
     }
@@ -87,6 +92,7 @@ fn run(app: &mut SolveApp, params: &Value) {
         Ok(r) => {
             app.tree.picked_components.clear();
             app.tree.picked_canvases.clear();
+            app.tree.picked_joints.clear();
             if let Some(s) = r["skipped"].as_array().and_then(|a| a.first()).and_then(Value::as_str) {
                 app.set_status(format!("deleted; {s}"), false);
             }

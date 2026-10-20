@@ -654,24 +654,27 @@ pub(crate) fn cmd_bench_open(args: &[String]) -> Result<(), String> {
     let t = std::time::Instant::now();
     // The file as read, held until the timeline has evaluated it (as the import command does).
     let mut read = None;
-    let doc = if step {
+    let (doc, saved) = if step {
         let imported = solidcraft_engine::io::step_import_feature(&bytes, path).map_err(|e| e.to_string())?;
         let mut doc = solidcraft_engine::doc::Document::new(&imported.name);
         doc.add_feature(imported.kind, Some(&imported.name)).map_err(|e| e.to_string())?;
         read = Some(imported.import);
-        doc
+        (doc, None)
     } else {
-        solidcraft_engine::io::read_design(&bytes).map_err(|e| e.to_string())?
+        // As Open reads it: with the model the file keeps.
+        solidcraft_engine::io::read_design_file(path, None::<fn(solidcraft_engine::io::DesignPreview)>).map_err(|e| e.to_string())?
     };
     let parse_ms = t.elapsed().as_secs_f64() * 1000.0;
-    println!("{}", json!({"step": "parse", "ms": parse_ms, "features": doc.features.len()}));
+    println!("{}", json!({"step": "parse", "ms": parse_ms, "features": doc.features.len(), "saved_model": saved.is_some()}));
     if args.iter().any(|a| a == "--parse-only") {
         return Ok(());
     }
     let t = std::time::Instant::now();
-    let s = Session::new(doc);
+    let s = Session::opened(doc, saved.as_ref());
     drop(read);
-    println!("{}", json!({"step": "evaluate", "ms": t.elapsed().as_secs_f64() * 1000.0}));
+    // Taken from the file: nothing evaluated (SOLIDCRAFT_NO_MODEL_CACHE evaluates anyway).
+    let adopted = saved.is_some() && s.model.last_recomputed == 0;
+    println!("{}", json!({"step": "evaluate", "ms": t.elapsed().as_secs_f64() * 1000.0, "adopted": adopted}));
     for r in &s.model.results {
         println!("{}", json!({"step": "feature", "id": r.id, "name": r.name, "ms": r.ms, "error": r.error}));
     }

@@ -1229,7 +1229,7 @@ fn joint_menu(
     }
     ui.separator();
     if ui.button("Delete").clicked() {
-        *run = Some(("joint.delete", json!({ "joint": id })));
+        *run = Some(("selection.delete", json!({ "joints": [id] })));
         ui.close();
     }
 }
@@ -1248,8 +1248,15 @@ pub fn timeline_joints(app: &mut SolveApp, ui: &mut egui::Ui, p: &egui::Painter,
     let mut run: Option<(&'static str, Value)> = None;
     for (id, name, kind, suppressed) in joints {
         let br = egui::Rect::from_min_size(egui::pos2(x, r.top() + 6.0), vec2(28.0, 28.0));
+        crate::scenario::publish_handle(&format!("timeline-joint:{name}"), br.center());
         let resp = ui.interact(br, ui.id().with(("joint", id)), egui::Sense::click());
-        let bg = if resp.hovered() { t.hover } else { t.timeline_item };
+        let bg = if app.tree.picked_joints.contains(&id) {
+            t.accent_soft
+        } else if resp.hovered() {
+            t.hover
+        } else {
+            t.timeline_item
+        };
         p.rect(br, 3.0, bg, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         crate::icons::paint(p, br.shrink(4.0), "joint", if suppressed { t.border } else { t.icon }, t.icon_fill, t.accent);
         if suppressed {
@@ -1258,12 +1265,21 @@ pub fn timeline_joints(app: &mut SolveApp, ui: &mut egui::Ui, p: &egui::Painter,
         let resp = resp.on_hover_text(format!("{name}  ({kind:?} joint)\nDouble-click to edit · right-click for more"));
         if resp.double_clicked() {
             open = edit_joint(app, id);
+        } else if resp.clicked() {
+            pick_joint(app, id, ui.input(|i| i.modifiers.command || i.modifiers.ctrl));
+        }
+        if resp.secondary_clicked() && !app.tree.picked_joints.contains(&id) {
+            pick_joint(app, id, false);
         }
         resp.context_menu(|ui| joint_menu(app, ui, (id, kind, suppressed), &mut open, &mut run));
         x += 32.0;
     }
     if let Some((c, prm)) = run {
-        let _ = app.run(c, prm);
+        if c == "selection.delete" {
+            crate::delete::request(app, prm);
+        } else {
+            let _ = app.run(c, prm);
+        }
     }
     if let Some(d) = open {
         app.tool = None;
@@ -1286,7 +1302,10 @@ pub fn timeline_joints_vertical(app: &mut SolveApp, ui: &mut egui::Ui) {
     let mut run = None;
     for (id, name, kind, suppressed) in joints {
         let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), egui::Sense::click());
-        if response.hovered() {
+        crate::scenario::publish_handle(&format!("timeline-joint:{name}"), rect.center());
+        if app.tree.picked_joints.contains(&id) {
+            ui.painter().rect_filled(rect, 3.0, t.accent_soft);
+        } else if response.hovered() {
             ui.painter().rect_filled(rect, 3.0, t.hover);
         }
         let icon = egui::Rect::from_min_size(egui::pos2(rect.left() + 4.0, rect.top() + 4.0), vec2(22.0, 22.0));
@@ -1304,11 +1323,20 @@ pub fn timeline_joints_vertical(app: &mut SolveApp, ui: &mut egui::Ui) {
         let response = response.on_hover_text(format!("{name}  ({kind:?} joint)\nDouble-click to edit · right-click for more"));
         if response.double_clicked() {
             open = edit_joint(app, id);
+        } else if response.clicked() {
+            pick_joint(app, id, ui.input(|i| i.modifiers.command || i.modifiers.ctrl));
+        }
+        if response.secondary_clicked() && !app.tree.picked_joints.contains(&id) {
+            pick_joint(app, id, false);
         }
         response.context_menu(|ui| joint_menu(app, ui, (id, kind, suppressed), &mut open, &mut run));
     }
     if let Some((command, params)) = run {
-        let _ = app.run(command, params);
+        if command == "selection.delete" {
+            crate::delete::request(app, params);
+        } else {
+            let _ = app.run(command, params);
+        }
     }
     if let Some(dialog) = open {
         app.tool = None;
@@ -1377,7 +1405,7 @@ pub fn browser_joints(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize) {
         // The same menus as the rest of the browser.
         if let Some(at) = r.secondary {
             if !app.tree.picked_joints.contains(&id) {
-                app.tree.picked_joints = vec![id];
+                pick_joint(app, id, false);
             }
             crate::context_menu::open_for(app, at, crate::context_menu::Target::Joint { id });
         }
@@ -1391,6 +1419,8 @@ pub fn browser_joints(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize) {
 /// A click on a joint's browser row: it becomes the pick (or, with Ctrl, toggles in or out of
 /// it). Picked joints draw highlighted in the viewport, even hidden ones.
 pub fn pick_joint(app: &mut SolveApp, id: u64, add: bool) {
+    app.tree.picked_timeline_groups.clear();
+    app.tree.timeline_anchor = None;
     if !add {
         let was = app.tree.picked_joints == [id];
         app.tree.picked_joints.clear();

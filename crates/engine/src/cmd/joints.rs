@@ -497,7 +497,12 @@ pub(crate) fn joint_id(s: &Session, v: Option<&Value>, cmd: &str) -> Result<u64>
         Some(Value::String(x)) => x.clone(),
         _ => return Err(bad(cmd, "`joint` must be an id or a name")),
     };
-    s.doc.assembly.joints.iter().find(|j| j.id.to_string() == key || j.name == key).map(|j| j.id).ok_or_else(|| bad(cmd, format!("no joint `{key}`")))
+    let joint = if let Some(Value::Number(number)) = v {
+        number.as_u64().and_then(|id| s.doc.assembly.joints.iter().find(|joint| joint.id == id))
+    } else {
+        s.doc.assembly.joints.iter().find(|joint| joint.id.to_string() == key || joint.name == key)
+    };
+    joint.map(|joint| joint.id).ok_or_else(|| bad(cmd, format!("no joint `{key}`")))
 }
 
 /// A joint value: numbers are degrees for angles and mm for distances; text is an expression.

@@ -451,10 +451,16 @@ fn begin_applying(app: &SolveApp, d: &Dialog) -> Option<Applying> {
     let scratch = app.session.scratch();
     let (tx, rx) = std::sync::mpsc::channel();
     let computed = cmds.clone();
+    #[cfg(test)]
+    let gate = app.apply_gate.clone();
     std::thread::Builder::new()
         .name("apply".into())
         .spawn(move || {
             let _ = scratch.preview(&computed);
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                let _ = gate.lock().unwrap().recv();
+            }
             let _ = tx.send(());
         })
         .ok()?;

@@ -223,6 +223,7 @@ fn drag_x(items: &DragItems, pointer_x: f32) -> f32 {
 }
 
 fn select_only(app: &mut SolveApp, item: TimelineItem) {
+    app.tree.picked_joints.clear();
     match item {
         TimelineItem::Group(id) => {
             app.tree.picked_timeline_groups.clear();
@@ -239,6 +240,9 @@ fn select_only(app: &mut SolveApp, item: TimelineItem) {
 
 fn select_item(app: &mut SolveApp, ui: &egui::Ui, item: TimelineItem, order: &[TimelineItem]) {
     let modifiers = ui.input(|input| input.modifiers);
+    if !modifiers.command && !modifiers.ctrl {
+        app.tree.picked_joints.clear();
+    }
     if modifiers.shift
         && let Some(anchor) = app.tree.timeline_anchor.as_deref()
         && let (Some(from), Some(to)) = (order.iter().position(|entry| entry.key() == anchor), order.iter().position(|entry| *entry == item))

@@ -643,7 +643,7 @@ fn joint_items(app: &SolveApp, id: u64) -> Vec<Item> {
         act("ui.findJoint", "Find in Window", "").with(json!({ "joint": id })),
         cmd(app, "joint.edit", if j.suppressed { "Unsuppress" } else { "Suppress" }).with(json!({ "joint": id, "suppressed": !j.suppressed })),
         Item::sep(),
-        cmd(app, "joint.delete", "Delete").key("Del").with(json!({ "joint": id })),
+        act("ui.delete", "Delete", "delete").key("Del").with(json!({ "joints": [id] })),
         act("ui.rename", "Rename", "").with(json!({ "joint": id })),
         Item::sep(),
         // Hiding a joint hides only its glyph: it still constrains and moves the parts.
