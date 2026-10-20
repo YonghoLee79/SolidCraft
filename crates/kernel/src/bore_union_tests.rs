@@ -2,6 +2,45 @@
 use crate::*;
 use solidcraft_geom::{Loop2, Plane, Region2, Seg2, UnitVec3, Vec2, Vec3};
 
+#[test]
+fn a_bore_open_at_the_stock_edge_accepts_outward_rim_trims() {
+    let stock = box_solid(Vec3::ZERO, Vec3::new(20., 30., 20.)).unwrap();
+    let cutter = cylinder(Vec3::new(23., 15., -5.), Vec3::Z, 5., 40.).unwrap();
+    let target = boolean(&stock, &cutter, BoolOp::Cut).unwrap().unwrap();
+    let region = Region2 { outer: Loop2::circle(Vec2::new(23., 15.), 8.), holes: vec![Loop2::circle(Vec2::new(23., 15.), 5.).reversed()] };
+    let ring = extrude(&Plane::XY, &[region], 14., 24.).unwrap().remove(0);
+    let joined = crate::coplanar::bore_union(&target, &ring, &|body| body.validity().is_empty()).unwrap();
+    assert_eq!(joined.shell_count(), 1);
+    let mesh = joined.tessellate_with(1e-3, true).unwrap();
+    assert!(mesh.contains(Vec3::new(17., 15., 22.)));
+    assert!(mesh.contains(Vec3::new(10., 15., 10.)));
+    assert!(!mesh.contains(Vec3::new(23., 15., 18.)));
+    let segment = |r: f64| r * r * (3. / r).acos() - 3. * (r * r - 9.).sqrt();
+    let expected = 20. * 30. * 20. - segment(5.) * 20. + std::f64::consts::PI * (64. - 25.) * 10. - (segment(8.) - segment(5.)) * 6.;
+    assert!((mesh.measure().volume - expected).abs() < 0.5, "volume {}, expected {expected}", mesh.measure().volume);
+}
+
+#[test]
+fn a_distant_freeform_boundary_is_proved_clear_by_its_control_box() {
+    let a = Vec2::new(5., 20.);
+    let b = Vec2::new(75., 20.);
+    let c = Vec2::new(75., 40.);
+    let d = Vec2::new(5., 40.);
+    let region = Region2 {
+        outer: Loop2 {
+            segs: vec![
+                Seg2::Cubic { p0: a, p1: Vec2::new(20., 30.), p2: Vec2::new(60., 30.), p3: b },
+                Seg2::Line { a: b, b: c },
+                Seg2::Line { a: c, b: d },
+                Seg2::Line { a: d, b: a },
+            ],
+        },
+        holes: vec![],
+    };
+    let body = extrude(&Plane::XY, &[region], 14., 24.).unwrap().remove(0);
+    assert!(crate::bore_guard::boundaries_clear(&body, &[], Vec3::ZERO, UnitVec3::Z, 5., 14., 24., 1e-6).is_some());
+}
+
 fn fixture() -> (Body, Body, Vec3, f64) {
     let slope = 1f64.to_radians().tan();
     let hs = |normal: Vec3, point: Vec3| {

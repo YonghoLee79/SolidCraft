@@ -170,6 +170,13 @@ fixes below (sound face pushes, no panics in the boolean's final assembly).
 
 ### Fixed
 
+- Common-bore joins accept straight trims that leave an existing bore vertex
+  only when their radial distance increases over the whole edge. Positive
+  rational control-point boxes also prove distant curved boundaries clear of
+  the recut, without requiring their projections to be lines or circles.
+  Boundaries entering the bore, including thin connected webs, still refuse
+  the fallback.
+
 - Back-to-back contact joins preserve intentional Split Face boundaries, including on
   faces away from the contact. The glue pass retains their lines during healing and in
   the resulting body for subsequent operations. Partial circular-contact regressions

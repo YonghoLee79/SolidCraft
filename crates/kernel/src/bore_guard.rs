@@ -3,7 +3,7 @@
 //! cylinder recut from silently removing an additional material boundary that
 //! the fallback's coarse material samples do not see.
 use crate::body::{Body, from_p3};
-use solidcraft_geom::{Plane, Seg2, UnitVec3, Vec3};
+use solidcraft_geom::{Plane, Seg2, UnitVec3, Vec2, Vec3};
 use std::collections::HashSet;
 use truck_modeling as mt;
 
@@ -41,10 +41,13 @@ pub(super) fn boundaries_clear(
     // edges or every edge of a planar face adjoining a cylinder.
     let bore_faces: HashSet<usize> = bore_faces.iter().copied().collect();
     let mut bore_edges = HashSet::new();
+    let mut bore_vertices = HashSet::new();
     for (i, face) in body.solid.face_iter().enumerate() {
         if bore_faces.contains(&i) {
             for edge in face.edge_iter() {
                 bore_edges.insert(edge.id());
+                bore_vertices.insert(edge.absolute_front().id());
+                bore_vertices.insert(edge.absolute_back().id());
             }
         }
     }
@@ -80,6 +83,21 @@ pub(super) fn boundaries_clear(
                     continue;
                 }
                 return None;
+            }
+            // A trim can leave an existing bore vertex without entering the
+            // bore. Its radial distance is increasing along the whole line, and
+            // its far end is off the wall: an axial line on the wall is refused.
+            let outward = |a: Vec3, b: Vec3, vertex: &mt::Vertex| {
+                let pa = plane.to_local(a);
+                let pb = plane.to_local(b);
+                bore_vertices.contains(&vertex.id())
+                    && a.dist(from_p3(vertex.point())) <= error
+                    && (pa.len() - radius).abs() <= error
+                    && pb.len() > radius + error
+                    && pa.dot(pb - pa) >= 0.
+            };
+            if outward(a, b, edge.absolute_front()) || outward(b, a, edge.absolute_back()) {
+                continue;
             }
             let (mut t0, mut t1): (f64, f64) = (0., 1.);
             let dh = hb - ha;
@@ -129,6 +147,8 @@ pub(super) fn boundaries_clear(
         let mut projection_error: f64 = 0.;
         let mut projected_origin = None;
         let mut projected_spread: f64 = 0.;
+        let (mut xmin, mut xmax) = (f64::INFINITY, f64::NEG_INFINITY);
+        let (mut ymin, mut ymax) = (f64::INFINITY, f64::NEG_INFINITY);
         let mut projected = Vec::with_capacity(controls.len());
         for p in controls {
             if ![p.x, p.y, p.z, p.w].iter().all(|v| v.is_finite()) || p.w <= 0. {
@@ -144,11 +164,27 @@ pub(super) fn boundaries_clear(
             heights.0 = heights.0.min(h - error);
             heights.1 = heights.1.max(h + error);
             let q = plane.to_local(point);
+            if !q.x.is_finite() || !q.y.is_finite() {
+                return None;
+            }
+            xmin = xmin.min(q.x);
+            xmax = xmax.max(q.x);
+            ymin = ymin.min(q.y);
+            ymax = ymax.max(q.y);
             let first = *projected_origin.get_or_insert(q);
             projected_spread = projected_spread.max(q.dist(first));
             projected.push(mt::Vector4::new(q.x * p.w, q.y * p.w, 0., p.w));
         }
         if heights.0 > hi || heights.1 < lo {
+            continue;
+        }
+        // Positive rational weights keep the entire projection in this box,
+        // including curves that are not circular or straight in this plane.
+        if !common_bore
+            && xmin <= xmax
+            && ymin <= ymax
+            && Vec2::new(0f64.clamp(xmin, xmax), 0f64.clamp(ymin, ymax)).len() > radius + tol * 4. + projection_error
+        {
             continue;
         }
         // A swept seam may be represented as a rational straight edge. Its

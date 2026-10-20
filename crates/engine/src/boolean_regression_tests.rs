@@ -1150,3 +1150,43 @@ fn joined_loft_frames_reference_mesh_covers_each_face_once() {
         }
     }
 }
+
+/// #2970: a ring and slot boss joined over a bore that cuts into the foot of a web's curved
+/// flank, as two profiles in one extrude and as a new body combined afterwards. The common-bore
+/// guard refused the straight trims leaving a bore vertex outward, and both joins failed with
+/// "no result".
+#[test]
+fn boss_joined_over_a_bore_in_a_web_flank() {
+    use std::f64::consts::PI;
+    // The flank z = 95 - sqrt(70² - u²), u = x - 110, crosses the boss top z = 50 at u0.
+    let u0 = -2875f64.sqrt();
+    let arc = (u0 * (4900.0 - u0 * u0).sqrt() + 4900.0 * (u0 / 70.0).asin()) / 2.0;
+    let boss_in_web = 25.0 * 30.0 * (110.0 + u0 - 35.0) + 30.0 * (-70.0 * u0 + arc);
+    let plate = 140.0 * 80.0 * 25.0 - PI * 100.0 * 25.0;
+    let web = 60.0 * (100.0 * 30.0 + 70.0 * 70.0 - PI * 4900.0 / 4.0);
+    let boss = 25.0 * (80.0 * 30.0 + PI * 12.5);
+    // The web's sliver inside the bore is also inside the boss, so it cancels.
+    let want = plate + web + boss - boss_in_web;
+    let profiles = json!([{"point": [60, 0]}, {"point": [127.5, 0]}]);
+    for separate in [false, true] {
+        let mut s = replay(include_str!("../../../examples/regressions/join_boss_over_bore_in_web_flank.json"));
+        let params = if separate {
+            json!({"sketch": "Boss", "profiles": profiles, "distance": 25, "operation": "new", "body_name": "Boss"})
+        } else {
+            json!({"sketch": "Boss", "profiles": profiles, "distance": 25, "operation": "join", "targets": ["Stock"]})
+        };
+        s.execute("solid.extrude", &params).unwrap();
+        if separate {
+            s.execute("solid.combine", &json!({"target": "Stock", "tools": ["Boss"], "operation": "join"})).unwrap();
+        }
+        assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results);
+        let state = s.model.state();
+        assert_eq!(state.bodies.len(), 1);
+        let body = &state.body("Stock").unwrap().body;
+        assert!(body.validity().is_empty(), "{:?}", body.validity());
+        assert_eq!(body.shell_count(), 1);
+        let got = body.tessellate(1e-5).unwrap().measure().volume;
+        println!("#2970 separate={separate}: volume {got:.6} mm³, expected {want:.6}");
+        assert!((got - want).abs() < 1e-5 * want, "{got} vs {want}");
+    }
+}
