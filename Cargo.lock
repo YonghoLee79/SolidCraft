@@ -4269,6 +4269,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "solidcraft-sim"
+version = "0.16.2"
+dependencies = [
+ "solidcraft-geom",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "solidcraft-sketch"
 version = "0.16.2"
 dependencies = [
