@@ -271,6 +271,7 @@ fn offscreen(
         pv_key: 0,
         pv_slot: none(),
         pv_hide: false,
+        preview_bounds: None,
         view_proj,
         back,
         size_px: [size as f32; 2],

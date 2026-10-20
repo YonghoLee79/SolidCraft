@@ -55,6 +55,10 @@ fn command_dialogs_shrink_to_their_content_within_limits() {
         h.app.design_properties = None;
         h.app.bom = None;
         h.app.tool = None;
+        // Viewport display commands can open Preferences instead of a command dialog.
+        if h.app.prefs_window.open {
+            h.call("ui.prefs", json!({"button":"cancel"}));
+        }
         if h.app.session.active_sketch.is_some() {
             h.app.finish_sketch();
         }

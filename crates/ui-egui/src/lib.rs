@@ -674,6 +674,17 @@ impl SolveApp {
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.big_operation |= now_ms() - t0 >= recovery_ui::BIG_OPERATION_MS;
         if let Ok(v) = &r {
+            if id == "view.ground_shadow" {
+                match v.get("mode").and_then(Value::as_str) {
+                    Some("off") => self.ui.ground_shadow = false,
+                    Some(mode) => {
+                        self.ui.ground_shadow = true;
+                        self.preferences.ground_shadow_style =
+                            if mode == "projected" { prefs::GroundShadowStyle::Projected } else { prefs::GroundShadowStyle::Ellipse };
+                    }
+                    None => {}
+                }
+            }
             if matches!(id, "view.ambient_occlusion" | "view.graphics_preset") {
                 self.preferences.ambient_occlusion = v.get("enabled").and_then(Value::as_bool).unwrap_or(false);
                 if id == "view.graphics_preset" {
@@ -784,6 +795,10 @@ impl SolveApp {
         // A display toggle leaves the current modelling tool and camera in place.
         if id == "view.ambient_occlusion" {
             let _ = self.run(id, json!({"enabled": !self.preferences.ambient_occlusion}));
+            return;
+        }
+        if id == "view.ground_shadow" {
+            prefs::open_at(self, prefs::PAGE_GRAPHICS);
             return;
         }
         // Another command ends Edit Text (its dialog is not a feature edit to keep).

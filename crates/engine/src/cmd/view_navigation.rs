@@ -7,6 +7,8 @@ use crate::params::{bad, num, req_vec2, req_vec3, vec3};
 use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("view.ground_shadow", "Ground Shadow", ground_shadow)
+    .icon("settings").noundo().doc_only().params("mode: off|ellipse|projected → mode; select the viewport ground shadow independently of ambient occlusion"),
 CommandSpec::new("view.graphics_preset", "Graphics Preset", graphics_preset)
     .icon("settings").noundo().doc_only().params("preset: performance|quality → preset, enabled, display_quality, supersampling, supersampling_adaptive; Quality: AO, Fine, adaptive 2x SSAA; Performance: no AO, Normal, no SSAA"),
 CommandSpec::new("view.ambient_occlusion", "Ambient Occlusion", ambient_occlusion)
@@ -297,9 +299,29 @@ fn ambient_occlusion(_s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"enabled": enabled}))
 }
 
+fn ground_shadow(_s: &mut Session, p: &Value) -> Result<Value> {
+    match p.get("mode").and_then(Value::as_str) {
+        Some(mode @ ("off" | "ellipse" | "projected")) => Ok(json!({"mode":mode})),
+        _ => Err(bad("view.ground_shadow", "mode must be off, ellipse or projected")),
+    }
+}
+
 #[cfg(test)]
 mod ambient_occlusion_tests {
     use super::*;
+    #[test]
+    fn ground_shadow_modes_validate_without_editing_the_design_or_history() {
+        let mut s = Session::default();
+        let before = s.doc.to_json();
+        for mode in ["off", "ellipse", "projected"] {
+            assert_eq!(s.execute("view.ground_shadow", &json!({"mode":mode})).unwrap(), json!({"mode":mode}));
+        }
+        for params in [json!({}), json!({"mode":true}), json!({"mode":2}), json!({"mode":"height_bands"}), json!({"mode":null})] {
+            assert!(s.execute("view.ground_shadow", &params).is_err());
+        }
+        assert_eq!(s.doc.to_json(), before);
+        assert!(s.undo.is_empty());
+    }
     #[test]
     fn validates_display_setting_without_editing_design_or_history() {
         let mut s = Session::default();

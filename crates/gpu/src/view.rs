@@ -15,6 +15,7 @@ use wgpu::util::DeviceExt;
 use crate::pbr;
 
 mod ao;
+pub mod ground_shadow;
 
 /// Triangle vertex: position (3 × f32), normal (3 × f32), sRGB colour (4 × u8).
 pub const TRI_SIZE: usize = 28;
@@ -38,6 +39,7 @@ pub struct PlannedBody {
 /// highlight scene (hover, selection, the origin widget) changes often and is small.
 #[derive(Default, Clone)]
 pub struct GpuScene {
+    pub projected_shadow: Option<Arc<ground_shadow::Projection>>,
     /// Opaque triangles. A zero normal draws the colour flat (unlit).
     pub tris: Vec<u8>,
     /// Opaque product PBR vertices; linear base color and explicit optical parameters.
@@ -226,6 +228,9 @@ pub struct Frame {
     pub pv_slot: SceneSlot,
     /// Preview reselect: skip drawing the preview while Primary rolls it back.
     pub pv_hide: bool,
+    /// World bounds of the active preview. Ground effects update their small receiver without
+    /// changing the model scene's key or re-uploading model geometry/colours.
+    pub preview_bounds: Option<solidcraft_geom::Aabb3>,
     /// Column-major view-projection.
     pub view_proj: [[f32; 4]; 4],
     /// Direction toward the eye (for lighting).
@@ -406,10 +411,12 @@ const MAX_CHUNK_BODIES: usize = 128;
 
 #[derive(Default)]
 struct Batches {
+    projection: Option<Arc<ground_shadow::Projection>>,
     /// The scene blocks on the GPU, by key.
     blocks: std::collections::HashMap<u64, BlockGpu>,
     key: Option<u64>,
     tris: Option<Batch>,
+    shadow_fallback: Option<Batch>,
     pbr: Option<Batch>,
     trans: Option<Batch>,
     glass: Option<Batch>,
@@ -438,6 +445,7 @@ impl Batches {
             return;
         }
         if let Some(sc) = slot.lock().ok().and_then(|mut s| s.take()) {
+            self.projection = sc.projected_shadow.clone();
             self.planned = match tess {
                 Some((tess, encoder)) => self.planned(device, tess, encoder, &sc.planned),
                 None => Vec::new(),
@@ -463,6 +471,7 @@ impl Batches {
                 }
             }
             self.tris = joined(blocks.iter().map(|b| &b.tris), upload(device, "sc_tris", &sc.tris, TRI_SIZE));
+            self.shadow_fallback = sc.projected_shadow.as_ref().and_then(|s| upload(device, "sc_shadow_fallback", &s.fallback, TRI_SIZE));
             self.pbr = upload(device, "sc_pbr", &sc.pbr, PBR_SIZE);
             self.trans = joined(blocks.iter().map(|b| &b.trans), upload(device, "sc_trans", &sc.trans, TRI_SIZE));
             self.glass = upload_with(device, "sc_glass", &sc.glass, TRI_SIZE, wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST);
@@ -548,6 +557,8 @@ impl Batches {
 
 /// The viewport's pipelines and the scenes uploaded to one device, for one kind of target.
 pub struct Renderer {
+    shadow: Option<ground_shadow::Resources>,
+    shadow_key: Option<(u64, u64, bool, [u32; 4])>,
     /// The AO depth prepass resources (a 1 × 1 stand-in while ambient occlusion is off).
     ao: ao::Resources,
     tri: wgpu::RenderPipeline,
@@ -1118,6 +1129,8 @@ impl Renderer {
             })
         });
         Renderer {
+            shadow: None,
+            shadow_key: None,
             ao,
             depth_reset,
             target: t,
@@ -1308,6 +1321,25 @@ impl Renderer {
         res.sketch.take(device, cb.sketch_key, &cb.sketch_slot, None);
         res.highlight.take(device, cb.hl_key, &cb.hl_slot, None);
         res.preview.take(device, cb.pv_key, &cb.pv_slot, None);
+        let shadow_key = (cb.key, cb.pv_key, cb.pv_hide, cb.clip.map(f32::to_bits));
+        let projection = res.model.projection.clone();
+        if let Some(projection) = projection {
+            if projection.visible(cb.back) && res.shadow_key != Some(shadow_key) {
+                let expanded = projection.with_preview(if cb.pv_hide { None } else { cb.preview_bounds });
+                let projection = expanded.as_ref().unwrap_or(&projection);
+                if res.shadow.is_none() {
+                    res.shadow = ground_shadow::Resources::new(device, &res.image_bgl);
+                }
+                if let Some(shadow) = &mut res.shadow {
+                    let preview = if cb.pv_hide { &res.empty } else { &res.preview };
+                    shadow.prepare(device, queue, encoder, projection, cb.clip, [&res.model, preview]);
+                }
+                res.shadow_key = Some(shadow_key);
+            }
+        } else {
+            res.shadow = None;
+            res.shadow_key = Some(shadow_key);
+        }
         res.model.sort_glass(queue, cb.back);
         queue.write_buffer(&res.uniform, 0, &uniform_bytes(cb, cb.size_px[0], cb.size_px[1], res.linear_out, res.target.reversed_depth()));
         if let Some(a) = &cb.access
@@ -1467,6 +1499,15 @@ impl Renderer {
         lines(pass, &res.line, &pv.lines);
         lines(pass, &res.line, &h.lines);
         lines(pass, &res.guide_line, &h.guide_lines);
+        if !cb.product && m.projection.as_ref().is_some_and(|p| p.visible(cb.back)) {
+            if let Some(shadow) = &res.shadow {
+                pass.set_bind_group(1, &shadow.bind, &[]);
+                tris(pass, &res.image, &shadow.quad);
+                pass.set_bind_group(1, &res.access_bind, &[]);
+            } else {
+                tris(pass, &res.trans, &m.shadow_fallback);
+            }
+        }
         for (id, q) in res.quads.iter().filter(|_| !cb.product) {
             if let Some((_, bind)) = res.textures.get(id) {
                 pass.set_pipeline(&res.image);
