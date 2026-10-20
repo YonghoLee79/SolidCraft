@@ -210,6 +210,7 @@ mod smart_extrude_ui_tests;
 pub mod space_mouse;
 pub mod space_mouse_calibration;
 pub mod stand_up;
+pub mod starting;
 #[cfg(test)]
 mod sweep_dialog_tests;
 pub mod theme;
@@ -1382,6 +1383,18 @@ impl SolveApp {
     }
 
     /// Per-frame logic before layout.
+    /// The preferences that set how the window looks (zoom, theme, colour vision), once they
+    /// change. Every frame; the starting page (`starting`) uses it before the app's own frames do.
+    pub fn apply_preferences(&mut self, ctx: &egui::Context) {
+        prefs::apply(self, ctx);
+        if !self.styled || theme::is_dark() != self.ui.dark || theme::vision() != self.preferences.color_vision {
+            theme::set_dark(self.ui.dark);
+            theme::set_vision(self.preferences.color_vision);
+            theme::apply(ctx);
+            self.styled = true;
+        }
+    }
+
     pub fn logic(&mut self, ctx: &egui::Context) {
         frame_watch::begin(self);
         file_picker::tick(self, ctx);
@@ -1395,13 +1408,7 @@ impl SolveApp {
         open_meshing::tick(self, ctx);
         open_meshing::refresh(self, ctx.input(|i| i.time));
         self.esc_handled = false;
-        prefs::apply(self, ctx);
-        if !self.styled || theme::is_dark() != self.ui.dark || theme::vision() != self.preferences.color_vision {
-            theme::set_dark(self.ui.dark);
-            theme::set_vision(self.preferences.color_vision);
-            theme::apply(ctx);
-            self.styled = true;
-        }
+        self.apply_preferences(ctx);
         if !self.fitted {
             self.fit_view();
             self.fitted = true;
