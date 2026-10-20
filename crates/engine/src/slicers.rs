@@ -62,33 +62,135 @@ impl IconSource {
     }
 }
 
-struct Known {
-    id: &'static str,
-    name: &'static str,
-    /// Names the application goes by, letters and digits only, lower case; an entry matches when
-    /// its name starts with one of them.
-    keys: &'static [&'static str],
-    /// Program file names.
-    exes: &'static [&'static str],
+/// What a mesh can be sent to. `Slicer` is the only kind there is. It is the extension point for a
+/// later Send to App: a new kind would name programs that are not slicers (a viewer, a CAM tool, a
+/// converter), each with its own accepted formats and way of taking a file, and would send through
+/// the same pipeline as `file.send_to_slicer` (write the file, find the target, start it and wait if
+/// it needs that, hand the file over, report).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetKind {
+    Slicer,
 }
 
-const KNOWN: &[Known] = &[
-    Known { id: "prusa", name: "PrusaSlicer", keys: &["prusaslicer"], exes: &["prusa-slicer", "PrusaSlicer", "prusa-slicer.exe"] },
-    Known { id: "bambu", name: "Bambu Studio", keys: &["bambustudio"], exes: &["bambu-studio", "BambuStudio", "bambu-studio.exe"] },
-    Known { id: "orca", name: "OrcaSlicer", keys: &["orcaslicer"], exes: &["orca-slicer", "OrcaSlicer", "orca-slicer.exe"] },
-    Known {
+/// How a target takes the file it is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileArg {
+    /// As an argument at the end of its command, or inside the `@@ … @@` pair of a Flatpak command.
+    Argument,
+}
+
+/// A program a mesh can be sent to, and what is known about how to do it. One row per known program;
+/// a program that is not in the table (a desktop entry that claims 3MF or STL, one the user picked) is
+/// a slicer with [`Target::SLICER`]'s defaults.
+pub struct Target {
+    pub id: &'static str,
+    /// The label shown to the user.
+    pub name: &'static str,
+    pub kind: TargetKind,
+    /// Names the application goes by, letters and digits only, lower case; an entry matches when
+    /// its name starts with one of them.
+    pub keys: &'static [&'static str],
+    /// Program file names, how it is found and started when it has no desktop entry.
+    pub exes: &'static [&'static str],
+    /// The mesh formats it takes, as `file.send_to_slicer` names them, and the one used when none is asked for.
+    pub formats: &'static [&'static str],
+    pub default_format: &'static str,
+    pub file: FileArg,
+    /// The flag that makes a running instance take the file instead of a new one starting, if it has one.
+    pub single_instance: Option<&'static str>,
+    /// The first major version whose `--single-instance-on-url` hands a file over; in an older one the
+    /// flag is swapped for `single_instance`.
+    pub on_url_swap_below: Option<u32>,
+    /// When it has to be started alone and waited for before it can be sent a file.
+    pub ready: Option<WaitRule>,
+}
+
+impl Target {
+    /// The defaults of a slicer: every mesh format, a file as an argument, no flag, no wait.
+    pub const SLICER: Target = Target {
+        id: "",
+        name: "",
+        kind: TargetKind::Slicer,
+        keys: &[],
+        exes: &[],
+        formats: &["3mf", "stl", "3mf-tagged"],
+        default_format: "3mf",
+        file: FileArg::Argument,
+        single_instance: None,
+        on_url_swap_below: None,
+        ready: None,
+    };
+
+    pub fn accepts(&self, format: &str) -> bool {
+        self.formats.contains(&format)
+    }
+
+    /// Whether the version of an install matters to how it is sent to, and so is read when it is found.
+    fn reads_version(&self) -> bool {
+        self.on_url_swap_below.is_some() || self.ready.is_some()
+    }
+}
+
+/// The known programs, in the order they are listed.
+const TARGETS: &[Target] = &[
+    Target {
+        id: "prusa",
+        name: "PrusaSlicer",
+        keys: &["prusaslicer"],
+        exes: &["prusa-slicer", "PrusaSlicer", "prusa-slicer.exe"],
+        single_instance: Some("--single-instance"),
+        on_url_swap_below: Some(3),
+        ready: Some(PRUSA_READY),
+        ..Target::SLICER
+    },
+    Target {
+        id: "bambu",
+        name: "Bambu Studio",
+        keys: &["bambustudio"],
+        exes: &["bambu-studio", "BambuStudio", "bambu-studio.exe"],
+        ..Target::SLICER
+    },
+    Target { id: "orca", name: "OrcaSlicer", keys: &["orcaslicer"], exes: &["orca-slicer", "OrcaSlicer", "orca-slicer.exe"], ..Target::SLICER },
+    Target {
         id: "cura",
         name: "UltiMaker Cura",
         keys: &["ultimakercura", "curaultimaker", "cura"],
         exes: &["cura", "UltiMaker-Cura", "UltiMaker-Cura.exe", "Cura.exe"],
+        single_instance: Some("--single-instance"),
+        ..Target::SLICER
     },
-    Known { id: "superslicer", name: "SuperSlicer", keys: &["superslicer"], exes: &["superslicer", "SuperSlicer", "superslicer.exe"] },
-    Known { id: "creality", name: "Creality Print", keys: &["crealityprint"], exes: &["CrealityPrint", "creality-print", "CrealityPrint.exe"] },
-    Known { id: "elegoo", name: "ElegooSlicer", keys: &["elegooslicer"], exes: &["elegoo-slicer", "ElegooSlicer", "ElegooSlicer.exe"] },
-    Known { id: "anycubic", name: "AnycubicSlicerNext", keys: &["anycubicslicer"], exes: &["AnycubicSlicerNext", "AnycubicSlicerNext.exe"] },
-    Known { id: "ideamaker", name: "ideaMaker", keys: &["ideamaker"], exes: &["ideamaker", "ideaMaker.exe"] },
-    Known { id: "lychee", name: "Lychee Slicer", keys: &["lycheeslicer"], exes: &["lychee-slicer", "Lychee Slicer.exe"] },
-    Known { id: "slic3r", name: "Slic3r", keys: &["slic3r"], exes: &["slic3r", "Slic3r", "slic3r.exe"] },
+    Target {
+        id: "superslicer",
+        name: "SuperSlicer",
+        keys: &["superslicer"],
+        exes: &["superslicer", "SuperSlicer", "superslicer.exe"],
+        single_instance: Some("--single-instance"),
+        ..Target::SLICER
+    },
+    Target {
+        id: "creality",
+        name: "Creality Print",
+        keys: &["crealityprint"],
+        exes: &["CrealityPrint", "creality-print", "CrealityPrint.exe"],
+        ..Target::SLICER
+    },
+    Target {
+        id: "elegoo",
+        name: "ElegooSlicer",
+        keys: &["elegooslicer"],
+        exes: &["elegoo-slicer", "ElegooSlicer", "ElegooSlicer.exe"],
+        ..Target::SLICER
+    },
+    Target {
+        id: "anycubic",
+        name: "AnycubicSlicerNext",
+        keys: &["anycubicslicer"],
+        exes: &["AnycubicSlicerNext", "AnycubicSlicerNext.exe"],
+        ..Target::SLICER
+    },
+    Target { id: "ideamaker", name: "ideaMaker", keys: &["ideamaker"], exes: &["ideamaker", "ideaMaker.exe"], ..Target::SLICER },
+    Target { id: "lychee", name: "Lychee Slicer", keys: &["lycheeslicer"], exes: &["lychee-slicer", "Lychee Slicer.exe"], ..Target::SLICER },
+    Target { id: "slic3r", name: "Slic3r", keys: &["slic3r"], exes: &["slic3r", "Slic3r", "slic3r.exe"], ..Target::SLICER },
 ];
 
 /// Lower-case letters and digits only: how names are compared.
@@ -97,13 +199,13 @@ fn normalize(s: &str) -> String {
 }
 
 /// The known slicer an application name (or file name) belongs to.
-fn known_for(name: &str) -> Option<&'static Known> {
+fn known_for(name: &str) -> Option<&'static Target> {
     let n = normalize(name);
     // Companion tools (G-code viewers, command-line builds) are not slicers to send a mesh to.
     if n.contains("viewer") || n.contains("console") || n.contains("gcode") || n.contains("uninstall") {
         return None;
     }
-    KNOWN.iter().find(|k| k.keys.iter().any(|key| n.starts_with(key)))
+    TARGETS.iter().find(|k| k.keys.iter().any(|key| n.starts_with(key)))
 }
 
 /// Folders and variables detection looks at, so it can be tested without the real machine.
@@ -170,7 +272,26 @@ impl Env {
 
 /// The slicers installed on this machine, known ones in a fixed order. Empty in the browser.
 pub fn detect() -> Vec<Slicer> {
+    #[cfg(test)]
+    if let Some(made_up) = TEST_DETECTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+        return made_up;
+    }
     if cfg!(target_arch = "wasm32") { Vec::new() } else { detect_in(&Env::current()) }
+}
+
+/// Tests of the commands set the slicers `detect` finds, and the `busctl` that is asked, to ones they made up.
+#[cfg(test)]
+pub(crate) static TEST_DETECTED: std::sync::Mutex<Option<Vec<Slicer>>> = std::sync::Mutex::new(None);
+#[cfg(test)]
+pub(crate) static TEST_BUSCTL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The program that is asked what is on the session bus: `busctl`.
+pub(crate) fn busctl_program() -> String {
+    #[cfg(test)]
+    if let Some(made_up) = TEST_BUSCTL.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+        return made_up;
+    }
+    "busctl".to_string()
 }
 
 /// [`detect`] over the folders in `env`. Every install of a slicer is listed: when there are
@@ -207,7 +328,7 @@ pub fn detect_in(env: &Env) -> Vec<Slicer> {
     for (s, _, origin) in &found {
         let several = found.iter().filter(|(o, ..)| o.id == s.id).count() > 1;
         let mut slicer = s.clone();
-        if slicer.kind() == "prusa" {
+        if slicer.target().reads_version() {
             slicer.prusa_major = prusa_major(env, &slicer.command, origin);
         }
         if several {
@@ -229,7 +350,7 @@ pub fn detect_in(env: &Env) -> Vec<Slicer> {
         labels.push(slicer.name.clone());
         out.push(slicer);
     }
-    let order = |s: &Slicer| (KNOWN.iter().position(|k| k.id == s.base_id()).unwrap_or(usize::MAX), s.name.to_lowercase(), s.id.clone());
+    let order = |s: &Slicer| (TARGETS.iter().position(|k| k.id == s.base_id()).unwrap_or(usize::MAX), s.name.to_lowercase(), s.id.clone());
     out.sort_by_key(order);
     out
 }
@@ -289,8 +410,8 @@ fn release_major(xml: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-fn known_by_id(id: &str) -> Option<&'static Known> {
-    KNOWN.iter().find(|k| k.id == id.split('#').next().unwrap_or(id))
+fn known_by_id(id: &str) -> Option<&'static Target> {
+    TARGETS.iter().find(|k| k.id == id.split('#').next().unwrap_or(id))
 }
 
 /// The program that `command` starts, as one string: a Flatpak or `open` command by itself, any
@@ -366,7 +487,7 @@ fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-fn known_slicer(k: &Known, command: Vec<String>, icon: Option<IconSource>) -> Slicer {
+fn known_slicer(k: &Target, command: Vec<String>, icon: Option<IconSource>) -> Slicer {
     Slicer { id: k.id.into(), name: k.name.into(), command, icon, prusa_major: None }
 }
 
@@ -490,7 +611,7 @@ fn theme_icon(env: &Env, name: &str) -> Option<IconSource> {
 }
 
 fn path_programs(env: &Env, add: &mut impl FnMut(Slicer, &Path)) {
-    for k in KNOWN {
+    for k in TARGETS {
         for dir in &env.path_dirs {
             for exe in k.exes {
                 let p = dir.join(exe);
@@ -605,12 +726,30 @@ pub fn set_chosen_programs(paths: &[String]) {
     *CHOSEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = paths.to_vec();
 }
 
-/// A slicer from a command parameter: the id or name of a detected one, or a program the user
-/// chose (by its path or name). Any other program path is refused: scripts and agents reach this
-/// through `file.save_mesh` and `file.send_to_slicer`, and must not run arbitrary programs.
+/// A slicer from a command parameter: the id or name of a detected one, the path of a detected
+/// one's program, or a program the user chose (by its path or name). Any other program path is
+/// refused: scripts and agents reach this through `file.save_mesh` and `file.send_to_slicer`, and
+/// must not run arbitrary programs.
 pub fn resolve(spec: &str) -> Option<Slicer> {
+    resolve_for(TargetKind::Slicer, spec)
+}
+
+/// [`resolve`] among the targets of one kind.
+pub fn resolve_for(kind: TargetKind, spec: &str) -> Option<Slicer> {
     let chosen = CHOSEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-    resolve_in(detect(), &chosen, spec)
+    resolve_in(detect_for(kind), &chosen, spec)
+}
+
+/// The installed targets of one kind, in the order they are listed. Empty in the browser.
+pub fn detect_for(kind: TargetKind) -> Vec<Slicer> {
+    detect().into_iter().filter(|s| s.target().kind == kind).collect()
+}
+
+/// Whether `spec` names the program that `command` starts: the same text, or the same file.
+fn same_program(command: &str, spec: &str) -> bool {
+    command == spec
+        || (Path::new(spec).is_absolute()
+            && std::fs::canonicalize(command).ok().is_some_and(|c| std::fs::canonicalize(spec).ok().is_some_and(|s| c == s)))
 }
 
 fn resolve_in(detected: Vec<Slicer>, chosen: &[String], spec: &str) -> Option<Slicer> {
@@ -622,6 +761,14 @@ fn resolve_in(detected: Vec<Slicer>, chosen: &[String], spec: &str) -> Option<Sl
         && let Some(i) = detected.iter().position(|d| normalize(&d.id) == wanted || named(d)).or_else(|| detected.iter().position(plain))
     {
         return detected.into_iter().nth(i);
+    }
+    // The path of a detected slicer's program, as `file.slicers` lists it (an AppImage, a program
+    // on `PATH`): that slicer, with its own command and arguments. Only when it is the program of
+    // exactly one: a launcher several entries share (`/usr/bin/flatpak`) says nothing about which of
+    // them is meant, and is not taken for the first. It goes on to the user's own programs instead.
+    let by_path: Vec<usize> = (0..detected.len()).filter(|&i| detected[i].command.first().is_some_and(|c| same_program(c, spec))).collect();
+    if let [only] = by_path.as_slice() {
+        return detected.into_iter().nth(*only);
     }
     let picked = chosen.iter().filter_map(|p| custom(p).map(|s| (p, s)));
     picked.into_iter().find(|(p, s)| p.as_str() == spec || (!wanted.is_empty() && named(s))).map(|(_, s)| s)
@@ -639,11 +786,6 @@ fn with_file(args: &[String], path: &str) -> Vec<String> {
     }
     out
 }
-
-/// Slicers that load a file into the window that is already open when given this flag. OrcaSlicer
-/// has none, and Bambu Studio is left out too; macOS applications (`open -a`) are always
-/// single-instance.
-const SINGLE_INSTANCE: &[&str] = &["prusa", "superslicer", "cura"];
 
 impl Slicer {
     /// The id without the `#<where>` that tells installs of one slicer apart: `prusa` for
@@ -670,7 +812,7 @@ impl Slicer {
     }
 
     /// [`Self::args`] without a file, for starting the slicer on its own: a Flatpak command's file
-    /// markers go too. A slicer that has to be started first (`WAIT_FOR_READY`) is always started
+    /// markers go too. A slicer that has to be started first (`Target::ready`) is always started
     /// with the single-instance flag, whatever the preference says: a start that finds one already
     /// running (a slow first look at the bus can start it twice) hands over to it and exits, where
     /// without the flag it would open a second window.
@@ -678,6 +820,11 @@ impl Slicer {
     fn start_args(&self, single_instance: bool) -> Vec<String> {
         let single_instance = single_instance || self.waits_for_ready().is_some();
         self.base_args(single_instance).into_iter().filter(|a| a != "@@" && a != "@@u").collect()
+    }
+
+    /// The row of the target table this is, or the slicer defaults for a program that has none.
+    pub fn target(&self) -> &'static Target {
+        TARGETS.iter().find(|t| t.id == self.kind()).unwrap_or(&Target::SLICER)
     }
 
     /// Which known slicer this is, by identity: its id without the install part, or for a program
@@ -692,17 +839,17 @@ impl Slicer {
         let has = |args: &[String]| args.iter().any(|a| a.starts_with("--single-instance"));
         if !single_instance {
             args.retain(|a| !a.starts_with("--single-instance"));
-        } else if self.prusa_v2() && args.iter().any(|a| a == "--single-instance-on-url") {
+        } else if self.url_flag_swaps() && args.iter().any(|a| a == "--single-instance-on-url") {
             // PrusaSlicer 2 only (by its version, when that could be read): its `-on-url` does not hand
             // a file over, and `--single-instance` does. Another program that happens to have the flag
             // keeps its own meaning for it, and so does an entry whose version is unknown.
             for a in args.iter_mut().filter(|a| *a == "--single-instance-on-url") {
                 *a = "--single-instance".into();
             }
-        } else if self.command.first().is_some_and(|p| p != "open") && !has(&args) && SINGLE_INSTANCE.contains(&self.kind()) {
+        } else if let Some(flag) = self.target().single_instance.filter(|_| self.command.first().is_some_and(|p| p != "open") && !has(&args)) {
             // Before a Flatpak command's file markers, which close the application's own arguments.
             let at = args.iter().position(|a| a == "@@" || a == "@@u").unwrap_or(args.len());
-            args.insert(at, "--single-instance".into());
+            args.insert(at, flag.into());
         }
         args
     }
@@ -742,21 +889,23 @@ impl Slicer {
     }
 
     /// Whether this slicer drops a file given at a cold start and so has to be started first and
-    /// sent the file once it can take one (see [`WAIT_FOR_READY`]). That is PrusaSlicer 3 or newer
+    /// sent the file once it can take one (see `Target::ready`). That is PrusaSlicer 3 or newer
     /// (`prusa_major`), which starts through its launcher; PrusaSlicer 2 loads the file at launch,
     /// whatever its command is. Where the version could not be read, and for a program that is not
-    /// PrusaSlicer, the launcher's name in the command decides.
+    /// in the table with such a rule, the launcher's name in the command decides.
     pub fn waits_for_ready(&self) -> Option<&'static WaitRule> {
-        match (self.kind() == "prusa", self.prusa_major) {
-            (true, Some(m)) if m < 3 => None,
-            (true, Some(_)) => WAIT_FOR_READY.first(),
-            _ => WAIT_FOR_READY.iter().find(|r| self.command.iter().any(|a| a.contains(r.command_has))),
+        let by_name = || TARGETS.iter().filter_map(|t| t.ready.as_ref()).find(|r| self.command.iter().any(|a| a.contains(r.command_has)));
+        match (self.target().ready.as_ref(), self.prusa_major) {
+            (Some(rule), Some(m)) if m < rule.min_major => None,
+            (Some(rule), Some(_)) => Some(rule),
+            _ => by_name(),
         }
     }
 
-    /// PrusaSlicer older than 3, by the version read when it was detected.
-    fn prusa_v2(&self) -> bool {
-        self.kind() == "prusa" && self.prusa_major.is_some_and(|m| m < 3)
+    /// Whether this is a PrusaSlicer old enough that its `--single-instance-on-url` does not hand a
+    /// file over, by the version read when it was detected.
+    fn url_flag_swaps(&self) -> bool {
+        self.target().on_url_swap_below.is_some_and(|below| self.prusa_major.is_some_and(|v| v < below))
     }
 
     /// Whether the slicer can take a file now: `Some(true)` or `Some(false)`, or `None` when that
@@ -768,10 +917,10 @@ impl Slicer {
 
     /// [`Self::is_ready`], giving `busctl` at most `limit` to answer.
     pub fn is_ready_within(&self, limit: std::time::Duration) -> Option<bool> {
-        self.ready_via("busctl", limit)
+        self.ready_via(&busctl_program(), limit)
     }
 
-    fn ready_via(&self, busctl: &str, limit: std::time::Duration) -> Option<bool> {
+    pub(crate) fn ready_via(&self, busctl: &str, limit: std::time::Duration) -> Option<bool> {
         let rule = self.waits_for_ready()?;
         match bus_list(busctl, limit) {
             Bus::Names(list) => Some(has_bus_name(&list, rule.bus_prefix)),
@@ -781,20 +930,23 @@ impl Slicer {
     }
 }
 
-/// A slicer that ignores a file given at a cold start, found by its command, and the sign that it
-/// is up and can take one.
+/// A rule for a program that ignores a file given at a cold start: how it is found by its command,
+/// and the sign that it is up and can take one.
 pub struct WaitRule {
     /// Part of an argument of the command.
     pub command_has: &'static str,
     /// A name on the session bus that exists while the slicer is ready. Its end changes with the
     /// install, so only its start is matched.
     pub bus_prefix: &'static str,
+    /// The first major version that needs this (older ones load the file at launch).
+    pub min_major: u32,
 }
 
 /// PrusaSlicer 3.0's launcher ignores the file on a cold start whatever the flag, and loads it
 /// over D-Bus when an instance is running. PrusaSlicer 2.9 and OrcaSlicer load it at launch, so
-/// they are not listed.
-pub const WAIT_FOR_READY: &[WaitRule] = &[WaitRule { command_has: "slic3r-app-launcher", bus_prefix: "com.prusa3d.prusaslicer.BroadcastListener." }];
+/// they have no such rule.
+pub const PRUSA_READY: WaitRule =
+    WaitRule { command_has: "slic3r-app-launcher", bus_prefix: "com.prusa3d.prusaslicer.BroadcastListener.", min_major: 3 };
 
 /// Longest wait for a started slicer to be ready, and how often it is looked at.
 pub const READY_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -908,33 +1060,27 @@ pub fn wait_until(mut ready: impl FnMut(std::time::Duration) -> bool, limit: std
 /// Wait for `slicer` to be ready to take a file. True when it is, or when that can't be told; false
 /// when the limit passes first, a slow `busctl` included.
 pub fn wait_for_ready(slicer: &Slicer) -> bool {
-    wait_for_ready_via(slicer, "busctl", READY_LIMIT, READY_POLL)
+    wait_for_ready_via(slicer, &busctl_program(), READY_LIMIT, READY_POLL)
 }
 
-fn wait_for_ready_via(slicer: &Slicer, busctl: &str, limit: std::time::Duration, poll: std::time::Duration) -> bool {
+pub(crate) fn wait_for_ready_via(slicer: &Slicer, busctl: &str, limit: std::time::Duration, poll: std::time::Duration) -> bool {
     // On purpose: if busctl is missing, or fails partway through, stop waiting and send; a file sent
     // too early is dropped quietly and costs one re-send. A busctl that is only slow is not that:
     // it keeps the wait going to the limit.
     wait_until(|left| slicer.ready_via(busctl, left.min(PROBE_LIMIT)) != Some(false), limit, poll)
 }
 
+/// What tests of this module and of the send pipeline share.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("solidcraft-slicers-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
+#[cfg(unix)]
+pub(crate) mod test_support {
+    use std::path::Path;
 
     /// A small shell script that can be run. One that was only just written can fail to start (text
     /// file busy) while another test forks, which would read as a `busctl` that is missing; so it is
     /// started once here, patiently, with a flag the script answers at once, before a test relies
     /// on it.
-    #[cfg(unix)]
-    fn fake_program(root: &Path, name: &str, body: &str) -> String {
+    pub(crate) fn fake_program(root: &Path, name: &str, body: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
         let p = root.join(name);
         std::fs::write(&p, format!("#!/bin/sh\n[ \"$1\" = --warm-up ] && exit 0\n{body}\n")).unwrap();
@@ -947,6 +1093,20 @@ mod tests {
             }
         }
         p.to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use super::test_support::fake_program;
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("solidcraft-slicers-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
     }
 
     #[test]
@@ -1031,6 +1191,44 @@ mod tests {
             ]
         );
         assert_eq!(found[1].command, ["fancy"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_path_that_several_entries_share_is_refused_and_a_single_one_runs_its_whole_command() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("shared-path");
+        let flatpak = root.join("bin/flatpak");
+        std::fs::create_dir_all(flatpak.parent().unwrap()).unwrap();
+        std::fs::write(&flatpak, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&flatpak, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let share = root.join("share");
+        std::fs::create_dir_all(share.join("applications")).unwrap();
+        for (file, name, branch) in [("a.desktop", "PrusaSlicer", "stable"), ("b.desktop", "OrcaSlicer", "master")] {
+            let exec = format!("{} run --branch={branch} com.example.{name} @@u %U @@", flatpak.display());
+            std::fs::write(share.join("applications").join(file), format!("[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\n")).unwrap();
+        }
+        // And an AppImage that is the program of one entry only.
+        let apps = root.join("Apps");
+        let image = apps.join("SuperSlicer.AppImage");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::write(&image, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let found = detect_in(&Env { data_dirs: vec![share], program_dirs: vec![apps], ..Env::default() });
+        assert_eq!(found.len(), 3, "{found:?}");
+        // Two detected Flatpak entries start the same launcher: the path alone does not say which.
+        assert_eq!(resolve_in(found.clone(), &[], flatpak.to_str().unwrap()), None);
+        // Each is still reachable by its own id or name, with its full command.
+        let by_id = resolve_in(found.clone(), &[], "orca").unwrap();
+        assert_eq!(by_id.command.first().map(String::as_str), flatpak.to_str());
+        assert!(by_id.command.contains(&"--branch=master".to_string()));
+        // The one entry whose program the path is runs its whole command.
+        let by_path = resolve_in(found.clone(), &[], image.to_str().unwrap()).unwrap();
+        assert_eq!(by_path.command, found.iter().find(|s| s.base_id() == "superslicer").unwrap().command);
+        // A path the user chose under Custom… is the user's own decision, whatever else shares it.
+        let chosen = [flatpak.to_str().unwrap().to_string()];
+        assert_eq!(resolve_in(found, &chosen, flatpak.to_str().unwrap()).map(|s| s.id), Some("custom".into()));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1256,7 +1454,7 @@ mod tests {
 
     #[test]
     fn the_bus_list_says_whether_the_slicer_is_up() {
-        let prefix = WAIT_FOR_READY[0].bus_prefix;
+        let prefix = PRUSA_READY.bus_prefix;
         let without = ":1.5 1234 systemd :1.5 user@1000.service 1 -\norg.freedesktop.Notifications 99 dunst :1.40 u 1 -\ncom.prusa3d.PrusaSlicer 7 x :1.9 s 1 -\n";
         let with = format!("{without}com.prusa3d.prusaslicer.BroadcastListener.3f9a1c 4321 xdg-dbus-proxy :1.77 u 1 -\n");
         assert!(!has_bus_name(without, prefix));
@@ -1371,7 +1569,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "cut off, not waited for");
         let answers = fake("answers", "echo ':1.5 1 x'; echo 'com.prusa3d.prusaslicer.BroadcastListener.ab 2 y'");
         let Bus::Names(list) = bus_list(&answers, std::time::Duration::from_secs(5)) else { panic!("no names") };
-        assert!(has_bus_name(&list, WAIT_FOR_READY[0].bus_prefix));
+        assert!(has_bus_name(&list, PRUSA_READY.bus_prefix));
         assert_eq!(bus_list(&fake("fails", "exit 1"), std::time::Duration::from_secs(5)), Bus::Unknown);
         // It exits at once but leaves a process running that keeps its output open.
         let lingers = fake("lingers", "echo ':1.5 1 x'; sleep 5 &\nexit 0");
@@ -1649,6 +1847,33 @@ mod tests {
             .unwrap();
         let found = detect_in(&Env { data_dirs: vec![usr], ..Env::default() });
         assert_eq!((found.len(), found[0].prusa_major), (1, Some(2)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_path_of_a_listed_program_is_accepted_and_any_other_is_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("listed-path");
+        let apps = root.join("Applications");
+        std::fs::create_dir_all(&apps).unwrap();
+        let image = apps.join("PrusaSlicer-2.9.AppImage");
+        std::fs::write(&image, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let other = root.join("other");
+        std::fs::write(&other, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = root.join("link-to-image");
+        std::os::unix::fs::symlink(&image, &link).unwrap();
+        let found = detect_in(&Env { program_dirs: vec![apps], ..Env::default() });
+        let spec = |s: &std::path::Path| resolve_in(found.clone(), &[], s.to_str().unwrap()).map(|s| s.id);
+        // The AppImage as `file.slicers` lists it, and a link to the same file.
+        assert_eq!(found[0].command, [image.to_str().unwrap()]);
+        assert_eq!(spec(&image).as_deref(), Some("prusa"));
+        assert_eq!(spec(&link).as_deref(), Some("prusa"));
+        // A program nobody listed or chose is refused, executable or not.
+        assert_eq!(spec(&other), None);
+        assert_eq!(spec(std::path::Path::new("/bin/sh")), None);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

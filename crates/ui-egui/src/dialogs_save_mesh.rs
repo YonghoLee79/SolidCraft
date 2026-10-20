@@ -108,7 +108,7 @@ pub fn available(app: &SolveApp) -> bool {
 }
 
 /// A slicer that was started alone and is being waited for, off the UI thread, until it can take
-/// the file (`slicers::WAIT_FOR_READY`). One at a time: a second send while it lasts does nothing.
+/// the file (`Target::ready` in `slicers`). One at a time: a second send while it lasts does nothing.
 pub struct SlicerWait {
     done: std::sync::mpsc::Receiver<bool>,
     /// The slicer that was started, found once.

@@ -6,6 +6,10 @@ mod thumbnail;
 #[path = "file_import.rs"]
 pub(crate) mod import;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "file_send.rs"]
+mod send;
+
 use serde_json::{Value, json};
 use solidcraft_doc::Document;
 use solidcraft_io::Format;
@@ -53,16 +57,16 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id or name from file.slicers, or a program the user added under Custom… (open the saved file there); single_instance?: bool (default true; see file.send_to_slicer)"),
+        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id or name from file.slicers, the program path it lists, or a program the user added under Custom… (send the saved file there, through the same steps as file.send_to_slicer: a slicer that has to be started first is waited for; may be deprecated later in favour of file.send_to_slicer or a Send to App workflow, kept for scripts); single_instance?: bool (default true; see file.send_to_slicer)"),
     CommandSpec::new("file.send_to_slicer", "Send to Slicer", send_to_slicer)
         .enabled(starts_programs)
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("slicer: id or name from file.slicers, or a program the user added under Custom…; bodies?: [names] (default: the selected bodies); wait?: block|return|no (default block: a slicer that drops a file at a cold start is started alone and the call waits up to 10 s for it to be ready, then sends; return: start it and answer {starting}; no: send now); single_instance?: bool (default true: PrusaSlicer, SuperSlicer, Bambu Studio and Cura load the file in the window that is open); format?: 3mf|stl|3mf-tagged (default 3mf, in millimetres; STL if that can't be written) → saves the bodies in this user's slicer folder and opens the file in the slicer. The file name stays the same for the same design and bodies, so sending again replaces it (use the slicer's Reload from disk)"),
+        .params("slicer: id or name from file.slicers, or a program the user added under Custom…; bodies?: [names] (default: the selected bodies); wait?: block|return|no (default block: a slicer that drops a file at a cold start is started alone and the call waits up to 10 s for it to be ready, then sends; return: start it and answer {starting}; no: send now); single_instance?: bool (default true: PrusaSlicer, SuperSlicer and Cura load the file in the window that is open); format?: 3mf|stl|3mf-tagged (default 3mf, in millimetres; STL if that can't be written) → saves the bodies in this user's slicer folder and opens the file in the slicer. The file name stays the same for the same design and bodies, so sending again replaces it (use the slicer's Reload from disk)"),
     CommandSpec::new("file.slicers", "Installed Slicers", slicers).icon("export")
         .noundo()
-        .params("→ the slicers found on this machine: [{id, name, icon?}]; pass an id or name as file.save_mesh's `slicer`"),
+        .params("→ the slicers found on this machine: [{id, name, program, icon?}]; pass an id, a name or the program path as file.send_to_slicer's or file.save_mesh's `slicer`"),
 ];
 
 fn new_doc(s: &mut Session, p: &Value) -> Result<Value> {
@@ -585,21 +589,32 @@ fn save_mesh(s: &mut Session, p: &Value) -> Result<Value> {
         Some("3mf-tagged") => Format::ThreeMfTagged,
         Some(other) => return Err(bad(cmd, format!("unknown mesh format `{other}` (stl, 3mf, 3mf-tagged)"))),
     };
-    let slicer = match str_(p, "slicer") {
-        None => None,
-        Some(spec) => Some(crate::slicers::resolve(spec).ok_or_else(|| {
-            bad(cmd, format!("no slicer `{spec}` (see file.slicers; a program works only once the user has added it under Custom…)"))
-        })?),
-    };
-    let mut out = export_to(s, path, format, &string_list(p, "bodies"))?;
-    if let (Some(slicer), Some(obj)) = (slicer, out.as_object_mut()) {
-        // The file is saved either way; a slicer that won't start is reported, not fatal.
-        match slicer.open(path, bool_(p, "single_instance").unwrap_or(true)) {
-            Ok(()) => obj.insert("slicer".into(), json!(slicer.name)),
-            Err(e) => obj.insert("slicer_error".into(), json!(e)),
-        };
+    // `slicer` sends the saved file to a program, through the same pipeline as `file.send_to_slicer`
+    // (a slicer that needs starting is waited for, `single_instance` applies). It is kept for scripts
+    // and may be deprecated later in favour of `file.send_to_slicer` or a Send to App workflow; that is
+    // a possibility, not a plan.
+    if let Some(spec) = str_(p, "slicer") {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = spec;
+            return Err(bad(cmd, "a slicer can't be started from the browser"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        return send::send(
+            s,
+            send::Send {
+                cmd,
+                kind: crate::slicers::TargetKind::Slicer,
+                spec,
+                bodies: string_list(p, "bodies"),
+                format,
+                dest: send::Dest::Path(path),
+                single_instance: bool_(p, "single_instance").unwrap_or(true),
+                wait: send::Wait::Block,
+            },
+        );
     }
-    Ok(out)
+    export_to(s, path, format, &string_list(p, "bodies"))
 }
 
 /// The browser build can't start a program.
@@ -618,7 +633,6 @@ fn send_to_slicer(s: &mut Session, p: &Value) -> Result<Value> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use crate::slicer_files;
         let format = match str_(p, "format").map(str::to_ascii_lowercase).as_deref() {
             None | Some("3mf") => Format::ThreeMf,
             Some("stl") => Format::StlBinary,
@@ -626,69 +640,27 @@ fn send_to_slicer(s: &mut Session, p: &Value) -> Result<Value> {
             Some(other) => return Err(bad(cmd, format!("unknown mesh format `{other}` (stl, 3mf, 3mf-tagged)"))),
         };
         let spec = str_(p, "slicer").ok_or_else(|| bad(cmd, "give `slicer` (see file.slicers)"))?;
-        let slicer = crate::slicers::resolve(spec).ok_or_else(|| {
-            bad(cmd, format!("no slicer `{spec}` (see file.slicers; a program works only once the user has added it under Custom…)"))
-        })?;
-        let mut bodies = string_list(p, "bodies");
-        if bodies.is_empty() {
-            bodies = s.selection.iter().filter_map(|x| if let crate::Sel::Body { name } = x { Some(name.clone()) } else { None }).collect();
-        }
-        if bodies.is_empty() {
-            return Err(bad(cmd, "select the bodies to open, or give `bodies`"));
-        }
-        let doc = s.doc.painted(&s.world_state());
-        let write = |format| solidcraft_io::export_with_metadata(&doc, &bodies, format, &s.doc.name, &s.doc.metadata);
-        let mut fell_back = false;
-        let (bytes, ext) = match (format, write(format)) {
-            (_, Ok(b)) => (b, if format == Format::StlBinary { "stl" } else { "3mf" }),
-            (Format::ThreeMf, Err(_)) => {
-                fell_back = true;
-                (write(Format::StlBinary)?, "stl")
-            }
-            (_, Err(e)) => return Err(e.into()),
-        };
-        let dir = slicer_files::dir().ok_or_else(|| bad(cmd, "no per-user folder on this system"))?;
-        let stem = slicer_files::stem(&s.doc.name, s.path.as_deref(), s.uid, &bodies);
-        let (file, numbered) = slicer_files::write(&dir, &stem, ext, &bytes).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
-        let path = file.to_string_lossy().into_owned();
-        let mut out = json!({"path": path, "bytes": bytes.len(), "format": ext, "numbered": numbered, "stl_fallback": fell_back});
-        let mut single = bool_(p, "single_instance").unwrap_or(true);
-        let wait = str_(p, "wait").unwrap_or("block");
-        if !matches!(wait, "block" | "return" | "no") {
-            return Err(bad(cmd, "`wait` is block, return or no"));
-        }
-        if let Some(obj) = out.as_object_mut() {
-            // A slicer that drops a file given at a cold start is started alone, and sent the file once it is ready.
-            if wait != "no" && slicer.waits_for_ready().is_some() && slicer.is_ready() == Some(false) {
-                if let Err(e) = slicer.start(single) {
-                    obj.insert("slicer_error".into(), json!(e));
-                    return Ok(out);
-                }
-                if wait == "return" {
-                    obj.insert("starting".into(), json!(slicer.name));
-                    return Ok(out);
-                }
-                if !crate::slicers::wait_for_ready(&slicer) {
-                    obj.insert("slicer_timeout".into(), json!(slicer.name));
-                    return Ok(out);
-                }
-                // After a start the file has to reach the instance that is now running, so the
-                // flag goes on whatever `single_instance` says.
-                single = true;
-            }
-            match slicer.open(&path, single) {
-                Ok(()) => obj.insert("slicer".into(), json!(slicer.name)),
-                Err(e) => obj.insert("slicer_error".into(), json!(e)),
-            };
-        }
-        Ok(out)
+        let wait = send::Wait::parse(str_(p, "wait")).ok_or_else(|| bad(cmd, "`wait` is block, return or no"))?;
+        send::send(
+            s,
+            send::Send {
+                cmd,
+                kind: crate::slicers::TargetKind::Slicer,
+                spec,
+                bodies: string_list(p, "bodies"),
+                format,
+                dest: send::Dest::Folder,
+                single_instance: bool_(p, "single_instance").unwrap_or(true),
+                wait,
+            },
+        )
     }
 }
 
 fn slicers(_: &mut Session, _: &Value) -> Result<Value> {
     let list: Vec<Value> = crate::slicers::detect()
         .iter()
-        .map(|d| json!({"id": d.id, "name": d.name, "icon": d.icon.as_ref().map(|i| i.path().to_string_lossy().into_owned())}))
+        .map(|d| json!({"id": d.id, "name": d.name, "program": d.command.first(), "icon": d.icon.as_ref().map(|i| i.path().to_string_lossy().into_owned())}))
         .collect();
     Ok(json!({ "slicers": list }))
 }
