@@ -229,33 +229,30 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 return Err(DocError::Invalid("not supported yet: a fillet between two faces of one body".into()));
             }
             let (Some(a), Some(b)) = (st.bodies.get(i).cloned(), st.bodies.get(j).cloned()) else { return Err(DocError::Invalid("body".into())) };
-            let k = match trim {
-                crate::FilletTrim::Both => kernel::FilletTrim::Both,
-                crate::FilletTrim::First => kernel::FilletTrim::First,
-                crate::FilletTrim::Second => kernel::FilletTrim::Second,
-                crate::FilletTrim::None => kernel::FilletTrim::None,
-            };
             let out = kernel::surface_fillet(
                 kernel::FilletFace { body: &a.body, pick: at.0 },
                 kernel::FilletFace { body: &b.body, pick: with_at.0 },
                 r,
-                k,
+                *trim,
             )?;
-            match trim {
-                crate::FilletTrim::Both | crate::FilletTrim::First => {
-                    if let Some(slot) = st.bodies.get_mut(i) {
-                        *slot = ModelBody::new(a.name, out, a.feature);
+            // The trimmed faces' bodies make the one sheet: the first's, else the second's.
+            let into = if trim.trims(0) {
+                Some((i, a))
+            } else if trim.trims(1) {
+                Some((j, b.clone()))
+            } else {
+                None
+            };
+            match into {
+                Some((k, mb)) => {
+                    if let Some(slot) = st.bodies.get_mut(k) {
+                        *slot = ModelBody::new(mb.name, out, mb.feature);
                     }
-                    if *trim == crate::FilletTrim::Both {
+                    if trim.trims(0) && trim.trims(1) {
                         st.bodies.retain(|x| x.name != b.name);
                     }
                 }
-                crate::FilletTrim::Second => {
-                    if let Some(slot) = st.bodies.get_mut(j) {
-                        *slot = ModelBody::new(b.name, out, b.feature);
-                    }
-                }
-                crate::FilletTrim::None => {
+                None => {
                     let name = new_name(st, f, 0);
                     st.bodies.push(ModelBody::new(name, out, f.id));
                 }

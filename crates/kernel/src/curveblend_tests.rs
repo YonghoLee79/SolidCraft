@@ -418,7 +418,7 @@ fn knife_edge_ball_centre_does_not_depend_on_the_side_order() {
         let centre = Vec3::new(tip.x - (4.0 * R * r).sqrt(), -r, tip.z);
         // `cusp` is +1 when n1 × t points into the cusp: the wall's normal is −y, the plane's +y.
         for (f1, f2, cusp) in [(wall, plane, 1.0), (plane, wall, -1.0)] {
-            let s = solve(&[f1], &[f2], tip, Vec3::Z, r, -1.0, cusp, None, 1e-6).unwrap();
+            let s = solve(&[f1], &[f2], tip, Vec3::Z, r, [-1.0; 2], cusp, None, 1e-6).unwrap();
             assert!(s.c.dist(centre) < 1e-6, "r={r} cusp={cusp}: centre {:?}, expected {centre:?}", s.c);
         }
     }

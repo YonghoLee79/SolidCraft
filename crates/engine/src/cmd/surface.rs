@@ -12,7 +12,7 @@ use solidcraft_kernel::Continuity;
 
 use super::CommandSpec;
 use super::features::{add_feature, axis_param, check_expr, extent_param, feature_sketch, operation, plane_param, profiles, sketch_id};
-use crate::params::{bad, bool_, expr, num, str_, string_list, vec3};
+use crate::params::{bad, bool_, expr, num, req_expr, req_vec3, str_, string_list, vec3};
 use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
@@ -622,19 +622,12 @@ fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
     if body == with {
         return Err(bad(cmd, "`with` must be another body"));
     }
-    let point = |k: &str| p.get(k).and_then(vec3).ok_or_else(|| bad(cmd, format!("`{k}` must be [x, y, z] on the face")));
-    let (at, with_at) = (point("at")?, point("with_at")?);
-    let radius = expr(p, "radius").ok_or_else(|| bad(cmd, "`radius` is required"))?;
+    let (at, with_at) = (req_vec3(cmd, p, "at")?, req_vec3(cmd, p, "with_at")?);
+    let radius = req_expr(cmd, p, "radius")?;
     check_expr(s, &radius, Kind::Length, cmd, "radius")?;
     let trim = match p.get("trim").filter(|v| !v.is_null()) {
-        None => FilletTrim::Both,
-        Some(v) => match v.as_str() {
-            Some("both") => FilletTrim::Both,
-            Some("first") => FilletTrim::First,
-            Some("second") => FilletTrim::Second,
-            Some("none") => FilletTrim::None,
-            _ => return Err(bad(cmd, "`trim` must be both, first, second or none")),
-        },
+        None => FilletTrim::default(),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|_| bad(cmd, "`trim` must be both, first, second or none"))?,
     };
     let kind = FeatureKind::SurfaceFillet { body: BodyName(body), at: Position(at), with: BodyName(with), with_at: Position(with_at), radius, trim };
     add_feature(s, p, kind)

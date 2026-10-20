@@ -109,8 +109,6 @@ pub struct CommandSpec {
     /// Reads the evaluated model (the default). A command that reads only the document and the
     /// session's history runs on a model left stale by a live gesture without evaluating it first.
     pub reads_model: bool,
-    /// Registered but not built yet: the GitHub issue number that tracks it.
-    pub planned: Option<&'static str>,
     /// The command's typed parameter contract, which carries its input schema; `None` until
     /// the command is converted (see `crate::schema`).
     pub contract: Option<&'static dyn crate::schema::Contract>,
@@ -133,15 +131,9 @@ impl CommandSpec {
             undoable: true,
             live: None,
             reads_model: true,
-            planned: None,
             contract: None,
             output: None,
         }
-    }
-    /// Not built yet; `issue` tracks building it.
-    pub const fn planned(mut self, issue: &'static str) -> Self {
-        self.planned = Some(issue);
-        self
     }
     /// Takes `live: true`, run by `run`.
     pub const fn live(mut self, run: LiveRun) -> Self {
@@ -206,7 +198,6 @@ impl CommandSpec {
             params: self.params,
             enabled: e.is_ok(),
             disabled_reason: e.err(),
-            planned: self.planned,
         }
     }
 }
@@ -222,8 +213,6 @@ pub struct CommandInfo {
     pub params: &'static str,
     pub enabled: bool,
     pub disabled_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub planned: Option<&'static str>,
 }
 
 pub fn always(_: &Session) -> std::result::Result<(), String> {

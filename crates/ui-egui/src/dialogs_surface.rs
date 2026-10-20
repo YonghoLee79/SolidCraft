@@ -380,6 +380,11 @@ fn pt(v: Vec3) -> Value {
     json!([v.x, v.y, v.z])
 }
 
+/// The body and point of the first face picked in input `i`.
+fn face_pick(inputs: &[SelInput], i: usize) -> Option<(String, Value)> {
+    items(inputs, i).first().and_then(|x| if let Sel::Face { body, point, .. } = x { Some((body.clone(), pt(*point))) } else { None })
+}
+
 fn bodies(inputs: &[SelInput], i: usize) -> Vec<String> {
     items(inputs, i).iter().filter_map(|x| if let Sel::Body { name } = x { Some(name.clone()) } else { None }).collect()
 }
@@ -826,22 +831,14 @@ pub fn commands(app: &SolveApp, k: &Surf, inputs: &[SelInput], extra: &Map<Strin
             ("surface.trim", p)
         }
         Surf::Fillet { radius, trim } => {
-            let face = |i: usize, what: &str| -> Result<(String, Value), String> {
-                items(inputs, i)
-                    .first()
-                    .and_then(|x| if let Sel::Face { body, point, .. } = x { Some((body.clone(), pt(*point))) } else { None })
-                    .ok_or(format!("pick the {what} face"))
-            };
-            let ((body, at), (with, with_at)) = (face(0, "first")?, face(1, "second")?);
+            let (body, at) = face_pick(inputs, 0).ok_or("pick the first face")?;
+            let (with, with_at) = face_pick(inputs, 1).ok_or("pick the second face")?;
             let trim = FILLET_TRIM.get(*trim).map_or("both", |(_, w)| *w);
             ("surface.fillet", json!({"body": body, "at": at, "with": with, "with_at": with_at, "radius": radius, "trim": trim}))
         }
         Surf::Untrim { holes, outer, in_place } => {
             need(0, "the face to untrim")?;
-            let (body, point) = items(inputs, 0)
-                .first()
-                .and_then(|x| if let Sel::Face { body, point, .. } = x { Some((body.clone(), pt(*point))) } else { None })
-                .ok_or("pick the face to untrim")?;
+            let (body, point) = face_pick(inputs, 0).ok_or("pick the face to untrim")?;
             let mut p = json!({"face": {"body": body, "point": point}});
             match holes {
                 0 => p["holes"] = json!("all"),
@@ -1142,15 +1139,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind, frame: &Mat) -> Option<(K
             )
         }
         FeatureKind::SurfaceFillet { at, with_at, radius, trim, .. } => (
-            Surf::Fillet {
-                radius: radius.to_string(),
-                trim: match trim {
-                    solidcraft_engine::doc::FilletTrim::Both => 0,
-                    solidcraft_engine::doc::FilletTrim::First => 1,
-                    solidcraft_engine::doc::FilletTrim::Second => 2,
-                    solidcraft_engine::doc::FilletTrim::None => 3,
-                },
-            },
+            Surf::Fillet { radius: radius.to_string(), trim: FILLET_TRIM.iter().position(|(_, w)| *w == trim.as_str()).unwrap_or(0) },
             vec![crate::dialogs::face_sel(s, at.0).into_iter().collect(), crate::dialogs::face_sel(s, with_at.0).into_iter().collect()],
         ),
         FeatureKind::SurfaceUntrim { face, holes, outer, in_place } => {

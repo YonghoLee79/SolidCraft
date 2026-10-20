@@ -1635,21 +1635,7 @@ impl FilletCorner {
 }
 
 /// Which faces a surface fillet trims back to itself and stitches to it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FilletTrim {
-    #[default]
-    Both,
-    First,
-    Second,
-    None,
-}
-
-impl FilletTrim {
-    pub fn is_both(&self) -> bool {
-        *self == FilletTrim::Both
-    }
-}
+pub use solidcraft_kernel::FilletTrim;
 
 /// How Extend continues a surface past its edges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -512,7 +512,7 @@ fn strip(
             (Some(_), Some(o)) => Some(p + o),
             (Some(into), None) => Some(knife_start(&o1, &o2, p, t, into, r)?),
         };
-        let s = solve_from(&o1, &o2, p, t, r, sigma, 0.0, None, tol * 100.0, start)?;
+        let s = solve_from(&o1, &o2, p, t, r, [sigma; 2], 0.0, None, tol * 100.0, start)?;
         if knife.is_some() {
             offset.set(Some(s.c - p));
         }
@@ -565,7 +565,7 @@ fn strip(
             return guide.sections.last().copied().ok_or_else(|| fail("section"));
         }
         let (anchor, t) = guide.anchor(along).ok_or_else(|| unsupported("degenerate rolling-ball spine"))?;
-        solve_from(&o1, &o2, anchor, t, r, sigma, 0.0, None, tol * 100.0, None)
+        solve_from(&o1, &o2, anchor, t, r, [sigma; 2], 0.0, None, tol * 100.0, None)
             .ok_or_else(|| unsupported("the ball doesn't fit along the resampled spine"))
     };
     let mut samples = SAMPLES;

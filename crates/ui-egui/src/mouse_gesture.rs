@@ -179,7 +179,7 @@ pub(crate) fn catalog() -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = SPECIALS.iter().map(|(i, l)| ((*i).to_string(), (*l).to_string())).collect();
     v.extend(ACTIONS.iter().map(|(i, l, _)| ((*i).to_string(), (*l).to_string())));
     for spec in solidcraft_engine::command_specs() {
-        if !spec.tab.is_empty() && spec.planned.is_none() && !v.iter().any(|(i, _)| i == spec.id) {
+        if !spec.tab.is_empty() && !v.iter().any(|(i, _)| i == spec.id) {
             v.push((spec.id.to_string(), short(spec.label).to_string()));
         }
     }

@@ -57,7 +57,7 @@ impl Walk for crate::document::RailFit {}
 impl Walk for crate::document::CoilSection {}
 impl Walk for crate::document::ThinSide {}
 impl Walk for crate::document::ExtendMode {}
-impl Walk for crate::document::FilletTrim {}
+impl Walk for solidcraft_kernel::FilletTrim {}
 impl Walk for crate::document::RuledMode {}
 impl Walk for crate::document::RuledCorners {}
 impl Walk for crate::document::ExtrudeConvention {}
