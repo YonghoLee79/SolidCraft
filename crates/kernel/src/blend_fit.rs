@@ -6,7 +6,7 @@
 //! the operations build is not a blend of those edges, so it is refused with the largest size
 //! that does fit. After the build, the volume taken away is checked against the wedges too.
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Triangle, Vec3};
 use truck_modeling as mt;
 
 use crate::blend::{ChamferSide, plane_normal, vtx};
@@ -254,7 +254,7 @@ fn overlap(a: &[Wedge], b: &[Wedge], eps: f64) -> bool {
 struct Selection {
     frames: Vec<Option<Frame>>,
     /// The body's triangles, with their face and whether that face is planar.
-    tris: Vec<([Vec3; 3], usize)>,
+    tris: Vec<(Triangle, usize)>,
     planar: Vec<bool>,
     size: f64,
     chord: f64,
@@ -299,7 +299,7 @@ fn select_in(body: &Body, pts: &[Vec3]) -> Result<Selection> {
     }
     let m = mesh.measure();
     let coarse = (m.volume, m.area);
-    let tris = mesh.triangles.iter().zip(&mesh.tri_face).filter_map(|(t, f)| Some((mesh.tri(t)?, *f as usize))).collect();
+    let tris = mesh.face_tris().map(|(t, f)| (t, f as usize)).collect();
     Ok(Selection { frames, tris, planar, size, chord, coarse })
 }
 
@@ -392,8 +392,8 @@ fn first_clash(sel: &Selection, size: Size, strict: bool) -> Option<Clash> {
             // The pieces near the arc's ends are thin: a curved face only goes clear of them
             // when its mesh stays a chord outside, or a sliver into the round is missed (#324).
             let fan = if sel.planar.get(*face).copied().unwrap_or(false) { flat } else { -sel.chord };
-            reaches_inside_beyond(t, &w.planes, eps, &trimmed, out)
-                && (changed.len() <= 1 || changed.iter().any(|p| reaches_inside_beyond(t, &p.planes, fan, &trimmed, out)))
+            reaches_inside_beyond(t.as_slice(), &w.planes, eps, &trimmed, out)
+                && (changed.len() <= 1 || changed.iter().any(|p| reaches_inside_beyond(t.as_slice(), &p.planes, fan, &trimmed, out)))
         });
         if hit {
             return Some(Clash::Face);

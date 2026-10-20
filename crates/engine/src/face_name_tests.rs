@@ -54,7 +54,8 @@ fn model_faces_gives_a_point_on_each_face_and_the_hole_axis_and_radius() {
     let body = st.body("Plate").unwrap();
     for f in &all {
         let (at, index) = (vec(&f["point"]), f["index"].as_u64().unwrap() as usize);
-        let (distance, nearest) = solidcraft_doc::appearance::nearest_face(body, at).unwrap();
+        let hit = body.mesh().nearest_face(at).unwrap();
+        let (distance, nearest) = (hit.dist, hit.face as usize);
         assert_eq!(nearest, index, "a pick at the point finds the face: {f}");
         match f.get("cylinder") {
             // On the cylinder itself, not only on its facets (which lie inside it).

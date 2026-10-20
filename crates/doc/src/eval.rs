@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
-use solidcraft_geom::{Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
+use solidcraft_geom::{Mesh, Plane, Region2, Triangle, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
 use solidcraft_sketch::{CurveKind, Profile, SolveReport, find_profiles};
 
@@ -2238,9 +2238,9 @@ impl<'a> Surroundings<'a> {
     /// are drawn in, so that faces lying against them don't count).
     fn harmless(&self, plane: &Plane, pieces: &[[Vec2; 3]], margin: f64, lo: f64, hi: f64) -> bool {
         let n = plane.normal();
-        let faces: Vec<([Vec3; 3], f64)> = pieces.iter().map(|t| (t.map(|p| plane.to_world(p)), margin)).collect();
+        let faces: Vec<(Triangle, f64)> = pieces.iter().map(|t| (Triangle(t.map(|p| plane.to_world(p))), margin)).collect();
         let mut space = solidcraft_geom::Aabb3::EMPTY;
-        for p in faces.iter().flat_map(|(t, _)| t) {
+        for p in faces.iter().flat_map(|(t, _)| t.iter()) {
             space.add(*p + n * lo);
             space.add(*p + n * hi);
         }
@@ -2462,7 +2462,7 @@ fn extend_for_coplanar(sur: &Surroundings, plane: &Plane, r: &Region2, lo: f64, 
         .map(|(_, m, _)| m)
         .flat_map(|m| {
             m.triangles.iter().filter_map(|t| {
-                let [a, b, c] = m.tri(t)?;
+                let Triangle([a, b, c]) = m.tri(t)?;
                 let normal = (b - a).cross(c - a).normalized()?;
                 (normal.dot(n).abs() > 1.0 - 1e-9).then(|| (a - plane.origin).dot(n))
             })
@@ -2525,7 +2525,7 @@ fn trim_embedded_join_ends(sur: &Surroundings, plane: &Plane, r: &Region2, lo: f
         .iter()
         .flat_map(|(_, mesh, _)| {
             mesh.triangles.iter().filter_map(|t| {
-                let [a, b, c] = mesh.tri(t)?;
+                let Triangle([a, b, c]) = mesh.tri(t)?;
                 let normal = (b - a).cross(c - a).normalized()?;
                 (normal.dot(n).abs() > 1.0 - 1e-9).then(|| (a - plane.origin).dot(n))
             })
@@ -2588,7 +2588,7 @@ fn face_level_at(st: &ModelState, plane: &Plane, h: f64, targets: &[String]) -> 
         let m = b.mesh();
         let tol = (b.body.size() * 1e-7).max(1e-9);
         m.triangles.iter().any(|t| {
-            m.tri(t).is_some_and(|[a, b, c]| {
+            m.tri(t).is_some_and(|Triangle([a, b, c])| {
                 (b - a).cross(c - a).normalized().is_some_and(|normal| normal.dot(n).abs() > 1.0 - 1e-9)
                     && ((a - plane.origin).dot(n) - h).abs() < tol
             })
@@ -2650,12 +2650,11 @@ fn faces_through(st: &ModelState, p: Vec3, reach: f64) -> Vec<(f64, Vec3, Option
         let m = b.mesh();
         // The nearest facet of each face of this body.
         let mut near: BTreeMap<u32, (f64, Vec3)> = BTreeMap::new();
-        for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-            let Some([a, bb, c]) = m.tri(t) else { continue };
-            let d = crate::appearance::closest_on_triangle(p, a, bb, c).dist(p);
+        for (Triangle([a, bb, c]), f) in m.face_tris() {
+            let d = Triangle([a, bb, c]).closest_point(p).dist(p);
             let Some(n) = (bb - a).cross(c - a).normalized() else { continue };
-            if d <= reach && near.get(f).is_none_or(|(x, _)| d < *x) {
-                near.insert(*f, (d, n));
+            if d <= reach && near.get(&f).is_none_or(|(x, _)| d < *x) {
+                near.insert(f, (d, n));
             }
         }
         for (f, (d, facet)) in near {
@@ -4781,8 +4780,8 @@ fn face_at(st: &ModelState, p: Vec3) -> Option<(usize, usize)> {
         .enumerate()
         .filter(|(_, b)| !b.body.is_mesh())
         .filter_map(|(bi, b)| {
-            let (d, fi) = crate::appearance::nearest_face(b, p)?;
-            (d <= crate::appearance::pick_tolerance(b)).then_some((d, bi, fi))
+            let hit = b.mesh().nearest_face(p)?;
+            (hit.dist <= crate::appearance::pick_tolerance(b)).then_some((hit.dist, bi, hit.face as usize))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, bi, fi)| (bi, fi))
@@ -4855,7 +4854,7 @@ fn face_samples(b: &ModelBody) -> Vec<Vec3> {
         if out.len() <= f {
             out.resize(f + 1, None);
         }
-        if let (Some(slot @ None), Some([a, bb, c])) = (out.get_mut(f), m.tri(t)) {
+        if let (Some(slot @ None), Some(Triangle([a, bb, c]))) = (out.get_mut(f), m.tri(t)) {
             *slot = Some((a + bb + c) * (1.0 / 3.0));
         }
     }
@@ -5011,7 +5010,7 @@ fn face_plane(st: &ModelState, picked: &Plane, at: Vec3, name: Option<&str>) -> 
                 .zip(&mesh.tri_face)
                 .filter(|(_, tf)| **tf as usize == f.index)
                 .filter_map(|(t, _)| mesh.tri(t))
-                .map(|[a, bb, c]| crate::project::closest_on_triangle(at, a, bb, c).dist(at))
+                .map(|Triangle([a, bb, c])| Triangle([a, bb, c]).closest_point(at).dist(at))
                 .fold(f64::INFINITY, f64::min);
             if best.is_none_or(|x| d < x.0) {
                 best = Some((d, f.centroid.dot(n)));
@@ -5934,8 +5933,8 @@ pub fn face_point_names(doc: &Document, st: &ModelState, kind: &FeatureKind, com
                 .iter()
                 .filter(|b| !b.body.is_mesh())
                 .filter_map(|b| {
-                    let (d, fi) = crate::appearance::nearest_face(b, *p)?;
-                    (d <= (b.body.size() * 1e-3).max(1e-3)).then_some((d, b, fi))
+                    let hit = b.mesh().nearest_face(*p)?;
+                    (hit.dist <= (b.body.size() * 1e-3).max(1e-3)).then_some((hit.dist, b, hit.face as usize))
                 })
                 .min_by(|a, b| a.0.total_cmp(&b.0))
                 .and_then(|(_, b, fi)| crate::naming::face_names(b).get(fi).cloned())

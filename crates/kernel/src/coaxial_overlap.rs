@@ -15,7 +15,7 @@
 //! band, a hole that is not round all the way, a pin end inside the hole), the overlap is not
 //! answered here and the caller takes the general boolean.
 
-use solidcraft_geom::{Aabb3, UnitVec3, Vec3};
+use solidcraft_geom::{Aabb3, Triangle, UnitVec3, Vec3};
 
 use crate::body::Body;
 use crate::{BoolOp, FaceSurface};
@@ -353,8 +353,8 @@ fn flush(x: &Body, y: &Body, same: f64, depth: f64) -> Vec<usize> {
                 .zip(&mx.tri_face)
                 .filter(|(_, f)| **f as usize == i)
                 .filter_map(|(t, _)| mx.tri(t))
-                .filter(|[a, b, c]| (*b - *a).cross(*c - *a).len() > 0.0)
-                .map(|[a, b, c]| (a + b + c) / 3.0)
+                .filter(|Triangle([a, b, c])| (*b - *a).cross(*c - *a).len() > 0.0)
+                .map(|Triangle([a, b, c])| (a + b + c) / 3.0)
                 .collect();
             let stride = centres.len().div_ceil(SAMPLES).max(1);
             !centres.is_empty() && centres.iter().step_by(stride).all(|c| my.contains(*c + n * depth) && !my.contains(*c - n * depth))
@@ -388,7 +388,7 @@ fn walls(b: &Body, cylinders: Vec<Wall>, same: f64) -> Option<Vec<Wall>> {
             if *f as usize != face {
                 continue;
             }
-            let Some([p, q, r]) = mesh.tri(t) else { continue };
+            let Some(Triangle([p, q, r])) = mesh.tri(t) else { continue };
             let c = (p + q + r) / 3.0;
             let radial = (c - origin) - axis * (c - origin).dot(axis);
             facing += (q - p).cross(r - p).dot(radial);

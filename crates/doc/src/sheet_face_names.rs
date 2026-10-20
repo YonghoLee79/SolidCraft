@@ -5,7 +5,7 @@
 //! neighbouring flange), the rim along the bend there, `<flange>:rim.ext0` and `rim.ext1`. A panel is `base` or a flange's tag (`F<feature>.<k>`), so the names
 //! say what each face is and stay with it when sizes change or other flanges come and go.
 
-use solidcraft_geom::{Vec2, Vec3};
+use solidcraft_geom::{Triangle, Vec2, Vec3};
 
 use super::SheetBody;
 use crate::{ModelBody, ModelState, apply_point, mat_inverse};
@@ -105,7 +105,7 @@ pub fn body_sheet_face_names(st: &ModelState, b: &ModelBody) -> Vec<Option<Strin
     let mut votes: Vec<Vec<(String, usize)>> = vec![Vec::new(); nf];
     let mut total = vec![0usize; nf];
     for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-        let (Some(v), Some(n), Some([a, b2, c])) = (votes.get_mut(*f as usize), total.get_mut(*f as usize), m.tri(t)) else { continue };
+        let (Some(v), Some(n), Some(Triangle([a, b2, c]))) = (votes.get_mut(*f as usize), total.get_mut(*f as usize), m.tri(t)) else { continue };
         // At most a few dozen points a face: enough to tell its name, cheap on a fine mesh.
         if *n >= 48 {
             continue;

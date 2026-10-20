@@ -101,15 +101,14 @@ fn rim_neighbour(b: &ModelBody, face: usize, c: &CylinderFace, at: f64) -> Optio
         return None;
     }
     let mut near: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
-    for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-        let f = *f as usize;
+    for (tri, f) in mesh.face_tris() {
+        let f = f as usize;
         if f == face {
             continue;
         }
-        let Some([p, q, r]) = mesh.tri(t) else { continue };
         let slot = near.entry(f).or_insert_with(|| vec![f64::INFINITY; rim.len()]);
         for (d, x) in slot.iter_mut().zip(&rim) {
-            *d = d.min(crate::naming::closest(*x, p, q, r).dist(*x));
+            *d = d.min(tri.closest_point(*x).dist(*x));
         }
     }
     // The face that meets the whole rim (the other half of a cylinder split in two meets only
@@ -232,10 +231,9 @@ pub fn face_name_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3,
         let mesh = b.mesh();
         let tol = (b.body.size() * 1e-3).max(1e-3).max(b.display_tol());
         let mut near: BTreeMap<usize, f64> = BTreeMap::new();
-        for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-            let Some([x, y, z]) = mesh.tri(t) else { continue };
-            let d = crate::naming::closest(p, x, y, z).dist(p);
-            near.entry(*f as usize).and_modify(|n| *n = n.min(d)).or_insert(d);
+        for (tri, f) in mesh.face_tris() {
+            let d = tri.closest_point(p).dist(p);
+            near.entry(f as usize).and_modify(|n| *n = n.min(d)).or_insert(d);
         }
         let nearest = near.values().copied().fold(f64::INFINITY, f64::min);
         if nearest > tol * 5.0 {

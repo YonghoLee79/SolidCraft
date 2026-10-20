@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Triangle, Vec3};
 use truck_modeling as mt;
 
 use crate::body::Body;
@@ -37,8 +37,8 @@ impl Convex {
     /// The prism a triangle sweeps when it moves along the unit vector `along` (not in its
     /// plane) from the distance `lo` to `hi`, its sides moved out by `margin` (in, when
     /// negative). `None` for a triangle without area or an empty interval.
-    fn swept(tri: [Vec3; 3], along: Vec3, margin: f64, lo: f64, hi: f64) -> Option<Convex> {
-        let [a, b, c] = tri;
+    fn swept(tri: Triangle, along: Vec3, margin: f64, lo: f64, hi: f64) -> Option<Convex> {
+        let Triangle([a, b, c]) = tri;
         let centre = (a + b + c) / 3.0;
         if hi <= lo || !(margin + lo + hi).is_finite() || (b - a).cross(c - a).dot(along).abs() < 1e-300 {
             return None;
@@ -62,7 +62,7 @@ impl Convex {
     }
 
     /// Does the triangle reach into the region? Touching its boundary counts.
-    fn meets(&self, tri: [Vec3; 3]) -> bool {
+    fn meets(&self, tri: Triangle) -> bool {
         // A side with the whole triangle beyond it settles most triangles at once.
         if self.0.iter().any(|(n, d)| tri.iter().all(|p| n.dot(*p) > *d)) {
             return false;
@@ -144,7 +144,7 @@ impl<'a> Clearance<'a> {
     /// planar faces square to `along`, each with how far its face reaches past it sideways
     /// (negative: the triangle's sides are drawn in, so that faces lying against them don't
     /// count). `Mixed` as soon as a face of the body reaches into that space.
-    pub fn swept(&self, faces: &[([Vec3; 3], f64)], along: Vec3, lo: f64, hi: f64) -> Occupancy {
+    pub fn swept(&self, faces: &[(Triangle, f64)], along: Vec3, lo: f64, hi: f64) -> Occupancy {
         let Some((first, _)) = faces.first() else { return Occupancy::Mixed };
         let base = along.dot(first[0]);
         // The body's triangles near that space.
@@ -164,7 +164,7 @@ impl<'a> Clearance<'a> {
                 || all(&|p| p.z < min.z)
                 || all(&|p| p.z > max.z)
         };
-        let mut near: Vec<(u32, [Vec3; 3])> = Vec::new();
+        let mut near: Vec<(u32, Triangle)> = Vec::new();
         for (t, face) in self.mesh.triangles.iter().zip(&self.mesh.tri_face) {
             let Some(tri) = self.mesh.tri(t) else { return Occupancy::Mixed };
             if !outside(&tri) {
@@ -185,7 +185,7 @@ impl<'a> Clearance<'a> {
             let (Some(sideways), Some(around)) = (prism(self.sag, 0.0), prism(self.sag, self.sag)) else { return Occupancy::Mixed };
             // With no face in it, the prism is all material or all empty.
             let here = if inside.contains(probe) { Occupancy::Full } else { Occupancy::Empty };
-            let reaches = |(face, t): &(u32, [Vec3; 3])| {
+            let reaches = |(face, t): &(u32, Triangle)| {
                 around.meets(*t)
                     && match *reach.entry(*face).or_insert_with(|| self.reach(*face, along, base + lo, base + hi)) {
                         Reach::Exact => tight.meets(*t),
@@ -311,9 +311,9 @@ mod tests {
 
     /// The top face of a 200 x 100 x 20 block between x = `x0` and `x1`, y = 10 and 90, as two
     /// triangles with their sides drawn in by 1e-4.
-    fn top(x0: f64, x1: f64) -> Vec<([Vec3; 3], f64)> {
+    fn top(x0: f64, x1: f64) -> Vec<(Triangle, f64)> {
         let p = |x: f64, y: f64| Vec3::new(x, y, 20.0);
-        vec![([p(x0, 10.0), p(x1, 10.0), p(x1, 90.0)], -1e-4), ([p(x0, 10.0), p(x1, 90.0), p(x0, 90.0)], -1e-4)]
+        vec![(Triangle([p(x0, 10.0), p(x1, 10.0), p(x1, 90.0)]), -1e-4), (Triangle([p(x0, 10.0), p(x1, 90.0), p(x0, 90.0)]), -1e-4)]
     }
 
     /// The space over a block's top face is empty and the space under it is material, up to
@@ -358,7 +358,7 @@ mod tests {
         // The top face from x = `x0` to 190 and y = `y0` to 90.
         let rect = |x0: f64, y0: f64| {
             let p = |x: f64, y: f64| Vec3::new(x, y, 20.0);
-            vec![([p(x0, y0), p(190.0, y0), p(190.0, 90.0)], -1e-4), ([p(x0, y0), p(190.0, 90.0), p(x0, 90.0)], -1e-4)]
+            vec![(Triangle([p(x0, y0), p(190.0, y0), p(190.0, 90.0)]), -1e-4), (Triangle([p(x0, y0), p(190.0, 90.0), p(x0, 90.0)]), -1e-4)]
         };
         assert_eq!(c.swept(&rect(10.0, -10.0), Vec3::Z, 1e-4, 3.0), Occupancy::Empty);
         assert!(c.clear_of_slab(Vec3::Z, 20.0, 1e-4, 3.0));

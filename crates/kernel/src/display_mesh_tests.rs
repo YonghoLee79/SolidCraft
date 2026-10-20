@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use solidcraft_geom::{Loop2, Mesh, Plane, Region2, Seg2, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Mesh, Plane, Region2, Seg2, Triangle, UnitVec3, Vec2, Vec3};
 
 use super::{Body, DISPLAY_ANGLE};
 use crate::{FaceSurface, extrude, face_surface};
@@ -90,7 +90,7 @@ fn angles_around(m: &Mesh, face: usize, origin: Vec3, axis: Vec3) -> Vec<f64> {
 fn sag(m: &Mesh, face: usize, origin: Vec3, axis: Vec3, radius: f64) -> f64 {
     let mut worst = 0.0f64;
     for (t, _) in m.triangles.iter().zip(&m.tri_face).filter(|(_, f)| **f as usize == face) {
-        let [a, b, c] = m.tri(t).unwrap();
+        let Triangle([a, b, c]) = m.tri(t).unwrap();
         for p in [a, b, c] {
             assert!((radial(p, origin, axis) - radius).abs() < 1e-6, "a corner off the cylinder");
         }
@@ -353,7 +353,7 @@ fn round_faces_of_every_kind_are_divided_by_the_angle() {
 
 /// The signed volume a closed mesh encloses.
 fn mesh_volume(m: &Mesh) -> f64 {
-    m.triangles.iter().filter_map(|t| m.tri(t)).map(|[a, b, c]| a.dot(b.cross(c)) / 6.0).sum()
+    m.triangles.iter().filter_map(|t| m.tri(t)).map(|Triangle([a, b, c])| a.dot(b.cross(c)) / 6.0).sum()
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn a_cylinder_wall_split_along_its_seam_meshes_round() {
             if !outer.get(*f as usize).copied().unwrap_or(false) {
                 continue;
             }
-            let [a, b, c] = m.tri(t).unwrap();
+            let Triangle([a, b, c]) = m.tri(t).unwrap();
             let centre = (a + b + c) * (1.0 / 3.0);
             let r = Vec2::new(centre.x, centre.y).len();
             assert!(r > 50.0 - 10.0 * tol.max(0.05), "tolerance {tol}: an outer wall triangle passes {r:.2} mm from the axis");

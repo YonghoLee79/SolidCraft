@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use solidcraft_doc::apply_point;
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Triangle, Vec3};
 use solidcraft_render::Camera;
 
 use super::super::meshes::{Placement, Scene, WORKERS, claim, transformed_bounds};
@@ -168,14 +168,14 @@ impl<'a> View<'a> {
         }
         Ok(projected)
     }
-    fn triangle(&self, shared: &Shared, placed: &Placement, id: usize) -> Result<[Vec3; 3], &'static str> {
+    fn triangle(&self, shared: &Shared, placed: &Placement, id: usize) -> Result<Triangle, &'static str> {
         let indices = shared.mesh.triangles.get(id).ok_or("invalid export triangle")?;
-        let [a, b, c] = shared.mesh.tri(indices).ok_or("invalid export triangle")?;
-        Ok([
+        let Triangle([a, b, c]) = shared.mesh.tri(indices).ok_or("invalid export triangle")?;
+        Ok(Triangle([
             self.project(apply_point(&placed.transform, a))?,
             self.project(apply_point(&placed.transform, b))?,
             self.project(apply_point(&placed.transform, c))?,
-        ])
+        ]))
     }
 }
 

@@ -462,7 +462,7 @@ mod close_pairs {
         for p in tri {
             bounds.add(p);
         }
-        (tri, bounds)
+        (Triangle(tri), bounds)
     }
 
     /// `count` small triangles scattered over a cube of side `spread` at `origin`. On the lattice their
@@ -741,6 +741,15 @@ mod blend {
         let d = flat.derivatives(0.0, 1).unwrap();
         assert_eq!(d[0], Vec2::ZERO);
     }
+}
+
+#[test]
+fn the_nearest_face_is_the_one_under_the_point() {
+    let m = cube_mesh(2.0);
+    let top = m.nearest_face(Vec3::new(1.0, 1.0, 3.0)).unwrap();
+    assert_eq!((top.point, top.dist), (Vec3::new(1.0, 1.0, 2.0), 1.0));
+    assert_eq!(m.tri_face.get(m.face_tris().position(|(_, f)| f == top.face).unwrap()), Some(&top.face));
+    assert!(Mesh::default().nearest_face(Vec3::ZERO).is_none());
 }
 
 #[test]

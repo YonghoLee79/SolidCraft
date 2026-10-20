@@ -11,7 +11,7 @@
 
 use serde_json::{Map, Value};
 use solidcraft_doc::{Mat, apply_point, apply_vector, is_identity, map_point_expr, mat_inverse};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Triangle, Vec3};
 
 use crate::Session;
 
@@ -152,7 +152,7 @@ fn frame_at(s: &Session, f: &Frames, p: Vec3, body: Option<&str>) -> Option<Mat>
         {
             continue;
         }
-        let d = mesh.triangles.iter().filter_map(|t| mesh.tri(t)).map(|[a, b, c]| tri_dist(p, a, b, c)).fold(f64::INFINITY, f64::min);
+        let d = mesh.triangles.iter().filter_map(|t| mesh.tri(t)).map(|Triangle([a, b, c])| tri_dist(p, a, b, c)).fold(f64::INFINITY, f64::min);
         if d <= tol && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
             best = Some((d, *m));
         }

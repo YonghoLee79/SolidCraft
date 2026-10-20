@@ -1,5 +1,5 @@
 use serde::Serialize;
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Triangle, Vec3};
 use truck_meshalgo::prelude::*;
 use truck_modeling as mt;
 
@@ -1576,11 +1576,10 @@ impl Body {
         let m = self.tessellate(tol)?;
         let nf = self.face_count();
         let mut acc: Vec<(f64, Vec3, Vec3, bool)> = vec![(0.0, Vec3::ZERO, Vec3::ZERO, true); nf];
-        for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-            let Some([a, b, c]) = m.tri(t) else { continue };
+        for (Triangle([a, b, c]), f) in m.face_tris() {
             let cr = (b - a).cross(c - a);
             let ar = cr.len() * 0.5;
-            if let Some(slot) = acc.get_mut(*f as usize) {
+            if let Some(slot) = acc.get_mut(f as usize) {
                 slot.0 += ar;
                 slot.1 += (a + b + c) * (ar / 3.0);
                 if let Some(n) = cr.normalized() {
@@ -1782,7 +1781,7 @@ impl Body {
                             t.get(k).and_then(|x| u32::try_from(x.pos).ok()).ok_or_else(|| KernelError::Failed("lumps: invalid mesh index".into()))
                         };
                         let indices = [idx(0)?, idx(1)?, idx(2)?];
-                        let [a, b, c] = m.tri(&indices).ok_or_else(|| KernelError::Failed("lumps: invalid mesh triangle".into()))?;
+                        let Triangle([a, b, c]) = m.tri(&indices).ok_or_else(|| KernelError::Failed("lumps: invalid mesh triangle".into()))?;
                         // STEP sphere poles can produce zero-area duplicate triangles.
                         // They have no boundary area or volume and are not ray crossings.
                         if (b - a).cross(c - a) == Vec3::ZERO {
@@ -1797,7 +1796,7 @@ impl Body {
                         .iter()
                         .map(|t| {
                             m.tri(t)
-                                .map(|[a, b, c]| (a - origin).dot((b - origin).cross(c - origin)) / 6.0)
+                                .map(|Triangle([a, b, c])| (a - origin).dot((b - origin).cross(c - origin)) / 6.0)
                                 .ok_or_else(|| KernelError::Failed("lumps: invalid mesh triangle".into()))
                         })
                         .collect::<Result<Vec<_>>>()?

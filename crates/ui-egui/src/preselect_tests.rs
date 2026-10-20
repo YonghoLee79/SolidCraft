@@ -4,7 +4,7 @@
 use crate::test_support::app_with_script as app_with;
 use serde_json::json;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Triangle, Vec3};
 use solidcraft_engine::{Sel, Session};
 
 #[test]
@@ -801,8 +801,8 @@ fn a_hole_is_patterned_as_a_feature() {
     let st = app.session.model.state();
     let m = st.bodies[0].mesh();
     let face_at = |p: Vec3| {
-        let t = m.triangles.iter().position(|t| super::dialogs::point_tri_dist(p, m.tri(t).unwrap()) < 0.05).unwrap();
-        let [a, b, c] = m.tri(&m.triangles[t]).unwrap();
+        let t = m.triangles.iter().position(|t| m.tri(t).unwrap().closest_point(p).dist(p) < 0.05).unwrap();
+        let Triangle([a, b, c]) = m.tri(&m.triangles[t]).unwrap();
         crate::viewport::Hit::Face { body: "Body1".into(), index: m.tri_face[t] as usize, point: (a + b + c) * (1.0 / 3.0) }
     };
     let mut d = start(&mut app, vec![], "solid.pattern.circular");
@@ -1025,7 +1025,7 @@ fn thread_face(app: &SolveApp, body: &str) -> Sel {
             if *face as usize != index {
                 return None;
             }
-            mesh.tri(triangle).map(|[a, b, c]| (a + b + c) / 3.0)
+            mesh.tri(triangle).map(|Triangle([a, b, c])| (a + b + c) / 3.0)
         })
         .unwrap();
     Sel::Face { body: body.into(), index, point }
@@ -1808,7 +1808,7 @@ fn split_body_by_a_curved_face_sends_it_as_a_tool() {
     let m = cyl.mesh();
     // A point on the round side.
     let p = Vec3::new(30.0, 15.0, 5.0);
-    let t = m.triangles.iter().position(|t| crate::dialogs::point_tri_dist(p, m.tri(t).unwrap()) < 0.3).unwrap();
+    let t = m.triangles.iter().position(|t| m.tri(t).unwrap().closest_point(p).dist(p) < 0.3).unwrap();
     let side = Sel::Face { body: cyl.name.clone(), index: m.tri_face[t] as usize, point: p };
     drop(st);
     let mut d = start(&mut app, vec![], "solid.split_body");

@@ -10,7 +10,7 @@
 //!
 //! A result that fails is refused with an error: a wrong result that looks right is worse.
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Triangle, Vec3};
 
 use crate::body::Body;
 use crate::{BoolOp, KernelError, Result};
@@ -90,7 +90,11 @@ impl<'a> Near<'a> {
         let [x, y, z] = Self::index(self.min, self.cell, self.dims, p);
         let Some(list) = self.cells.get((x * self.dims[1] + y) * self.dims[2] + z) else { return false };
         list.iter().any(|&t| {
-            self.mesh.triangles.get(t as usize).and_then(|t| self.mesh.tri(t)).is_some_and(|[a, b, c]| point_triangle_dist(p, a, b, c) <= self.reach)
+            self.mesh
+                .triangles
+                .get(t as usize)
+                .and_then(|t| self.mesh.tri(t))
+                .is_some_and(|Triangle([a, b, c])| point_triangle_dist(p, a, b, c) <= self.reach)
         })
     }
 }
@@ -99,7 +103,7 @@ impl<'a> Near<'a> {
 /// `reach`), if there is one.
 fn stray_point(from: &Mesh, onto: &Near, region: &Aabb3) -> Option<Vec3> {
     let step = from.triangles.len().div_ceil(MAX_SAMPLES).max(1);
-    from.triangles.iter().step_by(step).filter_map(|t| from.tri(t)).find_map(|[a, b, c]| {
+    from.triangles.iter().step_by(step).filter_map(|t| from.tri(t)).find_map(|Triangle([a, b, c])| {
         let p = (a + b + c) / 3.0;
         let outside =
             p.x < region.min.x || p.y < region.min.y || p.z < region.min.z || p.x > region.max.x || p.y > region.max.y || p.z > region.max.z;

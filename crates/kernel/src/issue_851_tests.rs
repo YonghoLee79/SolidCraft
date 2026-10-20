@@ -1,6 +1,6 @@
 //! Fillets and chamfers where a curved wall runs out into a flat face in a knife edge (#851).
 use crate::*;
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Triangle, Vec3};
 use std::f64::consts::PI;
 
 const R_WALL: f64 = 21.0;
@@ -168,7 +168,7 @@ pub(crate) fn planned_volume(b: &Body) -> f64 {
     let key = |p: Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
     let mut uses: std::collections::HashMap<([u64; 3], [u64; 3]), i32> = std::collections::HashMap::new();
     for t in &mesh.triangles {
-        let [a, b, c] = mesh.tri(t).unwrap();
+        let Triangle([a, b, c]) = mesh.tri(t).unwrap();
         for (p, q) in [(a, b), (b, c), (c, a)] {
             *uses.entry((key(p), key(q))).or_default() += 1;
             *uses.entry((key(q), key(p))).or_default() -= 1;

@@ -6,7 +6,7 @@ use serde_json::Value;
 use solidcraft_engine::{
     Sel,
     doc::Document,
-    geom::{Aabb3, Seg2, Vec3},
+    geom::{Aabb3, Seg2, Triangle, Vec3},
 };
 
 use crate::{
@@ -29,7 +29,7 @@ struct Cached {
 }
 struct Surface {
     normal: Vec3,
-    triangles: Vec<[Vec3; 3]>,
+    triangles: Vec<Triangle>,
     edges: Vec<[Vec3; 2]>,
 }
 
@@ -124,7 +124,7 @@ impl StraightPreview {
         for surface in &cache.surfaces {
             let shift = surface.normal * distance;
             let (low, high) = if distance > 0. { (Vec3::ZERO, shift) } else { (shift, Vec3::ZERO) };
-            for &[a, b, c] in &surface.triangles {
+            for &Triangle([a, b, c]) in &surface.triangles {
                 triangle(&mut scene, [a + low, c + low, b + low], -surface.normal);
                 triangle(&mut scene, [a + high, b + high, c + high], surface.normal);
                 for point in [a + low, b + low, c + low, a + high, b + high, c + high] {
@@ -173,7 +173,7 @@ fn prepare(app: &SolveApp, inputs: &[Sel]) -> Option<Cached> {
             }
             let triangles = crate::sketch_display::fill_triangles(region, &mut budget)
                 .into_iter()
-                .map(|triangle| triangle.map(|point| sketch.plane.to_world(point)))
+                .map(|triangle| Triangle(triangle.map(|point| sketch.plane.to_world(point))))
                 .collect::<Vec<_>>();
             if triangles.is_empty() {
                 return None;
@@ -214,19 +214,19 @@ fn prepare(app: &SolveApp, inputs: &[Sel]) -> Option<Cached> {
             for (triangle, face) in mesh.triangles.iter().zip(&mesh.tri_face) {
                 if let Some((index, _)) = selected.get(face) {
                     budget = budget.checked_sub(1)?;
-                    let mut points = mesh.tri(triangle)?;
+                    let Triangle(mut points) = mesh.tri(triangle)?;
                     let surface = surfaces.get_mut(*index)?;
                     if (points[1] - points[0]).cross(points[2] - points[0]).dot(surface.normal) < 0. {
                         points.swap(1, 2);
                     }
-                    surface.triangles.push(points);
+                    surface.triangles.push(Triangle(points));
                 }
             }
             // The command resolves picks by their point. A stale display face index
             // must fall back rather than previewing a different face.
             let tolerance = (mesh.bounds().diagonal() * 1e-8).max(1e-8);
             for (index, point) in selected.values() {
-                if !surfaces.get(*index)?.triangles.iter().any(|triangle| crate::dialogs::point_tri_dist(*point, *triangle) < tolerance) {
+                if !surfaces.get(*index)?.triangles.iter().any(|triangle| triangle.closest_point(*point).dist(*point) < tolerance) {
                     return None;
                 }
             }
@@ -237,7 +237,7 @@ fn prepare(app: &SolveApp, inputs: &[Sel]) -> Option<Cached> {
         for surface in &mut surfaces {
             let key = |point: Vec3| [point.x, point.y, point.z].map(|coordinate| if coordinate == 0. { 0 } else { coordinate.to_bits() });
             let mut edges = HashMap::new();
-            for &[a, b, c] in &surface.triangles {
+            for &Triangle([a, b, c]) in &surface.triangles {
                 for (a, b) in [(a, b), (b, c), (c, a)] {
                     let (ka, kb) = (key(a), key(b));
                     let entry = edges.entry(if ka < kb { (ka, kb) } else { (kb, ka) });

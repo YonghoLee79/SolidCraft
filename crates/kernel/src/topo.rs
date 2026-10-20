@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
-use solidcraft_geom::{Mesh, UnitVec3, Vec3};
+use solidcraft_geom::{Mesh, Triangle, UnitVec3, Vec3};
 
 use crate::Result;
 use crate::body::{Body, from_p3};
@@ -416,8 +416,8 @@ pub fn merged_topology(b: &Body, mesh: &Mesh) -> Result<TopoCounts> {
     let verts = face_vertices(mesh, nf);
     // Zero-area faces (a revolved profile edge lying on the axis) don't count.
     let mut area = vec![0.0f64; nf];
-    for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-        if let (Some([p, q, r]), Some(a)) = (mesh.tri(t), area.get_mut(*f as usize)) {
+    for (Triangle([p, q, r]), f) in mesh.face_tris() {
+        if let Some(a) = area.get_mut(f as usize) {
             *a += (q - p).cross(r - p).len() * 0.5;
         }
     }
@@ -649,10 +649,9 @@ pub fn cylinder_face_at(b: &Body, p: Vec3) -> Option<CylinderFace> {
     let mesh = b.tessellate(tol).ok()?;
     // Each face's distance from the point (its nearest triangle).
     let mut near: HashMap<u32, f64> = HashMap::new();
-    for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-        let Some([a, bb, c]) = mesh.tri(t) else { continue };
+    for (Triangle([a, bb, c]), f) in mesh.face_tris() {
         let d = crate::boolean_guard::point_triangle_dist(p, a, bb, c);
-        near.entry(*f).and_modify(|x| *x = x.min(d)).or_insert(d);
+        near.entry(f).and_modify(|x| *x = x.min(d)).or_insert(d);
     }
     let nearest = near.values().copied().fold(f64::INFINITY, f64::min);
     if nearest > size * 0.05 {

@@ -5,7 +5,7 @@
 //! have a direction (planar faces, straight edges), the angle.
 
 use serde_json::{Value, json};
-use solidcraft_geom::{Mesh, UnitVec3, Vec3};
+use solidcraft_geom::{Mesh, Triangle, UnitVec3, Vec3};
 
 use super::measure_shape::{Shape, Slot, add_round, centre};
 use crate::params::bad;
@@ -14,29 +14,12 @@ use crate::{Result, Sel, Session};
 /// Geometry of a picked item, as points or triangles.
 enum Geo {
     Points(Vec<Vec3>),
-    Tris(Vec<[Vec3; 3]>),
+    Tris(Vec<Triangle>),
 }
 
 /// Caps that keep a measurement interactive on big meshes.
 const MAX_POINTS: usize = 4000;
 const MAX_TRIS: usize = 20000;
-
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let n = (b - a).cross(c - a);
-    if let Some(nn) = n.normalized() {
-        let q = p - nn * (p - a).dot(nn);
-        if [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12) {
-            return q;
-        }
-    }
-    let on_seg = |u: Vec3, v: Vec3| {
-        let d = v - u;
-        let l2 = d.dot(d);
-        let t = if l2 > 0.0 { ((p - u).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        u + d * t
-    };
-    [on_seg(a, b), on_seg(b, c), on_seg(c, a)].into_iter().min_by(|x, y| x.dist(p).total_cmp(&y.dist(p))).unwrap_or(a)
-}
 
 fn polyline_len(pts: &[Vec3]) -> f64 {
     pts.windows(2).map(|w| w[0].dist(w[1])).sum()
@@ -67,8 +50,8 @@ fn edge_index(m: &Mesh, index: usize, point: Vec3) -> Option<usize> {
     m.edges.iter().enumerate().min_by(|(_, a), (_, b)| near(a).total_cmp(&near(b))).map(|(i, _)| i)
 }
 
-fn face_tris(m: &Mesh, f: usize) -> Vec<[Vec3; 3]> {
-    m.triangles.iter().zip(&m.tri_face).filter(|(_, tf)| **tf as usize == f).filter_map(|(t, _)| m.tri(t)).collect()
+fn face_tris(m: &Mesh, f: usize) -> Vec<Triangle> {
+    m.face_tris_of(f).collect()
 }
 
 /// A described item: its geometry, direction (planar face normal, straight edge direction),
@@ -255,8 +238,8 @@ fn face_slot(b: &solidcraft_doc::ModelBody, m: &Mesh, shape: &Shape, pts: &[Vec3
         return None;
     }
     let mut verts: Vec<Vec<Vec3>> = vec![Vec::new(); faces];
-    for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-        if let (Some(v), Some(tri)) = (verts.get_mut(*f as usize), m.tri(t)) {
+    for (Triangle(tri), f) in m.face_tris() {
+        if let Some(v) = verts.get_mut(f as usize) {
             v.extend(tri);
         }
     }
@@ -307,8 +290,8 @@ fn describe(s: &Session, sel: &Sel) -> Option<Item> {
             let m = b.mesh();
             let patch = m.surface_patch(*index);
             let tris = patch.iter().flat_map(|f| face_tris(&m, *f)).collect::<Vec<_>>();
-            let area: f64 = tris.iter().map(|[a, b, c]| (*b - *a).cross(*c - *a).len() * 0.5).sum();
-            let normals: Vec<UnitVec3> = tris.iter().filter_map(|[a, b, c]| (*b - *a).cross(*c - *a).unit()).collect();
+            let area: f64 = tris.iter().map(|Triangle([a, b, c])| (*b - *a).cross(*c - *a).len() * 0.5).sum();
+            let normals: Vec<UnitVec3> = tris.iter().filter_map(|Triangle([a, b, c])| (*b - *a).cross(*c - *a).unit()).collect();
             let planar = normals.first().copied().filter(|n0| normals.iter().all(|n| n.dot(*n0) > 1.0 - 1e-6));
             let mut json = json!({"type": "face", "area_mm2": area, "planar": planar.is_some()});
             let verts: Vec<Vec3> = tris.iter().flat_map(|t| t.iter().copied()).collect();
@@ -332,7 +315,7 @@ fn describe(s: &Session, sel: &Sel) -> Option<Item> {
         }
         Sel::Body { name } => {
             let m = st.body(name)?.mesh();
-            let tris: Vec<[Vec3; 3]> = m.triangles.iter().filter_map(|t| m.tri(t)).collect();
+            let tris: Vec<Triangle> = m.triangles.iter().filter_map(|t| m.tri(t)).collect();
             let v = m.measure().volume;
             plain(Geo::Tris(tris), None, json!({"type": "body", "name": name, "volume_mm3": v}))
         }
@@ -370,13 +353,13 @@ fn sample<T: Copy>(v: &[T], max: usize) -> Vec<T> {
 
 /// Closest pair of points between two pieces of geometry.
 fn closest(a: &Geo, b: &Geo) -> Option<(Vec3, Vec3)> {
-    let pts_to_tris = |pts: &[Vec3], tris: &[[Vec3; 3]]| -> Option<(Vec3, Vec3)> {
+    let pts_to_tris = |pts: &[Vec3], tris: &[Triangle]| -> Option<(Vec3, Vec3)> {
         let pts = sample(pts, MAX_POINTS);
         let tris = sample(tris, MAX_TRIS);
         let mut best: Option<(f64, Vec3, Vec3)> = None;
         for p in &pts {
-            for [x, y, z] in &tris {
-                let q = closest_on_triangle(*p, *x, *y, *z);
+            for Triangle([x, y, z]) in &tris {
+                let q = Triangle([*x, *y, *z]).closest_point(*p);
                 let d = p.dist(q);
                 if best.is_none_or(|(bd, _, _)| d < bd) {
                     best = Some((d, *p, q));
@@ -385,7 +368,7 @@ fn closest(a: &Geo, b: &Geo) -> Option<(Vec3, Vec3)> {
         }
         best.map(|(_, p, q)| (p, q))
     };
-    let verts = |tris: &[[Vec3; 3]]| -> Vec<Vec3> { tris.iter().flat_map(|t| t.iter().copied()).collect() };
+    let verts = |tris: &[Triangle]| -> Vec<Vec3> { tris.iter().flat_map(|t| t.iter().copied()).collect() };
     match (a, b) {
         (Geo::Points(p), Geo::Points(q)) => {
             let (p, q) = (sample(p, MAX_POINTS), sample(q, MAX_POINTS));
