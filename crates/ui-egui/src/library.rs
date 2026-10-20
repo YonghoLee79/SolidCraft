@@ -341,48 +341,25 @@ fn rows(app: &mut SolveApp, ui: &mut egui::Ui) -> Option<Entry> {
 fn insert_footer(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get();
     egui::Panel::bottom("sc_library_insert").exact_size(40.0).frame(egui::Frame::NONE.fill(t.timeline)).show(ui, |ui| {
-        let rect = ui.max_rect();
-        ui.painter().line_segment([rect.left_top(), rect.right_top()], egui::Stroke::new(1.0, t.border));
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            let button_width = ((ui.available_width() - 8.0 - ui.spacing().item_spacing.x) / 2.0).max(48.0);
-            for (command, label, handle) in
-                [("file.insert_mesh", "Insert Mesh", "library:insert_mesh"), ("file.insert_step", "Insert STEP", "library:insert_step")]
-            {
-                let enabled = app.services.pick_open.is_some()
-                    && !app.file_picker_busy()
-                    && !app.file_load.busy()
-                    && solidcraft_engine::find_command(command).is_some_and(|spec| spec.info(&app.session).enabled);
-                let label = app.tr_label(label);
-                let response = ui
-                    .add_enabled_ui(enabled, |ui| {
-                        let text = egui::WidgetText::from(label).into_galley(
-                            ui,
-                            Some(egui::TextWrapMode::Truncate),
-                            button_width - 46.0,
-                            egui::TextStyle::Button,
-                        );
-                        let size = egui::vec2(button_width, 30.0);
-                        let response = ui.add(egui::Button::new("").min_size(size));
-                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
-                        let icon =
-                            egui::Rect::from_center_size(egui::pos2(response.rect.left() + 20.0, response.rect.center().y), egui::vec2(24.0, 24.0));
-                        let icon_id = if command == "file.insert_mesh" { "insert_mesh" } else { "insert_step" };
-                        crate::icons::paint_on(ui.painter(), icon, icon_id, None, if enabled { 1.0 } else { 0.35 });
-                        ui.painter().galley(
-                            egui::pos2(icon.right() + 6.0, response.rect.center().y - text.size().y / 2.0),
-                            text,
-                            ui.style().interact(&response).text_color(),
-                        );
-                        response
-                    })
-                    .inner;
-                crate::scenario::publish_handle(handle, response.rect.center());
-                if response.clicked() {
-                    app.start(command);
-                }
+        let enabled = app.services.pick_open.is_some() && !app.file_picker_busy() && !app.file_load.busy();
+        let (mesh, step) = ui
+            .add_enabled_ui(enabled, |ui| {
+                crate::ui_kit::button_pair(
+                    ui,
+                    "library",
+                    [false; 2],
+                    [
+                        crate::ui_kit::PairButton { key: "insert_mesh", label: "Insert Mesh", icon: Some("insert_mesh") },
+                        crate::ui_kit::PairButton { key: "insert_step", label: "Insert STEP", icon: Some("insert_step") },
+                    ],
+                )
+            })
+            .inner;
+        for (clicked, command) in [(mesh, "file.insert_mesh"), (step, "file.insert_step")] {
+            if clicked && solidcraft_engine::find_command(command).is_some_and(|spec| spec.info(&app.session).enabled) {
+                app.start(command);
             }
-        });
+        }
     });
 }
 
@@ -398,7 +375,8 @@ fn contents(app: &mut SolveApp, ui: &mut egui::Ui) -> Option<Entry> {
         if home.on_hover_text("Return to CAD folder").clicked() {
             go_home(app);
         }
-        ui.label("›");
+        let (chevron, _) = ui.allocate_exact_size(egui::vec2(12.0, 24.0), egui::Sense::hover());
+        crate::ui_kit::disclosure(ui.painter(), chevron.center(), false, crate::theme::Tokens::get().text_dim);
         let name = app
             .library
             .root
@@ -439,19 +417,19 @@ fn contents(app: &mut SolveApp, ui: &mut egui::Ui) -> Option<Entry> {
             for part in parts {
                 path.push(&part);
                 ui.label("/");
-                if ui.selectable_label(false, part.to_string_lossy()).clicked() {
+                if crate::ui_kit::button(ui, part.to_string_lossy(), crate::ui_kit::Button::Small).clicked() {
                     app.library.navigate(path.clone());
                 }
             }
         }
-        let refresh = ui.add(egui::Button::new("").min_size(egui::vec2(24.0, 24.0)));
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+        let refresh = crate::ui_kit::icon_button_at(ui, rect, "refresh", "Refresh");
         refresh.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Refresh"));
-        crate::icons::paint_on(ui.painter(), refresh.rect.shrink(3.0), "refresh", None, 1.0);
         if refresh.on_hover_text("Refresh").clicked() {
             app.library.refresh();
         }
     });
-    let response = ui.add(egui::TextEdit::singleline(&mut app.library.search).hint_text("Search this folder"));
+    let response = crate::ui_kit::search_field(ui, ui.id().with("library_search"), &mut app.library.search, "Search this folder");
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search documents"));
     ui.separator();
     messages(&app.library, ui);
@@ -720,6 +698,8 @@ mod tests {
         folder_picker(&mut h, None);
         h.frames(3);
         let before = crate::scenario::handle_at("library:insert_mesh").unwrap();
+        let step = crate::scenario::handle_at("library:insert_step").unwrap();
+        assert!(step.x - before.x > 100.0, "import controls overlap: {before:?} {step:?}");
         // Same 40-point row as the bottom timeline, even before a folder is chosen.
         assert!((before.y - 980.0).abs() < 2.0, "{before:?}");
         h.app.library.root = Some(h.dir.clone());
@@ -765,16 +745,23 @@ mod tests {
                 for name in ["CAD Files".to_owned(), "Long CAD directory ".repeat(30)] {
                     h.app.library.root = Some(h.dir.join(&name));
                     h.app.library.current = h.app.library.root.clone().unwrap();
-                    h.frames(3);
-                    let panel = crate::scenario::rect_of("library:panel").unwrap();
-                    let gear = crate::scenario::handle_at("library:settings").unwrap();
-                    assert!((gear.x - (panel.right() - 20.0)).abs() < 1.0, "{panel:?} {gear:?}");
-                    let toggle = crate::scenario::rect_of("library:toggle").unwrap();
-                    let file = crate::scenario::rect_of("appbar:file").unwrap();
-                    let home = crate::scenario::rect_of("appbar:home").unwrap();
-                    assert!(toggle.right() < home.left());
-                    assert!(home.right() < file.left());
-                    assert!(toggle.bottom() < panel.top());
+                    for home_open in [true, false] {
+                        h.app.home.open = home_open;
+                        h.frames(3);
+                        let panel = crate::scenario::rect_of("library:panel").unwrap();
+                        let gear = crate::scenario::handle_at("library:settings").unwrap();
+                        assert!((gear.x - (panel.right() - 20.0)).abs() < 1.0, "{panel:?} {gear:?}");
+                        let toggle = crate::scenario::rect_of("library:toggle").unwrap();
+                        let file = crate::scenario::rect_of("appbar:file").unwrap();
+                        let home = crate::scenario::rect_of("appbar:home").unwrap();
+                        assert!(toggle.right() < home.left());
+                        assert!(home.right() < file.left());
+                        assert!(toggle.bottom() < panel.top());
+                        if !home_open {
+                            let viewport = h.app.viewport.rect.unwrap();
+                            assert!(viewport.left() >= panel.right(), "{panel:?} {viewport:?}");
+                        }
+                    }
                 }
             }
         }

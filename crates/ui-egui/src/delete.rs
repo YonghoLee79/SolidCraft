@@ -2,11 +2,13 @@
 //! the viewport or the browser goes in one undoable step through `selection.delete`. When it
 //! takes other features with it or makes some fail, a confirmation lists them first.
 
-use egui::{RichText, vec2};
 use serde_json::{Value, json};
 
 use crate::SolveApp;
-use crate::theme::Tokens;
+use crate::ui_kit;
+
+/// Longest list of names the confirmation shows before "and n more".
+const MAX_LISTED: usize = 20;
 
 /// A delete waiting for confirmation: its parameters and the dry run's report.
 #[derive(Clone, Debug)]
@@ -110,55 +112,49 @@ pub fn confirm(app: &mut SolveApp, accept: bool) -> bool {
     true
 }
 
-/// The confirmation window.
+/// The confirmation card.
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(p) = app.menu.confirm.clone() else { return };
-    let t = Tokens::get();
     let list = |k: &str| -> Vec<String> {
         p.report[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
     };
     let (deleted, fails) = (list("deleted"), list("would_fail"));
-    let mut answer: Option<bool> = None;
-    crate::frame::window(ctx, crate::i18n::tr_label("Delete"), crate::frame::Width::Normal)
-        .id(egui::Id::new("sc_delete_confirm"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, -60.0))
-        .show(ctx, |ui| {
-            ui.set_max_width(360.0);
-            if shared_occurrences(app, &p.params) {
-                ui.label(crate::i18n::tr_label("This child is shared. Deleting it removes it from every copy of its parent."));
+    let shared = shared_occurrences(app, &p.params);
+    let (closed, action) = ui_kit::Confirm::new(egui::Id::new("sc_delete_confirm"), "delete", crate::i18n::tr_label("Delete"))
+        .tone(ui_kit::Tone::Danger)
+        .actions("Delete", "Cancel", None)
+        .show(ctx, true, |ui| {
+            if shared {
+                ui_kit::text(
+                    ui,
+                    crate::i18n::tr_label("This child is shared. Deleting it removes it from every copy of its parent."),
+                    ui_kit::Text::Report("shared", false),
+                );
             }
-            if !deleted.is_empty() {
-                ui.label(crate::i18n::tr_label("These features will be deleted:"));
-                for d in deleted.iter().take(20) {
-                    ui.label(RichText::new(format!("  • {d}")).color(t.text));
+            for (key, heading, names, error) in
+                [("deleted", "These features will be deleted:", &deleted, false), ("fails", "These features will fail:", &fails, true)]
+            {
+                if names.is_empty() {
+                    continue;
                 }
-                if deleted.len() > 20 {
-                    ui.label(format!("  … and {} more", deleted.len() - 20));
+                ui_kit::text(ui, crate::i18n::tr_label(heading), ui_kit::Text::Report(key, error));
+                for name in names.iter().take(MAX_LISTED) {
+                    ui_kit::text(ui, &format!("  • {name}"), ui_kit::Text::Report(&format!("{key}:{name}"), error));
                 }
-            }
-            if !fails.is_empty() {
-                ui.add_space(6.0);
-                ui.label(RichText::new(crate::i18n::tr_label("These features will fail:")).color(t.warning));
-                for f in fails.iter().take(20) {
-                    ui.label(RichText::new(format!("  • {f}")).color(t.warning));
+                if names.len() > MAX_LISTED {
+                    let more = (names.len() - MAX_LISTED).to_string();
+                    ui_kit::text(
+                        ui,
+                        &crate::i18n::format("delete.and_more", &[("count", &more)]),
+                        ui_kit::Text::Report(&format!("{key}:more"), error),
+                    );
                 }
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Delete").clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    answer = Some(false);
-                }
-            });
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                answer = Some(false);
             }
         });
-    if let Some(a) = answer {
-        confirm(app, a);
+    match action {
+        ui_kit::Action::Ok => drop(confirm(app, true)),
+        ui_kit::Action::Cancel => drop(confirm(app, false)),
+        _ if closed => drop(confirm(app, false)),
+        _ => {}
     }
 }

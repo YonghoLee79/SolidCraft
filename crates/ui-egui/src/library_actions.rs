@@ -52,7 +52,7 @@ pub(super) fn context_menu(app: &mut SolveApp, ui: &egui::Ui, response: &egui::R
                 && !app.file_picker_busy()
                 && !app.file_load.busy()
                 && (action != Action::Reveal || app.services.show_in_folder.is_some());
-            if ui.add_enabled(enabled, egui::Button::new(label(action))).clicked() {
+            if crate::ui_kit::button(ui, label(action), crate::ui_kit::Button::Enabled(enabled)).clicked() {
                 ui.close();
                 perform(app, entry.clone(), action);
             }
@@ -135,15 +135,21 @@ pub(super) fn dialog(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut dialog) = app.library.action_dialog.take() else { return };
     let mut confirm = false;
     let mut cancel = false;
-    crate::frame::window(ctx, label(dialog.action), crate::frame::Width::Normal)
-        .id(egui::Id::new("library_file_action"))
-        .collapsible(false)
-        .resizable(false)
+    let (closed, action) = crate::ui_kit::Window::new(egui::Id::new("library_file_action"), "folder", label(dialog.action))
+        .actions(label(dialog.action), "Cancel", None)
+        .fields()
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
+        .show(ctx, true, |ui| {
             ui.label(&dialog.entry.name);
             if dialog.action == Action::Rename {
-                let input = ui.add(egui::TextEdit::singleline(&mut dialog.name).char_limit(255));
+                let input = crate::ui_kit::bounded_cell_editor(
+                    ui,
+                    ui.id().with("library_filename"),
+                    &mut dialog.name,
+                    "New filename",
+                    dialog.error.is_some(),
+                    255,
+                );
                 input.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "New filename"));
                 if dialog.focus {
                     input.request_focus();
@@ -156,11 +162,9 @@ pub(super) fn dialog(app: &mut SolveApp, ctx: &egui::Context) {
             if let Some(error) = &dialog.error {
                 ui.label(error);
             }
-            ui.horizontal(|ui| {
-                confirm |= ui.button(label(dialog.action)).clicked();
-                cancel |= ui.button("Cancel").clicked();
-            });
         });
+    confirm |= action == crate::ui_kit::Action::Ok;
+    cancel |= closed || action == crate::ui_kit::Action::Cancel;
     cancel |= ctx.input(|i| i.key_pressed(egui::Key::Escape));
     if cancel {
         return;

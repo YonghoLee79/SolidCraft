@@ -79,7 +79,7 @@ fn ask(tx: &Sender<ControlRequest>, method: &str, params: Value) -> Receiver<Val
 }
 
 fn frame(app: &mut SolveApp) {
-    let ctx = egui::Context::default();
+    let ctx = crate::fonts::test_context();
     poll(app, &ctx);
     app.drain_control(&ctx);
 }
@@ -463,7 +463,7 @@ fn app_with_script() -> (SolveApp, Script, egui::Context) {
     let script = Script::default();
     app.agent_chat.backend = Some(Box::new(script.clone()));
     app.agent_chat.state = Some(State::Ready);
-    (app, script, egui::Context::default())
+    (app, script, crate::fonts::test_context())
 }
 
 fn ended(script: &Script, reason: &str) {
@@ -631,7 +631,7 @@ done
     let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
     app.agent_chat.backend = Some(Box::new(acp_client::AcpBackend::start(&argv, start).unwrap()));
     app.agent_chat.state = Some(State::Starting);
-    let ctx = egui::Context::default();
+    let ctx = crate::fonts::test_context();
     let until = |app: &mut SolveApp, what: &str, done: &dyn Fn(&SolveApp) -> bool| {
         let t = std::time::Instant::now();
         while !done(app) {
@@ -724,7 +724,7 @@ done
     let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
     app.agent_chat.backend = Some(Box::new(acp_client::AcpBackend::start(&argv, start).unwrap()));
     app.agent_chat.state = Some(State::Starting);
-    let ctx = egui::Context::default();
+    let ctx = crate::fonts::test_context();
     let until = |app: &mut SolveApp, done: &dyn Fn(&SolveApp) -> bool| {
         let t = std::time::Instant::now();
         while !done(app) {
@@ -842,7 +842,7 @@ done
     app.agent_chat.state = Some(State::Starting);
     app.agent_chat.running_id = "fake".into();
     app.preferences.agent_models.insert("fake".into(), "smart".into());
-    let ctx = egui::Context::default();
+    let ctx = crate::fonts::test_context();
     let t = std::time::Instant::now();
     loop {
         poll(&mut app, &ctx);

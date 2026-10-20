@@ -10,7 +10,7 @@
   {"key": "A", "cmd": true},
   {"text": "100 mm"},
   {"key": "Enter"},
-  {"widget": "Close window"},
+  {"click": {"handle": "params:close"}},
   {"expect": {"param": {"width": 100}, "errors": 0}},
   {"click": {"handle": "titlebar:save"}},
   {"expect": {"file": "Sample Plate.solidcraft"}},

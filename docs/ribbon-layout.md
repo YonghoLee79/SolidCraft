@@ -134,7 +134,7 @@ Section labels retain `panel:<tab>:<section>` and collapsed sections retain `col
 
 The ribbon is a full-width surface immediately below the 34 px application bar, with no outer gap or rounding. `toolbar::{TAB_ROW_HEIGHT,GROUP_HEIGHT,RIBBON_HEIGHT}` reserve 30 + 86 + 1 px; browser and viewport placement follows the panel allocation. The workspace column is 88 px wide. Promoted buttons are 54 × 60 px with 3 px gaps (Sketch Create retains wider family selectors). Section labels occupy a 20 px row, inset 3 px, and retain the existing command lists, pin actions and drag targets.
 
-Tab labels use normal word casing. Selected standard tabs use their soft accent; contextual tabs use their solid accent and add a row-wide line when selected. The existing `TabAccent` helper supplies all selection colours. Search is a 188 × 24 px launcher for the S box, using the existing `zoom` magnifier; it shrinks to 24 px before the tabs scroll horizontally. The selected tab scrolls into view after a context change or resize. Clicking Search or pressing S anchors the existing search popup below the field. The bottom command line remains available.
+Tab labels use normal word casing. Selected standard tabs use their soft accent; contextual tabs use their solid accent and add a row-wide line when selected. The existing `TabAccent` helper supplies all selection colours. Search is a 188 × 24 px launcher for the S box, using the existing `zoom` magnifier; it shrinks to 24 px before the tabs scroll horizontally. The selected tab scrolls into view after a context change or resize. Clicking Search or pressing S anchors the existing search popup below the field. The bottom command line is gone: the S box (and the ribbon search field) runs a command id typed with JSON parameters, e.g. `solid.extrude {"distance": 20}`, when you press Enter.
 
 Sketch's Finish group reserves space at the far right even when other groups collapse. Its unfilled Finish Sketch button uses the existing `finish` icon. The chevron-free Exit row still opens the existing command list, preserving Finish with Auto-Constrain and saved pin customizations.
 
@@ -147,3 +147,12 @@ The workspace popup is 470 px wide, anchored below the workspace column. Design 
 Section lists use 30 px command rows, 20 px semantic icons, monospace shortcuts, hover pins and a pinning footer. `workspace::groups` optionally supplies headings and command order. MODEL / MODIFY uses EDGES, FACES, BODIES and SPECIALISE; unlisted commands follow the final heading in their original order. This ordering does not change promoted buttons or saved pins.
 
 Ribbon tooltips show the full command name in bold and its registered shortcut in a key cap. Existing Render catalog descriptions are reused; commands without prose descriptions show the header alone (and their existing disabled reason when applicable). Registry parameter syntax is not presented as a description.
+
+
+The floating shell uses one Browser card with a title, body count and fold button. Its right
+edge resizes the same saved browser width as the Docked sidebar. The Browser preference
+“Float it over the workspace” switches the Docked sidebar to this card; in the Floating shell
+it keeps the card and enables the translucent overlay surface. With the left history enabled,
+the browser stays below that history unless the overlay preference is enabled, in which case
+only the history keeps its column. The bottom History card leaves a gap beneath the browser;
+the full viewport remains available through the gaps and below a short browser.
