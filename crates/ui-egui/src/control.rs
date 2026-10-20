@@ -171,9 +171,9 @@ fn batch(app: &mut SolveApp, p: &Value) -> Outcome {
             Err(e) => {
                 let restored = checkpoint.is_some_and(|id| app.run("edit.restore_checkpoint", json!({"checkpoint": id})).is_ok());
                 let failed = json!({"index": i, "command": command(step), "error": e});
-                // `restored` tells the MCP `batch` tool whether the design is back (#3242).
+                // `rolled_back`: the design really is back at its checkpoint.
                 let reply =
-                    json!({"completed": i, "results": results, "failed": failed, "restored": restored, "undone": if restored { i } else { 0 }});
+                    json!({"completed": i, "results": results, "failed": failed, "undone": if restored { i } else { 0 }, "rolled_back": restored});
                 return ok(with_timings(reply, timed, rows, clock.ms()));
             }
         }

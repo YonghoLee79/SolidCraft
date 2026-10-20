@@ -610,16 +610,16 @@ fn batch_reply(r: &Value, rollback: bool, verbose: bool) -> Value {
         None => (json!({"ok": true, "completed": results.len(), "results": results}), false),
         Some(failed) => {
             // `rolled_back` tells whether the design went back, not whether a rollback was
-            // asked for (#3242): the app answers with `restored`; an app that predates that
-            // field and undid none of the steps it had completed did not go back.
+            // asked for (#3242): the app answers with its own `rolled_back`; an app that
+            // predates that field and undid none of the steps it had completed did not go back.
             let undone = r["undone"].as_u64().unwrap_or(0);
-            let restored = r.get("restored").and_then(Value::as_bool).unwrap_or(undone > 0 || r["completed"].as_u64() == Some(0));
+            let went_back = r.get("rolled_back").and_then(Value::as_bool).unwrap_or(undone > 0 || r["completed"].as_u64() == Some(0));
             (
                 json!({
                     "ok": false,
                     "completed": r["completed"],
                     "failed": failed,
-                    "rolled_back": rollback && restored,
+                    "rolled_back": rollback && went_back,
                     "undone": r["undone"],
                     "results": results,
                 }),

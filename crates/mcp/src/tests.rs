@@ -1351,7 +1351,7 @@ fn batch_reports_a_failed_engine_batch_like_before() {
 }
 
 /// `rolled_back` tells whether the design went back, not whether a rollback was asked for
-/// (#3242): the app's `restored`, or, for an app that predates that field, none of the
+/// (#3242): the app's `rolled_back`, or, for an app that predates that field, none of the
 /// completed steps undone means the design did not go back.
 #[test]
 fn a_batch_the_app_could_not_roll_back_reports_it() {
@@ -1361,7 +1361,7 @@ fn a_batch_the_app_could_not_roll_back_reports_it() {
         body
     };
     let body = failed(
-        json!({"completed": 1, "results": [{"x": 1}], "failed": {"index": 1, "command": "a.two", "error": "boom"}, "restored": false, "undone": 0}),
+        json!({"completed": 1, "results": [{"x": 1}], "failed": {"index": 1, "command": "a.two", "error": "boom"}, "rolled_back": false, "undone": 0}),
     );
     assert_eq!(body["rolled_back"], false, "{body}");
     let body = failed(json!({"completed": 1, "results": [{"x": 1}], "failed": {"index": 1, "command": "a.two", "error": "boom"}, "undone": 0}));
