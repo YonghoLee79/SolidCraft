@@ -17,7 +17,7 @@
 //! beyond that order, and no surface can be told to carry a condition the target has not got.
 
 use mt::{BoundedCurve, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Segment, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -358,14 +358,7 @@ fn chain_mid(chain: &[mt::Edge]) -> Result<Vec3> {
 
 /// How far `p` is from a polyline.
 fn chain_distance(poly: &[Vec3], p: Vec3) -> f64 {
-    let mut best = f64::INFINITY;
-    for w in poly.windows(2) {
-        let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
-        let d = b.dist(*a);
-        let t = if d > 1e-12 { ((p - *a).dot(*b - *a) / (d * d)).clamp(0.0, 1.0) } else { 0.0 };
-        best = best.min(p.dist(*a + (*b - *a) * t));
-    }
-    best
+    Segment::along(poly).map(|s| s.dist(p)).fold(f64::INFINITY, f64::min)
 }
 
 /// The side of the face's own parameter rectangle the picked chain sits nearest.

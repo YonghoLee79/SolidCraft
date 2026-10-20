@@ -5,7 +5,7 @@
 //! have a direction (planar faces, straight edges), the angle.
 
 use serde_json::{Value, json};
-use solidcraft_geom::{Mesh, UnitVec3, Vec3};
+use solidcraft_geom::{Mesh, Segment, UnitVec3, Vec3};
 
 use super::measure_shape::{Shape, Slot, add_round, centre};
 use crate::params::bad;
@@ -29,13 +29,11 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
             return q;
         }
     }
-    let on_seg = |u: Vec3, v: Vec3| {
-        let d = v - u;
-        let l2 = d.dot(d);
-        let t = if l2 > 0.0 { ((p - u).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        u + d * t
-    };
-    [on_seg(a, b), on_seg(b, c), on_seg(c, a)].into_iter().min_by(|x, y| x.dist(p).total_cmp(&y.dist(p))).unwrap_or(a)
+    [Segment::new(a, b), Segment::new(b, c), Segment::new(c, a)]
+        .map(|s| s.closest_point(p))
+        .into_iter()
+        .min_by(|x, y| x.dist(p).total_cmp(&y.dist(p)))
+        .unwrap_or(a)
 }
 
 fn polyline_len(pts: &[Vec3]) -> f64 {

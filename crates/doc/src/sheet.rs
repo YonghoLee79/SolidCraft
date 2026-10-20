@@ -10,7 +10,7 @@
 //! together; the flat solid is the outline extruded through the thickness.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Aabb2, LINEAR_TOL, Loop2, Plane, Region2, Ring, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Aabb2, LINEAR_TOL, Loop2, Plane, Region2, Ring, Seg2, Segment, Vec2, Vec3};
 use solidcraft_kernel::{self as kernel, Body, EdgeSpec, FaceSpec, SurfSpec};
 
 use crate::expr::{self, Kind, Value};
@@ -1979,11 +1979,7 @@ impl SheetBody {
                 }
             }
         }
-        let dist = |c: Vec2, (a, b): (Vec2, Vec2)| -> f64 {
-            let (d, l) = (b - a, (b - a).dot(b - a));
-            let t = if l > 0.0 { ((c - a).dot(d) / l).clamp(0.0, 1.0) } else { 0.0 };
-            c.dist(a + d * t)
-        };
+        let dist = |c: Vec2, (a, b): (Vec2, Vec2)| Segment::new(a, b).dist(c);
         let dy = if p.square { p.pitch } else { p.pitch * 3f64.sqrt() / 2.0 };
         let mut out = Vec::new();
         let mut row = 0usize;
@@ -2106,9 +2102,7 @@ impl SheetBody {
                 }
                 for (z, top) in [(0.0, false), (self.t, true)] {
                     let q2 = Vec2::new(q.x, q.y);
-                    let d = b - a;
-                    let t = ((q2 - a).dot(d) / d.len2()).clamp(0.0, 1.0);
-                    let dist = ((a + d * t) - q2).len().hypot(q.z - z);
+                    let dist = Segment::new(a, b).dist(q2).hypot(q.z - z);
                     if best.as_ref().is_none_or(|x| dist < x.4) {
                         best = Some((pi, a, b, top, dist));
                     }
@@ -2159,11 +2153,7 @@ impl SheetBody {
                 let mid = (a + b) * 0.5;
                 let touches = |p: &Vec<Vec2>| {
                     let m = p.len();
-                    (0..m).filter_map(|i| Some((*p.get(i)?, *p.get((i + 1) % m)?))).any(|(p0, p1)| {
-                        let e = p1 - p0;
-                        let t = if e.len2() > 1e-18 { ((mid - p0).dot(e) / e.len2()).clamp(0.0, 1.0) } else { 0.0 };
-                        (p0 + e * t).dist(mid) < 1e-6
-                    })
+                    (0..m).filter_map(|i| Some(Segment::new(*p.get(i)?, *p.get((i + 1) % m)?))).any(|s| s.dist(mid) < 1e-6)
                 };
                 let mut keep = Vec::new();
                 // What goes, as strips to cut out of an outline with arcs or curves.
@@ -3240,13 +3230,11 @@ impl SheetBody {
             }
         };
         // The rest of the outline must stay clear of it.
-        let clear = segs.iter().enumerate().filter(|(e, _)| *e != i && *e != j).all(|(_, s)| {
-            s.polyline(1e-3).windows(2).all(|w| {
-                let d = w[1] - w[0];
-                let t = if d.len2() > 1e-30 { ((c - w[0]).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
-                c.dist(w[0] + d * t) > reach + 1e-6
-            })
-        });
+        let clear = segs
+            .iter()
+            .enumerate()
+            .filter(|(e, _)| *e != i && *e != j)
+            .all(|(_, s)| Segment::along(&s.polyline(1e-3)).all(|seg| seg.dist(c) > reach + 1e-6));
         if !clear {
             return Err(format!("a relief {size:.3} mm across reaches {reach:.3} mm from the corner, where another edge of the base is nearer"));
         }
@@ -4130,11 +4118,7 @@ fn merge_loops(polys: &[Vec<Vec2>], work: &mut FlatWork) -> Result<Vec<Vec<Vec2>
 
 /// Whether `q` lies within `tol` of the closed polygon `poly`'s outline.
 fn near_outline(poly: &Ring<Vec2>, q: Vec2, tol: f64) -> bool {
-    poly.edges().any(|(&a, &b)| {
-        let d = b - a;
-        let t = if d.len2() > 1e-18 { ((q - a).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
-        (a + d * t).dist(q) < tol
-    })
+    poly.segments().any(|s| s.dist(q) < tol)
 }
 
 fn signed_area(p: &[Vec2]) -> f64 {

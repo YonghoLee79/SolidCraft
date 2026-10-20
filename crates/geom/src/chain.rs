@@ -6,7 +6,7 @@
 use std::marker::PhantomData;
 use std::ops::Deref;
 
-use crate::{Aabb2, Vec2, Vec3};
+use crate::{Aabb2, Point, Segment, Vec2, Vec3};
 
 /// Whether a chain's last item joins its first.
 pub trait Ends: sealed::Sealed {
@@ -78,6 +78,23 @@ impl<T> Path<T> {
     /// The ring through the same items: the last joined back to the first.
     pub fn close(self) -> Ring<T> {
         Chain::new(self.items)
+    }
+}
+
+impl<P: Point, E: Ends> Chain<P, E> {
+    /// Its edges as segments (with the closing one around a ring).
+    pub fn segments(&self) -> impl Iterator<Item = Segment<P>> + '_ {
+        self.edges().map(|(a, b)| Segment::new(*a, *b))
+    }
+
+    /// The length along its edges.
+    pub fn length(&self) -> f64 {
+        self.segments().map(|s| s.len()).sum()
+    }
+
+    /// How far `p` is from its edges (infinite for a chain with no edge).
+    pub fn distance_to(&self, p: P) -> f64 {
+        self.segments().map(|s| s.dist(p)).fold(f64::INFINITY, f64::min)
     }
 }
 

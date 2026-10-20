@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::{Plane, Seg2, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Plane, Seg2, Segment, UnitVec3, Vec2, Vec3};
 use truck_meshalgo::tessellation::RobustMeshableShape;
 use truck_modeling as mt;
 
@@ -83,15 +83,7 @@ impl Field {
                 let q = Vec2::new(q.x, q.y);
                 if *closed {
                     // Distance to the loop, positive inside it.
-                    let d = (0..pts.len().saturating_sub(1))
-                        .filter_map(|i| Some((*pts.get(i)?, *pts.get(i + 1)?)))
-                        .map(|(a, b)| {
-                            let d = b - a;
-                            let l2 = d.dot(d);
-                            let t = if l2 > 0.0 { ((q - a).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
-                            (q - (a + d * t)).len()
-                        })
-                        .fold(f64::INFINITY, f64::min);
+                    let d = Segment::along(pts).map(|s| s.dist(q)).fold(f64::INFINITY, f64::min);
                     let uv: Vec<(f64, f64)> = pts.iter().map(|p| (p.x, p.y)).collect();
                     return if inside(&uv, (q.x, q.y)) { d } else { -d };
                 }

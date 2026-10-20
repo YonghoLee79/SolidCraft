@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use solidcraft_doc::joints;
 use solidcraft_doc::{Document, IDENTITY, Mat, apply_point, mat_mul};
-use solidcraft_geom::{Aabb3, Bvh, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Bvh, Mesh, Segment, Vec3};
 
 use crate::params::bad;
 use crate::{Result, Session};
@@ -516,7 +516,7 @@ fn tri_distance(a: &[Vec3; 3], b: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
     }
     for i in 0..3 {
         for j in 0..3 {
-            let (pa, pb) = segment_closest(a[i], a[(i + 1) % 3], b[j], b[(j + 1) % 3]);
+            let (pa, pb) = Segment::new(a[i], a[(i + 1) % 3]).closest_points(&Segment::new(b[j], b[(j + 1) % 3]));
             keep(pa, pb);
         }
     }
@@ -546,37 +546,6 @@ pub(super) fn segment_hits_triangle(p: Vec3, q: Vec3, t: &[Vec3; 3]) -> Option<V
     }
     let along = f * e2.dot(qv);
     (0.0..=1.0).contains(&along).then(|| p + d * along)
-}
-
-/// The nearest points of segments p1q1 and p2q2.
-fn segment_closest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
-    let (d1, d2, r) = (q1 - p1, q2 - p2, p1 - p2);
-    let (a, e, f) = (d1.dot(d1), d2.dot(d2), d2.dot(r));
-    let eps = 1e-24;
-    let (s, t) = if a <= eps && e <= eps {
-        (0.0, 0.0)
-    } else if a <= eps {
-        (0.0, (f / e).clamp(0.0, 1.0))
-    } else {
-        let c = d1.dot(r);
-        if e <= eps {
-            ((-c / a).clamp(0.0, 1.0), 0.0)
-        } else {
-            let b = d1.dot(d2);
-            let denom = a * e - b * b;
-            let mut s = if denom > eps * a * e { ((b * f - c * e) / denom).clamp(0.0, 1.0) } else { 0.0 };
-            let mut t = (b * s + f) / e;
-            if t < 0.0 {
-                t = 0.0;
-                s = (-c / a).clamp(0.0, 1.0);
-            } else if t > 1.0 {
-                t = 1.0;
-                s = ((b - c) / a).clamp(0.0, 1.0);
-            }
-            (s, t)
-        }
-    };
-    (p1 + d1 * s, p2 + d2 * t)
 }
 
 #[cfg(test)]

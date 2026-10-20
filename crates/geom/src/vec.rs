@@ -141,10 +141,7 @@ impl Vec3 {
     }
     /// Distance from this point to the segment `a`–`b`.
     pub fn dist_to_segment(self, a: Vec3, b: Vec3) -> f64 {
-        let ab = b - a;
-        let l2 = ab.len2();
-        let t = if l2 > 0.0 { ((self - a).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        self.dist(a + ab * t)
+        crate::Segment::new(a, b).dist(self)
     }
 }
 

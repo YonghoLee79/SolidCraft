@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use solidcraft_geom::{Mesh, Plane, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Mesh, Plane, Seg2, Segment, Vec2, Vec3};
 use solidcraft_sketch::{CurveKind, LinkGeom, LinkKind, LinkSource, Sketch};
 
 use crate::eval::ModelState;
@@ -367,9 +367,8 @@ fn locate_named_edge(st: &ModelState, body: &str, name: &str, at: Vec3) -> Optio
 fn resolve_named_edge(st: &ModelState, plane: &Plane, kind: LinkKind, body: &str, index: usize, near: Vec3) -> Result<Resolved> {
     let target = st.body(body).ok_or_else(|| lost("named projection body"))?;
     let pts = target.mesh().edges.get(index).cloned().unwrap_or_default();
-    let at = pts
-        .windows(2)
-        .filter_map(|w| Some(closest_on_segment(near, *w.first()?, *w.get(1)?)))
+    let at = Segment::along(&pts)
+        .map(|s| s.closest_point(near))
         .min_by(|a, b| a.dist(near).total_cmp(&b.dist(near)))
         .ok_or_else(|| lost("named projection edge"))?;
     let mut wires = Vec::new();
@@ -706,13 +705,6 @@ fn body_mesh(st: &ModelState, name: &str, at: Vec3) -> Result<(usize, std::sync:
     Ok((i, b.mesh()))
 }
 
-fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
-    let ab = b - a;
-    let l2 = ab.len2();
-    let t = if l2 > 0.0 { ((p - a).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-    a + ab * t
-}
-
 /// Nearest non-seam edge: (index, closest point, distance).
 pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
     let mut best: Option<(usize, Vec3, f64)> = None;
@@ -720,9 +712,8 @@ pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
         if m.seams.get(i).copied().unwrap_or(false) {
             continue;
         }
-        for w in e.windows(2) {
-            let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
-            let q = closest_on_segment(p, *a, *b);
+        for s in Segment::along(e) {
+            let q = s.closest_point(p);
             let d = q.dist(p);
             if best.is_none_or(|(_, _, bd)| d < bd) {
                 best = Some((i, q, d));
@@ -734,13 +725,14 @@ pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
 
 pub(crate) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     let n = (b - a).cross(c - a);
-    let Some(nn) = n.normalized() else { return closest_on_segment(p, a, b) };
+    let Some(nn) = n.normalized() else { return Segment::new(a, b).closest_point(p) };
     let q = p - nn * (p - a).dot(nn);
     let inside = (b - a).cross(q - a).dot(n) >= 0.0 && (c - b).cross(q - b).dot(n) >= 0.0 && (a - c).cross(q - c).dot(n) >= 0.0;
     if inside {
         return q;
     }
-    [closest_on_segment(p, a, b), closest_on_segment(p, b, c), closest_on_segment(p, c, a)]
+    [Segment::new(a, b), Segment::new(b, c), Segment::new(c, a)]
+        .map(|s| s.closest_point(p))
         .into_iter()
         .min_by(|x, y| x.dist(p).total_cmp(&y.dist(p)))
         .unwrap_or(a)
@@ -916,17 +908,7 @@ fn as_spline(pts: &[Vec2], tol: f64) -> Option<LinkGeom> {
             return None;
         }
         let poly = solidcraft_sketch::spline_polyline(&fit, false, 3);
-        let ok = pts.iter().all(|q| {
-            poly.windows(2)
-                .map(|w| {
-                    let (a, b) = (w[0], w[1]);
-                    let d = b - a;
-                    let t = if d.len2() > 0.0 { ((*q - a).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
-                    q.dist(a + d * t)
-                })
-                .fold(f64::INFINITY, f64::min)
-                <= tol
-        });
+        let ok = pts.iter().all(|q| Segment::along(&poly).map(|s| s.dist(*q)).fold(f64::INFINITY, f64::min) <= tol);
         if ok {
             return Some(LinkGeom::Spline { pts: fit, control: false, degree: 3, periodic: false });
         }

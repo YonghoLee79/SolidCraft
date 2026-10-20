@@ -1,7 +1,7 @@
 //! Operations on bodies: booleans and rigid transforms.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Segment, Vec3};
 use truck_modeling as mt;
 
 use std::collections::HashMap;
@@ -445,9 +445,7 @@ fn shared_cylinders(a: &Body, b: &Body, ma: &solidcraft_geom::Mesh, mb: &solidcr
         for t in facets(m, face) {
             for (p, q) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
                 let (p, q) = (radial(p), radial(q));
-                let d = q - p;
-                let s = if d.dot(d) > 0.0 { (-p.dot(d) / d.dot(d)).clamp(0.0, 1.0) } else { 0.0 };
-                near = near.min((p + d * s).len());
+                near = near.min(Segment::new(p, q).dist(Vec3::ZERO));
                 far = far.max(p.len());
             }
             out += (t[1] - t[0]).cross(t[2] - t[0]).dot(radial((t[0] + t[1] + t[2]) * (1.0 / 3.0)));

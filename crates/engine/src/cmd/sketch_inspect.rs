@@ -2,7 +2,7 @@
 //! centre of mass of bodies.
 
 use serde_json::{Value, json};
-use solidcraft_geom::{Aabb3, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Aabb3, Seg2, Segment, Vec2, Vec3};
 
 use super::CommandSpec;
 use crate::params::{bad, num, string_list, vec3};
@@ -189,12 +189,11 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     if inside(a, b) && inside(b, c) && inside(c, a) {
         return q;
     }
-    let seg = |u: Vec3, v: Vec3| {
-        let d = v - u;
-        let t = if d.dot(d) > 1e-300 { ((p - u).dot(d) / d.dot(d)).clamp(0.0, 1.0) } else { 0.0 };
-        u + d * t
-    };
-    [seg(a, b), seg(b, c), seg(c, a)].into_iter().min_by(|x, y| x.dist(p).total_cmp(&y.dist(p))).unwrap_or(a)
+    [Segment::new(a, b), Segment::new(b, c), Segment::new(c, a)]
+        .map(|s| s.closest_point(p))
+        .into_iter()
+        .min_by(|x, y| x.dist(p).total_cmp(&y.dist(p)))
+        .unwrap_or(a)
 }
 
 /// Smallest radius of curvature over a face of a mesh, from the turn of the vertex normals

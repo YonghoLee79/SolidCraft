@@ -17,8 +17,8 @@
 //! its curvature vector, and the third is the arclength derivative of that curvature vector.
 
 use mt::{BoundedCurve, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::Vec3;
 use solidcraft_geom::bspline::{CurveN, HPoint, NurbsSurface};
+use solidcraft_geom::{Segment, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -255,9 +255,9 @@ impl ChainLine {
         let mut best = (f64::INFINITY, 0.0, 0usize, 0.0);
         for w in self.samples.windows(2) {
             let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
-            let len = a.p.dist(b.p);
-            let f = if len > 1e-12 { ((p - a.p).dot(b.p - a.p) / (len * len)).clamp(0.0, 1.0) } else { 0.0 };
-            let d = p.dist(a.p + (b.p - a.p) * f);
+            let seg = Segment::new(a.p, b.p);
+            let (len, f) = (seg.len(), seg.param(p));
+            let d = p.dist(seg.at(f));
             if d < best.0 {
                 best = (d, a.s + len * f, a.edge, a.t + (b.t - a.t) * f);
             }
