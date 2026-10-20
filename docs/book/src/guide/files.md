@@ -68,6 +68,13 @@ second window. You can turn this off in
 Preferences → General, except for PrusaSlicer 3.0, whose launcher can't hand a file to a running
 window without it. Scripts pass `single_instance: false` to `file.open_in_slicer` or `file.save_mesh`.
 
+PrusaSlicer 2 and 3 behave differently, so SolidCraft reads which one an install is from the
+version in its installed metadata (a Flatpak's own files, or the `metainfo` file of a package); it
+never runs the program to ask. PrusaSlicer 2 is sent the file with `--single-instance`. PrusaSlicer 3
+is started on its own first, SolidCraft waits up to ten seconds for it to be ready, and then sends the
+file. If the version can't be read, the command decides: the `slic3r-app-launcher` launcher is
+treated as PrusaSlicer 3, and any other entry is left as it is.
+
 Closed mechanical meshes with a constant cross-section can be rebuilt as solids with the
 `mesh.convert` command (command palette, scripts and the control channel).
 

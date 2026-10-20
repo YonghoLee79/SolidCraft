@@ -28,6 +28,10 @@ pub struct Slicer {
     /// The program and its leading arguments; the file to open is appended.
     pub command: Vec<String>,
     pub icon: Option<IconSource>,
+    /// For PrusaSlicer, the major version of this install (`3` for `3.0.0-alpha10`), read from its
+    /// appstream metadata when it was detected (see [`prusa_major`]); `None` when that can't be read,
+    /// and for every other program. Never worked out by running the program.
+    pub prusa_major: Option<u32>,
 }
 
 /// Where an application's icon is read from.
@@ -117,6 +121,9 @@ pub struct Env {
     pub app_dirs: Vec<PathBuf>,
     /// Folders holding one folder per installed program (Windows).
     pub install_dirs: Vec<PathBuf>,
+    /// Flatpak installations (`~/.local/share/flatpak`, `/var/lib/flatpak`), where an app's
+    /// metadata says its version.
+    pub flatpak_roots: Vec<PathBuf>,
 }
 
 impl Env {
@@ -154,6 +161,8 @@ impl Env {
                 env.program_dirs.extend(home.iter().map(|h| h.join(dir)));
             }
             env.program_dirs.extend(["/opt", "/usr/local/bin"].map(PathBuf::from));
+            env.flatpak_roots.extend(home.iter().map(|h| h.join(".local/share/flatpak")));
+            env.flatpak_roots.push("/var/lib/flatpak".into());
         }
         env
     }
@@ -198,6 +207,9 @@ pub fn detect_in(env: &Env) -> Vec<Slicer> {
     for (s, _, origin) in &found {
         let several = found.iter().filter(|(o, ..)| o.id == s.id).count() > 1;
         let mut slicer = s.clone();
+        if slicer.kind() == "prusa" {
+            slicer.prusa_major = prusa_major(env, &slicer.command, origin);
+        }
         if several {
             let slug = normalize(&origin.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
             let mut id = format!("{}#{slug}", s.id);
@@ -220,6 +232,61 @@ pub fn detect_in(env: &Env) -> Vec<Slicer> {
     let order = |s: &Slicer| (KNOWN.iter().position(|k| k.id == s.base_id()).unwrap_or(usize::MAX), s.name.to_lowercase(), s.id.clone());
     out.sort_by_key(order);
     out
+}
+
+/// The major version of an install of PrusaSlicer, from the release at the top of its appstream
+/// metadata: for a Flatpak, in the app's own files (the branch the command names, else the current
+/// one); for any other install found through a desktop entry, in the `metainfo` or `appdata` folder
+/// beside that entry's `applications`. Read from files, never by running the program. `None` when
+/// there is no such file or it has no release, in which case the entry's own command decides (see
+/// `Slicer::waits_for_ready` and `Slicer::base_args`).
+fn prusa_major(env: &Env, command: &[String], origin: &Path) -> Option<u32> {
+    let xml = if command.first().is_some_and(|c| file_name(Path::new(c)) == "flatpak") {
+        flatpak_metainfo(env, command)?
+    } else {
+        let stem = origin.file_stem()?.to_string_lossy().into_owned();
+        let data = origin.parent()?.parent()?;
+        [data.join(format!("metainfo/{stem}.metainfo.xml")), data.join(format!("appdata/{stem}.appdata.xml"))].into_iter().find(|p| p.is_file())?
+    };
+    if std::fs::metadata(&xml).ok()?.len() > 1 << 20 {
+        return None;
+    }
+    release_major(&std::fs::read_to_string(xml).ok()?)
+}
+
+/// The metadata file of the Flatpak a `flatpak run …` command starts.
+fn flatpak_metainfo(env: &Env, command: &[String]) -> Option<PathBuf> {
+    let mut rest = command.iter().skip(1).skip_while(|a| *a != "run").skip(1);
+    let app = rest.find(|a| !a.starts_with('-'))?;
+    let branch = command.iter().find_map(|a| a.strip_prefix("--branch="));
+    if app.is_empty() || app.contains('/') || branch.is_some_and(|b| b.contains('/')) {
+        return None;
+    }
+    for root in &env.flatpak_roots {
+        let app_dir = root.join("app").join(app);
+        // The branch the command names, under each architecture; else the one `current` points at.
+        let deployments: Vec<PathBuf> = match branch {
+            Some(b) => entries(&app_dir).into_iter().filter(|p| p.is_dir() && file_name(p) != "current").map(|arch| arch.join(b)).collect(),
+            None => vec![app_dir.join("current")],
+        };
+        for d in deployments {
+            let files = d.join("active/files/share");
+            for rel in [format!("metainfo/{app}.metainfo.xml"), format!("appdata/{app}.appdata.xml")] {
+                if files.join(&rel).is_file() {
+                    return Some(files.join(rel));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The leading number of the first `<release version="…">`: `3` for `3.0.0-alpha10`.
+fn release_major(xml: &str) -> Option<u32> {
+    let release = &xml[xml.find("<release ")?..];
+    let version = &release[release.find("version=\"")? + "version=\"".len()..];
+    let digits: String = version.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 fn known_by_id(id: &str) -> Option<&'static Known> {
@@ -300,7 +367,7 @@ fn s(p: &Path) -> String {
 }
 
 fn known_slicer(k: &Known, command: Vec<String>, icon: Option<IconSource>) -> Slicer {
-    Slicer { id: k.id.into(), name: k.name.into(), command, icon }
+    Slicer { id: k.id.into(), name: k.name.into(), command, icon, prusa_major: None }
 }
 
 // --- Linux ---
@@ -390,7 +457,7 @@ fn desktop_entries(env: &Env, add: &mut impl FnMut(Slicer, &Path)) {
             let icon = entry.get("Icon").and_then(|i| theme_icon(env, i));
             match known {
                 Some(k) => add(known_slicer(k, command, icon), &file),
-                None => add(Slicer { id: format!("desktop-{}", normalize(name)), name: name.clone(), command, icon }, &file),
+                None => add(Slicer { id: format!("desktop-{}", normalize(name)), name: name.clone(), command, icon, prusa_major: None }, &file),
             }
         }
     }
@@ -526,7 +593,7 @@ pub fn custom(path: &str) -> Option<Slicer> {
         let stem = p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         (vec![path.to_string()], theme_icon(&Env::current(), &stem))
     };
-    Some(Slicer { id: "custom".into(), name, command, icon })
+    Some(Slicer { id: "custom".into(), name, command, icon, prusa_major: None })
 }
 
 /// The programs the user picked under Custom…, set by the application. Commands may start these
@@ -625,9 +692,10 @@ impl Slicer {
         let has = |args: &[String]| args.iter().any(|a| a.starts_with("--single-instance"));
         if !single_instance {
             args.retain(|a| !a.starts_with("--single-instance"));
-        } else if self.kind() == "prusa" && self.waits_for_ready().is_none() && args.iter().any(|a| a == "--single-instance-on-url") {
-            // PrusaSlicer only, found by what it is and not by its version: another program that
-            // happens to have the flag keeps its own meaning for it.
+        } else if self.prusa_v2() && args.iter().any(|a| a == "--single-instance-on-url") {
+            // PrusaSlicer 2 only (by its version, when that could be read): its `-on-url` does not hand
+            // a file over, and `--single-instance` does. Another program that happens to have the flag
+            // keeps its own meaning for it, and so does an entry whose version is unknown.
             for a in args.iter_mut().filter(|a| *a == "--single-instance-on-url") {
                 *a = "--single-instance".into();
             }
@@ -674,9 +742,21 @@ impl Slicer {
     }
 
     /// Whether this slicer drops a file given at a cold start and so has to be started first and
-    /// sent the file once it can take one (see [`WAIT_FOR_READY`]).
+    /// sent the file once it can take one (see [`WAIT_FOR_READY`]). That is PrusaSlicer 3 or newer
+    /// (`prusa_major`), which starts through its launcher; PrusaSlicer 2 loads the file at launch,
+    /// whatever its command is. Where the version could not be read, and for a program that is not
+    /// PrusaSlicer, the launcher's name in the command decides.
     pub fn waits_for_ready(&self) -> Option<&'static WaitRule> {
-        WAIT_FOR_READY.iter().find(|r| self.command.iter().any(|a| a.contains(r.command_has)))
+        match (self.kind() == "prusa", self.prusa_major) {
+            (true, Some(m)) if m < 3 => None,
+            (true, Some(_)) => WAIT_FOR_READY.first(),
+            _ => WAIT_FOR_READY.iter().find(|r| self.command.iter().any(|a| a.contains(r.command_has))),
+        }
+    }
+
+    /// PrusaSlicer older than 3, by the version read when it was detected.
+    fn prusa_v2(&self) -> bool {
+        self.kind() == "prusa" && self.prusa_major.is_some_and(|m| m < 3)
     }
 
     /// Whether the slicer can take a file now: `Some(true)` or `Some(false)`, or `None` when that
@@ -989,6 +1069,7 @@ mod tests {
             name: name.into(),
             command: command.iter().map(|s| s.to_string()).collect(),
             icon: None,
+            prusa_major: None,
         };
         let args = |s: &Slicer, single| s.args("/t/a.3mf", single);
         for (id, name) in [("prusa", "PrusaSlicer"), ("superslicer", "SuperSlicer"), ("cura", "UltiMaker Cura")] {
@@ -1027,7 +1108,7 @@ mod tests {
         std::fs::write(&program, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = program.to_str().unwrap();
-        let prusa = Slicer { id: "prusa".into(), name: "PrusaSlicer".into(), command: vec!["prusa-slicer".into()], icon: None };
+        let prusa = Slicer { id: "prusa".into(), name: "PrusaSlicer".into(), command: vec!["prusa-slicer".into()], icon: None, prusa_major: None };
         let found = |spec: &str, chosen: &[String]| resolve_in(vec![prusa.clone()], chosen, spec).map(|s| s.id);
         assert_eq!(found("prusa", &[]).as_deref(), Some("prusa"));
         assert_eq!(found("Prusa Slicer", &[]).as_deref(), Some("prusa"));
@@ -1100,6 +1181,7 @@ mod tests {
             name: "PrusaSlicer".into(),
             command: command.iter().map(|s| s.to_string()).collect(),
             icon: None,
+            prusa_major: None,
         };
         // The command lines of this machine's desktop entries.
         let flatpak = slicer(&[
@@ -1382,7 +1464,8 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             p.to_string_lossy().into_owned()
         };
-        let launcher = Slicer { id: "prusa".into(), name: "PrusaSlicer".into(), command: vec!["slic3r-app-launcher".into()], icon: None };
+        let launcher =
+            Slicer { id: "prusa".into(), name: "PrusaSlicer".into(), command: vec!["slic3r-app-launcher".into()], icon: None, prusa_major: None };
         let (limit, poll) = (std::time::Duration::from_millis(300), std::time::Duration::from_millis(20));
         // Hangs: not ready, the wait keeps going to its limit and then times out (does not send).
         let hang = fake("hang", "sleep 30");
@@ -1409,55 +1492,152 @@ mod tests {
         assert_eq!(launcher.ready_via(&up, limit), Some(true));
         std::fs::remove_dir_all(root).unwrap();
     }
-
-    #[test]
-    fn the_on_url_flag_is_swapped_where_it_does_not_hand_the_file_over() {
-        let slicer = |command: &str| Slicer {
+    /// What the flags and the wait come to for a PrusaSlicer install, by its version.
+    fn prusa(command: &str, major: Option<u32>) -> Slicer {
+        Slicer {
             id: "prusa".into(),
             name: "PrusaSlicer".into(),
             command: command.split(' ').map(str::to_string).collect(),
             icon: None,
-        };
-        // The command lines of this desktop's entries, with `%u` and `%U` dropped as `parse_exec` does.
-        let v29 =
-            slicer("flatpak run --branch=stable --command=entrypoint --file-forwarding com.prusa3d.PrusaSlicer --single-instance-on-url @@u @@");
-        let v30 = slicer(
-            "flatpak run --branch=beta --arch=x86_64 --command=slic3r-app-launcher --file-forwarding com.prusa3d.PrusaSlicer --single-instance-on-url @@u @@",
-        );
+            prusa_major: major,
+        }
+    }
+
+    // The command lines of this desktop's two Flatpak entries, with `%u` and `%U` dropped as `parse_exec` does.
+    const V2_ENTRY: &str =
+        "flatpak run --branch=stable --command=entrypoint --file-forwarding com.prusa3d.PrusaSlicer --single-instance-on-url @@u @@";
+    const V3_ENTRY: &str = "flatpak run --branch=master --arch=x86_64 --command=slic3r-app-launcher --file-forwarding com.prusa3d.PrusaSlicer --single-instance-on-url @@u @@";
+
+    #[test]
+    fn prusa_2_swaps_the_flag_and_does_not_wait_and_prusa_3_keeps_it_and_waits() {
         let with = |flag: &str| {
             let mut v: Vec<String> =
                 ["run", "--branch=stable", "--command=entrypoint", "--file-forwarding", "com.prusa3d.PrusaSlicer"].map(String::from).into();
             v.extend([flag, "@@", "/t/a.3mf", "@@"].map(String::from).into_iter().filter(|a| !a.is_empty()));
             v
         };
-        // 2.9: `--single-instance` in its place, the file markers as before.
-        assert_eq!(v29.args("/t/a.3mf", true), with("--single-instance"));
-        assert_eq!(v29.args("/t/a.3mf", false), with(""));
-        assert!(v29.waits_for_ready().is_none());
-        // 3.0: the launcher's own flag stays, and the preference off strips it.
-        let kept = v30.args("/t/a.3mf", true);
-        assert!(kept.contains(&"--single-instance-on-url".to_string()) && !kept.contains(&"--single-instance".to_string()), "{kept:?}");
-        let off = v30.args("/t/a.3mf", false);
-        assert!(off.contains(&"--single-instance-on-url".to_string()) && !off.contains(&"--single-instance".to_string()), "{off:?}");
-        // A program that is not PrusaSlicer keeps its own `--single-instance-on-url`, and loses it with
-        // the preference off like any other flag of this kind; one the user picked and named PrusaSlicer is PrusaSlicer.
+        // 2.9.6: `--single-instance` in its place, no wait, the file markers as before; nothing without the preference.
+        let v2 = prusa(V2_ENTRY, Some(2));
+        assert!(v2.waits_for_ready().is_none());
+        assert_eq!(v2.args("/t/a.3mf", true), with("--single-instance"));
+        assert_eq!(v2.args("/t/a.3mf", false), with(""));
+        // Also when its command happens to go through the launcher: the version decides.
+        assert!(prusa("slic3r-app-launcher --single-instance-on-url", Some(2)).waits_for_ready().is_none());
+        // 3.0.0-alpha10: the launcher's own flag stays on every send and start, and it waits.
+        let v3 = prusa(V3_ENTRY, Some(3));
+        assert!(v3.waits_for_ready().is_some());
+        for single in [true, false] {
+            let sent = v3.args("/t/a.3mf", single);
+            assert!(sent.contains(&"--single-instance-on-url".to_string()) && !sent.contains(&"--single-instance".to_string()), "{sent:?}");
+            assert!(v3.start_args(single).contains(&"--single-instance-on-url".to_string()));
+        }
+        // Newer than 3 waits too, and so does a 3 whose command is not the launcher.
+        assert!(prusa("prusa-slicer", Some(4)).waits_for_ready().is_some());
+        assert!(prusa("prusa-slicer", Some(3)).waits_for_ready().is_some());
+    }
+
+    #[test]
+    fn an_unreadable_version_falls_back_to_the_command() {
+        // The launcher's name means 3: it waits and keeps its flag, as before versions were read.
+        let launcher = prusa("slic3r-app-launcher --single-instance-on-url", None);
+        assert!(launcher.waits_for_ready().is_some());
+        assert_eq!(launcher.args("/t/a.3mf", true), ["--single-instance-on-url", "/t/a.3mf"]);
+        // Without it nothing is known: no wait, and the entry's flags are left as they are.
+        let unknown = prusa(V2_ENTRY, None);
+        assert!(unknown.waits_for_ready().is_none());
+        let sent = unknown.args("/t/a.3mf", true);
+        assert!(sent.contains(&"--single-instance-on-url".to_string()) && !sent.contains(&"--single-instance".to_string()), "{sent:?}");
+        assert!(!unknown.args("/t/a.3mf", false).iter().any(|a| a.starts_with("--single-instance")));
+    }
+
+    #[test]
+    fn a_program_that_is_not_prusaslicer_is_left_alone_whatever_a_version_says() {
         let viewer = Slicer {
             id: "desktop-meshviewer".into(),
             name: "Mesh Viewer".into(),
             command: vec!["mesh-viewer".into(), "--single-instance-on-url".into()],
             icon: None,
+            prusa_major: Some(2),
         };
         assert_eq!(viewer.args("/t/a.3mf", true), ["--single-instance-on-url", "/t/a.3mf"]);
         assert_eq!(viewer.args("/t/a.3mf", false), ["/t/a.3mf"]);
-        let picked = |name: &str| Slicer {
+        assert!(viewer.waits_for_ready().is_none());
+        // One the user picked and named PrusaSlicer is PrusaSlicer, and is told apart by its version like the rest.
+        let picked = |name: &str, major| Slicer {
             id: "custom".into(),
             name: name.into(),
             command: vec!["/x/prog".into(), "--single-instance-on-url".into()],
             icon: None,
+            prusa_major: major,
         };
-        assert_eq!(picked("PrusaSlicer").args("/t/a.3mf", true), ["--single-instance", "/t/a.3mf"]);
-        assert_eq!(picked("Mesh Viewer").args("/t/a.3mf", true), ["--single-instance-on-url", "/t/a.3mf"]);
-        // Starting 3.0 on its own keeps it whatever the preference says (the earlier rule).
-        assert!(v30.start_args(false).contains(&"--single-instance-on-url".to_string()));
+        assert_eq!(picked("PrusaSlicer", Some(2)).args("/t/a.3mf", true), ["--single-instance", "/t/a.3mf"]);
+        assert_eq!(picked("PrusaSlicer", None).args("/t/a.3mf", true), ["--single-instance-on-url", "/t/a.3mf"]);
+        assert_eq!(picked("Mesh Viewer", Some(2)).args("/t/a.3mf", true), ["--single-instance-on-url", "/t/a.3mf"]);
+    }
+
+    #[test]
+    fn the_version_is_the_leading_number_of_the_top_release() {
+        let xml = |v: &str| {
+            format!(
+                "<component><releases><release version=\"{v}\" date=\"2026-07-28\"><description/></release><release version=\"2.9.5\"/></releases></component>"
+            )
+        };
+        assert_eq!(release_major(&xml("3.0.0-alpha10")), Some(3));
+        assert_eq!(release_major(&xml("2.9.6")), Some(2));
+        assert_eq!(release_major(&xml("10.1")), Some(10));
+        assert_eq!(release_major(&xml("beta")), None);
+        assert_eq!(release_major("<component><releases></releases></component>"), None);
+        assert_eq!(release_major(""), None);
+    }
+
+    #[test]
+    fn detection_reads_the_version_from_the_installs_metadata() {
+        let root = scratch("versions");
+        let (home, share) = (root.join("home"), root.join("home/.local/share"));
+        let flatpak = home.join(".local/share/flatpak");
+        let deploy = |branch: &str, version: &str| {
+            let dir = flatpak.join("app/com.prusa3d.PrusaSlicer/x86_64").join(branch).join("active/files/share/metainfo");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("com.prusa3d.PrusaSlicer.metainfo.xml"),
+                format!("<component><releases><release version=\"{version}\"/><release version=\"2.9.5\"/></releases></component>"),
+            )
+            .unwrap();
+        };
+        deploy("stable", "2.9.6");
+        deploy("master", "3.0.0-alpha10");
+        std::fs::create_dir_all(share.join("applications")).unwrap();
+        let entry = |file: &str, exec: &str| {
+            std::fs::write(share.join("applications").join(file), format!("[Desktop Entry]\nType=Application\nName=PrusaSlicer\nExec={exec}\n"))
+                .unwrap();
+        };
+        entry("v2.desktop", V2_ENTRY);
+        entry("v3.desktop", V3_ENTRY);
+        // A branch that is not installed has no metadata to read.
+        entry("gone.desktop", &V3_ENTRY.replace("--branch=master", "--branch=beta"));
+        let env = Env { home: Some(home), data_dirs: vec![share.clone()], flatpak_roots: vec![flatpak], ..Env::default() };
+        let found = detect_in(&env);
+        let by = |needle: &str| found.iter().find(|s| s.command.iter().any(|a| a == needle)).unwrap();
+        assert_eq!(by("--branch=stable").prusa_major, Some(2));
+        assert_eq!(by("--branch=master").prusa_major, Some(3));
+        assert_eq!(by("--branch=beta").prusa_major, None);
+        // And what that decides: 2.9.6 swaps and does not wait; 3.0 keeps its flag and waits; the unread one goes by its launcher.
+        assert!(
+            by("--branch=stable").waits_for_ready().is_none()
+                && by("--branch=stable").args("/t/a.3mf", true).contains(&"--single-instance".to_string())
+        );
+        assert!(by("--branch=master").waits_for_ready().is_some());
+        assert!(by("--branch=beta").waits_for_ready().is_some());
+        // A system install: the metadata sits beside its desktop entry.
+        let usr = root.join("usr/share");
+        std::fs::create_dir_all(usr.join("applications")).unwrap();
+        std::fs::create_dir_all(usr.join("metainfo")).unwrap();
+        std::fs::write(usr.join("applications/PrusaSlicer.desktop"), "[Desktop Entry]\nType=Application\nName=PrusaSlicer\nExec=prusa-slicer %F\n")
+            .unwrap();
+        std::fs::write(usr.join("metainfo/PrusaSlicer.metainfo.xml"), "<component><releases><release version=\"2.8.1\"/></releases></component>")
+            .unwrap();
+        let found = detect_in(&Env { data_dirs: vec![usr], ..Env::default() });
+        assert_eq!((found.len(), found[0].prusa_major), (1, Some(2)));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

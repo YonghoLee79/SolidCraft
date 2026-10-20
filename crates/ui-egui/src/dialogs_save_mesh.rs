@@ -771,8 +771,15 @@ mod tests {
 
     #[test]
     fn a_remembered_install_that_is_gone_falls_back_to_the_same_slicer() {
-        let prusa = |id: &str| slicers::Slicer { id: id.into(), name: "PrusaSlicer".into(), command: vec!["prusa-slicer".into()], icon: None };
-        let orca = slicers::Slicer { id: "orca".into(), name: "OrcaSlicer".into(), command: vec!["orca-slicer".into()], icon: None };
+        let prusa = |id: &str| slicers::Slicer {
+            id: id.into(),
+            name: "PrusaSlicer".into(),
+            command: vec!["prusa-slicer".into()],
+            icon: None,
+            prusa_major: None,
+        };
+        let orca =
+            slicers::Slicer { id: "orca".into(), name: "OrcaSlicer".into(), command: vec!["orca-slicer".into()], icon: None, prusa_major: None };
         let menu = |detected: Vec<slicers::Slicer>| SlicerMenu { detected, ..Default::default() };
         // Two installs when it was remembered, one (now plain) left.
         let lone = menu(vec![orca.clone(), prusa("prusa")]);
