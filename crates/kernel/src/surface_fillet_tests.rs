@@ -8,7 +8,7 @@ use std::f64::consts::PI;
 
 use solidcraft_geom::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
 
-use crate::{Body, FilletFace, KernelError, extrude_sheet, measure, patch_region, surface_fillet};
+use crate::{Body, FilletFace, FilletTrim, KernelError, extrude_sheet, measure, patch_region, surface_fillet};
 
 /// A flat sheet on `plane` over `[u0, u1] × [v0, v1]` of its coordinates.
 fn plate(plane: Plane, u0: f64, v0: f64, u1: f64, v1: f64) -> Body {
@@ -26,8 +26,13 @@ fn wall(z0: f64, z1: f64) -> Body {
     plate(Plane { origin: Vec3::ZERO, x: Vec3::Y, y: Vec3::Z }, 0.0, z0, 30.0, z1)
 }
 
+/// The blend alone.
 fn fillet(a: &Body, pa: Vec3, b: &Body, pb: Vec3, r: f64) -> crate::Result<Body> {
-    surface_fillet(FilletFace { body: a, pick: pa }, FilletFace { body: b, pick: pb }, r)
+    trimmed(a, pa, b, pb, r, FilletTrim::None)
+}
+
+fn trimmed(a: &Body, pa: Vec3, b: &Body, pb: Vec3, r: f64, trim: FilletTrim) -> crate::Result<Body> {
+    surface_fillet(FilletFace { body: a, pick: pa }, FilletFace { body: b, pick: pb }, r, trim)
 }
 
 /// Every point of the fillet's mesh lies `r` from the line through `o` along y.
@@ -105,4 +110,25 @@ fn faces_a_ball_cannot_touch_both_of_are_refused() {
         assert!(fillet(&g, Vec3::new(20.0, 15.0, 0.0), &w, Vec3::new(0.0, 15.0, 20.0), r).is_err(), "{r}");
     }
     assert!(fillet(&g, Vec3::new(f64::NAN, 15.0, 0.0), &w, Vec3::new(0.0, 15.0, 20.0), 5.0).is_err());
+}
+
+/// The ground and the wall, both 40 × 30, filleted with radius 5 and trimmed: one sheet of
+/// three faces, the ground and the wall each 5 shorter, area 2 · 35 · 30 + 5 · π/2 · 30; trimming
+/// only the ground keeps the wall whole and leaves it out of the result.
+#[test]
+fn trimming_cuts_the_faces_back_to_the_blend_and_stitches_them() {
+    let (g, w) = (ground(0.0, 40.0), wall(0.0, 40.0));
+    let (pg, pw) = (Vec3::new(20.0, 15.0, 0.0), Vec3::new(0.0, 15.0, 20.0));
+    let blend = 5.0 * PI / 2.0 * 30.0;
+    let both = trimmed(&g, pg, &w, pw, 5.0, FilletTrim::Both).unwrap();
+    let m = measure(&both).unwrap();
+    assert_eq!((m.shells, m.faces), (1, 3), "{m:?}");
+    let want = 2.0 * 35.0 * 30.0 + blend;
+    assert!((m.area - want).abs() < 1e-3 * want, "area {} vs {want}", m.area);
+    assert!(m.bbox.min.x.abs() < 1e-6 && m.bbox.min.z.abs() < 1e-6 && (m.bbox.max.x - 40.0).abs() < 1e-6, "{:?}", m.bbox);
+    let one = trimmed(&g, pg, &w, pw, 5.0, FilletTrim::First).unwrap();
+    let m = measure(&one).unwrap();
+    assert_eq!((m.shells, m.faces), (1, 2), "{m:?}");
+    let want = 35.0 * 30.0 + blend;
+    assert!((m.area - want).abs() < 1e-3 * want, "area {} vs {want}", m.area);
 }

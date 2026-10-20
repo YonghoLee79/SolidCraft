@@ -23,6 +23,23 @@ const PER_RADIUS: f64 = 2.0;
 const MIN_SECTIONS: usize = 8;
 const MAX_SECTIONS: usize = 512;
 
+/// Which of the two faces the fillet trims back to where it meets them (stitching the blend
+/// to what is left), or none: the blend alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FilletTrim {
+    #[default]
+    Both,
+    First,
+    Second,
+    None,
+}
+
+impl FilletTrim {
+    fn trims(self, side: usize) -> bool {
+        matches!((self, side), (FilletTrim::Both, _) | (FilletTrim::First, 0) | (FilletTrim::Second, 1))
+    }
+}
+
 /// One of the two faces a fillet runs between: a face of `body`, picked by a point on it.
 #[derive(Clone, Copy, Debug)]
 pub struct FilletFace<'a> {
@@ -228,10 +245,12 @@ fn evenly(a: &Side, b: &Side, r: f64, sections: &[Section], tol: f64) -> Result<
     Ok(out)
 }
 
-/// The rolling-ball fillet of radius `radius` between the faces `a` and `b` pick, as a sheet of
-/// one face: the ball sits on the side of each face the other face's pick is on, and the
-/// fillet runs both ways from where it starts, near the picks, until a contact leaves its face.
-pub fn surface_fillet(a: FilletFace<'_>, b: FilletFace<'_>, radius: f64) -> Result<Body> {
+/// The rolling-ball fillet of radius `radius` between the faces `a` and `b` pick: the ball sits
+/// on the side of each face the other face's pick is on, and the fillet runs both ways from
+/// where it starts, near the picks, until a contact reaches its faces' boundary. The faces
+/// `trim` names are cut back to where the blend meets them and stitched to it: the result is
+/// one body of the blend and those trimmed bodies (the blend alone with [`FilletTrim::None`]).
+pub fn surface_fillet(a: FilletFace<'_>, b: FilletFace<'_>, radius: f64, trim: FilletTrim) -> Result<Body> {
     if !(radius.is_finite() && radius > 0.0) {
         return Err(KernelError::Invalid("the fillet radius must be a positive number".into()));
     }
@@ -259,8 +278,63 @@ pub fn surface_fillet(a: FilletFace<'_>, b: FilletFace<'_>, radius: f64) -> Resu
         sections.push(start);
         sections.extend(ahead);
         let sections = evenly(&fa, &fb, radius, &sections, tol)?;
-        blend_sheet(&sections)
+        let blend = blend_sheet(&sections)?;
+        let mut kept = Vec::new();
+        for (k, f) in [a, b].into_iter().enumerate() {
+            if trim.trims(k) {
+                kept.push(trimmed(f, &sections, k, radius)?);
+            }
+        }
+        if kept.is_empty() {
+            return Ok(blend);
+        }
+        let mut all: Vec<&Body> = vec![&blend];
+        all.extend(kept.iter());
+        crate::surfaces::stitch(&all, tol * 100.0)
     })
+}
+
+/// The body of `f` cut back to where the blend meets it (contact `k` of each section): cut by
+/// the strip from the spine through the contacts, square to the face along them, keeping the
+/// side away from the other face.
+fn trimmed(f: FilletFace<'_>, sections: &[Section], k: usize, r: f64) -> Result<Body> {
+    use crate::splitface::SplitTool;
+    use crate::surface_trim::{TrimKeep, trim_keep};
+    let fail = || KernelError::Failed("surface fillet: the strip that trims a face".into());
+    if !f.body.is_surface() {
+        return Err(KernelError::Invalid("not supported yet: trimming a solid's face to a fillet (trim only the surface)".into()));
+    }
+    let contact = |s: &Section| if k == 0 { (s.q1, s.q2) } else { (s.q2, s.q1) };
+    let spine: Vec<Vec3> = sections.iter().map(|s| s.c).collect();
+    let past: Vec<Vec3> = sections.iter().map(|s| s.c + (contact(s).0 - s.c) * 2.0).collect();
+    let tool = strip(&spine, &past).ok_or_else(fail)?;
+    // Keep the side the contact faces away from the other face's contact, along the face.
+    let mid = sections.get(sections.len() / 2).ok_or_else(fail)?;
+    let (q, other) = contact(mid);
+    let w = (q - other) - (mid.c - q).normalized().ok_or_else(fail)? * (q - other).dot((mid.c - q).normalized().ok_or_else(fail)?);
+    let keep = q + w.normalized().ok_or_else(fail)? * r;
+    trim_keep(f.body, &SplitTool::Face { body: &tool, face: 0 }, TrimKeep::Side(keep))
+}
+
+/// A one-face sheet ruled between the polylines `a` and `b` (interpolated, as many points each).
+fn strip(a: &[Vec3], b: &[Vec3]) -> Option<Body> {
+    let (base, top) = (crate::build::interpolate_cubic(a)?, crate::build::interpolate_cubic(b)?);
+    let at = |c: &mt::BSplineCurve<mt::Point3>, t: f64| -> Vec3 {
+        use mt::ParametricCurve;
+        crate::body::from_p3(c.subs(t))
+    };
+    let v = |p: Vec3| mt::Vertex::new(crate::body::p3(p));
+    let (b0, b1, t0, t1) = (v(at(&base, 0.0)), v(at(&base, 1.0)), v(at(&top, 0.0)), v(at(&top, 1.0)));
+    let line = |x: &mt::Vertex, y: &mt::Vertex| mt::builder::line(x, y);
+    let surface = mt::Surface::BSplineSurface(mt::BSplineSurface::homotopy(base.clone(), top.clone()));
+    let edges = vec![
+        line(&b0, &t0),
+        mt::Edge::new(&t0, &t1, mt::Curve::BSplineCurve(top)),
+        line(&b1, &t1).inverse(),
+        mt::Edge::new(&b0, &b1, mt::Curve::BSplineCurve(base)).inverse(),
+    ];
+    let face = mt::Face::try_new(vec![mt::Wire::from(edges)], surface).ok()?;
+    Some(surface_body(vec![face]))
 }
 
 /// The one-face sheet through `sections`: its contact curves and the arcs at both ends.
