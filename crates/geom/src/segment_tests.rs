@@ -59,3 +59,14 @@ fn a_ring_is_saved_as_its_points() {
     assert_eq!(json, serde_json::json!([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]));
     assert_eq!(serde_json::from_value::<Ring<Vec2>>(json).unwrap(), ring);
 }
+
+#[test]
+fn items_counted_round_a_ring() {
+    let mut ring = Ring::from([1, 2, 3]);
+    assert_eq!((ring.at(0), ring.at(4), ring.at(5)), (Some(&1), Some(&2), Some(&3)));
+    if let Some(x) = ring.at_mut(3) {
+        *x = 9;
+    }
+    assert_eq!(ring.into_vec(), vec![9, 2, 3]);
+    assert_eq!(Ring::<i32>::default().at(0), None);
+}

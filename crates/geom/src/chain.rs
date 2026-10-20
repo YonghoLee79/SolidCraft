@@ -86,6 +86,18 @@ impl<'de, T: Deserialize<'de>, E: Ends> Deserialize<'de> for Chain<T, E> {
 }
 
 impl<T> Ring<T> {
+    /// Item `i` counted round the ring: `i` past the last item comes back to the first (`None`
+    /// for an empty ring).
+    pub fn at(&self, i: usize) -> Option<&T> {
+        self.items.get(i.checked_rem(self.items.len())?)
+    }
+
+    /// [`Ring::at`], to change it.
+    pub fn at_mut(&mut self, i: usize) -> Option<&mut T> {
+        let n = self.items.len();
+        self.items.get_mut(i.checked_rem(n)?)
+    }
+
     /// Each item with the one before and the one after it: `(previous, item, next)`, once per
     /// item.
     pub fn corners(&self) -> impl Iterator<Item = (&T, &T, &T)> + Clone {

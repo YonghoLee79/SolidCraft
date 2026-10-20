@@ -66,15 +66,20 @@ fn at(p: Vec3) -> String {
     format!("({:.3}, {:.3}, {:.3})", p.x, p.y, p.z)
 }
 
-/// A planar face of the body: its outward normal and its outline, counter-clockwise about the
-/// normal. Edge `i` runs from corner `i` to the next one, along face `across[i]`: straight, or an
-/// arc where that face is a round wall (`round[i]`: the circle's centre and the arc's middle).
-/// `holes`: its inner loops, in `plane`, each with the faces of its walls.
+/// A corner of a face's outline and the edge from it to the next corner: the face across that
+/// edge, and where the edge is an arc of a round wall, the circle's centre and the arc's middle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Corner {
+    p: Vec3,
+    across: Option<usize>,
+    round: Option<(Vec3, Vec3)>,
+}
+
+/// A planar face of the body: its outward normal and its outline's corners, counter-clockwise
+/// about the normal. `holes`: its inner loops, in `plane`, each with the faces of its walls.
 struct Face {
     n: UnitVec3,
-    pts: Vec<Vec3>,
-    across: Vec<Option<usize>>,
-    round: Vec<Option<(Vec3, Vec3)>>,
+    corners: Ring<Corner>,
     plane: Plane,
     holes: Vec<(Loop2, Vec<usize>)>,
 }
@@ -88,10 +93,20 @@ struct Panel {
     setback: f64,
 }
 
-/// Area of a loop in space, positive when it runs counter-clockwise about `n`.
-fn area_about(pts: &[Vec3], n: UnitVec3) -> f64 {
-    let Some(&o) = pts.first() else { return 0.0 };
-    pts.windows(2).map(|w| (w[0] - o).cross(w[1] - o).dot(n)).sum::<f64>() / 2.0
+/// Area of an outline in space, positive when it runs counter-clockwise about `n`.
+fn area_about(corners: &Ring<Corner>, n: UnitVec3) -> f64 {
+    let Some(o) = corners.first().map(|c| c.p) else { return 0.0 };
+    corners.edges().map(|(a, b)| (a.p - o).cross(b.p - o).dot(n)).sum::<f64>() / 2.0
+}
+
+/// The same outline the other way round: each edge still starts at a corner, now at its other
+/// end.
+fn reversed(corners: &Ring<Corner>) -> Ring<Corner> {
+    let mut edges: Vec<_> = corners.iter().rev().map(|c| (c.across, c.round)).collect();
+    if !edges.is_empty() {
+        edges.rotate_left(1);
+    }
+    corners.iter().rev().zip(edges).map(|(c, (across, round))| Corner { p: c.p, across, round }).collect()
 }
 
 /// Turn a loop's per-edge values round with its corners (edge `i` starts at corner `i`).
@@ -247,43 +262,32 @@ fn outline(b: &Body, mesh: &Mesh, f: usize, tol: f64) -> Result<Face> {
     // The outline's corners, where its segments start (an arc's in quarter turns at most, so that
     // the corners alone still make an outline), each with the face along it.
     let world = |v: Vec2| plane.to_world(v);
-    let (mut pts, mut tags, mut round) = (Vec::new(), Vec::new(), Vec::new());
+    let mut corners = Vec::new();
     for (seg, g) in outer {
-        let g = g.map(|g| g as usize);
+        let across = g.map(|g| g as usize);
         if let Seg2::Arc { center, radius, start, sweep } = seg {
             let k = ((sweep.abs() / FRAC_PI_2 - 1e-9).ceil() as usize).clamp(1, 8);
             let step = sweep / k as f64;
             for p in 0..k {
                 let a = start + step * p as f64;
-                pts.push(world(center + Vec2::from_angle(a) * radius));
-                tags.push(g);
-                round.push(Some((world(center), world(center + Vec2::from_angle(a + step / 2.0) * radius))));
+                let round = Some((world(center), world(center + Vec2::from_angle(a + step / 2.0) * radius)));
+                corners.push(Corner { p: world(center + Vec2::from_angle(a) * radius), across, round });
             }
         } else {
-            pts.push(world(seg.start()));
-            tags.push(g);
-            round.push(None);
+            corners.push(Corner { p: world(seg.start()), across, round: None });
         }
     }
     // A straight run along one neighbour is one edge, however the body's edges divide it (a
     // shell's outer corners are divided at the height of its floor).
-    let m = pts.len();
-    let corner = |i: usize| -> bool {
-        let before = (i + m - 1) % m;
-        let (Some(&a), Some(&p), Some(&b)) = (pts.get(before), pts.get(i), pts.get((i + 1) % m)) else { return true };
-        let arc = |k: usize| round.get(k).is_some_and(Option::is_some);
-        tags.get(before) != tags.get(i) || arc(before) || arc(i) || Segment::new(a, b).dist(p) > tol
-    };
-    let keep: Vec<usize> = (0..m).filter(|i| corner(*i)).collect();
-    let mut pts: Vec<Vec3> = keep.iter().filter_map(|i| pts.get(*i).copied()).collect();
-    let mut tags: Vec<Option<usize>> = keep.iter().filter_map(|i| tags.get(*i).copied()).collect();
-    let mut round: Vec<Option<(Vec3, Vec3)>> = keep.iter().filter_map(|i| round.get(*i).copied()).collect();
-    if area_about(&pts, n) < 0.0 {
-        pts.reverse();
-        turn(&mut tags);
-        turn(&mut round);
-    }
-    Ok(Face { n, pts, across: tags, round, plane, holes })
+    let corners: Ring<Corner> = Ring::new(corners)
+        .corners()
+        .filter(|(before, c, next)| {
+            before.across != c.across || before.round.is_some() || c.round.is_some() || Segment::new(before.p, next.p).dist(c.p) > tol
+        })
+        .map(|(_, c, _)| *c)
+        .collect();
+    let corners = if area_about(&corners, n) < 0.0 { reversed(&corners) } else { corners };
+    Ok(Face { n, corners, plane, holes })
 }
 
 /// The face straight through the material behind planar face `f`, when it is parallel to it,
@@ -343,11 +347,10 @@ fn chamfer_at(mb: &ModelBody, mesh: &Mesh, p: Vec3, tol: f64, near: f64) -> Opti
         Some(FaceSurface::Plane { normal, .. }) => Some(normal),
         _ => None,
     };
-    let m = strip.pts.len();
-    let edge = |i: usize| -> Option<(Vec3, Vec3, usize)> {
-        let (p, q) = (*strip.pts.get(i)?, *strip.pts.get((i + 1) % m)?);
-        Some((p, (q - p).normalized()?, strip.across.get(i).copied().flatten()?))
-    };
+    // Each straight edge: a point on it, its direction and the face across it.
+    let edges: Vec<Option<(Vec3, Vec3, usize)>> = strip.corners.edges().map(|(a, b)| Some((a.p, (b.p - a.p).normalized()?, a.across?))).collect();
+    let m = edges.len();
+    let edge = |i: usize| edges.get(i).copied().flatten();
     let mut sides = Vec::new();
     for i in 0..m {
         for j in i + 1..m {
@@ -420,18 +423,18 @@ fn without_chamfers(b: &Body, mut face: Face, g: usize, chamfers: &[Chamfer], to
         let Some(FaceSurface::Plane { normal: n, point: o }) = face_surface(b, other) else {
             return err("the face across a chamfer picked as a bend is not flat");
         };
-        let m = face.pts.len();
-        let along: Vec<usize> = (0..m).filter(|i| face.across.get(*i).copied().flatten() == Some(c.strip)).collect();
+        let m = face.corners.len();
+        let along: Vec<usize> = face.corners.iter().enumerate().filter(|(_, x)| x.across == Some(c.strip)).map(|(i, _)| i).collect();
         let &[k] = along.as_slice() else {
             return err("not supported yet: a chamfer picked as a bend that runs along a face more than once");
         };
         // Its corners slide along the edges before and after it: those must be straight.
-        if [k + m - 1, k + 1].iter().any(|i| face.round.get(i % m).is_some_and(Option::is_some)) {
+        if [k + m - 1, k + 1].iter().any(|i| face.corners.at(*i).is_some_and(|x| x.round.is_some())) {
             return err("not supported yet: a round edge of a face that ends at a chamfer picked as a bend");
         }
         // Each end of the edge slides along the edge on its other side, out to the other plane.
         let slide = |corner: usize, before: usize| -> Option<Vec3> {
-            let (p, q) = (*face.pts.get(corner % m)?, *face.pts.get(before % m)?);
+            let (p, q) = (face.corners.at(corner)?.p, face.corners.at(before)?.p);
             let d = (p - q).normalized()?;
             let s = (o - p).dot(n) / d.dot(n);
             (s.is_finite() && s >= -tol).then_some(p + d * s)
@@ -439,14 +442,12 @@ fn without_chamfers(b: &Body, mut face: Face, g: usize, chamfers: &[Chamfer], to
         let (Some(p), Some(q)) = (slide(k, k + m - 1), slide(k + 1, k + 2)) else {
             return err("a face beside a chamfer picked as a bend does not reach the face across it");
         };
-        if let Some(x) = face.pts.get_mut(k) {
-            *x = p;
+        if let Some(x) = face.corners.at_mut(k) {
+            x.p = p;
+            x.across = Some(other);
         }
-        if let Some(x) = face.pts.get_mut((k + 1) % m) {
-            *x = q;
-        }
-        if let Some(x) = face.across.get_mut(k) {
-            *x = Some(other);
+        if let Some(x) = face.corners.at_mut(k + 1) {
+            x.p = q;
         }
     }
     Ok(face)
@@ -521,25 +522,22 @@ fn inset(pts: &Ring<Vec2>, by: &[f64]) -> Result<(Ring<Vec2>, Vec<Option<usize>>
 /// edge is split there: the pieces beside the wall are no bend. `bend` says whether a face is a
 /// bend of the wall. Any other wall is left as it is.
 fn end_at_wall(base: &mut Face, wall: &mut Face, ids: (usize, usize), by: f64, bend: &dyn Fn(usize) -> bool, tol: f64) {
-    let (m, n) = (wall.pts.len(), base.pts.len());
-    let at_wall: Vec<usize> = (0..m).filter(|i| wall.across.get(*i).copied().flatten() == Some(ids.0)).collect();
-    let at_base: Vec<usize> = (0..n).filter(|i| base.across.get(*i).copied().flatten() == Some(ids.1)).collect();
+    let m = wall.corners.len();
+    let along = |f: &Face, g: usize| -> Vec<usize> { f.corners.iter().enumerate().filter(|(_, c)| c.across == Some(g)).map(|(i, _)| i).collect() };
+    let (at_wall, at_base) = (along(wall, ids.0), along(base, ids.1));
     let (&[k], &[i]) = (at_wall.as_slice(), at_base.as_slice()) else { return };
     if m < 5 {
         return;
     }
     // Corner `j` and edge `j` (from corner `j`) counted from the bend's edge on.
-    let pt = |j: usize| wall.pts.get((k + j) % m).copied().unwrap_or_default();
+    let pt = |j: usize| wall.corners.at(k + j).map(|c| c.p).unwrap_or_default();
     let (p, q) = (pt(0), pt(1));
     let Some(d) = (q - p).normalized() else { return };
     // Up the wall from the bend's edge (the outline runs counter-clockwise about the normal), and
     // along the edge.
     let up = |x: Vec3| (x - p).dot(wall.n.cross(d));
     let along = |x: Vec3| (x - p).dot(d);
-    let free = |j: usize| {
-        let j = (k + j) % m;
-        wall.round.get(j).is_some_and(Option::is_none) && wall.across.get(j).copied().flatten().is_none_or(|g| !bend(g))
-    };
+    let free = |j: usize| wall.corners.at(k + j).is_some_and(|c| c.round.is_none() && c.across.is_none_or(|g| !bend(g)));
     let low = |x: Vec3| up(x) > tol && up(x) <= by + tol;
     // A strip from an end of the bend's edge up to `x1`, back along the edge (`back`: the way it
     // runs) to `x2`, then the wall's end up to `x3`: where the line of that end meets the edge.
@@ -563,29 +561,32 @@ fn end_at_wall(base: &mut Face, wall: &mut Face, ids: (usize, usize), by: f64, b
     {
         return;
     }
-    // The wall: the strips' corners and edges go, the bend's edge runs from `p1` to `q1`.
-    let (mut corners_out, mut edges_out) = (Vec::new(), Vec::new());
+    // The wall: the strips' corners and edges go, the bend's edge runs from `p1` to `q1`. At the
+    // edge's end, corners 2 and 3 go with edges 1 and 2: corner 1 then starts edge 3 (the wall's
+    // end). At its start, corners and edges m - 1 and m - 2 go.
+    let mut out = Vec::new();
     if end.is_some() {
-        corners_out.extend([2, 3]);
-        edges_out.extend([1, 2]);
+        if let Some(end_edge) = wall.corners.at(k + 3).copied()
+            && let Some(c) = wall.corners.at_mut(k + 1)
+        {
+            (c.across, c.round) = (end_edge.across, end_edge.round);
+        }
+        out.extend([2, 3]);
     }
     if start.is_some() {
-        corners_out.extend([m - 1, m - 2]);
-        edges_out.extend([m - 1, m - 2]);
+        out.extend([m - 1, m - 2]);
     }
-    if let Some(x) = wall.pts.get_mut(k) {
-        *x = p1;
+    if let Some(x) = wall.corners.at_mut(k) {
+        x.p = p1;
     }
-    if let Some(x) = wall.pts.get_mut((k + 1) % m) {
-        *x = q1;
+    if let Some(x) = wall.corners.at_mut(k + 1) {
+        x.p = q1;
     }
-    let kept = |j: usize, out: &[usize]| !out.contains(&((j + m - k) % m));
-    wall.pts = wall.pts.iter().enumerate().filter(|(j, _)| kept(*j, &corners_out)).map(|(_, x)| *x).collect();
-    wall.across = wall.across.iter().enumerate().filter(|(j, _)| kept(*j, &edges_out)).map(|(_, x)| *x).collect();
-    wall.round = wall.round.iter().enumerate().filter(|(j, _)| kept(*j, &edges_out)).map(|(_, x)| *x).collect();
+    let kept = |j: usize| !out.contains(&((j + m - k) % m));
+    wall.corners = wall.corners.iter().enumerate().filter(|(j, _)| kept(*j)).map(|(_, c)| *c).collect();
     // The fixed face's edge: the bend from `p1` to `q1` (it runs the other way along it), no bend
     // beside it.
-    let (Some(&a), Some(&b)) = (base.pts.get(i), base.pts.get((i + 1) % n)) else { return };
+    let (Some(a), Some(b)) = (base.corners.at(i).map(|c| c.p), base.corners.at(i + 1).map(|c| c.p)) else { return };
     let from_a = |x: Vec3| (x - a).dot(b - a);
     let (x, y) = if from_a(p1) < from_a(q1) { (p1, q1) } else { (q1, p1) };
     let mut pieces: Vec<(Vec3, Option<usize>)> = Vec::with_capacity(3);
@@ -596,10 +597,9 @@ fn end_at_wall(base: &mut Face, wall: &mut Face, ids: (usize, usize), by: f64, b
     if y.dist(b) > tol {
         pieces.push((y, None));
     }
-    let count = pieces.len();
-    base.pts.splice(i..=i, pieces.iter().map(|(x, _)| *x));
-    base.across.splice(i..=i, pieces.iter().map(|(_, g)| *g));
-    base.round.splice(i..=i, std::iter::repeat_n(None, count));
+    let mut corners = std::mem::replace(&mut base.corners, Ring::new(Vec::new())).into_vec();
+    corners.splice(i..=i, pieces.into_iter().map(|(p, across)| Corner { p, across, round: None }));
+    base.corners = Ring::new(corners);
 }
 
 /// Give flange `i` its panel: `outline` in flat coordinates, counter-clockwise, its edge at the
@@ -719,7 +719,7 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
     let fixed = face_of(f0).map_err(|e| DocError::Invalid(format!("the fixed face can't be a face of the sheet: {e}")))?;
     // A shell: the same small distance of material behind the fixed face and the faces at every
     // bend. It keeps its thickness, and a bend picked on one skin is that bend on the other too.
-    let thin = behind(b, &mesh, f0).map(|(_, d)| d).filter(|d| *d > 0.0 && d * d * 16.0 <= area_about(&fixed.pts, fixed.n));
+    let thin = behind(b, &mesh, f0).map(|(_, d)| d).filter(|d| *d > 0.0 && d * d * 16.0 <= area_about(&fixed.corners, fixed.n));
     let wall = |f: usize, d: f64| behind(b, &mesh, f).filter(|(_, e)| (e - d).abs() <= 1e-6 * d.max(1.0)).map(|(g, _)| g);
     let backs: Vec<Option<(usize, usize)>> = picks.iter().map(|(_, (x, y))| thin.and_then(|d| Some((wall(*x, d)?, wall(*y, d)?)))).collect();
     let shell = thin.filter(|_| backs.iter().all(Option::is_some));
@@ -772,8 +772,8 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
                 return err(format!("the faces at the bend at {} must meet at an angle between 0 and 180°", at(p)));
             }
             // Up: the child rises on the material side of its parent, which is behind its face.
-            let o = parent.face.pts.first().copied().unwrap_or_default();
-            let lift = child.pts.iter().map(|q| (*q - o).dot(parent.face.n)).fold(0.0, |m: f64, h| if h.abs() > m.abs() { h } else { m });
+            let o = parent.face.corners.first().map(|c| c.p).unwrap_or_default();
+            let lift = child.corners.iter().map(|c| (c.p - o).dot(parent.face.n)).fold(0.0, |m: f64, h| if h.abs() > m.abs() { h } else { m });
             let (angle, sharp) = if lift < 0.0 { (theta, r + t) } else { (-theta, r) };
             panels.insert(to, Panel { face: child, parent: Some(from), angle, setback: sharp * (theta / 2.0).tan() });
             order.push(to);
@@ -788,12 +788,10 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
     }
     // The flat frame: on the fixed face, x along its longest edge, z into the material.
     let Some(base) = panels.get(&f0) else { return err("fixed face") };
-    let base_ring = Ring::from(base.face.pts.clone());
-    let corners = base_ring.edges();
-    let straight = corners.zip(&base.face.round).filter(|(_, r)| r.is_none()).map(|(c, _)| c);
-    let longest = straight.max_by(|x, y| x.0.dist(*x.1).total_cmp(&y.0.dist(*y.1)));
+    let straight = base.face.corners.edges().filter(|(a, _)| a.round.is_none()).map(|(a, b)| (a.p, b.p));
+    let longest = straight.max_by(|x, y| x.0.dist(x.1).total_cmp(&y.0.dist(y.1)));
     let frame = longest
-        .and_then(|(a, b)| Some((*a, (*b - *a).normalized()?)))
+        .and_then(|(a, b)| Some((a, (b - a).normalized()?)))
         .and_then(|(a, x)| Plane::new(a, x, x.cross(base.face.n)))
         .ok_or_else(|| DocError::Invalid("the fixed face has no plane".into()))?;
     // A wall on part of an edge of the fixed face bends only where it stands (a bend picked as a
@@ -818,7 +816,7 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
         points.entry(*g as usize).or_default().extend(tri.iter().filter_map(|k| mesh.positions.get(*k as usize)));
     }
     let span = |g: usize, face: &Face| {
-        let o = face.pts.first().copied().unwrap_or_default();
+        let o = face.corners.first().map(|c| c.p).unwrap_or_default();
         let ds = points.get(&g).into_iter().flatten().map(|p| (o - *p).dot(face.n));
         ds.fold((f64::INFINITY, 0.0), |(lo, hi): (f64, f64), d| (lo.min(d.max(0.0)), hi.max(d)))
     };
@@ -838,28 +836,28 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
         next += 1;
         let Some(panel) = panels.get(&pf) else { continue };
         let inv = mat_inverse(&sh.world(fl)).ok_or_else(|| DocError::Invalid("sheet panel frame".into()))?;
-        let n = panel.face.pts.len();
+        let n = panel.face.corners.len();
         let (mut pts, mut by) = (Vec::with_capacity(n), Vec::with_capacity(n));
-        for (i, p) in panel.face.pts.iter().enumerate() {
-            let q = apply_point(&inv, *p);
+        for (c, next) in panel.face.corners.edges() {
+            let q = apply_point(&inv, c.p);
             if !(q.z.abs() <= tol) {
-                return err(format!("the face at {} does not lie where its bend puts it ({:.6} mm off)", at(*p), q.z));
+                return err(format!("the face at {} does not lie where its bend puts it ({:.6} mm off)", at(c.p), q.z));
             }
             pts.push(Vec2::new(q.x, q.y));
-            let e = panel.face.pts.get((i + 1) % n).and_then(|b| (*b - *p).normalized()).unwrap_or(Vec3::X);
-            by.push(match panel.face.across.get(i).copied().flatten().and_then(|g| Some((g, panels.get(&g)?))) {
+            let e = (next.p - c.p).normalized().unwrap_or(Vec3::X);
+            by.push(match c.across.and_then(|g| Some((g, panels.get(&g)?))) {
                 Some((g, _)) if panel.parent == Some(g) => panel.setback,
                 Some((_, other)) if other.parent == Some(pf) => other.setback,
                 Some((_, other)) => rip_cut(&panel.face, &other.face, e, t, rv.gap)?,
                 None => 0.0,
             });
         }
-        let mut across = panel.face.across.clone();
+        let mut across: Vec<Option<usize>> = panel.face.corners.iter().map(|c| c.across).collect();
         let flat = |p: Vec3| {
             let q = apply_point(&inv, p);
             Vec2::new(q.x, q.y)
         };
-        let mut round: Vec<Option<(Vec2, Vec2)>> = panel.face.round.iter().map(|r| r.map(|(c, m)| (flat(c), flat(m)))).collect();
+        let mut round: Vec<Option<(Vec2, Vec2)>> = panel.face.corners.iter().map(|c| c.round.map(|(o, m)| (flat(o), flat(m)))).collect();
         let mut pts = Ring::new(pts);
         if pts.signed_area() < 0.0 {
             pts.reverse();
@@ -867,7 +865,7 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
             turn(&mut across);
             turn(&mut round);
         }
-        let first = panel.face.pts.first().copied().unwrap_or_default();
+        let first = panel.face.corners.first().map(|c| c.p).unwrap_or_default();
         let face_at = |e: DocError| DocError::Invalid(format!("{e} (the face at {})", at(first)));
         let (trimmed, from) = inset(&pts, &by).map_err(face_at)?;
         let exact = drawn(&trimmed, &from, &pts, &round).map_err(face_at)?;
