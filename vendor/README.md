@@ -131,6 +131,12 @@ Changes:
 - `tessellation/triangulation.rs`: meshed faces and edges are built unchecked: faces whose loop
   runs along a seam edge both ways and closed edges (a full circle on one vertex) are valid,
   but the debug-build checks rejected them (debug builds could not mesh them).
+- `tessellation/triangulation.rs`: on a periodic surface, a boundary point's projected parameter
+  is moved by whole periods to within half a period of the point before it, however many periods
+  away the search put it (it was moved by two periods at most). A hinted search on a revolved
+  surface can return an angle millions of turns from its hint; the loop then spanned those turns,
+  the polyline closing it across the seam had millions of points, and meshing never finished,
+  which hung the STEP export that reads its own file back (#1985).
 - `tessellation/triangulation.rs`: parameter searches that land outside a surface's bounded,
   non-periodic domain are rejected (a hinted B-spline search can run off and extrapolate to
   thousands of parameter units, and meshing that grid never finishes); the last-resort nearest
@@ -184,6 +190,14 @@ Changes:
   point of the face's edges now goes to that point, when it is within the chord tolerance
   (`onto_edges`). Points within `TOLERANCE` stay on the surface, so exact geometry meshes as
   before. The meshes Boolean operations intersect keep truck's points.
+- `tessellation/triangulation.rs`: a face whose boundary touches itself or another of its loops
+  within `TOLERANCE` (pinched to a point where a body touches its edge, #1648) can cross there by
+  less than that. A segment that would cross one already added was left out of the triangulation,
+  and the fallback that joins the next point instead cut across the face: such a face came out
+  with no triangles, or without those at the pinch, depending on which segment went in first.
+  When a segment is left out, every boundary point within `TOLERANCE` of a segment, away from its
+  ends, is put into it (`pinched`: at most 8192 boundary points, and at most 8192 put in), and
+  the face is triangulated again. Faces whose segments all go in are triangulated as before.
 
 - `tessellation/triangulation.rs`: in display and export meshes (`Deflection::rulings`), a
   direction left undivided along the rulings of a face ruled one way also gets a grid line
