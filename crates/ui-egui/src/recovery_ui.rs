@@ -425,6 +425,30 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn a_tab_closed_while_its_autosave_is_written_leaves_nothing_to_recover() {
+        let (mut app, dir) = app("discard-race", Duration::ZERO);
+        name(&mut app, "Closed");
+        // Enough of a design that its write is still running when the tab is closed.
+        for i in 0..40 {
+            app.run("solid.cylinder", json!({"radius": 3, "height": 5, "base": [i * 8, 0, 0], "operation": "new"})).unwrap();
+        }
+        app.big_operation = false;
+        documents::new_tab(&mut app);
+        tick(&mut app); // Starts writing the background tab on a worker thread.
+        documents::close(&mut app, 0, true); // Don't Save, right away.
+        let files = || fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>();
+        // A write that outlived the close would recreate the entry; give it time to.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            assert!(entries(&dir).is_empty(), "the closed design came back: {:?}", files());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(app);
+        assert!(recovery::orphans(&dir).is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     fn entry(id: &str, name: &str) -> Entry {
         Entry { id: id.into(), path: None, name: name.into(), saved_at: 0, features: 3 }
     }

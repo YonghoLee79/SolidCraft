@@ -363,6 +363,11 @@ impl Autosaver {
 
     /// The user closed this design (saving it or choosing Don't Save): discard only its entry.
     pub fn discard(mut self) {
+        // A write still running would recreate the entry, without a lock, after it is removed:
+        // the next launch would offer a design the user closed.
+        if let Some(w) = self.writing.take() {
+            let _ = w.done.recv();
+        }
         for ext in ["json", solidcraft_io::DESIGN_EXT] {
             let _ = fs::remove_file(file(&self.dir, &self.id, ext));
         }
