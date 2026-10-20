@@ -4,7 +4,7 @@
 //! solidcraft-cli run <script.json|design.solidcraft|part.step|mesh.3mf> [--in design|part.step|mesh.3mf] [--out FILE]... [--save FILE] [--quiet] [--results] [--timings] [--profile] [--json-out FILE] [--allow-errors]
 //! solidcraft-cli eval <script.json|design.solidcraft|part.step> [--json-out FILE] (alias: inspect) measurements as JSON
 //! solidcraft-cli script <design.solidcraft> [--out script.json]     the design's history as a command script
-//! solidcraft-cli bench-open <design.solidcraft | part.step> [--parse-only] [--display LEVEL [--edit NAME EXPR]] loading timings as JSON lines
+//! solidcraft-cli bench-open <design.solidcraft | part.step> [--parse-only] [--save OUT.solidcraft] [--display LEVEL [--edit NAME EXPR]] loading timings as JSON lines
 //! solidcraft-cli bench-agent [--scale F] [--save F] [--script-out F] a ~1,300-body design built command by command, timed
 //! solidcraft-cli snapshot <script|design> [--in design|part.step] --out shot.png [--width W] [--height H] [--view iso|front|top|…|NAME | --camera JSON] [--no-grid] [--no-axes]
 //!                                                             [--body NAME:opacity=0.3,color=#rrggbb]... [--tool NAME]... [--section z=27]
@@ -13,6 +13,7 @@
 //! solidcraft-cli recipe <recipe.json>                         translate an oracle recipe to a script
 //! solidcraft-cli oracle <case-dir>...                         replay recipes and compare with expected.json
 //! solidcraft-cli mcp [--in design|script] [--connect HOST:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
+//!                    [--param-check off|warn|strict]
 //!                                                             MCP server on stdio (docs/mcp.md)
 //! solidcraft-cli licences                                     SolidCraft's licence and the third-party licences
 //! solidcraft-cli icon --out F.png|F.ico [--size N]             the app icon (packaging; drawn, not a file)
@@ -49,7 +50,7 @@ const USAGE: &str = "usage:
        as plain UTF-8: a shell's > can re-encode it, e.g. Windows PowerShell adds a byte-order mark)
   solidcraft-cli script <design.solidcraft|script.json> [--out script.json]
       (the design's history as a command script that eval and run replay)
-  solidcraft-cli bench-open <design.solidcraft | part.step> [--parse-only] [--display LEVEL [--edit NAME EXPR]]
+  solidcraft-cli bench-open <design.solidcraft | part.step> [--parse-only] [--save OUT.solidcraft] [--display LEVEL [--edit NAME EXPR]]
   solidcraft-cli bench-agent [--scale F] [--save design.solidcraft] [--script-out script.json]
   solidcraft-cli snapshot <script|design> [--in design.solidcraft|part.step] --out shot.png [--width W] [--height H] [--view NAME | --camera JSON] [--no-grid] [--no-axes]
       [--body NAME:opacity=0.3,color=#rrggbb]... [--tool NAME]... [--section z=27]
@@ -71,6 +72,7 @@ const USAGE: &str = "usage:
   solidcraft-cli oracle <case-dir>... [--json]
   solidcraft-cli fuzz [--from N] [--count N] [--jobs J] [--timeout S] [--steps N] [--minimise] [--out DIR] [--report FILE]
   solidcraft-cli mcp [--in design.solidcraft|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
+                     [--param-check off|warn|strict]
   solidcraft-cli crashes [list [--json] | show <id> | replay <id> | dir | clear [<id>]]
   solidcraft-cli licences
   solidcraft-cli gpu [--policy auto|hardware|software|cpu]
@@ -154,7 +156,14 @@ pub fn read_json(path: &str) -> Result<Value, String> {
 
 /// A session from a design file, a STEP/3MF/STL file, a command script, or an oracle recipe.
 pub fn load(path: &str) -> Result<Session, String> {
+    load_checked(path, solidcraft_engine::schema::ParamCheck::Off)
+}
+
+/// `load`, with scripts and recipes run at the parameter-check level `check`, which the
+/// session keeps.
+fn load_checked(path: &str, check: solidcraft_engine::schema::ParamCheck) -> Result<Session, String> {
     let mut s = Session::default();
+    s.param_check = check;
     if solidcraft_engine::io::is_step_path(path) || solidcraft_engine::io::is_mesh_path(path) {
         s.execute("doc.open", &json!({"path": path})).map_err(|e| e.to_string())?;
         return Ok(s);
@@ -164,16 +173,22 @@ pub fn load(path: &str) -> Result<Session, String> {
         let doc = solidcraft_engine::io::read_design(&bytes).map_err(|e| format!("{path}: {e}"))?;
         let mut session = Session::new(doc);
         session.path = Some(path.to_owned());
+        session.param_check = check;
         return Ok(session);
     }
     let v: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
     if v.get("format").and_then(Value::as_str).is_some_and(|f| solidcraft_engine::doc::format::version_of(f).is_some()) {
         s.execute("doc.open", &json!({"path": path})).map_err(|e| e.to_string())?;
-    } else if v.get("features").is_some() && v.get("commands").is_none() {
-        let script = recipe::to_script(&v)?;
-        s.run_script(&script).map_err(|e| e.to_string())?;
     } else {
-        s.run_script(&v).map_err(|e| e.to_string())?;
+        let script = if v.get("features").is_some() && v.get("commands").is_none() { recipe::to_script(&v)? } else { v };
+        // Warn level: each step's `param_warnings` as it completes, even when a later step fails
+        // (stderr, so stdout stays the caller's).
+        let mut warn = |step: usize, r: &Value| {
+            for w in r.get("param_warnings").and_then(Value::as_array).into_iter().flatten() {
+                eprintln!("{path}: step {}: {}", step + 1, w.as_str().unwrap_or_default());
+            }
+        };
+        s.run_script_each(&script, &mut warn).map_err(|e| e.to_string())?;
     }
     Ok(s)
 }
@@ -536,6 +551,17 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             eprintln!("solidcraft mcp: the design's folder is left out because {why}; add it with --allow-path if you mean it");
         }
     }
+    // How a headless session treats calls that break a command's parameter contract (docs/mcp.md).
+    let param_check = match flag(args, "--param-check") {
+        None if args.iter().any(|a| a == "--param-check") => return Err("mcp: --param-check wants off, warn or strict".into()),
+        None => solidcraft_engine::schema::ParamCheck::Off,
+        Some(v) => {
+            solidcraft_engine::schema::ParamCheck::parse(v).ok_or_else(|| format!("mcp: --param-check wants off, warn or strict, not `{v}`"))?
+        }
+    };
+    if param_check != solidcraft_engine::schema::ParamCheck::Off && flag(args, "--connect").is_some() {
+        eprintln!("solidcraft mcp: --param-check applies to headless sessions; calls to the app are not checked yet");
+    }
     let backend: Box<dyn solidcraft_mcp::Backend> = match (flag(args, "--connect"), flag(args, "--in")) {
         (Some(_), Some(_)) => return Err("mcp: use either --connect or --in, not both".into()),
         (Some(addr), None) => {
@@ -552,8 +578,12 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             }
             Box::new(remote)
         }
-        (None, Some(path)) => Box::new(solidcraft_mcp::Headless::new(load(path)?)),
-        (None, None) => Box::new(solidcraft_mcp::Headless::default()),
+        (None, Some(path)) => Box::new(solidcraft_mcp::Headless::new(load_checked(path, param_check)?)),
+        (None, None) => {
+            let mut headless = solidcraft_mcp::Headless::default();
+            headless.session.param_check = param_check;
+            Box::new(headless)
+        }
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -655,10 +685,45 @@ pub(crate) fn cmd_bench_open(args: &[String]) -> Result<(), String> {
         "{}",
         json!({"step": "mesh", "ms": t.elapsed().as_secs_f64() * 1000.0, "place_ms": place_ms, "bodies": st.bodies.len(), "triangles": triangles})
     );
+    let flag = |name: &str| args.iter().position(|a| a == name);
+    // `--save PATH`: save the opened design without its model cache (to PATH.plain.solidcraft) and
+    // as the app does, with it, then read the cache back.
+    let s = match flag("--save").and_then(|i| args.get(i + 1)) {
+        Some(out) => {
+            let mut s = s;
+            // Without the cache first, for comparison.
+            let plain = format!("{out}.plain.solidcraft");
+            let t = std::time::Instant::now();
+            s.execute("file.save_as", &json!({"path": plain, "cache": false})).map_err(|e| e.to_string())?;
+            let plain_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let plain_bytes = std::fs::metadata(&plain).map(|m| m.len()).unwrap_or(0);
+            let t = std::time::Instant::now();
+            s.execute("file.save_as", &json!({"path": out})).map_err(|e| e.to_string())?;
+            let save_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let bytes = std::fs::read(out).map_err(|e| format!("{out}: {e}"))?;
+            let t = std::time::Instant::now();
+            let cached = solidcraft_engine::io::read_design_geometry(&bytes).map(|m| m.bodies.len());
+            let read_ms = t.elapsed().as_secs_f64() * 1000.0;
+            // Why bodies could not be kept exactly, when the cache was left out.
+            let mut refused = std::collections::BTreeMap::<String, usize>::new();
+            if cached.is_none() {
+                for b in &s.model.state().bodies {
+                    if let Err(e) = solidcraft_engine::kernel::encode_native_body(&b.body) {
+                        *refused.entry(e.to_string()).or_default() += 1;
+                    }
+                }
+            }
+            println!(
+                "{}",
+                json!({"step": "save", "ms": save_ms, "bytes": bytes.len(), "plain_ms": plain_ms, "plain_bytes": plain_bytes, "cached_bodies": cached, "cache_read_ms": read_ms, "refused": refused})
+            );
+            s
+        }
+        None => s,
+    };
     // `--display LEVEL`: the display plans the viewport draws at that display quality, made as
     // the GPU viewport makes them; `--edit NAME EXPR` then changes a parameter and times the
     // evaluation and the plans of the bodies it changed.
-    let flag = |name: &str| args.iter().position(|a| a == name);
     let Some(level) = flag("--display").and_then(|i| args.get(i + 1)) else { return Ok(()) };
     let q = solidcraft_engine::doc::display_quality::DisplayQuality::parse(level).ok_or("--display: coarse, normal, fine or ultra")?;
     let plans = |st: &solidcraft_engine::doc::ModelState| {

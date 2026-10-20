@@ -20,6 +20,7 @@ pub mod product_scene;
 pub mod recovery;
 pub mod render_jobs;
 pub mod sample;
+pub mod schema;
 mod slicer_icon;
 pub mod slicers;
 pub mod timing;
@@ -165,6 +166,13 @@ impl Ahead {
     pub fn evaluate(self, commands: &[(String, Value)]) -> Result<()> {
         self.0.preview_in_place(commands).map(|_| ())
     }
+
+    /// Run `commands` one after another, each reply or error in turn (what they evaluate stays
+    /// in the shared evaluation cache): the checks a front end makes before a command, such as
+    /// what a delete takes with it (#2678), computed off its window thread.
+    pub fn replies(mut self, commands: &[(String, Value)]) -> Vec<Result<Value>> {
+        commands.iter().map(|(id, params)| self.0.execute(id, params)).collect()
+    }
 }
 
 /// What some commands would make, evaluated on a scratch copy of a session
@@ -223,6 +231,9 @@ pub struct Session {
     pub revision: u64,
     /// Project a face's edges into a sketch created on it (the default; `sketch.auto_project`).
     pub auto_project: bool,
+    /// How calls that break a command's parameter contract are treated (off by default). It
+    /// belongs to the session, not the design, so it survives opening and starting designs.
+    pub param_check: schema::ParamCheck,
     /// The component new sketches and features go into (0 = the root).
     pub active_component: u64,
     /// The placement used when authoring shared component geometry.
@@ -367,6 +378,7 @@ impl Session {
             log: Vec::new(),
             revision: 1,
             auto_project: true,
+            param_check: schema::ParamCheck::Off,
             active_component: 0,
             active_occurrence_path: None,
             pending_moves: Default::default(),
@@ -400,12 +412,14 @@ impl Session {
     /// checkpoint keeps, not the replaced session's file path (docs/mcp.md).
     pub fn replace_design(&mut self, fresh: Session) {
         let auto_project = self.auto_project;
+        let param_check = self.param_check;
         let render_viewport = self.render_viewport.clone();
         let render_jobs = self.render_jobs.scratch();
         let checkpoints = std::mem::take(&mut self.checkpoints);
         let next_checkpoint = self.next_checkpoint;
         *self = fresh;
         self.auto_project = auto_project;
+        self.param_check = param_check;
         self.render_viewport = render_viewport;
         self.render_jobs = render_jobs;
         self.checkpoints = checkpoints;
@@ -847,6 +861,7 @@ impl Session {
             log: Vec::new(),
             revision: self.revision,
             auto_project: self.auto_project,
+            param_check: self.param_check,
             active_component: self.active_component,
             active_occurrence_path: self.active_occurrence_path.clone(),
             pending_moves: self.pending_moves.clone(),
@@ -977,18 +992,24 @@ impl Session {
     /// Run a script: a JSON array of `{"command": id, "params": {...}}` (or an object with a
     /// `commands` array). Stops at the first error. Returns each command's result.
     pub fn run_script(&mut self, script: &Value) -> Result<Vec<Value>> {
-        Ok(self.run_script_with(script, None)?.0)
+        Ok(self.run_script_with(script, None, &mut |_, _| {})?.0)
+    }
+
+    /// [`Session::run_script`], calling `each(index, result)` as each command succeeds, so a
+    /// caller sees the steps before a later one fails.
+    pub fn run_script_each(&mut self, script: &Value, each: &mut dyn FnMut(usize, &Value)) -> Result<Vec<Value>> {
+        Ok(self.run_script_with(script, None, each)?.0)
     }
 
     /// [`Session::run_script`], timing each command (#1833): the results and
     /// `{"timings": [{"index", "command", "ms", "profile"?}], "total_ms"}`, with `profile` the
     /// kernel's share of each command ([`timing`]).
     pub fn run_script_timed(&mut self, script: &Value, profile: bool) -> Result<(Vec<Value>, Value)> {
-        let (results, timings) = self.run_script_with(script, Some(profile))?;
+        let (results, timings) = self.run_script_with(script, Some(profile), &mut |_, _| {})?;
         Ok((results, timings.unwrap_or(Value::Null)))
     }
 
-    fn run_script_with(&mut self, script: &Value, profile: Option<bool>) -> Result<(Vec<Value>, Option<Value>)> {
+    fn run_script_with(&mut self, script: &Value, profile: Option<bool>, each: &mut dyn FnMut(usize, &Value)) -> Result<(Vec<Value>, Option<Value>)> {
         let list = match script {
             Value::Array(a) => a.clone(),
             Value::Object(o) => {
@@ -1017,7 +1038,9 @@ impl Session {
                 }
                 None => self.execute(id, &p),
             };
-            out.push(r.map_err(|e| EngineError::Other(format!("step {} ({id}): {e}", i + 1)))?);
+            let r = r.map_err(|e| EngineError::Other(format!("step {} ({id}): {e}", i + 1)))?;
+            each(i, &r);
+            out.push(r);
         }
         let timings = profile.map(|_| serde_json::json!({"timings": steps, "total_ms": timing::round_ms(clock.ms())}));
         Ok((out, timings))

@@ -127,15 +127,26 @@ fn feature_pattern_controls_preview_without_committing_and_cancel_cleanly() {
     }
 }
 
+#[track_caller]
 fn wait_feature_preview(h: &mut crate::scenario::Harness) {
-    for _ in 0..300 {
+    // A large faceted thread can outlive 300 UI frames on a busy CI host. This checks
+    // completion, not preview speed; use a bounded wall-clock wait for the worker.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while std::time::Instant::now() < deadline {
         h.frames(2);
-        if h.app.preview.active && !h.app.preview.busy {
+        if !h.app.preview.busy && (h.app.preview.active || h.app.preview.error.is_some()) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(h.app.preview.active && !h.app.preview.busy, "preview failed: {:?}", h.app.preview.error);
+    assert!(
+        h.app.preview.active && !h.app.preview.busy,
+        "preview failed: active={} busy={} error={:?} dialog={:?}",
+        h.app.preview.active,
+        h.app.preview.busy,
+        h.app.preview.error,
+        h.app.dialog
+    );
     assert!(h.app.preview.error.is_none());
 }
 
@@ -649,6 +660,54 @@ fn edges_then_fillet_takes_them_with_chains() {
     assert_eq!(d.inputs[0].items.len(), 2, "box edges are not tangent to others");
     let cmds = apply_commands(&app, &d).unwrap();
     assert_eq!(cmds[0].1["edges"].as_array().unwrap().len(), 2);
+
+    // #3370: on a bar with rounded ends and a slot whose wall lies on the seam between the flat
+    // top and the rounded end, picking the slot's sharp top edge must not chain the two smooth
+    // seams that continue it in a straight line.
+    let mut h = crate::scenario::Harness::new();
+    for (cmd, p) in [
+        ("sketch.create", json!({"plane": "YZ", "name": "Stadium"})),
+        ("sketch.line", json!({"points": [[0, -9.5], [25, -9.5]]})),
+        ("sketch.arc.center_point", json!({"center": [25, 0], "start": [25, -9.5], "end": [25, 9.5]})),
+        ("sketch.line", json!({"points": [[25, 9.5], [0, 9.5]]})),
+        ("sketch.arc.center_point", json!({"center": [0, 0], "start": [0, 9.5], "end": [0, -9.5]})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"sketch": "Stadium", "distance": 14})),
+        ("solid.box", json!({"corner": [3.5, -12, -10], "length": 6, "width": 12, "height": 20, "operation": "cut"})),
+    ] {
+        h.app.run(cmd, p).unwrap();
+    }
+    let slot_top = crate::viewport::grouped_selection(&h.app.session, &edge(&h.app, Vec3::new(6.5, 0.0, 9.5)));
+    h.app.session.selection = slot_top.clone();
+    h.app.start("solid.fillet");
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items, slot_top, "smooth stadium seams are not chained onto a sharp slot edge");
+
+    // On a rounded slot extrusion, picking one straight top edge chains the 4 tangent top edges;
+    // unticking Tangent Chain leaves only the picked edge, and ticking it again re-chains all 4.
+    let mut h = crate::scenario::Harness::new();
+    for (cmd, p) in [
+        ("sketch.create", json!({"plane":"XY"})),
+        ("sketch.slot.center_to_center", json!({"p0":[-20,0],"p1":[20,0],"width":20})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"distance":10})),
+    ] {
+        h.app.run(cmd, p).unwrap();
+    }
+    let top_line = crate::viewport::grouped_selection(&h.app.session, &edge(&h.app, Vec3::new(0.0, 10.0, 10.0)));
+    h.app.session.selection = top_line.clone();
+    h.app.start("solid.fillet");
+    h.frames(2);
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items.len(), 4);
+    h.step(&json!({"click":{"handle":"dialog:Tangent Chain"}})).unwrap();
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items, top_line);
+    h.step(&json!({"click":{"handle":"dialog:Tangent Chain"}})).unwrap();
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items.len(), 4);
+    // Picking while Tangent Chain is off adds only that edge; unpicking with Tangent Chain on removes its chain.
+    h.step(&json!({"click":{"handle":"dialog:Tangent Chain"}})).unwrap();
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items, top_line);
+    h.step(&json!({"click":{"handle":"dialog:Tangent Chain"}})).unwrap();
+    h.app.dialog.as_mut().unwrap().pick(&h.app.session, top_line[0].clone());
+    assert!(h.app.dialog.as_ref().unwrap().inputs[0].items.is_empty());
 }
 
 #[test]
@@ -1271,6 +1330,55 @@ fn thread_choices_can_start_without_a_face_and_recover_from_invalid_text() {
 }
 
 #[test]
+fn modelled_thread_preview_updates_reports_errors_and_cancels_without_changes() {
+    fn designation(h: &mut crate::scenario::Harness, text: &str) {
+        h.step(&json!({"click":{"handle":"dialog:thread_size"}})).unwrap();
+        h.step(&json!({"key":"A","cmd":true})).unwrap();
+        h.step(&json!({"text":text})).unwrap();
+    }
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.cylinder", json!({"radius":4,"height":2})).unwrap();
+    let saved = h.app.session.doc.to_json();
+    let undo = h.app.session.undo.len();
+    h.app.session.selection = vec![thread_face(&h.app, "Body1")];
+    h.step(&json!({"start":"solid.thread"})).unwrap();
+    designation(&mut h, "M8x1");
+    h.step(&json!({"click":{"handle":"dialog:Modeled"}})).unwrap();
+    assert_eq!(h.app.dialog.as_ref().unwrap().extra.get("modeled"), Some(&json!(true)), "{:?}", h.app.dialog);
+    assert!(crate::dialogs::preview_commands(&h.app, h.app.dialog.as_ref().unwrap()).is_ok(), "{:?}", h.app.dialog);
+    wait_feature_preview(&mut h);
+    assert_eq!(h.app.preview.replaced, ["Body1"]);
+    let first_key = h.app.preview.key;
+    designation(&mut h, "M8x1.3");
+    wait_feature_preview(&mut h);
+    assert_ne!(h.app.preview.key, first_key, "changing pitch updates the preview before OK");
+    designation(&mut h, "M6x1.3");
+    for _ in 0..500 {
+        h.frames(2);
+        if !h.app.preview.busy && h.app.preview.error.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(h.app.preview.error.as_deref().is_some_and(|e| e.contains("does not fit")), "{:?}", h.app.preview.error);
+    designation(&mut h, "M8x1.3");
+    wait_feature_preview(&mut h);
+    assert!(h.app.preview.error.is_none());
+    assert_eq!(h.app.session.doc.to_json(), saved);
+    assert_eq!(h.app.session.undo.len(), undo);
+    h.step(&json!({"click":{"handle":"dialog:Modeled"}})).unwrap();
+    h.frames(2);
+    assert!(!h.app.preview.active && h.app.preview.replaced.is_empty(), "cosmetic threads leave the original body visible");
+    h.step(&json!({"click":{"handle":"dialog:Modeled"}})).unwrap();
+    wait_feature_preview(&mut h);
+    h.step(&json!({"key":"Escape"})).unwrap();
+    h.frames(2);
+    assert!(h.app.dialog.is_none() && !h.app.preview.active && h.app.preview.replaced.is_empty());
+    assert_eq!(h.app.session.doc.to_json(), saved);
+    assert_eq!(h.app.session.undo.len(), undo);
+}
+
+#[test]
 fn newer_options_reach_their_commands() {
     let mut app = boxed();
     // Thread: Modeled.
@@ -1884,6 +1992,37 @@ fn every_construct_tool_opens_a_dialog_instead_of_failing() {
         assert!(h.app.dialog.as_ref().is_some_and(|d| !d.inputs.is_empty()), "{id} opens a dialog that asks for picks");
         crate::dialogs::cancel(&mut h.app);
     }
+}
+
+/// #2167: Delete Face asks for its faces instead of failing with "`faces` must be a list of
+/// points or face names". Started with nothing selected it opens a dialog; with a face picked
+/// first it takes that face, and OK takes the fillet off.
+#[test]
+fn delete_face_asks_for_faces_and_takes_the_preselected_one() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length":40,"width":30,"height":20,"body_name":"B"})).unwrap();
+    h.app.run("solid.fillet", json!({"edges":[[40,15,20]],"radius":5})).unwrap();
+    let volume = |h: &crate::scenario::Harness| h.app.session.world_state().body("B").unwrap().mesh().measure().volume;
+    let filleted = volume(&h);
+
+    h.app.session.selection.clear();
+    h.app.start("face.delete");
+    h.frames(1);
+    let status = h.app.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+    assert!(!status.contains("must be a list"), "{status}");
+    assert!(h.app.dialog.as_ref().is_some_and(|d| !d.inputs.is_empty()), "Delete Face opens a dialog that asks for faces");
+    crate::dialogs::cancel(&mut h.app);
+
+    // A point on the fillet's surface, 45 degrees round from its axis (35, y, 15).
+    let r = 5.0 * std::f64::consts::FRAC_1_SQRT_2;
+    let point = Vec3::new(35.0 + r, 15.0, 15.0 + r);
+    h.app.session.selection = vec![crate::dialogs::face_sel(&h.app.session, point).expect("the fillet face")];
+    h.app.start("face.delete");
+    h.frames(1);
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items.len(), 1, "the selected face fills the input");
+    h.step(&json!({"key":"Enter"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog.as_ref().and_then(|d| d.error.clone()));
+    assert!(volume(&h) > filleted + 1.0, "the rounded edge is square again");
 }
 
 /// #2494: two planes selected first, Axis Through Two Planes takes both and makes the axis
