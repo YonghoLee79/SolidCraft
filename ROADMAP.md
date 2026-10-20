@@ -69,6 +69,9 @@ M6 navigation preferences include **Touchpad**: Shift + pointer movement pans, A
 pointer movement orbits without a mouse button, and vertical scrolling zooms. Other presets
 retain their saved two-finger scroll preference; camera motion is available through
 `view.navigate` and modifier-aware `ui.move` automation.
+With the **Fusion** preset and two-finger pan enabled, two fingers pan and Shift + two fingers
+orbit freely, with pinch zoom and mouse bindings unchanged. The shared navigation handler
+applies the same gestures to model and Render views and blocks orbit on flat pages.
 
 M11 precursor: File → Export Current View as DXF exports shown placed bodies from the current
 camera as a 2D millimetre drawing, with hidden edges omitted or dashed. Vector occlusion splits
