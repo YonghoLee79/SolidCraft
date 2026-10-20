@@ -50,7 +50,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use solidcraft_geom::{Loop2, Mesh, Plane, Polyline, Region2, Ring, Seg2, Segment, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Around, Loop2, Mesh, Plane, Polyline, Region2, Ring, Seg2, Segment, UnitVec3, Vec2, Vec3};
 use solidcraft_kernel::{Body, FaceSurface, face_surface};
 
 use super::{FlatWork, ReliefOverride, RuleValues, SheetBody, SheetFlange, base_flange, polys_cross, snap};
@@ -279,13 +279,11 @@ fn outline(b: &Body, mesh: &Mesh, f: usize, tol: f64) -> Result<Face> {
     }
     // A straight run along one neighbour is one edge, however the body's edges divide it (a
     // shell's outer corners are divided at the height of its floor).
-    let corners: Ring<Corner> = Ring::new(corners)
-        .corners()
-        .filter(|(before, c, next)| {
-            before.across != c.across || before.round.is_some() || c.round.is_some() || Segment::new(before.p, next.p).dist(c.p) > tol
-        })
-        .map(|(_, c, _)| *c)
-        .collect();
+    // A corner stays where the face across changes, an arc starts or ends, or the outline turns.
+    let stays = |c: &Around<'_, Corner>| {
+        c.prev.across != c.at.across || c.prev.round.is_some() || c.at.round.is_some() || Segment::new(c.prev.p, c.next.p).dist(c.at.p) > tol
+    };
+    let corners: Ring<Corner> = Ring::new(corners).corners().filter(stays).map(|c| *c.at).collect();
     let corners = if area_about(&corners, n) < 0.0 { reversed(&corners) } else { corners };
     Ok(Face { n, corners, plane, holes })
 }
@@ -484,7 +482,7 @@ fn inset(pts: &Ring<Vec2>, by: &[f64]) -> Result<(Ring<Vec2>, Vec<Option<usize>>
         .collect();
     let (mut out, mut from) = (Vec::new(), Vec::new());
     // Corner i: where the edge before it meets edge i.
-    for (i, (before, edge, _)) in moved.corners().enumerate() {
+    for (i, (before, edge)) in moved.with_prev().enumerate() {
         let (Some((p0, d0)), Some((p1, d1))) = (*before, *edge) else { return err("a face of the sheet has an edge without length") };
         let cross = d0.cross(d1);
         if cross.abs() > 1e-9 {

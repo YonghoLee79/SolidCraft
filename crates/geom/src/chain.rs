@@ -72,6 +72,14 @@ impl<T, E: Ends> Chain<T, E> {
     }
 }
 
+/// An item of a [`Ring`] with its neighbours (see [`Ring::corners`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Around<'a, T> {
+    pub prev: &'a T,
+    pub at: &'a T,
+    pub next: &'a T,
+}
+
 /// Saved as the bare list of its items.
 impl<T: Serialize, E> Serialize for Chain<T, E> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -98,11 +106,15 @@ impl<T> Ring<T> {
         self.items.get_mut(i.checked_rem(n)?)
     }
 
-    /// Each item with the one before and the one after it: `(previous, item, next)`, once per
-    /// item.
-    pub fn corners(&self) -> impl Iterator<Item = (&T, &T, &T)> + Clone {
+    /// Each item with the one before it and the one after it, once per item.
+    pub fn corners(&self) -> impl Iterator<Item = Around<'_, T>> + Clone {
+        self.with_prev().zip(self.edges()).map(|((prev, at), (_, next))| Around { prev, at, next })
+    }
+
+    /// Each item with the one before it: `(previous, item)`, once per item.
+    pub fn with_prev(&self) -> impl Iterator<Item = (&T, &T)> + Clone {
         let before = self.items.iter().cycle().skip(self.items.len().saturating_sub(1));
-        before.zip(self.edges()).map(|(p, (c, x))| (p, c, x))
+        before.zip(&self.items)
     }
 }
 
@@ -245,7 +257,9 @@ mod tests {
         assert_eq!(Path::from([7]).edges().count(), 0);
         assert_eq!(Ring::<u8>::default().edges().count(), 0);
         assert_eq!(Path::<u8>::default().edges().count(), 0);
-        assert_eq!(Ring::from([1, 2, 3]).corners().collect::<Vec<_>>(), vec![(&3, &1, &2), (&1, &2, &3), (&2, &3, &1)]);
+        let around = |c: Around<'_, i32>| (*c.prev, *c.at, *c.next);
+        assert_eq!(Ring::from([1, 2, 3]).corners().map(around).collect::<Vec<_>>(), vec![(3, 1, 2), (1, 2, 3), (2, 3, 1)]);
+        assert_eq!(Ring::from([1, 2, 3]).with_prev().collect::<Vec<_>>(), vec![(&3, &1), (&1, &2), (&2, &3)]);
         assert_eq!(Ring::<u8>::default().corners().count(), 0);
     }
 

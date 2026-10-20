@@ -1485,12 +1485,9 @@ fn chain_loops(
             }
         }
         let raw: Ring<(Vec2, Option<u32>)> = lp.iter().map(|(p, f)| (plane.to_local(*p), *f)).collect();
-        // Drop points in the middle of straight runs.
-        let pts: Vec<(Vec2, Option<u32>)> = raw
-            .corners()
-            .filter(|&(&(p, _), &(c, _), &(n, _))| (c - p).cross(n - c).abs() > 1e-9 * (c - p).len().max(1e-9) * (n - c).len().max(1e-9))
-            .map(|(_, c, _)| *c)
-            .collect();
+        // Drop points in the middle of straight runs: keep those where the outline turns.
+        let turns = |p: Vec2, c: Vec2, n: Vec2| (c - p).cross(n - c).abs() > 1e-9 * (c - p).len().max(1e-9) * (n - c).len().max(1e-9);
+        let pts: Vec<(Vec2, Option<u32>)> = raw.corners().filter(|c| turns(c.prev.0, c.at.0, c.next.0)).map(|c| *c.at).collect();
         if pts.len() >= 3 {
             loops.push(pts);
         }
@@ -1687,8 +1684,8 @@ fn offset_left(p: &[Vec2], d: f64) -> Vec<Vec2> {
         .collect();
     // Corner i: where the edge before it meets edge i.
     lines
-        .corners()
-        .filter_map(|(before, edge, _)| {
+        .with_prev()
+        .filter_map(|(before, edge)| {
             let ((p0, d0), (p1, d1)) = ((*before)?, (*edge)?);
             let den = d0.cross(d1);
             if den.abs() < 1e-12 {

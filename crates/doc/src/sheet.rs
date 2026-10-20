@@ -4064,11 +4064,8 @@ fn merge_loops(polys: &[Ring<Vec2>], work: &mut FlatWork) -> Result<Vec<Ring<Vec
             }
         }
         // Straight runs merged: only the corners that turn stay.
-        let clean: Ring<Vec2> = Ring::new(lp)
-            .corners()
-            .filter(|&(&p, &q, &r)| (q - p).cross(r - q).abs() > 1e-9 * (q - p).len().max(1.0) * (r - q).len().max(1.0))
-            .map(|(_, &q, _)| q)
-            .collect();
+        let turns = |p: Vec2, q: Vec2, r: Vec2| (q - p).cross(r - q).abs() > 1e-9 * (q - p).len().max(1.0) * (r - q).len().max(1.0);
+        let clean: Ring<Vec2> = Ring::new(lp).corners().filter(|c| turns(*c.prev, *c.at, *c.next)).map(|c| *c.at).collect();
         if clean.len() >= 3 {
             loops.push(clean);
         }

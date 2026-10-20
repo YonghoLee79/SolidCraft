@@ -1160,7 +1160,7 @@ pub fn extend(body: &Body, at: &[Vec3], distance: f64) -> Result<Body> {
             Some(p + d * (w.cross(e).dot(c) / cc))
         };
         let corners: Ring<mt::Vertex> =
-            Ring::new(lines).corners().map(|(prev, cur, _)| mt::Vertex::new(p3(meet(*prev, *cur).unwrap_or(cur.0)))).collect();
+            Ring::new(lines).with_prev().map(|(prev, cur)| mt::Vertex::new(p3(meet(*prev, *cur).unwrap_or(cur.0)))).collect();
         let mut rec = Rebuild::default();
         let wire: mt::Wire = corners
             .edges()

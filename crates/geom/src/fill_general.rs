@@ -422,7 +422,8 @@ fn develop(st: &[Station]) -> SplineResult<Developed> {
     }
     let mut nu = Vec::with_capacity(m);
     let mut speed = Vec::with_capacity(m);
-    for (k, (&prev, &here, &next)) in d.corners().enumerate() {
+    for (k, c) in d.corners().enumerate() {
+        let (prev, here, next) = (*c.prev, *c.at, *c.next);
         let (a, b) = ([here[0] - prev[0], here[1] - prev[1]], [next[0] - here[0], next[1] - here[1]]);
         let (la, lb) = (a[0].hypot(a[1]), b[0].hypot(b[1]));
         if !(la > 0.0 && lb > 0.0) {

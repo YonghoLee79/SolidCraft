@@ -496,7 +496,7 @@ fn split_corner(
     // one of the corner's edges turns that edge round, and a face whose loops cross after the
     // move is refused (both checked in `offset_body`).
     let triples: Vec<[usize; 3]> = if mixed {
-        Ring::new(face_ring(&pairs, planes.len())?).corners().map(|(a, b, c)| [*a, *b, *c]).collect()
+        Ring::new(face_ring(&pairs, planes.len())?).corners().map(|c| [*c.prev, *c.at, *c.next]).collect()
     } else {
         let mut t = Vec::new();
         for ia in 0..planes.len() {
