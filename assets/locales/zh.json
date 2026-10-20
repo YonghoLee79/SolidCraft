@@ -597,6 +597,7 @@
   "cmd.sketch_polygon_inscribed": "内接多边形",
   "cmd.sketch_project_to_surface": "投影到曲面",
   "cmd.sketch_rectangle_center": "中心矩形",
+  "cmd.sketch_rectangle_edge_center": "边中点矩形",
   "cmd.sketch_rectangle_rounded": "圆角矩形",
   "cmd.sketch_rectangle_three_point": "三点矩形",
   "cmd.sketch_rectangle_two_point": "两点矩形",

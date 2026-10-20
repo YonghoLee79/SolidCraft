@@ -597,6 +597,7 @@
   "cmd.sketch_polygon_inscribed": "Inscribed Polygon",
   "cmd.sketch_project_to_surface": "Project To Surface",
   "cmd.sketch_rectangle_center": "Center Rectangle",
+  "cmd.sketch_rectangle_edge_center": "Edge Center Rectangle",
   "cmd.sketch_rectangle_rounded": "Rounded Rectangle",
   "cmd.sketch_rectangle_three_point": "3-Point Rectangle",
   "cmd.sketch_rectangle_two_point": "2-Point Rectangle",

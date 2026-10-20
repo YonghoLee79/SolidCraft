@@ -44,6 +44,8 @@ pub fn boxes_for(cmd: &str, n: usize) -> Vec<DimBox> {
         ("sketch.arc.center_point", 2) => vec![b("Sweep", Angle)],
         ("sketch.polygon.inscribed" | "sketch.polygon.circumscribed", 1) => vec![b("Radius", Length), b("Sides", Unitless)],
         ("sketch.slot.center_to_center" | "sketch.slot.overall", 1) => vec![b("Length", Length)],
+        ("sketch.rectangle.edge_center", 1) => vec![b("Length", Length)],
+        ("sketch.rectangle.edge_center", 2) => vec![b("Width", Length)],
         ("sketch.conic", 2) => vec![b("Rho", Unitless)],
         ("sketch.slot.center_to_center" | "sketch.slot.overall", 2) => vec![b("Width", Length)],
         _ => Vec::new(),
@@ -83,6 +85,20 @@ pub fn effective(app: &SolveApp, t: &Tool, h: Vec2) -> Vec2 {
             let d = h - a;
             Vec2::new(a.x + lk("Width").map_or(d.x, |w| w * 0.5 * sign(d.x)), a.y + lk("Height").map_or(d.y, |hh| hh * 0.5 * sign(d.y)))
         }
+        // The edge's end: its box is the whole edge, centred on the first point.
+        ("sketch.rectangle.edge_center", 1) => {
+            let v = h - a;
+            let ang = if t.hover.as_ref().is_some_and(|x| x.1.is_some()) { v.angle() } else { snap_axis(v.angle()) };
+            a + Vec2::from_angle(ang) * lk("Length").map_or(v.len(), |l| l * 0.5)
+        }
+        ("sketch.rectangle.edge_center", 2) => match lk("Width") {
+            Some(w) => {
+                let c0 = t.pts.first().map(|p| p.0).unwrap_or(a);
+                let n = dir_or_x(a - c0).perp();
+                c0 + n * (w * sign(n.dot(h - c0)))
+            }
+            None => h,
+        },
         ("sketch.circle.center", 1) => a + dir_or_x(h - a) * lk("Diameter").map_or((h - a).len(), |d| d * 0.5),
         ("sketch.arc.center_point", 1) => a + dir_or_x(h - a) * lk("Radius").unwrap_or((h - a).len()),
         ("sketch.arc.center_point", 2) => {
@@ -214,6 +230,15 @@ fn live(app: &SolveApp, t: &Tool, e: Vec2, px: f64) -> Vec<(f64, Vec2)> {
             let (sx, sy) = (sign(d.x), sign(d.y));
             vec![(2.0 * d.x.abs(), Vec2::new(a.x, a.y - d.y - sy * off)), (2.0 * d.y.abs(), Vec2::new(a.x + d.x + sx * 2.0 * off, a.y))]
         }
+        ("sketch.rectangle.edge_center", 1) => {
+            let n = dir_or_x(e - a).perp();
+            vec![(2.0 * (e - a).len(), (a + e) * 0.5 + n * off)]
+        }
+        ("sketch.rectangle.edge_center", 2) => {
+            let n = dir_or_x(a - first).perp();
+            let w = n.dot(e - first);
+            vec![(w.abs(), e + n * (sign(w) * 2.5 * off))]
+        }
         ("sketch.circle.center", 1) => vec![(2.0 * (e - a).len(), (a + e) * 0.5 + dir_or_x(e - a).perp() * off)],
         ("sketch.arc.center_point", 1) | ("sketch.polygon.inscribed" | "sketch.polygon.circumscribed", 1) => {
             vec![((e - a).len(), (a + e) * 0.5), (6.0, a + (e - a) * 0.5 + (e - a).perp() * 0.3)]
@@ -263,7 +288,7 @@ pub fn sync(t: &mut Tool) {
     if t.dims_stage != t.pts.len() {
         if t.dims_stage == 1
             && t.pts.len() == 2
-            && matches!(t.cmd, "sketch.arc.center_point" | "sketch.slot.center_to_center" | "sketch.slot.overall")
+            && matches!(t.cmd, "sketch.arc.center_point" | "sketch.slot.center_to_center" | "sketch.slot.overall" | "sketch.rectangle.edge_center")
         {
             t.dim_history.extend(t.dims.iter().filter(|dimension| dimension.locked).cloned());
         } else if t.pts.len() <= t.dims_stage || t.cmd == "sketch.line" {

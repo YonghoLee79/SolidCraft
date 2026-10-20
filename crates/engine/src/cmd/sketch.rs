@@ -62,6 +62,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("rect_center")
         .enabled(in_sketch)
         .params(concat!("center, corner. Returns sides {bottom, right, top, left} (line ids) and corners {bottom_left, bottom_right, top_right, top_left} (point ids)", connect_doc!(), created_doc!())),
+    CommandSpec::new("sketch.rectangle.edge_center", "Edge Center Rectangle", rect_edge_center)
+        .at("SKETCH", "CREATE")
+        .icon("rect_edge_center")
+        .enabled(in_sketch)
+        .params(concat!("anchor: [x,y], a point id or \"mid:<line>\" (the midpoint of one edge); corner: [x,y] (a corner of the opposite edge); orientation of the anchored edge, one of direction: [dx,dy] | line: curve id (parallel to it) | none when anchor is \"mid:<line>\" (that line's direction). The rectangle extends from the anchor toward the corner: its width is the corner's distance from the anchored edge, its half-height the corner's offset along the edge. Returns sides {anchor, far, side_a, side_b} (line ids), corners", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.circle.center", "Center Diameter Circle", circle_center)
         .at("SKETCH", "CREATE")
         .icon("circle")
@@ -1098,6 +1103,103 @@ fn rect_center(s: &mut Session, p: &Value) -> Result<Value> {
         cons.extend(connect_points(sk, first, p)?);
         drop_implied_axes(sk, &mut cons);
         Ok(((ids_of(sk, &l), cons), rect_names(sk, &l, &pts)))
+    })?;
+    Ok(rect_result(out, names, info))
+}
+
+/// The direction of the anchored edge of an edge-centre rectangle: `direction`, else the
+/// direction of `line`, else that of the line an `anchor` of the form `mid:<line>` snaps to.
+/// Never a default axis: a rectangle with no orientation is an error.
+fn edge_direction(sk: &Sketch, p: &Value, cmd: &str) -> Result<Vec2> {
+    if let Some(v) = p.get("direction") {
+        let d = vec2(v).ok_or_else(|| bad(cmd, "`direction` must be [dx, dy]"))?;
+        return d.normalized().filter(|d| d.is_finite()).ok_or_else(|| bad(cmd, "`direction` must be a non-zero vector"));
+    }
+    let line = match (str_(p, "line"), p.get("mid_line").and_then(Value::as_str)) {
+        (Some(l), _) | (None, Some(l)) => l,
+        _ => {
+            return Err(bad(
+                cmd,
+                "the edge's orientation is ambiguous: give `direction` [dx, dy] or `line` (a line it is parallel to), or anchor on a line's midpoint with \"mid:<line>\"",
+            ));
+        }
+    };
+    let c = sk.curve_index(line).ok_or_else(|| bad(cmd, format!("unknown sketch curve `{line}`")))?;
+    let Some(solidcraft_sketch::Shape::Line { a, b }) = sk.shape(c) else { return Err(bad(cmd, format!("`{line}` is not a line"))) };
+    (b - a).normalized().ok_or_else(|| bad(cmd, format!("`{line}` has no length")))
+}
+
+/// A rectangle from the midpoint of one edge (`anchor`) and a corner of the opposite edge. The
+/// anchored edge runs along the given direction; the corner's offset along it is the half-height
+/// and its offset across it the width, so the rectangle lies on the corner's side of the anchor.
+fn rect_edge_center(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sketch.rectangle.edge_center";
+    // A `mid:<line>` anchor becomes a point id when snapped; remember its line for the direction.
+    let mut p = p.clone();
+    if let Some(line) = p.get("anchor").and_then(Value::as_str).and_then(|a| a.strip_prefix("mid:")).map(str::to_string)
+        && let Some(o) = p.as_object_mut()
+    {
+        o.insert("mid_line".into(), Value::String(line));
+    }
+    let p = &super::sketch_project::snap_points(s, &p, cmd)?;
+    let k = req_vec2(cmd, p, "corner")?;
+    let ((out, names), info) = edit(s, p, cmd, false, |sk, doc| {
+        let first = sk.points.len();
+        let anchor = req_parg(sk, doc, p, "anchor", cmd)?;
+        let d = edge_direction(sk, p, cmd)?;
+        let n = d.perp();
+        let a = anchor.pos();
+        let (w, h) = ((k - a).dot(n), (k - a).dot(d).abs());
+        // Relative to the sketch's scale, so a tiny or huge rectangle is judged alike.
+        let scale = a.len().max(k.len()).max(1.0);
+        if !(w.is_finite() && h.is_finite()) || w.abs() < 1e-9 * scale || h < 1e-9 * scale {
+            return Err(bad(cmd, "the corner must be off the anchored edge and off its perpendicular through the anchor"));
+        }
+        let (c0, c1) = (a - d * h, a + d * h);
+        let (l, pts) = polygon_lines(sk, &[c0, c1, c1 + n * w, c0 + n * w])?;
+        let mut cons = Vec::new();
+        if let [l0, l1, l2, l3] = l[..] {
+            let kinds = if d.y.abs() < 1e-12 {
+                // Along the sketch's x axis: horizontal and vertical sides, as the other rectangles.
+                [
+                    ConstraintKind::Horizontal { l: l0 },
+                    ConstraintKind::Horizontal { l: l2 },
+                    ConstraintKind::Vertical { l: l1 },
+                    ConstraintKind::Vertical { l: l3 },
+                ]
+                .to_vec()
+            } else if d.x.abs() < 1e-12 {
+                [
+                    ConstraintKind::Vertical { l: l0 },
+                    ConstraintKind::Vertical { l: l2 },
+                    ConstraintKind::Horizontal { l: l1 },
+                    ConstraintKind::Horizontal { l: l3 },
+                ]
+                .to_vec()
+            } else {
+                [ConstraintKind::Perpendicular { a: l0, b: l1 }, ConstraintKind::Parallel { a: l0, b: l2 }, ConstraintKind::Parallel { a: l1, b: l3 }]
+                    .to_vec()
+            };
+            for k in kinds {
+                cons.push(add_c(sk, k)?);
+            }
+            // The anchor stays at the middle of its edge.
+            let ap = match anchor.idx() {
+                Some(i) => i,
+                None => sk.add_point(a, None)?,
+            };
+            cons.push(add_c(sk, ConstraintKind::Midpoint { p: ap, l: l0 })?);
+        }
+        mark_construction(sk, &l, p);
+        cons.extend(connect_points(sk, first, p)?);
+        drop_implied_axes(sk, &mut cons);
+        let curve = |i: usize| l.get(i).and_then(|c| sk.curves.get(*c)).map(|c| c.id.clone());
+        let point = |i: usize| pts.get(i).and_then(|q| sk.points.get(*q)).map(|q| q.id.clone());
+        let names = json!({
+            "sides": {"anchor": curve(0), "side_a": curve(1), "far": curve(2), "side_b": curve(3)},
+            "corners": {"anchor_start": point(0), "anchor_end": point(1), "far_end": point(2), "far_start": point(3)},
+        });
+        Ok(((ids_of(sk, &l), cons), names))
     })?;
     Ok(rect_result(out, names, info))
 }

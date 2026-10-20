@@ -597,6 +597,7 @@
   "cmd.sketch_polygon_inscribed": "内接ポリゴン",
   "cmd.sketch_project_to_surface": "サーフェスに投影",
   "cmd.sketch_rectangle_center": "中心指定の長方形",
+  "cmd.sketch_rectangle_edge_center": "辺中点指定の長方形",
   "cmd.sketch_rectangle_rounded": "角丸長方形",
   "cmd.sketch_rectangle_three_point": "3点指定長方形",
   "cmd.sketch_rectangle_two_point": "2点指定長方形",
