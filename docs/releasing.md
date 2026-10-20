@@ -248,7 +248,7 @@ published while the secret was missing or expired, submit it afterwards with
 
 ## Update signing
 
-The app's **Update now** (docs/book/src/guide/updates.md) only installs a package whose SHA-256
+The app's **Update now** (docs/en/guide/updates.md) only installs a package whose SHA-256
 matches the release's `SHA256SUMS.txt`, fetched over HTTPS. That protects against corrupted and
 tampered downloads in transit, but not against someone who can upload release assets. Signing
 the checksum list closes that gap: once `PUBLIC_KEY` in `crates/ui-egui/src/update/install.rs`

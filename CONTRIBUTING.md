@@ -107,7 +107,7 @@ The [architecture page](docs/architecture.md) has the layer table. The short ver
    dependencies are fine. Note which one you're adding and why in the PR. THIRD-PARTY-LICENSES.txt
    lists it once the change lands: the Generated files workflow rewrites it on `main`.
    Nightly/manual CI also scans advisories, bans and sources with cargo-deny; see
-   [the local command and coverage limits](docs/book/src/dev/testing.md#dependency-advisories).
+   [the local command and coverage limits](docs/en/dev/testing.md#dependency-advisories).
 3. **Every asset is original or openly licensed and has a row in
    [ATTRIBUTION.md](ATTRIBUTION.md).** Icons are drawn in code (`crates/ui-egui/src/icons.rs`).
    `cargo xtask assets` enforces this.
@@ -196,7 +196,7 @@ on state left by another test.
 Pull requests skip a few heavy tests (one to twelve minutes each), which run in full validation
 (the merge queue, nightly, manual runs and pushes to `main` not already tested by the queue).
 Check that validation after merging. They are listed in
-`.config/nextest.toml` and the [testing page](docs/book/src/dev/testing.md):
+`.config/nextest.toml` and the [testing page](docs/en/dev/testing.md):
 
 - `solidcraft-engine`: `tests::hostile_params_never_panic`, everything in `tests::robustness` and
   the seeds of `tests::robustness_goldens` (`seed_00` … `seed_95`; pull requests matching the workflow's geometry paths run all but the slowest, `SLOW_SEEDS` in `ci.yml`),

@@ -3,7 +3,7 @@ title = "SolidCraft"
 description = "An open-source parametric 3D CAD application in pure Rust: user guide and developer guide."
 authors = ["SolidCraft contributors"]
 language = "en"
-src = "src"
+src = "../en"
 
 [build]
 build-dir = "../../target/book"
