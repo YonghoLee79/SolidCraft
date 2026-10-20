@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use solidcraft_geom::mesh_distance::{MeshClosest, TriangleSet};
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Polyline, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -113,7 +113,7 @@ impl<'a> DistanceShape<'a> {
             let Some(line) = self.mesh.edges.get(e) else { continue };
             let rough = match line.as_slice() {
                 [one] => one.dist(p),
-                _ => line.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min),
+                _ => line.distance_to(p),
             };
             if rough > 2.0 * reach {
                 continue;
@@ -170,7 +170,7 @@ impl<'a> DistanceShape<'a> {
             let Some(line) = self.mesh.edges.get(e) else { continue };
             let near = match line.as_slice() {
                 [one] => one.dist(p),
-                _ => line.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min),
+                _ => line.distance_to(p),
             };
             if near <= reach && e < self.edges.len() {
                 out.push(Feature::Edge(e));

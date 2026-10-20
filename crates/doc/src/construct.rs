@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Plane, Vec2, Vec3};
+use solidcraft_geom::{Plane, Polyline, Segment, Vec2, Vec3};
 use solidcraft_kernel::{self as kernel, FaceSurface};
 
 use crate::eval::{ModelBody, ModelState};
@@ -164,7 +164,7 @@ fn edge_points(st: &ModelState, at: Vec3, name: &Option<String>) -> Result<Vec<V
         let tol = (b.body.size() * 1e-3).max(1e-3);
         let Ok(edges) = b.body.edges(tol) else { continue };
         for e in edges {
-            let d = e.points.windows(2).map(|w| at.dist_to_segment(w[0], w[1])).fold(f64::MAX, f64::min);
+            let d = e.points.distance_to(at);
             if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, e.points));
             }
@@ -208,7 +208,7 @@ fn as_line(pts: &[Vec3]) -> Option<(Vec3, Vec3)> {
     let (a, b) = (*pts.first()?, *pts.last()?);
     let d = (b - a).normalized()?;
     let len = (b - a).len();
-    pts.iter().all(|p| p.dist_to_segment(a, b) <= len * 1e-6 + 1e-9).then_some((a, d))
+    pts.iter().all(|p| Segment::new(a, b).dist(*p) <= len * 1e-6 + 1e-9).then_some((a, d))
 }
 
 /// A polyline on a circle: (centre, unit normal, radius).
@@ -373,7 +373,7 @@ fn centre(ctx: &Ctx, g: &GeoRef) -> Result<Vec3> {
 
 /// Point and unit tangent at fraction `t` along a polyline.
 fn along(pts: &[Vec3], t: f64) -> Option<(Vec3, Vec3)> {
-    let total: f64 = pts.windows(2).map(|w| (w[1] - w[0]).len()).sum();
+    let total: f64 = pts.length();
     if !(total > 0.0) {
         return None;
     }

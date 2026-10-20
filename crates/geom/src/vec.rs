@@ -139,10 +139,6 @@ impl Vec3 {
     pub fn to_f32(self) -> [f32; 3] {
         [self.x as f32, self.y as f32, self.z as f32]
     }
-    /// Distance from this point to the segment `a`–`b`.
-    pub fn dist_to_segment(self, a: Vec3, b: Vec3) -> f64 {
-        crate::Segment::new(a, b).dist(self)
-    }
 }
 
 macro_rules! ops {

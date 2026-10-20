@@ -5,7 +5,7 @@ use std::f64::consts::TAU;
 
 use serde_json::{Value, json};
 use solidcraft_doc::ProfileSel;
-use solidcraft_geom::{Segment, Vec2};
+use solidcraft_geom::{Polyline, Vec2};
 use solidcraft_sketch::{ConstraintKind, Curve, CurveKind, Shape, Sketch, intersections};
 
 use super::sketch::{add_c, edit, ids_of, solve_current};
@@ -1226,7 +1226,7 @@ fn piece_shape(p: &Piece) -> Shape {
 /// Distance from `q` to an offset piece.
 fn piece_dist(p: &Piece, q: Vec2) -> f64 {
     match p {
-        Piece::Free(v) => Segment::along(v).map(|s| s.dist(q)).fold(f64::INFINITY, f64::min),
+        Piece::Free(v) => v.distance_to(q),
         _ => piece_shape(p).dist(q),
     }
 }

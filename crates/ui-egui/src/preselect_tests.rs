@@ -4,7 +4,7 @@
 use crate::test_support::app_with_script as app_with;
 use serde_json::json;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Polyline, Vec3};
 use solidcraft_engine::{Sel, Session};
 
 #[test]
@@ -531,7 +531,7 @@ fn face(app: &SolveApp, c: Vec3) -> Sel {
 fn edge(app: &SolveApp, p: Vec3) -> Sel {
     let st = app.session.model.state();
     let m = st.body("Body1").unwrap().mesh();
-    let i = m.edges.iter().position(|e| e.windows(2).any(|w| p.dist_to_segment(w[0], w[1]) < 1e-9)).unwrap();
+    let i = m.edges.iter().position(|e| e.segments().any(|s| s.dist(p) < 1e-9)).unwrap();
     Sel::Edge { body: "Body1".into(), index: i, point: p }
 }
 

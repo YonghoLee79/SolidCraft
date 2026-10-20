@@ -10,7 +10,7 @@
 //! together; the flat solid is the outline extruded through the thickness.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Aabb2, LINEAR_TOL, Loop2, Plane, Region2, Ring, Seg2, Segment, Vec2, Vec3};
+use solidcraft_geom::{Aabb2, LINEAR_TOL, Loop2, Plane, Polyline, Region2, Ring, Seg2, Segment, Vec2, Vec3};
 use solidcraft_kernel::{self as kernel, Body, EdgeSpec, FaceSpec, SurfSpec};
 
 use crate::expr::{self, Kind, Value};
@@ -3234,7 +3234,7 @@ impl SheetBody {
             .iter()
             .enumerate()
             .filter(|(e, _)| *e != i && *e != j)
-            .all(|(_, s)| Segment::along(&s.polyline(1e-3)).all(|seg| seg.dist(c) > reach + 1e-6));
+            .all(|(_, s)| s.polyline(1e-3).segments().all(|seg| seg.dist(c) > reach + 1e-6));
         if !clear {
             return Err(format!("a relief {size:.3} mm across reaches {reach:.3} mm from the corner, where another edge of the base is nearer"));
         }

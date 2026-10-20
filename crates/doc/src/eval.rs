@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
-use solidcraft_geom::{Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
+use solidcraft_geom::{Mesh, Plane, Polyline, Region2, Segment, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
 use solidcraft_sketch::{CurveKind, Profile, SolveReport, find_profiles};
 
@@ -2652,7 +2652,7 @@ fn faces_through(st: &ModelState, p: Vec3, reach: f64) -> Vec<(f64, Vec3, Option
         let mut near: BTreeMap<u32, (f64, Vec3)> = BTreeMap::new();
         for (t, f) in m.triangles.iter().zip(&m.tri_face) {
             let Some([a, bb, c]) = m.tri(t) else { continue };
-            let d = crate::appearance::closest_on_triangle(p, a, bb, c).dist(p);
+            let d = solidcraft_geom::compare::closest_on_triangle(p, a, bb, c).dist(p);
             let Some(n) = (bb - a).cross(c - a).normalized() else { continue };
             if d <= reach && near.get(f).is_none_or(|(x, _)| d < *x) {
                 near.insert(*f, (d, n));
@@ -2727,7 +2727,7 @@ pub struct EdgeRef {
 
 fn edge_dir(e: &kernel::EdgeInfo) -> Vec3 {
     let (Some(a), Some(b)) = (e.points.first(), e.points.last()) else { return Vec3::ZERO };
-    let straight = e.points.iter().all(|p| p.dist_to_segment(*a, *b) < 1e-6 * (1.0 + e.length));
+    let straight = e.points.iter().all(|p| Segment::new(*a, *b).dist(*p) < 1e-6 * (1.0 + e.length));
     if straight && a.dist(*b) > 1e-9 { (*b - *a).normalized().unwrap_or(Vec3::ZERO) } else { Vec3::ZERO }
 }
 
@@ -2741,7 +2741,7 @@ pub fn edge_refs(st: &ModelState, body: &Option<crate::BodyName>, pts: &[Vec3]) 
     pts.iter()
         .map(|p| {
             let e = edges.iter().min_by(|x, y| {
-                let d = |e: &kernel::EdgeInfo| e.points.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+                let d = |e: &kernel::EdgeInfo| e.points.distance_to(*p);
                 d(x).total_cmp(&d(y))
             });
             EdgeRef { dir: e.map(edge_dir).unwrap_or(Vec3::ZERO), min: bb.min, max: bb.max }
@@ -2783,7 +2783,7 @@ fn resolve_edges(b: &Body, pts: &[Vec3], refs: &[EdgeRef], warning: &mut Option<
     let size = b.size();
     let edges = b.edges((size * 1e-3).max(1e-3))?;
     let tight = (size * 2e-3).max(1e-3);
-    let dist = |p: Vec3, e: &kernel::EdgeInfo| e.points.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+    let dist = |p: Vec3, e: &kernel::EdgeInfo| e.points.distance_to(p);
     let now = b.tessellate((size * 1e-2).max(1e-2)).map(|m| m.bounds()).ok();
     let (mut out, mut moved, mut lost) = (Vec::new(), 0, 0);
     for (i, p) in pts.iter().enumerate() {
@@ -2807,10 +2807,7 @@ fn resolve_edges(b: &Body, pts: &[Vec3], refs: &[EdgeRef], warning: &mut Option<
                 continue;
             }
         }
-        let best = edges
-            .iter()
-            .map(|e| (e.points.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min), e.mid))
-            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let best = edges.iter().map(|e| (e.points.distance_to(*p), e.mid)).min_by(|a, b| a.0.total_cmp(&b.0));
         match best {
             Some((d, _)) if d <= tight => out.push(*p),
             Some((d, mid)) if d <= size * 0.25 => {
@@ -5011,7 +5008,7 @@ fn face_plane(st: &ModelState, picked: &Plane, at: Vec3, name: Option<&str>) -> 
                 .zip(&mesh.tri_face)
                 .filter(|(_, tf)| **tf as usize == f.index)
                 .filter_map(|(t, _)| mesh.tri(t))
-                .map(|[a, bb, c]| crate::project::closest_on_triangle(at, a, bb, c).dist(at))
+                .map(|[a, bb, c]| solidcraft_geom::compare::closest_on_triangle(at, a, bb, c).dist(at))
                 .fold(f64::INFINITY, f64::min);
             if best.is_none_or(|x| d < x.0) {
                 best = Some((d, f.centroid.dot(n)));

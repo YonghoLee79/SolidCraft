@@ -15,7 +15,7 @@
 use std::f64::consts::TAU;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Aabb2, Aabb3, Ring, Segment, Vec2, Vec3};
+use solidcraft_geom::{Aabb2, Aabb3, Polyline, Ring, Segment, Vec2, Vec3};
 
 use super::{JointKind, JointOrigin, MotionLink, Size, component_bodies, component_of, flip_of, occurrence_world, size_of};
 use crate::{DocError, Document, IDENTITY, Mat, ModelState, Result, apply_point, apply_vector, mat_inverse, mat_mul};
@@ -342,7 +342,7 @@ fn profile_points(doc: &Document, st: &ModelState, p: &CamProfile, cam: &super::
                     .filter(|e| on.is_none_or(|b| e.0 == b))
                     .map(|e| {
                         let d = e.1.windows(2).filter_map(|w| match w {
-                            [p, q] => Some(at.dist_to_segment(*p, *q)),
+                            [p, q] => Some(Segment::new(*p, *q).dist(at)),
                             _ => None,
                         });
                         (d.fold(f64::MAX, f64::min), e)

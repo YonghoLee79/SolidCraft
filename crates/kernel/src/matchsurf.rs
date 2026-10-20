@@ -17,7 +17,7 @@
 //! beyond that order, and no surface can be told to carry a condition the target has not got.
 
 use mt::{BoundedCurve, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::{Segment, Vec3};
+use solidcraft_geom::{Polyline, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -174,7 +174,7 @@ pub fn seam_continuity(made: &Body, target: &Body, target_pick: &[Vec3]) -> Resu
         for i in 0..STATIONS {
             let t = i as f64 / (STATIONS - 1) as f64;
             let p = Side::at(&surf, &ranges, near, t);
-            gap = gap.max(chain_distance(&poly, p));
+            gap = gap.max(poly.distance_to(p));
             // What the target says there, and what the rebuilt surface actually does there.
             let Some(frame) = frames.iter().min_by(|a, b| a.p.dist(p).total_cmp(&b.p.dist(p))) else {
                 return Err(KernelError::Failed("match: the target has no frames".into()));
@@ -356,11 +356,6 @@ fn chain_mid(chain: &[mt::Edge]) -> Result<Vec3> {
     Ok(*a + (*b - *a) * t)
 }
 
-/// How far `p` is from a polyline.
-fn chain_distance(poly: &[Vec3], p: Vec3) -> f64 {
-    Segment::along(poly).map(|s| s.dist(p)).fold(f64::INFINITY, f64::min)
-}
-
 /// The side of the face's own parameter rectangle the picked chain sits nearest.
 fn nearest_side(face: &mt::Face, chain: &[mt::Edge]) -> Result<Side> {
     let surf = face.surface();
@@ -373,7 +368,7 @@ fn nearest_side(face: &mt::Face, chain: &[mt::Edge]) -> Result<Side> {
         let mut total = 0.0;
         for k in 0..SAMPLES {
             let t = k as f64 / (SAMPLES - 1) as f64;
-            total += chain_distance(&poly, Side::at(&surf, &ranges, side, t));
+            total += poly.distance_to(Side::at(&surf, &ranges, side, t));
         }
         let mean = total / SAMPLES as f64;
         if best.is_none_or(|(b, _)| mean < b) {

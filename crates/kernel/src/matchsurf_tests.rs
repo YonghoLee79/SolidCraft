@@ -81,7 +81,7 @@ fn far_drift(made: &Body, sheet: &Body, far_mid: Vec3) -> f64 {
     let mut worst = 0.0f64;
     for k in 0..=8 {
         let p = from_p3(surf.subs(u0 + (u1 - u0) * k as f64 / 8.0, v1));
-        worst = worst.max(chain_distance(&poly, p));
+        worst = worst.max(poly.distance_to(p));
     }
     worst
 }

@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use solidcraft_geom::{Ring, Vec3};
+use solidcraft_geom::{Polyline, Ring, Segment, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Solid, from_p3};
@@ -77,7 +77,7 @@ pub(crate) fn on_split_line(pts: &[Vec3], keep: &[Vec<Vec3>]) -> bool {
         && keep.iter().any(|line| {
             let seg = line.windows(2).filter_map(|w| Some(w.first()?.dist(*w.get(1)?))).fold(0.0, f64::max);
             let tol = 1e-6 * (1.0 + seg) + if line.len() > 2 { seg * 0.1 } else { 0.0 };
-            pts.iter().all(|q| line.windows(2).any(|w| w.first().zip(w.get(1)).is_some_and(|(a, b)| q.dist_to_segment(*a, *b) <= tol)))
+            pts.iter().all(|q| line.segments().any(|s| s.dist(*q) <= tol))
         })
 }
 
@@ -346,7 +346,7 @@ fn fit_exact(e: &mt::Edge, tol: f64) -> Option<mt::Edge> {
     if e.absolute_front() == e.absolute_back() || a.dist(b) < tol {
         return None;
     }
-    if pts.iter().all(|p| p.dist_to_segment(a, b) < tol) {
+    if pts.iter().all(|p| Segment::new(a, b).dist(*p) < tol) {
         return Some(builder::line(e.absolute_front(), e.absolute_back()));
     }
     // A circle through the ends and the middle sample.

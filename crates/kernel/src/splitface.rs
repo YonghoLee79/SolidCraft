@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::{Plane, Seg2, Segment, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Plane, Polyline, Seg2, Segment, UnitVec3, Vec2, Vec3};
 use truck_meshalgo::tessellation::RobustMeshableShape;
 use truck_modeling as mt;
 
@@ -83,7 +83,7 @@ impl Field {
                 let q = Vec2::new(q.x, q.y);
                 if *closed {
                     // Distance to the loop, positive inside it.
-                    let d = Segment::along(pts).map(|s| s.dist(q)).fold(f64::INFINITY, f64::min);
+                    let d = pts.distance_to(q);
                     let uv: Vec<(f64, f64)> = pts.iter().map(|p| (p.x, p.y)).collect();
                     return if inside(&uv, (q.x, q.y)) { d } else { -d };
                 }
@@ -335,7 +335,7 @@ fn trace_flat(face: &mt::Face, g: &Field, size: f64) -> Option<Vec<Chain>> {
         let straight = matches!(e.curve(), mt::Curve::Line(_)) || {
             let c = e.curve();
             let (t0, t1) = c.range_tuple();
-            (1..8).all(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 8.0)).dist_to_segment(a, b) <= tol)
+            (1..8).all(|k| Segment::new(a, b).dist(from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 8.0))) <= tol)
         };
         if !straight || (ga.abs() <= tol && gb.abs() <= tol) || !ga.is_finite() || !gb.is_finite() {
             return None;

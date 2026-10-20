@@ -50,9 +50,9 @@
 //! Input is hostile: sizes are capped, every evaluation is checked, and failures are
 //! [`SplineError`]s naming the curves; nothing here panics.
 
-use crate::Vec3;
 use crate::bspline::{NurbsSurface, SplineError, SplineResult, invalid};
 use crate::spline_space::{Cond, Interpolant, Linear, Monotone, Space, embed};
+use crate::{Polyline, Vec3};
 
 /// Most curves in one direction of a network.
 pub const MAX_NETWORK_CURVES: usize = 32;
@@ -272,8 +272,8 @@ fn closest(a: &mut Track, b: &mut Track, tol: f64) -> SplineResult<Crossing> {
     let mut d = Vec::with_capacity(pa.len());
     for p in &pa {
         let mut best = (f64::INFINITY, 0usize);
-        for (k, w) in pb.windows(2).enumerate() {
-            let x = p.dist_to_segment(w[0], w[1]);
+        for (k, s) in pb.segments().enumerate() {
+            let x = s.dist(*p);
             if x < best.0 {
                 best = (x, k);
             }
@@ -1236,6 +1236,7 @@ fn surface(su: &Space, sv: &Space, net: &[Vec<Vec3>]) -> SplineResult<NurbsSurfa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Segment;
 
     /// A curve given by a function of its parameter.
     struct F<G: FnMut(f64) -> Vec3>(G);
@@ -1269,7 +1270,7 @@ mod tests {
 
     /// Distance from `p` to the polyline of `f` sampled finely.
     fn dist_to(p: Vec3, f: &dyn Fn(f64) -> Vec3) -> f64 {
-        (0..2000).map(|k| p.dist_to_segment(f(k as f64 / 2000.0), f((k + 1) as f64 / 2000.0))).fold(f64::INFINITY, f64::min)
+        (0..2000).map(|k| Segment::new(f(k as f64 / 2000.0), f((k + 1) as f64 / 2000.0)).dist(p)).fold(f64::INFINITY, f64::min)
     }
 
     /// The bilinearly blended Coons patch of four straight lines reproduces the hyperbolic

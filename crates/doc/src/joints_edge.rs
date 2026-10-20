@@ -8,7 +8,7 @@
 //! corner x and y run along the two edges, away from the corner into the face, in the order that
 //! makes the frame right-handed.
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Polyline, Vec3};
 
 use super::{Snap, component_bodies, frame};
 use crate::{DocError, Document, Mat, ModelBody, ModelState, Result};
@@ -20,13 +20,7 @@ fn tol(b: &ModelBody) -> f64 {
 
 /// The edge of `b` nearest `p`, and how far it is.
 fn nearest_edge(b: &ModelBody, p: Vec3) -> Option<(usize, f64)> {
-    b.mesh()
-        .edges
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (i, e.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min)))
-        .filter(|(_, d)| d.is_finite())
-        .min_by(|a, b| a.1.total_cmp(&b.1))
+    b.mesh().edges.iter().enumerate().map(|(i, e)| (i, e.distance_to(p))).filter(|(_, d)| d.is_finite()).min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 /// Edge `i` of `b`: by its name (`None` when the body has no such edge), else the edge at `pick`.
@@ -60,7 +54,7 @@ fn face_of(b: &ModelBody, i: usize, name: Option<&str>, pick: Vec3) -> Result<(u
 
 /// Edge `i`'s middle (along its polyline) and the direction it runs there.
 fn middle(e: &[Vec3]) -> Option<(Vec3, Vec3)> {
-    let total: f64 = e.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let total: f64 = e.length();
     let mut acc = 0.0;
     for w in e.windows(2) {
         let l = w[0].dist(w[1]);

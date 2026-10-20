@@ -5,7 +5,7 @@ use super::*;
 use crate::EmbossFace;
 use crate::apply_point;
 use crate::sheet;
-use solidcraft_geom::{Aabb3, Loop2, Ring, Seg2};
+use solidcraft_geom::{Aabb3, Loop2, Polyline, Ring, Seg2};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState) -> Result<()> {
     match &f.kind {
@@ -170,7 +170,7 @@ fn planar_normal_at(b: &Body, p: Vec3) -> Option<Vec3> {
     let mut near = vec![f64::INFINITY; faces.len()];
     for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
         if let (Some([u, v, w]), Some(d)) = (mesh.tri(t), near.get_mut(*f as usize)) {
-            *d = d.min(crate::appearance::closest_on_triangle(p, u, v, w).dist(p));
+            *d = d.min(solidcraft_geom::compare::closest_on_triangle(p, u, v, w).dist(p));
         }
     }
     faces
@@ -246,7 +246,7 @@ fn rib_tool(st: &ModelState, ss: &SolvedSketch, ids: &[String], t: f64, depth: O
         let w = ss.plane.to_world(q);
         st.bodies.iter().any(|b| b.mesh().contains(w))
     };
-    let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let len: f64 = pts.length();
     let samples = ((len / (t.min(len) * 0.25).max(len / 400.0)).ceil() as usize).clamp(2, 400);
     let along: Vec<Vec2> = (0..=samples).map(|k| point_on_polyline(&pts, len * k as f64 / samples as f64)).collect();
     let limit = depth.unwrap_or(reach * 2.0 + 1.0);
@@ -292,7 +292,7 @@ fn rib_tool(st: &ModelState, ss: &SolvedSketch, ids: &[String], t: f64, depth: O
 /// the sketch toward the body by `depth` (or until the whole wall reaches the body).
 fn rib_tool_normal(st: &ModelState, ss: &SolvedSketch, ids: &[String], t: f64, depth: Option<f64>, flip: bool) -> Result<Body> {
     let pts = chain_points(ss, ids)?;
-    let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let len: f64 = pts.length();
     if !(len > 1e-9) {
         return Err(DocError::Invalid("a zero-length rib curve".into()));
     }

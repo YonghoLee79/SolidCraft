@@ -11,7 +11,7 @@
 
 use serde_json::{Map, Value};
 use solidcraft_doc::{Mat, apply_point, apply_vector, is_identity, map_point_expr, mat_inverse};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Polyline, Vec3};
 
 use crate::Session;
 
@@ -162,11 +162,11 @@ fn frame_at(s: &Session, f: &Frames, p: Vec3, body: Option<&str>) -> Option<Mat>
 
 fn tri_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
     let n = (b - a).cross(c - a);
-    let Some(nn) = n.normalized() else { return p.dist_to_segment(a, b).min(p.dist_to_segment(b, c)) };
+    let Some(nn) = n.normalized() else { return [a, b, c].distance_to(p) };
     let h = (p - a).dot(nn);
     let q = p - nn * h;
     let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12);
-    if inside { h.abs() } else { [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min) }
+    if inside { h.abs() } else { [a, b, c, a].distance_to(p) }
 }
 
 struct Mapper<'a> {

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Plane, Vec3};
+use solidcraft_geom::{Plane, Polyline, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3, v3};
@@ -802,7 +802,7 @@ fn point_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
     let h = (p - a).dot(nn);
     let q = p - nn * h;
     let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12);
-    if inside { h.abs() } else { [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min) }
+    if inside { h.abs() } else { [a, b, c, a].distance_to(p) }
 }
 
 /// The body with every planar face moved along its outward normal by `shift(face index,

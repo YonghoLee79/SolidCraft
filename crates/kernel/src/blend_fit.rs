@@ -6,7 +6,7 @@
 //! the operations build is not a blend of those edges, so it is refused with the largest size
 //! that does fit. After the build, the volume taken away is checked against the wedges too.
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Polyline, Vec3};
 use truck_modeling as mt;
 
 use crate::blend::{ChamferSide, plane_normal, vtx};
@@ -280,12 +280,7 @@ fn select_in(body: &Body, pts: &[Vec3]) -> Result<Selection> {
     let mut frames = Vec::new();
     for p in pts {
         // The edge nearest the point, as the blends pick it.
-        let best = mesh
-            .edges
-            .iter()
-            .enumerate()
-            .map(|(i, poly)| (i, poly.windows(2).filter_map(|w| Some(p.dist_to_segment(*w.first()?, *w.get(1)?))).fold(f64::INFINITY, f64::min)))
-            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let best = mesh.edges.iter().enumerate().map(|(i, poly)| (i, poly.distance_to(*p))).min_by(|a, b| a.1.total_cmp(&b.1));
         // Points on the same edge (pieces healed into one) count once.
         let frame = match best.and_then(|(i, dist)| all.get(i).filter(|_| dist <= size * 0.05 + 1e-3)) {
             Some(e) if taken.contains(&e.id()) => continue,

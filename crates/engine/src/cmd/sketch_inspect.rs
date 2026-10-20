@@ -2,11 +2,12 @@
 //! centre of mass of bodies.
 
 use serde_json::{Value, json};
-use solidcraft_geom::{Aabb3, Seg2, Segment, Vec2, Vec3};
+use solidcraft_geom::{Aabb3, Polyline, Seg2, Vec2, Vec3};
 
 use super::CommandSpec;
 use crate::params::{bad, num, string_list, vec3};
 use crate::{EngineError, Result, Session};
+use solidcraft_geom::compare::closest_on_triangle;
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("inspect.curvature_comb", "Curvature Comb Analysis", curvature_comb)
@@ -103,7 +104,7 @@ fn curvature_comb(s: &mut Session, p: &Value) -> Result<Value> {
                     if m.seams.get(i).copied().unwrap_or(false) {
                         continue;
                     }
-                    let d = pts.windows(2).map(|w| at.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+                    let d = pts.distance_to(at);
                     if best.as_ref().is_none_or(|x| d < x.0) {
                         best = Some((d, pts.clone()));
                     }
@@ -177,25 +178,6 @@ fn face_at(st: &solidcraft_doc::ModelState, at: Vec3) -> Option<(usize, u32)> {
     best.filter(|b| b.0 < 1.0).map(|b| (b.1, b.2))
 }
 
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    // Project onto the plane, then clamp to the edges if outside.
-    let n = (b - a).cross(c - a);
-    let nn = n.dot(n);
-    if nn < 1e-300 {
-        return a;
-    }
-    let q = p - n * ((p - a).dot(n) / nn);
-    let inside = |u: Vec3, v: Vec3| (v - u).cross(q - u).dot(n) >= 0.0;
-    if inside(a, b) && inside(b, c) && inside(c, a) {
-        return q;
-    }
-    [Segment::new(a, b), Segment::new(b, c), Segment::new(c, a)]
-        .map(|s| s.closest_point(p))
-        .into_iter()
-        .min_by(|x, y| x.dist(p).total_cmp(&y.dist(p)))
-        .unwrap_or(a)
-}
-
 /// Smallest radius of curvature over a face of a mesh, from the turn of the vertex normals
 /// along each triangle side: (radius, where).
 fn face_min_radius(m: &solidcraft_geom::Mesh, face: u32) -> Option<(f64, Vec3)> {
@@ -254,7 +236,7 @@ fn minimum_radius(s: &mut Session, p: &Value) -> Result<Value> {
                     if m.seams.get(i).copied().unwrap_or(false) {
                         continue;
                     }
-                    let d = pts.windows(2).map(|w| at.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+                    let d = pts.distance_to(at);
                     if best.as_ref().is_none_or(|x| d < x.0) {
                         best = Some((d, pts.clone()));
                     }

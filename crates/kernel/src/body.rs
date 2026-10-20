@@ -1,5 +1,5 @@
 use serde::Serialize;
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Segment, Vec3};
 use truck_meshalgo::prelude::*;
 use truck_modeling as mt;
 
@@ -1611,7 +1611,7 @@ impl Body {
         for e in &edges {
             for w in e.points.windows(2) {
                 if let (Some(a), Some(b)) = (w.first(), w.get(1)) {
-                    let d = p.dist_to_segment(*a, *b);
+                    let d = Segment::new(*a, *b).dist(p);
                     if best.is_none_or(|(_, bd)| d < bd) {
                         best = Some((e.index, d));
                     }

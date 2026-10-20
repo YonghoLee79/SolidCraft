@@ -257,7 +257,7 @@ impl ChainLine {
             let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
             let seg = Segment::new(a.p, b.p);
             let (len, f) = (seg.len(), seg.param(p));
-            let d = p.dist(seg.at(f));
+            let d = p.dist(seg.lerp(f));
             if d < best.0 {
                 best = (d, a.s + len * f, a.edge, a.t + (b.t - a.t) * f);
             }

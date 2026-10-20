@@ -1,4 +1,5 @@
 use super::*;
+use crate::{Path, Ring};
 
 #[test]
 fn the_nearest_point_stays_on_the_segment() {
@@ -34,18 +35,19 @@ fn nearest_points_of_two_segments() {
 #[test]
 fn the_segments_of_a_polyline() {
     let pts = [Vec2::ZERO, Vec2::X, Vec2::new(1.0, 1.0)];
-    let segs: Vec<Segment<Vec2>> = Segment::along(&pts).collect();
+    let segs: Vec<Segment<Vec2>> = pts.segments().collect();
     assert_eq!(segs, vec![Segment::new(Vec2::ZERO, Vec2::X), Segment::new(Vec2::X, Vec2::new(1.0, 1.0))]);
-    assert_eq!(Segment::along(&pts[..1]).count(), 0);
+    assert_eq!(pts[..1].segments().count(), 0);
+    assert_eq!(pts.length(), 2.0);
 }
 
 #[test]
 fn a_chain_measured_along_its_segments() {
     let corners = [Vec2::ZERO, Vec2::new(2.0, 0.0), Vec2::new(2.0, 1.0)];
-    let (path, ring) = (crate::Path::from(corners), crate::Ring::from(corners));
+    let (path, ring) = (Path::from(corners), Ring::from(corners));
     assert_eq!(path.length(), 3.0);
     // Around the ring, back to the start too.
     assert!((ring.length() - (3.0 + 5f64.sqrt())).abs() < 1e-12);
     assert_eq!(path.distance_to(Vec2::new(1.0, -2.0)), 2.0);
-    assert_eq!(crate::Path::<Vec2>::from([Vec2::ZERO]).distance_to(Vec2::ZERO), f64::INFINITY);
+    assert_eq!(Path::<Vec2>::from([Vec2::ZERO]).distance_to(Vec2::ZERO), f64::INFINITY);
 }

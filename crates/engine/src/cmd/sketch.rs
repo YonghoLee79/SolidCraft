@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 use solidcraft_doc::{FeatureKind, PlaneRef, expr::Kind};
-use solidcraft_geom::{Plane, Vec2, Vec3};
+use solidcraft_geom::{Plane, Polyline, Vec2, Vec3};
 use solidcraft_sketch::{Analysis, Budget, ConstraintKind, CurveKind, Hold, PointExprs, Sketch, SolveReport, solve, solve_with};
 
 use super::{CommandSpec, in_sketch};
@@ -661,7 +661,7 @@ pub(super) fn face_contains(m: &solidcraft_geom::Mesh, fi: usize, p: Vec3, tol: 
         (s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0)
             || (s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0)
             // Exact curved boundaries can sit just outside their tessellated chords.
-            || p.dist_to_segment(a, b).min(p.dist_to_segment(b, c)).min(p.dist_to_segment(c, a)) <= tol * 0.1
+            || [a, b, c, a].distance_to(p) <= tol * 0.1
     })
 }
 

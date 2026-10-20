@@ -13,7 +13,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::doc::joints::JointKind;
-use solidcraft_engine::geom::{Aabb3, Mesh, Vec3};
+use solidcraft_engine::geom::{Aabb3, Mesh, Polyline, Vec3};
 
 use crate::SolveApp;
 use crate::dialogs::{Dialog, Kind, combo, field, form_row};

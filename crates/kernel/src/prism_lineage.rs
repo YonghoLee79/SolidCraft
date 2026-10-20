@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use solidcraft_geom::{Plane, Region2, Vec2, Vec3};
+use solidcraft_geom::{Plane, Polyline, Region2, Vec2, Vec3};
 use truck_modeling as mt;
 
 use super::{Index, Section, Tag, dist_to, inside};
@@ -277,9 +277,9 @@ impl<'a> Context<'a> {
                 // The edge as a fine polyline: a line exactly, an arc within its chords' sag.
                 let n = if matches!(c, mt::Curve::Line(_)) { 1 } else { 64 };
                 let pts: Vec<Vec3> = (0..=n).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / n as f64))).collect();
-                let length: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+                let length: f64 = pts.length();
                 let near = self.tol * 10.0 + if n == 1 { 0.0 } else { length * 2e-3 };
-                pts.windows(2).any(|w| at.dist_to_segment(w[0], w[1]) <= near)
+                pts.segments().any(|s| s.dist(at) <= near)
             })
         });
         match (on.next(), on.next()) {

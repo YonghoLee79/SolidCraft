@@ -12,12 +12,13 @@
 
 use std::collections::BTreeMap;
 
-use solidcraft_geom::{Mesh, Plane, Seg2, Segment, Vec2, Vec3};
+use solidcraft_geom::{Mesh, Plane, Polyline, Seg2, Vec2, Vec3};
 use solidcraft_sketch::{CurveKind, LinkGeom, LinkKind, LinkSource, Sketch};
 
 use crate::eval::ModelState;
 use crate::expr::Value;
 use crate::{DocError, Document, PlaneRef, Result};
+use solidcraft_geom::compare::closest_on_triangle;
 
 /// Half length of the line an axis or plane projects to.
 const AXIS_HALF: f64 = 100.0;
@@ -367,7 +368,8 @@ fn locate_named_edge(st: &ModelState, body: &str, name: &str, at: Vec3) -> Optio
 fn resolve_named_edge(st: &ModelState, plane: &Plane, kind: LinkKind, body: &str, index: usize, near: Vec3) -> Result<Resolved> {
     let target = st.body(body).ok_or_else(|| lost("named projection body"))?;
     let pts = target.mesh().edges.get(index).cloned().unwrap_or_default();
-    let at = Segment::along(&pts)
+    let at = pts
+        .segments()
         .map(|s| s.closest_point(near))
         .min_by(|a, b| a.dist(near).total_cmp(&b.dist(near)))
         .ok_or_else(|| lost("named projection edge"))?;
@@ -712,7 +714,7 @@ pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
         if m.seams.get(i).copied().unwrap_or(false) {
             continue;
         }
-        for s in Segment::along(e) {
+        for s in e.segments() {
             let q = s.closest_point(p);
             let d = q.dist(p);
             if best.is_none_or(|(_, _, bd)| d < bd) {
@@ -721,21 +723,6 @@ pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
         }
     }
     best
-}
-
-pub(crate) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let n = (b - a).cross(c - a);
-    let Some(nn) = n.normalized() else { return Segment::new(a, b).closest_point(p) };
-    let q = p - nn * (p - a).dot(nn);
-    let inside = (b - a).cross(q - a).dot(n) >= 0.0 && (c - b).cross(q - b).dot(n) >= 0.0 && (a - c).cross(q - c).dot(n) >= 0.0;
-    if inside {
-        return q;
-    }
-    [Segment::new(a, b), Segment::new(b, c), Segment::new(c, a)]
-        .map(|s| s.closest_point(p))
-        .into_iter()
-        .min_by(|x, y| x.dist(p).total_cmp(&y.dist(p)))
-        .unwrap_or(a)
 }
 
 /// Nearest face: (B-rep face index, closest point, distance).
@@ -908,7 +895,7 @@ fn as_spline(pts: &[Vec2], tol: f64) -> Option<LinkGeom> {
             return None;
         }
         let poly = solidcraft_sketch::spline_polyline(&fit, false, 3);
-        let ok = pts.iter().all(|q| Segment::along(&poly).map(|s| s.dist(*q)).fold(f64::INFINITY, f64::min) <= tol);
+        let ok = pts.iter().all(|q| poly.distance_to(*q) <= tol);
         if ok {
             return Some(LinkGeom::Spline { pts: fit, control: false, degree: 3, periodic: false });
         }

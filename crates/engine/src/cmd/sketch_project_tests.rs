@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 
 use crate::Session;
+use solidcraft_geom::Polyline;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
     match s.execute(id, &p) {
@@ -457,7 +458,7 @@ fn sweeps_and_pipes_follow_3d_sketch_curves() {
         sk.wires[sk.wire_index(&wid).unwrap()].pts.clone()
     };
     run(&mut s, "sketch.finish", json!({}));
-    let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let len: f64 = pts.length();
     // A pipe along it: volume ≈ π r² × length.
     let before = s.model.state().bodies.len();
     run(&mut s, "solid.pipe", json!({"path_sketch": path_sketch, "path": [wid.clone()], "diameter": "2 mm", "operation": "new"}));

@@ -1,4 +1,4 @@
-//! A straight segment between two points, in the plane or in space.
+//! A straight segment between two points, in the plane or in space, and polylines made of them.
 
 use std::ops::{Add, Mul, Sub};
 
@@ -34,18 +34,13 @@ impl<P: Point> Segment<P> {
         Segment { a, b }
     }
 
-    /// The segments of the polyline through `points`, in order.
-    pub fn along(points: &[P]) -> impl Iterator<Item = Segment<P>> + '_ {
-        points.windows(2).filter_map(|w| Some(Segment::new(*w.first()?, *w.get(1)?)))
-    }
-
     pub fn len(&self) -> f64 {
         let d = self.b - self.a;
         d.dot(d).sqrt()
     }
 
     /// The point a fraction `t` of the way from `a` to `b`.
-    pub fn at(&self, t: f64) -> P {
+    pub fn lerp(&self, t: f64) -> P {
         self.a + (self.b - self.a) * t
     }
 
@@ -58,7 +53,7 @@ impl<P: Point> Segment<P> {
 
     /// The point of the segment nearest `p`.
     pub fn closest_point(&self, p: P) -> P {
-        self.at(self.param(p))
+        self.lerp(self.param(p))
     }
 
     /// How far `p` is from the segment.
@@ -96,7 +91,30 @@ impl<P: Point> Segment<P> {
                 (s, t)
             }
         };
-        (self.at(s), o.at(t))
+        (self.lerp(s), o.lerp(t))
+    }
+}
+
+/// Points in order, each joined to the next by a [`Segment`]. A slice is an open polyline; a
+/// [`Ring`](crate::Ring) also joins its last point back to its first.
+pub trait Polyline<P: Point> {
+    /// Its segments, in order.
+    fn segments(&self) -> impl Iterator<Item = Segment<P>> + '_;
+
+    /// Its length.
+    fn length(&self) -> f64 {
+        self.segments().map(|s| s.len()).sum()
+    }
+
+    /// How far `p` is from it (infinite with no segment).
+    fn distance_to(&self, p: P) -> f64 {
+        self.segments().map(|s| s.dist(p)).fold(f64::INFINITY, f64::min)
+    }
+}
+
+impl<P: Point> Polyline<P> for [P] {
+    fn segments(&self) -> impl Iterator<Item = Segment<P>> + '_ {
+        self.windows(2).filter_map(|w| Some(Segment::new(*w.first()?, *w.get(1)?)))
     }
 }
 

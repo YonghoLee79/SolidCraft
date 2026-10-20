@@ -7,7 +7,7 @@ use solidcraft_doc::{
 };
 use solidcraft_doc::{BodyName, FeatureName, SketchId};
 use solidcraft_doc::{Dir, FacePick, Position};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Polyline, Vec3};
 
 use super::{CommandSpec, not_in_sketch};
 use crate::params::{bad, bool_, expr, req_expr, str_, string_list, vec2, vec3};
@@ -984,11 +984,7 @@ fn edge_points(s: &Session, p: &Value, cmd: &str) -> Result<Vec<Vec3>> {
             });
             let mut nearest = f64::INFINITY;
             let on_edge = bodies.iter().any(|(size, edges)| {
-                let d = edges
-                    .iter()
-                    .flat_map(|e| e.points.windows(2))
-                    .filter_map(|w| Some(pt.dist_to_segment(*w.first()?, *w.get(1)?)))
-                    .fold(f64::INFINITY, f64::min);
+                let d = edges.iter().map(|e| e.points.distance_to(pt)).fold(f64::INFINITY, f64::min);
                 nearest = nearest.min(d);
                 d <= size * 0.05 + 1e-3
             });

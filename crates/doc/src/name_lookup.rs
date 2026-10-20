@@ -8,7 +8,7 @@
 //! was worked out from geometry, found where the reference's point no longer lies, is reported:
 //! only geometry decided.
 
-use solidcraft_geom::{Mesh, Vec3};
+use solidcraft_geom::{Mesh, Polyline, Vec3};
 
 use crate::history_names::{Match, Names};
 use crate::naming::{self, closest, edge_names, face_names, legacy_edge_names, legacy_face_names, strip_piece};
@@ -93,7 +93,7 @@ pub fn locate_edge(b: &ModelBody, name: &str, near: Vec3) -> Result<EdgeHit, Str
 /// Whether the picked point `near` lies on edge `i` of body `b` (whose mesh is `m`): then a
 /// reference keeps it.
 fn edge_near(b: &ModelBody, m: &Mesh, i: usize, near: Vec3) -> bool {
-    m.edges.get(i).is_some_and(|e| e.windows(2).any(|w| near.dist_to_segment(w[0], w[1]) < (b.body.size() * 2e-3).max(1e-3)))
+    m.edges.get(i).is_some_and(|e| e.segments().any(|s| s.dist(near) < (b.body.size() * 2e-3).max(1e-3)))
 }
 
 /// The point of face `face` of a mesh nearest `p`, and how far it is.
@@ -117,7 +117,7 @@ fn nearest_on_face(m: &Mesh, face: usize, p: Vec3) -> Option<(f64, Vec3)> {
 /// The middle of edge `i` of a mesh (along its polyline).
 fn edge_mid(m: &Mesh, i: usize) -> Option<Vec3> {
     let e = m.edges.get(i)?;
-    let total: f64 = e.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let total: f64 = e.length();
     let mut acc = 0.0;
     for w in e.windows(2) {
         let l = w[0].dist(w[1]);

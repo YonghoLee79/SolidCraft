@@ -5,11 +5,12 @@
 //! have a direction (planar faces, straight edges), the angle.
 
 use serde_json::{Value, json};
-use solidcraft_geom::{Mesh, Segment, UnitVec3, Vec3};
+use solidcraft_geom::{Mesh, Polyline, UnitVec3, Vec3};
 
 use super::measure_shape::{Shape, Slot, add_round, centre};
 use crate::params::bad;
 use crate::{Result, Sel, Session};
+use solidcraft_geom::compare::closest_on_triangle;
 
 /// Geometry of a picked item, as points or triangles.
 enum Geo {
@@ -21,28 +22,9 @@ enum Geo {
 const MAX_POINTS: usize = 4000;
 const MAX_TRIS: usize = 20000;
 
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let n = (b - a).cross(c - a);
-    if let Some(nn) = n.normalized() {
-        let q = p - nn * (p - a).dot(nn);
-        if [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12) {
-            return q;
-        }
-    }
-    [Segment::new(a, b), Segment::new(b, c), Segment::new(c, a)]
-        .map(|s| s.closest_point(p))
-        .into_iter()
-        .min_by(|x, y| x.dist(p).total_cmp(&y.dist(p)))
-        .unwrap_or(a)
-}
-
-fn polyline_len(pts: &[Vec3]) -> f64 {
-    pts.windows(2).map(|w| w[0].dist(w[1])).sum()
-}
-
 /// A polyline with extra points so no gap is longer than 1/64 of it.
 fn densify(pts: &[Vec3]) -> Vec<Vec3> {
-    let step = (polyline_len(pts) / 64.0).max(1e-9);
+    let step = (pts.length() / 64.0).max(1e-9);
     let mut out = Vec::new();
     for w in pts.windows(2) {
         let n = ((w[0].dist(w[1]) / step).ceil() as usize).clamp(1, 64);
@@ -57,7 +39,7 @@ fn densify(pts: &[Vec3]) -> Vec<Vec3> {
 /// The mesh edge a selection means: by index if it still passes through the point, otherwise
 /// the nearest.
 fn edge_index(m: &Mesh, index: usize, point: Vec3) -> Option<usize> {
-    let near = |e: &Vec<Vec3>| e.windows(2).map(|w| point.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+    let near = |e: &Vec<Vec3>| e.distance_to(point);
     let tol = m.bounds().diagonal().max(1.0) * 1e-6;
     if m.edges.get(index).is_some_and(|e| near(e) < tol) {
         return Some(index);
@@ -113,7 +95,7 @@ fn edge_round(b: &solidcraft_doc::ModelBody, m: &Mesh, index: usize, whole: bool
             let all: Vec<Vec3> =
                 if whole { m.circular_rim(index).iter().filter_map(|&i| m.edges.get(i)).flatten().copied().collect() } else { pts.clone() };
             let (center, axis, radius) = fit_circle(&all, tol * 10.0)?;
-            let angle = if whole { std::f64::consts::TAU } else { polyline_len(pts) / radius };
+            let angle = if whole { std::f64::consts::TAU } else { pts.length() / radius };
             (center, axis, radius, angle)
         }
     };
@@ -186,7 +168,7 @@ fn sketch_curve(ss: &solidcraft_doc::SolvedSketch, id: &str) -> Option<Item> {
             (b - a).normalized()
         }
         _ => {
-            json["length_mm"] = json!(polyline_len(&pts));
+            json["length_mm"] = json!(pts.length());
             add_round(&mut json, &shape);
             None
         }
@@ -282,7 +264,7 @@ fn describe(s: &Session, sel: &Sel) -> Option<Item> {
             let rim = m.circular_rim(index);
             if rim.len() > 1 {
                 let pieces: Vec<&Vec<Vec3>> = rim.iter().filter_map(|&i| m.edges.get(i)).collect();
-                let len: f64 = pieces.iter().map(|p| polyline_len(p)).sum();
+                let len: f64 = pieces.iter().map(|p| p.length()).sum();
                 let points = pieces.iter().flat_map(|p| densify(p)).collect();
                 let mut json = json!({"type": "edge", "length_mm": len});
                 let shape = edge_round(b, &m, index, true).unwrap_or(Shape::Other);
@@ -291,7 +273,7 @@ fn describe(s: &Session, sel: &Sel) -> Option<Item> {
             }
             let (a, z) = (*pts.first()?, *pts.last()?);
             let straight = (z - a).normalized().filter(|d| pts.iter().all(|p| (*p - a).cross(*d).len() < 1e-6 * (1.0 + a.dist(z))));
-            let len = polyline_len(pts);
+            let len = pts.length();
             let mut json = json!({"type": "edge", "length_mm": len});
             let shape = match straight {
                 Some(_) => Shape::Line { a, b: z },
