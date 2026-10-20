@@ -16,9 +16,21 @@ closed mesh as a solid body, so those operations work on it.
   converted where it can be; one that cannot stays a mesh body with a warning, so the import
   still succeeds.
 
-The conversion is a **timeline feature** (`MeshConvert`): it keeps the body's name, follows the
-features before it (it converts whatever the upstream features last built), takes part in undo,
-and a saved design rebuilds it when it is opened.
+## What happens to the body
+
+The conversion **replaces the mesh body in place**: the body keeps its row and name in the browser
+(it is the same body, now a B-rep solid), and the timeline gains a **Convert Mesh** feature
+(`ConvertMesh1`). Nothing else is created, so sketches, appearances, booleans and the rest keep
+pointing at that body.
+
+- **Undo** (`Ctrl+Z`) or **deleting the Convert Mesh feature** brings the mesh back.
+- The feature is not edited in the timeline yet: to change the tolerance, delete it and run
+  Convert Mesh again.
+- To keep the mesh as well, copy the body before converting — **Move/Copy** (`M`) with **Copy**
+  ticked, or `solid.move {bodies: ["Mesh1"], copy: true}` — and convert one of the two.
+
+The conversion follows the features before it (it converts whatever the upstream features last
+built), takes part in undo, and a saved design rebuilds it when it is opened.
 
 ## What the conversion does
 
