@@ -22,16 +22,11 @@ pub struct BodyMeasure {
     pub merged: TopoCounts,
 }
 
-/// Per-face sums: area, 6 × signed volume and 24 × first moments (divergence theorem, about
-/// `o`). Taken about a point in the body, not the world's origin: a mesh's cracks (its faces'
-/// edges sampled apart) count for their distance from that point, so a small part far out would
-/// measure them many times over (a 0.4 mm part 1000 mm out lost 8e-4 mm³ to them, three hundred
-/// times a small round on it).
-fn face_sums(m: &Mesh, nf: usize, o: Vec3) -> Vec<(f64, f64, Vec3)> {
+/// Per-face sums: area, 6 × signed volume and 24 × first moments (divergence theorem, origin 0).
+fn face_sums(m: &Mesh, nf: usize) -> Vec<(f64, f64, Vec3)> {
     let mut out = vec![(0.0, 0.0, Vec3::ZERO); nf];
     for (t, f) in m.triangles.iter().zip(&m.tri_face) {
         let (Some([a, b, c]), Some(slot)) = (m.tri(t), out.get_mut(*f as usize)) else { continue };
-        let (a, b, c) = (a - o, b - o, c - o);
         let d = a.dot(b.cross(c));
         slot.0 += (b - a).cross(c - a).len() * 0.5;
         slot.1 += d;
@@ -70,7 +65,9 @@ pub struct MassMeasure {
     pub bbox: Aabb3,
 }
 
-/// The volume a mesh encloses, taken about `o` ([`face_sums`]: a point in or near the body).
+/// The volume a mesh encloses, taken about `o` (a point in or near the body): a mesh's cracks (its
+/// faces' edges sampled apart) count for their distance from that point, so a small part far out
+/// would measure them many times over about the world's origin.
 pub(crate) fn mesh_volume_about(m: &Mesh, o: Vec3) -> f64 {
     let o = if o.is_finite() { o } else { Vec3::ZERO };
     m.triangles.iter().filter_map(|t| m.tri(t)).map(|[a, b, c]| (a - o).dot((b - o).cross(c - o))).sum::<f64>() / 6.0
@@ -163,9 +160,7 @@ fn mass(b: &Body, topology: bool) -> Result<(MassMeasure, Option<Mesh>)> {
         None => None,
     };
     let nf = b.face_count();
-    let o = coarse.bounds().center();
-    let o = if o.is_finite() { o } else { Vec3::ZERO };
-    let (sf, sm, sc) = (face_sums(&fine, nf, o), face_sums(&medium, nf, o), face_sums(&coarse, nf, o));
+    let (sf, sm, sc) = (face_sums(&fine, nf), face_sums(&medium, nf), face_sums(&coarse, nf));
     let close = |x: f64, y: f64| (x - y).abs() <= 0.01 * x.abs().max(y.abs()) + 1e-9;
     let (mut area, mut v6, mut mom) = (0.0, 0.0, Vec3::ZERO);
     for ((f, m), c) in sf.iter().zip(&sm).zip(&sc) {
@@ -182,7 +177,7 @@ fn mass(b: &Body, topology: bool) -> Result<(MassMeasure, Option<Mesh>)> {
         mom += pick.2;
     }
     let volume = v6 / 6.0;
-    let centroid = if v6.abs() > 1e-12 { o + mom / (4.0 * v6) } else { fine.bounds().center() };
+    let centroid = if v6.abs() > 1e-12 { mom / (4.0 * v6) } else { fine.bounds().center() };
     Ok((MassMeasure { volume, area, centroid, bbox: coarse.bounds().union(&fine.bounds()) }, topo))
 }
 
