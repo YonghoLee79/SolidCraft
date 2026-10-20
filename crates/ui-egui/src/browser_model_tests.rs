@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde_json::json;
 use solidcraft_engine::Sel;
 
+use crate::scenario::Harness;
 use crate::test_support::component_box as fixture;
 
 #[test]
@@ -80,4 +81,38 @@ fn body_index_and_placements_follow_geometry_undo_and_document_identity() {
     assert!(super::model_placement(&mut h.app, &[occurrence]).is_none());
     assert!(super::model_children(&h.app, 0).is_empty());
     assert!(super::entries(&h.app, component, "bodies").is_empty());
+}
+
+/// One frame, keeping what it painted.
+fn painted(h: &mut Harness) -> egui::FullOutput {
+    let ctx = h.ctx.clone();
+    crate::test_support::frame(&ctx, egui::RawInput { screen_rect: Some(ctx.content_rect()), focused: true, ..Default::default() }, |ui| {
+        h.app.logic(ui.ctx());
+        h.app.ui(ui);
+    })
+}
+
+/// The body row of `name` on screen, and where its name was painted: (row, name, elided).
+fn row_and_painted_name(h: &mut Harness, name: &str) -> (egui::Rect, egui::Rect, bool) {
+    h.frames(2);
+    let row = super::drawn_rows().into_iter().find(|(label, ..)| label == name).expect("the body's row on screen").1;
+    let out = painted(h);
+    let shape = crate::test_support::text_shapes(&out).find(|s| s.galley.job.text == name).expect("the body's name, painted");
+    (row, shape.galley.rect.translate(shape.pos.to_vec2()), shape.galley.elided)
+}
+
+#[test]
+fn a_name_too_long_for_the_browser_stops_at_the_panel_edge_and_widening_shows_more() {
+    let mut h = Harness::new();
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+    let long = "Synology_ds224_10-Inch_Rackmount_2_2";
+    h.app.run("body.rename", json!({"body":"Body1","name":long})).unwrap();
+    let (row, narrow, elided) = row_and_painted_name(&mut h, long);
+    assert!(elided, "a name longer than the panel is elided with a \u{2026}");
+    assert!(narrow.right() <= row.right(), "the name is painted past its row ({:.1} > {:.1})", narrow.right(), row.right());
+
+    // The panel's edge can be dragged wider, and the name then shows more of itself.
+    h.app.preferences.browser_width = super::MAX_BROWSER_WIDTH;
+    let (_, wide, _) = row_and_painted_name(&mut h, long);
+    assert!(wide.width() > narrow.width(), "a wider panel shows more of the name ({:.1} > {:.1})", wide.width(), narrow.width());
 }
