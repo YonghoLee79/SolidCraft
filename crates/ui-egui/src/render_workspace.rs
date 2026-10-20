@@ -125,11 +125,12 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
 }
 
 pub fn reset_document(app: &mut SolveApp) {
+    app.ui.ribbon_context = None;
     let host = app.render_workspace.host.clone();
     let image_host = app.render_workspace.image_host.clone();
     app.render_workspace = State { host, image_host, ..Default::default() };
     if active(app) {
-        app.ui.tab = "SOLID".into();
+        app.ui.tab = "MODEL".into();
     }
     sync_backend(app);
 }
@@ -161,7 +162,7 @@ pub fn enter(app: &mut SolveApp, render: bool) -> Result<(), String> {
             app.ui.up_axis = camera.up;
             app.ui.perspective = perspective;
         }
-        app.ui.tab = "SOLID".into();
+        app.ui.tab = "MODEL".into();
     }
     app.cancel_view_animation();
     Ok(())
@@ -528,6 +529,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             hl_slot: slot.clone(),
             pv_key: 0,
             pv_slot: slot,
+            pv_hide: false,
             view_proj: camera.view_proj(f64::from(rect.width() / rect.height().max(1.0)), radius).to_f32(),
             back: camera.back().to_f32(),
             size_px: [rect.width() * ppp, rect.height() * ppp],

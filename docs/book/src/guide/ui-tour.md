@@ -7,8 +7,10 @@
   and one tab per open design (each with its own undo history, selection and camera; a dot marks
   unsaved changes). On the right: Report a bug, Help (?), Preferences (which hold the theme) and the
   window's buttons.
-- **Toolbar.** The workspace switcher (DESIGN) sits on the left. The tabs (SOLID, SURFACE,
-  SHEET METAL, PLASTIC, UTILITIES, and SKETCH while you sketch) hold panels of commands. Click a
+- **Toolbar.** The workspace switcher (DESIGN) sits on the left. The tabs (MODEL, SURFACE,
+  ASSEMBLE, INSERT, INSPECT, MANAGE and VIEW) hold sections of commands. SKETCH appears while
+  editing a sketch; SHEET METAL appears for the active sheet body. Both select automatically
+  when entered, and the other tabs remain available. Click a
   panel's name for all its commands. Drag a command from the dropdown onto a panel's label
   or empty space to append it; the insertion line shows its destination. Drop onto an existing
   button to insert before it. Buttons can also move between panels, and the layout is saved.
@@ -16,7 +18,7 @@
   origin, bodies, sketches, construction planes, canvases, joints and components. The eye shows or
   hides an item, a component's radio button makes it the active component, and right-clicking any
   row gives that item's menu. Rows drag into groups and other components.
-- **Viewport.** Click to select, Shift or Ctrl to add, drag for a window or crossing box. To
+- **Viewport.** Click to select, Shift or Ctrl to add (Preferences › Selection), drag for a window or crossing box. While sketching, Ctrl/Cmd or Alt/Option suppress auto-snap by default; Shift prefers a midpoint. To
   reach something under something else (two lines drawn on top of each other, coincident points,
   an edge in front of a face, overlapping bodies), hold the left button still for half a second
   (long-press on a touch screen) or right-click › **Select Other…**: a list of everything under
@@ -32,6 +34,15 @@
   in the default and Inventor presets. In every preset, Ctrl+left drag (Cmd on macOS) that starts
   on empty space orbits; a Ctrl+click still adds to the selection. Shift+right-drag snaps to the nearest standard or
   diagonal view; Shift does not request snapping when the preset already requires it to orbit.
+  **Mouse gestures** (Preferences › Navigation, off by default) work with the SolidWorks mouse preset
+  only (the wheel orbits, Ctrl + wheel pans) and take over the right button, which then no longer
+  orbits: hold it and move the pointer 4 pt to open a ring of tools (280 pt inside, 350 pt outside), even
+  while a tool is active, and touch a tool's zone to take it. A right-click that does not move still
+  opens the usual context menu. Each studio has its own
+  tools, and **Customize…** sets how many tools a studio's ring holds and in which place. Zones
+  alternate between two tints, three when the number of tools is odd. The optional radial context
+  menu is a separate setting, and gestures take the right button from it while they are on.
+
   With **Touchpad** selected in Preferences › Navigation, hold **Shift** and move the pointer to
   pan, or hold **Alt** (**Option** on macOS) and move it to orbit—no mouse button is needed.
   Vertical two-finger scrolling zooms in this preset, regardless of the saved two-finger pan

@@ -2,7 +2,7 @@
 
 pub(crate) use crate::icons::glyphs::transport_glyph;
 use egui::{Rect, Sense, Stroke, UiBuilder, pos2, vec2};
-use serde_json::json;
+use serde_json::{Value, json};
 use solidcraft_engine::doc::{
     FeatureKind, PlaneRef, SketchId,
     construct::{AxisDef, PointDef},
@@ -150,11 +150,18 @@ pub(crate) fn delete_feature(app: &mut SolveApp, id: u64) {
     delete_features(app, vec![id]);
 }
 
+/// Check what deleting `ids` takes with it or makes fail (off the window thread when that takes a
+/// while, #2678), then delete them or ask first.
 pub(crate) fn delete_features(app: &mut SolveApp, ids: Vec<u64>) {
+    let checks = ids.iter().map(|id| ("timeline.dependents".to_string(), json!({ "feature": id }))).collect();
+    app.check_delete(checks, crate::deferred::AfterCheck::Timeline(ids));
+}
+
+/// [`delete_features`] once each feature's `timeline.dependents` report is in.
+pub(crate) fn delete_checked_features(app: &mut SolveApp, ids: Vec<u64>, reports: &[Value]) {
     let mut with = std::collections::BTreeSet::new();
     let mut fail = std::collections::BTreeSet::new();
-    for id in &ids {
-        let deps = app.session.execute("timeline.dependents", &json!({ "feature": id })).unwrap_or_default();
+    for deps in reports {
         for (key, output) in [("deleted_with_it", &mut with), ("would_fail", &mut fail)] {
             output
                 .extend(deps.get(key).and_then(|value| value.as_array()).into_iter().flatten().filter_map(|value| value.as_str().map(String::from)));
@@ -243,6 +250,7 @@ fn toggle_feature(app: &mut SolveApp, id: u64) {
 
 pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
+    let accent = crate::theme::TabAccent::for_tab(&t, &app.ui.tab);
     egui::Panel::bottom("sc_timeline").exact_size(40.0).frame(egui::Frame::NONE.fill(t.timeline)).show(ui, |ui| {
         let r = ui.max_rect();
         let p = ui.painter().clone();
@@ -280,6 +288,8 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
         // The features scroll horizontally in the space right of the playback controls.
         let strip = Rect::from_min_max(pos2(x, r.top()), r.right_bottom());
         ui.scope_builder(UiBuilder::new().max_rect(strip), |ui| {
+            // A plain mouse wheel scrolls the strip sideways too, not only Shift + wheel (#3356).
+            ui.style_mut().always_scroll_the_only_direction = true;
             egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
                 let p = ui.painter().clone();
                 let mut x = ui.max_rect().left();
@@ -327,7 +337,7 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let bg = if err.is_some() {
                         t.timeline_item_error
                     } else if sel {
-                        t.accent_soft
+                        accent.soft
                     } else if resp.hovered() || from_view == Some(*id) {
                         t.hover
                     } else {
@@ -336,7 +346,7 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let edge = if err.is_some() {
                         t.error
                     } else if from_view == Some(*id) {
-                        t.accent
+                        accent.color
                     } else {
                         t.border
                     };
@@ -393,6 +403,8 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                         } else if ui.input(|i| i.modifiers.command || i.modifiers.ctrl) {
                             toggle_feature(app, *id);
                         } else {
+                            app.tree.picked_joints.clear();
+                            app.tree.picked_timeline_groups.clear();
                             let _ = app.run("select.set", json!({"items": [{"type": "feature", "id": id}]}));
                         }
                     }
@@ -448,7 +460,13 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                     if resp.drag_started() {
                         drag = Some(Drag::Marker);
                     }
-                    let col = if resp.hovered() || drag == Some(Drag::Marker) { t.accent } else { t.timeline_marker };
+                    let col = if resp.hovered() || drag == Some(Drag::Marker) {
+                        accent.color
+                    } else if accent.color == t.accent {
+                        t.timeline_marker
+                    } else {
+                        accent.color
+                    };
                     p.rect_filled(mr, 1.0, col);
                     resp.on_hover_text("History marker: drag to roll the model back; new features go here");
                 }
@@ -461,7 +479,7 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let sx = xs.get(slot).copied().unwrap_or(end) - 4.0;
                     p.line_segment(
                         [pos2(sx, r.top() + 3.0), pos2(sx, r.bottom() - 3.0)],
-                        Stroke::new(2.0, if matches!(dg, Drag::Marker) { t.accent } else { t.sketch_accent }),
+                        Stroke::new(2.0, if matches!(dg, Drag::Marker) { accent.color } else { t.sketch_accent }),
                     );
                 }
                 let released = ui.input(|i| i.pointer.any_released());
@@ -615,6 +633,25 @@ mod tests {
         h.app.run("select.clear", json!({})).unwrap();
         h.frames(4);
         h
+    }
+
+    /// A timeline wider than the window scrolls with a plain mouse wheel (#3356).
+    #[test]
+    fn the_mouse_wheel_scrolls_a_long_timeline() {
+        let mut h = Harness::new();
+        for i in 0..80 {
+            h.app.run("sketch.create", json!({"plane": "XY", "name": format!("S{i}")})).unwrap();
+            h.app.run("sketch.finish", json!({})).unwrap();
+        }
+        h.frames(4);
+        let first = crate::scenario::handle_at("timeline:S0").unwrap();
+        let last = crate::scenario::handle_at("timeline:S79").unwrap();
+        assert!(last.x > 1600.0, "the timeline runs past the 1600-point window: {last:?}");
+        h.call("ui.scroll", json!({"x": first.x + 200.0, "y": first.y, "delta": -400.0}));
+        h.frames(30);
+        let moved = crate::scenario::handle_at("timeline:S0").unwrap();
+        assert!(moved.x < first.x - 100.0, "the wheel scrolled the timeline: {first:?} → {moved:?}");
+        assert_eq!(moved.y, first.y);
     }
 
     #[test]

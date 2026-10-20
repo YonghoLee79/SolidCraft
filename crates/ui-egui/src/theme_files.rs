@@ -78,7 +78,14 @@ macro_rules! theme_keys {
         #[allow(dead_code)]
         fn every_colour_has_a_key(t: &Tokens) {
             // Not colours: the hover lift is a grey step, the analysis colours belong to shaders.
-            let Tokens { $($one: _,)* $($many: _,)* hover_face_lift: _, analysis: _, icons: _ } = t;
+            let Tokens {
+                $($one: _,)* $($many: _,)*
+                hover_face_lift: _, analysis: _, icons: _,
+                space_2: _, space_3: _, space_4: _, space_6: _, space_8: _, space_10: _, space_12: _, space_14: _, space_16: _, space_24: _,
+                radius_sm: _, radius_md: _, radius_lg: _, radius_xl: _,
+                font_badge: _, font_micro: _, font_panel: _, font_small: _, font_caption: _, font_body: _, font_label: _, font_button: _,
+                font_heading: _,
+            } = t;
             let IconColors { $($ione: _,)* $($imany: _,)* } = &t.icons;
         }
     };
@@ -96,6 +103,8 @@ theme_keys! {
         profile_fill, glyph_bg, glyph_edge, glyph_text, overlay, rubber_band, app_bar_text, app_bar_hover, timeline_item,
         timeline_item_error, timeline_marker, field, box_window, box_crossing, sketch_projected, sketch_lost,
         sketch_construction, sketch_centerline, bend_up, bend_down, interference,
+        app_bar_separator, surface_accent, mesh_accent, form_accent, render_accent, on_accent, agent_ok, agent_busy, app_bar_hover_subtle,
+        app_bar_hover_button, app_bar_hover_strong, app_bar_tab_active,
     ],
     many: [triad, gizmo, continuity, app_bar_icon, logo],
     icons_one: [
