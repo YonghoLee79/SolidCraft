@@ -428,7 +428,15 @@ pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
         if row.selected { crate::theme::TabAccent::current(ui.ctx()).ink } else { row.color.unwrap_or(if row.dim { t.text_dim } else { t.text }) };
     let label_display = if row.name { crate::i18n::tr_name(row.label) } else { crate::i18n::tr_dyn(row.label) };
     let font = if row.selected { crate::fonts::semibold(t.font_label) } else { FontId::proportional(t.font_label) };
-    let galley = ui.painter().layout_no_wrap(label_display, font, col);
+    // A name longer than the row's room stops at its right edge with a "…" (leaving the badges
+    // their space) instead of running over the panel's edge: the row's tooltip then shows it
+    // whole, and dragging the panel's edge wider shows more of it.
+    let badges = if row.badges.is_empty() { 0.0 } else { 6.0 + 15.0 * row.badges.len() as f32 };
+    let room = (r.right() - 4.0 - x - badges).max(0.0);
+    let mut job = egui::text::LayoutJob::single_section(label_display.clone(), egui::TextFormat { font_id: font, color: col, ..Default::default() });
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+    let galley = ui.painter().layout_job(job);
+    let elided = galley.elided;
     let lw = galley.size().x;
     ui.painter().galley(pos2(x, cy - galley.size().y / 2.0), galley, col);
     let mut bx = (x + lw + 6.0).min(r.right() - 16.0);
@@ -446,6 +454,8 @@ pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
     };
     let resp = match tip {
         Some(t) => resp.on_hover_text(t),
+        // A name that does not fit the row: hovering it shows the whole one.
+        None if elided => resp.on_hover_text(label_display),
         None => resp,
     };
     out.on_control = press_on != 0;
