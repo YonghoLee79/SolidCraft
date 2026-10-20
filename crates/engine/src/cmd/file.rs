@@ -228,27 +228,36 @@ fn convert_meshes(s: &mut Session, out: &mut Value, p: &Value, cmd: &str) -> Res
     let tolerance = expr(p, "tolerance").unwrap_or_else(|| "0.05 mm".into());
     check_expr(s, &tolerance, Kind::Length, cmd, "tolerance")?;
     let millimetres = s.doc.eval(&s.doc.with_design_unit(&tolerance, Kind::Length), Kind::Length).map_err(|e| bad(cmd, e.to_string()))?;
+    // Bare lengths typed in an inch (or cm…) design mean that unit, as a command would.
+    let tolerance = s.doc.with_design_unit(&tolerance, Kind::Length);
     let names: Vec<String> = out["created_bodies"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
     let mut warnings: Vec<String> = out["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-    // The bodies live in the import's component, so the conversions are authored there.
-    let saved = s.active_component;
-    s.active_component = component;
     let mut solids = Vec::new();
     for name in names {
+        // Asked first whether the body converts, so one that cannot stays a mesh body without a
+        // feature that would fail on every rebuild. Then one feature per body, in the import's
+        // component, all inside one rebuild (a glTF may bring many meshes).
         let convertible = {
             let state = s.model.state();
             state.body(&name).map(|b| solidcraft_kernel::convert_mesh(&b.body, millimetres))
         };
         match convertible {
-            Some(Ok(_)) => match super::mesh::convert(s, &json!({"body": name, "tolerance": tolerance})) {
-                Ok(_) => solids.push(name),
-                Err(e) => warnings.push(format!("{name}: stayed a mesh body: {e}")),
-            },
+            Some(Ok(_)) => {
+                let kind = solidcraft_doc::FeatureKind::MeshConvert { body: name.clone().into(), tolerance: tolerance.clone().into() };
+                match s.doc_mut().add_feature(kind, None) {
+                    Ok(id) => {
+                        if let Some(f) = s.doc_mut().feature_mut(id) {
+                            f.component = component;
+                        }
+                        solids.push(name);
+                    }
+                    Err(e) => warnings.push(format!("{name}: stayed a mesh body: {e}")),
+                }
+            }
             Some(Err(e)) => warnings.push(format!("{name}: stayed a mesh body: {e}")),
             None => {}
         }
     }
-    s.active_component = saved;
     s.refresh();
     out["solid_bodies"] = json!(solids);
     if !warnings.is_empty() {
