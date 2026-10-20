@@ -2812,11 +2812,10 @@ mod sketch_return_tab_tests {
             h.app.run("sketch.finish", json!({})).unwrap();
             assert_eq!(h.app.ui.tab, start);
         }
-        for start in ["NO SUCH TAB"] {
-            h.app.ui.tab = start.into();
-            h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
-            h.app.run("sketch.finish", json!({})).unwrap();
-            assert_eq!(h.app.ui.tab, "MODEL", "{start}: falls back to MODEL");
-        }
+        let start = "NO SUCH TAB";
+        h.app.ui.tab = start.into();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        assert_eq!(h.app.ui.tab, "MODEL", "{start}: falls back to MODEL");
     }
 }
