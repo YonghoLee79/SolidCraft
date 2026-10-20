@@ -996,8 +996,13 @@ fn boolean_via(a: &Body, b: &Body, op: BoolOp, whole: &dyn Fn(&Body, &Body, Bool
     {
         // Numerical retries must not quietly alter a planar design's dimensions.
         // Prefer the exact polygon result; reject an edge-only pinch if it cannot
-        // form a closed solid without displacing either operand.
-        r = match crate::polybool::planar_boolean(a, b, op) {
+        // form a closed solid without displacing either operand. A finely faceted pair's result
+        // already is the polygon boolean's (#1983): asking it again would only repeat the work.
+        let exact = match faceted_faces(a, b) {
+            Some(faces) => Err(KernelError::Failed(faceted_refusal(faces))),
+            None => crate::polybool::planar_boolean(a, b, op),
+        };
+        r = match exact {
             Ok(Some(exact)) if preserves_planar_surfaces(a, b, &exact) => {
                 diagnostics = Default::default();
                 diagnostics.events.push(BooleanFallback::new(BooleanStrategy::PlanarFallback));
@@ -1098,6 +1103,29 @@ fn cut_around_voids(a: &Body, b: &Body, whole: &dyn Fn(&Body, &Body, BoolOp) -> 
     let mut all = cut.solid.boundaries().clone();
     all.extend(voids);
     Ok(Some(guard("voids back", || Body::new(Solid::try_new(all).map_err(|e| KernelError::Failed(format!("voids back: {e}")))?))?))
+}
+
+/// Flat faces from which a body counts as finely faceted (#1983): a modelled thread has about
+/// 3000, an exact part with a few hundred holes far fewer than this.
+const FACETED_FACES: usize = 1000;
+
+/// The two bodies' faces together when either is finely faceted: B-rep, only planar faces, at
+/// least [`FACETED_FACES`] of them. Such a pair goes to the exact polygon boolean alone.
+fn faceted_faces(a: &Body, b: &Body) -> Option<usize> {
+    let faceted = |x: &Body| {
+        !x.is_mesh()
+            && x.face_count() >= FACETED_FACES
+            && guard("faceted body", || Ok(x.solid.face_iter().all(|f| matches!(f.oriented_surface(), mt::Surface::Plane(_))))).unwrap_or(false)
+    };
+    (faceted(a) || faceted(b)).then(|| a.face_count() + b.face_count())
+}
+
+/// The refusal of a finely faceted pair the polygon boolean could not decide.
+fn faceted_refusal(faces: usize) -> String {
+    format!(
+        "not supported yet: a boolean with a body this finely faceted ({faces} flat faces between the two, such as a modelled thread) \
+         gave no reliable result; combine the bodies first and add modelled threads afterwards, or thread the hole itself"
+    )
 }
 
 /// Every face of an all-planar union must remain on an operand's original plane.
@@ -1381,6 +1409,25 @@ where
             Ok(None) => return Ok(None),
             // A failed prism attempt keeps trying the other strategies, as it did before.
             Err(_) => {}
+        }
+    }
+    // A body of thousands of flat faces (a modelled thread, a faceted result) is decided by the
+    // exact polygon boolean alone (#1983). Every B-rep retry below meets each of its faces with
+    // each of the other body's, and the ladder of them ran for many minutes; the polygon route
+    // takes seconds, and when it cannot give a result it can stand behind, nothing below can.
+    if let Some(faces) = faceted_faces(a, b) {
+        let (exact, diagnostics) = capture_boolean_diagnostics(|| crate::polybool::planar_boolean(a, b, op));
+        match exact {
+            Ok(Some(body)) if check(&body).0 => {
+                merge(diagnostics);
+                record(BooleanFallback::new(BooleanStrategy::PlanarFallback));
+                return Ok(Some(body));
+            }
+            Ok(None) if plausible(0.0, op, va, vb, slack) => {
+                record(BooleanFallback::new(BooleanStrategy::PlanarFallback));
+                return Ok(None);
+            }
+            _ => return Err(KernelError::Failed(faceted_refusal(faces))),
         }
     }
     // Bodies touching along one whole face (a part joined with its mirror image).

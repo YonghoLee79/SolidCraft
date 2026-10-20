@@ -237,6 +237,35 @@ fn hex_nut(hole: f64) -> Session {
     s
 }
 
+/// Two threaded screws crossing each other, cut and joined (#1983, the hang half of #2038): each
+/// is thousands of flat faces, and the boolean went through every B-rep retry on them for many
+/// minutes. It now takes the exact polygon route alone and answers in seconds, with a result or
+/// a clear refusal.
+#[test]
+fn booleans_of_two_modelled_threads_finish() {
+    let mut s = Session::default();
+    for (id, p) in [
+        ("solid.cylinder", json!({"radius": 2.5, "height": 10, "body_name": "A"})),
+        ("solid.thread", json!({"face": [-2.5, 0, 5], "designation": "M5", "length": 4, "modeled": true})),
+        ("solid.cylinder", json!({"radius": 2.5, "height": 10, "base": [3.5, 0, 2], "operation": "new", "body_name": "B"})),
+        ("solid.thread", json!({"face": [6, 0, 7], "designation": "M5", "length": 4, "modeled": true})),
+    ] {
+        run(&mut s, id, p);
+    }
+    for b in ["A", "B"] {
+        let faces = s.model.state().body(b).map(|b| b.body.face_count()).unwrap_or(0);
+        assert!(faces > 1000, "{b} is faceted: {faces} faces");
+    }
+    for op in ["cut", "join"] {
+        let started = std::time::Instant::now();
+        let r = s.execute("solid.combine", &json!({"target": "A", "tools": ["B"], "operation": op, "keep_tools": true}));
+        assert!(started.elapsed().as_secs() < 30, "the {op} took {:?}", started.elapsed());
+        if let Err(e) = r {
+            assert!(e.to_string().contains("not supported yet"), "{op}: {e}");
+        }
+    }
+}
+
 /// Issue 602: rounding the edges of a hex boss on a threaded shaft froze the app. The thread's
 /// thousands of facets were healed pair by pair, once per feature after it, and the fillet's
 /// preview then compared each of them with the whole old body.
