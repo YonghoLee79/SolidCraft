@@ -298,6 +298,9 @@ pub struct Prefs {
     /// The grid turns to the upright origin plane facing a side view (#1470). Off by default: the
     /// grid stays on the ground plane (XY) whatever the view.
     pub grid_follows_view: bool,
+    /// Draw reference geometry such as inactive sketches and datum planes through shaded bodies.
+    /// Off by default to preserve the depth-tested viewport behaviour.
+    pub reference_geometry_through_bodies: bool,
     /// How finely the viewport tessellates curved faces and edges: `coarse`, `normal`, `fine` or
     /// `ultra` (#1287). Only the display plan the viewport draws; never the design or exports.
     pub display_quality: String,
@@ -460,6 +463,7 @@ impl Default for Prefs {
             msaa: 4,
             ambient_occlusion: false,
             grid_follows_view: false,
+            reference_geometry_through_bodies: false,
             display_quality: "normal".into(),
             supersampling: 1.0,
             supersampling_adaptive: true,
@@ -796,6 +800,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
             p.supersampling_adaptive = d.supersampling_adaptive;
             p.show_frame_rate = d.show_frame_rate;
             p.measure_axis_distances = d.measure_axis_distances;
+            p.reference_geometry_through_bodies = d.reference_geometry_through_bodies;
             p.color_vision = d.color_vision;
             app.ui.visual_style = 0;
             app.ui.show_grid = true;
@@ -1492,6 +1497,10 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             ui.label(crate::i18n::tr_label("Grid follows the view"));
             ui.add_enabled(app.ui.show_grid, egui::Checkbox::without_text(&mut app.preferences.grid_follows_view))
                 .on_hover_text(crate::i18n::tr_label("Side views show the grid on the upright plane facing them instead of the ground"));
+            ui.end_row();
+            ui.label(app.tr("settings.reference_geometry_through_bodies"));
+            ui.checkbox(&mut app.preferences.reference_geometry_through_bodies, "")
+                .on_hover_text(app.tr("settings.reference_geometry_through_bodies_help"));
             ui.end_row();
             ui.label(crate::i18n::tr_label("Ground shadow"));
             ui.checkbox(&mut app.ui.ground_shadow, "");
