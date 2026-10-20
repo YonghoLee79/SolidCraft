@@ -564,15 +564,16 @@ fn sub_curve<C: Cut + BoundedCurve + Clone>(c: &C, a: f64, b: f64) -> C {
     out
 }
 
-/// Pieces of a spline edge from `ps` to `pe` (two pieces for a closed edge).
-fn spline_pieces<C>(c: &C, ps: mt::Point3, pe: mt::Point3, sense: bool, closed: bool, tol: f64) -> R<Vec<C>>
+/// Pieces of a spline edge from `ps` to `pe` (two pieces for a closed edge). The vertices may
+/// be up to `snap` off the curve; `tol` decides whether the curve closes on itself.
+fn spline_pieces<C>(c: &C, ps: mt::Point3, pe: mt::Point3, sense: bool, closed: bool, tol: f64, snap: f64) -> R<Vec<C>>
 where
     C: ParametricCurve<Point = mt::Point3> + BoundedCurve + SearchNearestParameter<mt::D1, Point = mt::Point3> + Cut + Clone + Invertible,
 {
     let (t0, t1) = c.range_tuple();
     let (ts, ds) = nearest_param(c, ps).ok_or("spline evaluation failed")?;
     let (te, de) = nearest_param(c, pe).ok_or("spline evaluation failed")?;
-    if ds > tol || de > tol {
+    if !(ds <= snap && de <= snap) {
         return Err(format!("edge vertices are {:.3e} mm off their curve", ds.max(de)));
     }
     let span = t1 - t0;
@@ -614,9 +615,51 @@ where
     Ok(pieces)
 }
 
+/// Moves one end of a spline piece (`back`: its end, else its start) onto its vertex `p` by
+/// the control point that end sits on, so the piece meets the vertex exactly and keeps its
+/// shape away from that end. A piece whose end is not a control point (an unclamped spline) is
+/// left as it is.
+fn pin_end(c: &mut mt::Curve, p: mt::Point3, back: bool) {
+    let end = if back { c.back() } else { c.front() };
+    let d = p - end;
+    if !(d.magnitude2() > 0.0) {
+        return;
+    }
+    let at_end = |q: mt::Point3| q.distance(end) <= mt::TOLERANCE;
+    match c {
+        mt::Curve::BSplineCurve(b) => {
+            let cp = if back { b.control_points_mut().last() } else { b.control_points_mut().next() };
+            if let Some(q) = cp.filter(|q| at_end(**q)) {
+                *q += d;
+            }
+        }
+        mt::Curve::NurbsCurve(n) => {
+            let cp = if back { n.control_points_mut().last() } else { n.control_points_mut().next() };
+            if let Some(q) = cp.filter(|q| q.w != 0.0 && at_end(mt::Point3::from_homogeneous(**q))) {
+                *q = (mt::Point3::from_homogeneous(*q) + d).to_homogeneous() * q.w;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Kernel curves for an edge from `ps` to `pe`: one piece, or two for a closed edge (so no
-/// kernel edge starts and ends at the same vertex).
-pub(crate) fn edge_pieces(g: &CurveGeo, ps: mt::Point3, pe: mt::Point3, sense: bool, closed: bool, tol: f64) -> R<Vec<mt::Curve>> {
+/// kernel edge starts and ends at the same vertex). A spline or open-conic edge's ends are
+/// moved onto vertices up to `snap` off its curve, so the pieces meet the vertices exactly.
+pub(crate) fn edge_pieces(g: &CurveGeo, ps: mt::Point3, pe: mt::Point3, sense: bool, closed: bool, tol: f64, snap: f64) -> R<Vec<mt::Curve>> {
+    let mut pieces = curve_pieces(g, ps, pe, sense, closed, tol, snap)?;
+    if matches!(g, CurveGeo::BSpline(_) | CurveGeo::Nurbs(_) | CurveGeo::Hyperbola { .. } | CurveGeo::Parabola { .. }) {
+        if let Some(c) = pieces.first_mut() {
+            pin_end(c, ps, false);
+        }
+        if let Some(c) = pieces.last_mut() {
+            pin_end(c, pe, true);
+        }
+    }
+    Ok(pieces)
+}
+
+fn curve_pieces(g: &CurveGeo, ps: mt::Point3, pe: mt::Point3, sense: bool, closed: bool, tol: f64, snap: f64) -> R<Vec<mt::Curve>> {
     match g {
         CurveGeo::Line { .. } => {
             if closed {
@@ -653,15 +696,15 @@ pub(crate) fn edge_pieces(g: &CurveGeo, ps: mt::Point3, pe: mt::Point3, sense: b
             }
             // The curve is open, so the edge is the parameters between its vertices: rising
             // for the same sense, falling for the opposite one.
-            let (ts, te) = (open_conic_param(g, ps, tol)?, open_conic_param(g, pe, tol)?);
+            let (ts, te) = (open_conic_param(g, ps, snap)?, open_conic_param(g, pe, snap)?);
             let scale = 1.0 + ts.abs().max(te.abs());
             if (te - ts).abs() <= 1e-9 * scale {
                 return Err("degenerate conic edge".into());
             }
             Ok(vec![open_conic_curve(g, ts, te)?])
         }
-        CurveGeo::BSpline(c) => Ok(spline_pieces(c, ps, pe, sense, closed, tol)?.into_iter().map(mt::Curve::BSplineCurve).collect()),
-        CurveGeo::Nurbs(c) => Ok(spline_pieces(c, ps, pe, sense, closed, tol)?.into_iter().map(mt::Curve::NurbsCurve).collect()),
+        CurveGeo::BSpline(c) => Ok(spline_pieces(c, ps, pe, sense, closed, tol, snap)?.into_iter().map(mt::Curve::BSplineCurve).collect()),
+        CurveGeo::Nurbs(c) => Ok(spline_pieces(c, ps, pe, sense, closed, tol, snap)?.into_iter().map(mt::Curve::NurbsCurve).collect()),
     }
 }
 

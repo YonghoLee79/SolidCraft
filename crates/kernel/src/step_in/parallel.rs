@@ -67,7 +67,7 @@ fn prepare(ex: &Exchange, job: &Job) -> Prepared {
     let (part, read) = match &job.source {
         Source::Oriented(part) => (part.clone(), None),
         Source::Item { item, units } => {
-            let cx = Ctx { ex, len: units.len, ang: units.ang, tol: units.tol };
+            let cx = Ctx { ex, len: units.len, ang: units.ang, tol: units.tol, snap: units.snap };
             let out = guard("step brep", || brep::read_item(&cx, *item).map_err(KernelError::Failed))
                 .map_err(|e| Failure { read: true, msg: e.to_string().trim_start_matches("the operation failed: ").to_string() })?;
             // Orient once where the file defines the solid; each placement then takes its

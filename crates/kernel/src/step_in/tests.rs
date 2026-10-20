@@ -164,7 +164,7 @@ fn benchmark_independent_step_solids() {
     let start = std::time::Instant::now();
     let ex = p21::parse(&text).unwrap();
     let parse = start.elapsed();
-    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 0.01 };
+    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 0.01, snap: 0.01 };
     let mut items: Vec<_> = ex.entities.iter().filter(|(_, e)| e.name() == "MANIFOLD_SOLID_BREP").map(|(id, _)| *id).collect();
     items.sort();
     let start = std::time::Instant::now();
@@ -433,7 +433,7 @@ fn offset_geometry(definition: &str, offset: &str, len: f64, sense: bool, points
         "{HEAD}#1=CARTESIAN_POINT('',(0.,0.,0.));\n#2=AXIS2_PLACEMENT_3D('',#1,$,$);\n#3={definition};\n#4=OFFSET_SURFACE('',#3,{offset},.U.);\n{TAIL}"
     );
     let ex = p21::parse(&text).unwrap();
-    let cx = Ctx { ex: &ex, len, ang: 1.0, tol: 1e-6 };
+    let cx = Ctx { ex: &ex, len, ang: 1.0, tol: 1e-6, snap: 1e-6 };
     crate::guard("test offset surface", || geom::surface(&cx, 4, points, &[], sense, 0).map_err(KernelError::Failed))
 }
 
@@ -483,13 +483,13 @@ fn offset_surfaces_nested_and_hostile() {
     }
     let text = format!("{HEAD}#1=OFFSET_SURFACE('',#1,1.,.F.);{TAIL}");
     let ex = p21::parse(&text).unwrap();
-    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6 };
+    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6, snap: 1e-6 };
     assert!(geom::surface(&cx, 1, &points, &[], true, 0).unwrap_err().contains("nested too deeply"));
     let text = format!(
         "{HEAD}#1=CARTESIAN_POINT('',(0.,0.,0.));#2=AXIS2_PLACEMENT_3D('',#1,$,$);#3=CYLINDRICAL_SURFACE('',#2,5.);#4=OFFSET_SURFACE('',#3,-6.,.F.);#5=OFFSET_SURFACE('',#4,6.,.F.);{TAIL}"
     );
     let ex = p21::parse(&text).unwrap();
-    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6 };
+    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6, snap: 1e-6 };
     assert!(geom::surface(&cx, 5, &points, &[], true, 0).is_err());
 }
 
@@ -901,6 +901,75 @@ fn unsupported_face_is_left_out_and_reported() {
     assert_eq!(imp.bodies[0].body.face_count(), 5);
     assert!(imp.warnings.iter().any(|w| w.contains("OFFSET_SURFACE")), "{:?}", imp.warnings);
     assert!(imp.warnings.iter().any(|w| w.contains("open body")), "{:?}", imp.warnings);
+}
+
+/// A flat square sheet `size` mm across in millimetres (declared accuracy 1e-6 mm) whose right
+/// edge is a straight spline ending `gap` mm beside the corner vertex it runs to, as exporters
+/// write two curves meeting at a vertex between them. `stray` adds an unused vertex that far
+/// out, which makes the model look that large.
+fn gapped_sheet(size: f64, gap: f64, stray: Option<f64>) -> String {
+    let mut t = String::from(HEAD);
+    for (k, (x, y)) in [(0.0, 0.0), (size, 0.0), (size, size), (0.0, size)].iter().enumerate() {
+        t += &format!("#{}=CARTESIAN_POINT('',({x:.6},{y:.6},0.));\n#{}=VERTEX_POINT('',#{});\n", 20 + k, 30 + k, 20 + k);
+    }
+    if let Some(far) = stray {
+        t += &format!("#38=CARTESIAN_POINT('',({far:.6},0.,0.));\n#39=VERTEX_POINT('',#38);\n");
+    }
+    t += &format!(
+        "#46=CARTESIAN_POINT('',({:.6},{size:.6},0.));\n#47=B_SPLINE_CURVE_WITH_KNOTS('',1,(#21,#46),.UNSPECIFIED.,.F.,.F.,(2,2),(0.,1.),.UNSPECIFIED.);\n",
+        size + gap
+    );
+    t += "#40=DIRECTION('',(1.,0.,0.));\n#41=VECTOR('',#40,1.);\n#50=LINE('',#20,#41);\n#52=LINE('',#22,#41);\n#53=LINE('',#23,#41);\n";
+    for (k, curve) in [50, 47, 52, 53].iter().enumerate() {
+        t += &format!(
+            "#{}=EDGE_CURVE('',#{},#{},#{curve},.T.);\n#{}=ORIENTED_EDGE('',*,*,#{},.T.);\n",
+            60 + k,
+            30 + k,
+            30 + (k + 1) % 4,
+            70 + k,
+            60 + k
+        );
+    }
+    t += "#80=EDGE_LOOP('',(#70,#71,#72,#73));\n#81=FACE_OUTER_BOUND('',#80,.T.);\n#90=CARTESIAN_POINT('',(0.,0.,0.));\n#91=DIRECTION('',(0.,0.,1.));\n";
+    t += "#92=AXIS2_PLACEMENT_3D('',#90,#91,#40);\n#93=PLANE('',#92);\n#82=ADVANCED_FACE('',(#81),#93,.T.);\n";
+    t += "#110=OPEN_SHELL('',(#82));\n#111=SHELL_BASED_SURFACE_MODEL('Sheet',(#110));\n#112=SHAPE_REPRESENTATION('',(#111),#10);\n";
+    t += &context(10, "(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+    t += TAIL;
+    t
+}
+
+#[test]
+fn a_vertex_off_its_curve_by_a_small_share_of_the_model_is_moved_onto_it() {
+    // 0.19 mm on a 1 m sheet: 190 000 times the file's declared accuracy, 1.3e-4 of its size.
+    let imp = step_import(&gapped_sheet(1000.0, 0.19, None)).unwrap();
+    assert!(!imp.warnings.iter().any(|w| w.contains("off their curve")), "{:?}", imp.warnings);
+    assert_eq!(imp.bodies.len(), 1, "{:?}", imp.warnings);
+    let body = &imp.bodies[0].body;
+    assert_eq!(body.face_count(), 1);
+    // Every edge meets its vertices exactly: the spline's end was moved onto the corner.
+    use mt::{BoundedCurve as _, MetricSpace as _};
+    for e in body.solid.edge_iter() {
+        let c = e.curve();
+        assert!(c.front().distance(e.front().point()) < 1e-9 && c.back().distance(e.back().point()) < 1e-9);
+    }
+    let m = measure(body).unwrap();
+    assert!(rel(m.area, 1e6) < 1e-4, "area {}", m.area);
+}
+
+#[test]
+fn a_vertex_further_off_its_curve_than_the_model_allows_leaves_the_face_out() {
+    // 0.19 mm on a 10 mm sheet is 1.3 % of the part; and a stray point a kilometre out cannot
+    // stretch the limit past 1 mm.
+    for text in [gapped_sheet(10.0, 0.19, None), gapped_sheet(1000.0, 2.0, Some(1e6))] {
+        let warnings = match step_import(&text) {
+            Ok(imp) => {
+                assert!(imp.bodies.is_empty());
+                imp.warnings.join("\n")
+            }
+            Err(e) => e.to_string(),
+        };
+        assert!(warnings.contains("off their curve"), "{warnings}");
+    }
 }
 
 #[test]
@@ -1510,7 +1579,7 @@ fn knot_multiplicities_are_checked_before_they_are_expanded() {
     };
     let read = |text: &str| {
         let ex = p21::parse(text).unwrap();
-        let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6 };
+        let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6, snap: 1e-6 };
         geom::curve(&cx, 3, 0)
     };
     let error = read(&curve(1_000_000, 64)).unwrap_err();
@@ -1543,7 +1612,7 @@ fn a_spline_over_a_tiny_parameter_range_is_read_over_one() {
         knots.iter().map(|k| format!("{k:e}")).collect::<Vec<_>>().join(",")
     );
     let ex = p21::parse(&text).unwrap();
-    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6 };
+    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6, snap: 1e-6 };
     let Ok(geom::CurveGeo::BSpline(c)) = geom::curve(&cx, 3, 0) else { panic!("a B-spline") };
     let (t0, t1) = c.range_tuple();
     assert_eq!((t0, t1), (0.0, 1.0));
@@ -1998,7 +2067,7 @@ fn periodic_knot_bsplines_are_read_on_their_domain() {
         row.join(",")
     );
     let ex = p21::parse(&text).unwrap();
-    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6 };
+    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6, snap: 1e-6 };
     let pi = std::f64::consts::PI;
     let on_tube = |p: mt::Point3| (p.x.hypot(p.y) - r).abs() < 1e-9 && p.z > -1e-9 && p.z < h + 1e-9;
 
