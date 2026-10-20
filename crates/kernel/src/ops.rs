@@ -873,7 +873,18 @@ thread_local! {
     /// second round of pushing).
     static APART: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Set while a union runs with a bore narrowed off a common cylinder (no second round).
+    static TANGENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set under [`with_tangent_prepass`]: unions nudge a tool tangent to a target cylinder.
+    static TANGENT_PREPASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set when a union failed on bodies with such a tangent contact (see [`take_tangent_contact`]).
+    static TANGENT_SEEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static BORES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set under [`with_tangent_retry_available`]: the caller will retry a failed join with a
+    /// tangent contact under [`with_tangent_prepass`], so such a join need not try on.
+    static TANGENT_RETRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Unions with a tangent contact seen, and unions given up early, on this thread (counters).
+    static TANGENT_CONTACTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static EARLY_EXITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The intersections left to the booleans running under [`with_attempt_budget`], if any.
     static ATTEMPTS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
@@ -898,6 +909,58 @@ pub fn with_attempt_budget<T>(attempts: usize, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// `f`, with the unions it runs on this thread moving a tool whose plane is externally tangent to
+/// a cylinder of the target (along a line) a hair into it, so that the contact becomes an overlap.
+/// Off by default: it changes the faces of joins that work as they lie, so a caller turns it on
+/// only to retry an operation that failed without it.
+pub fn with_tangent_prepass<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TANGENT_PREPASS.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(TANGENT_PREPASS.with(|c| c.replace(true)));
+    f()
+}
+
+/// `f`, with the unions it runs on this thread that fail on a tangent contact (see
+/// [`with_tangent_prepass`]) giving up once their ordinary tries at the operands as they lie have
+/// failed, instead of going on to shifted operands, a nudged tool and the other last resorts
+/// (seconds, for a result the retry gets in a fraction of that). For a caller that retries the
+/// whole operation under [`with_tangent_prepass`] after such a failure and, where that does not
+/// cure it, redoes the operation without this (see [`tangent_early_exits`]). Off by default.
+pub fn with_tangent_retry_available<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TANGENT_RETRY.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(TANGENT_RETRY.with(|c| c.replace(true)));
+    f()
+}
+
+/// How many unions with a tangent contact (see [`with_tangent_prepass`]) this thread has run, in
+/// all: a caller takes the difference across an operation to learn whether the pre-pass could
+/// have changed it. Counted only under [`with_tangent_prepass`] or [`with_tangent_retry_available`].
+pub fn tangent_contacts() -> u64 {
+    TANGENT_CONTACTS.with(|c| c.get())
+}
+
+/// How many unions this thread has given up early under [`with_tangent_retry_available`], in all.
+pub fn tangent_early_exits() -> u64 {
+    EARLY_EXITS.with(|c| c.get())
+}
+
+/// Whether a union failed on this thread since the last call, between bodies where a planar face
+/// of one lies externally tangent to a cylinder of the other along a line: the failures
+/// [`with_tangent_prepass`] may cure. Only a failed union is looked at, so a boolean that works
+/// pays nothing for it.
+pub fn take_tangent_contact() -> bool {
+    TANGENT_SEEN.with(|c| c.replace(false))
+}
+
 /// Takes one of the attempts left under [`with_attempt_budget`]; false when none is left.
 fn take_attempt() -> bool {
     ATTEMPTS.with(|c| match c.get() {
@@ -917,7 +980,16 @@ fn take_attempt() -> bool {
 /// The result carries its exact history ([`Body::history`]) over the operands `[a, b]`,
 /// whichever way it was made, or none where a step it took does not report one.
 pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
-    crate::profile::timed(crate::profile::Kind::Boolean, || boolean_untimed(a, b, op))
+    let r = crate::profile::timed(crate::profile::Kind::Boolean, || boolean_untimed(a, b, op));
+    if r.is_err() && op == BoolOp::Union && !TANGENT_PREPASS.with(|c| c.get()) && !TANGENT_SEEN.with(|c| c.get()) {
+        let tol = a.size().max(b.size()) * 1e-4;
+        if let (Ok(ma), Ok(mb)) = (a.tessellate_with(tol, true), b.tessellate_with(tol, true))
+            && !tangent_steps(a, b, &ma, &mb).is_empty()
+        {
+            TANGENT_SEEN.with(|c| c.set(true));
+        }
+    }
+    r
 }
 
 fn boolean_untimed(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
@@ -1347,6 +1419,46 @@ where
         }
         return Err(KernelError::Failed("no reliable result at refined tolerances".into()));
     }
+    // A join whose tool has a planar face exactly tangent to a cylinder of the target along a
+    // line (a spoke's inner face against a hub) touches it along that line only. A body with
+    // several such contacts defeats later booleans (a pattern's later copies fail on the
+    // lines the earlier ones left), so the tool is moved a hair (1e-5 of the size) along the
+    // face's normal into the cylinder, to overlap it by a sliver: one solid, with the line
+    // contact an ordinary crossing. Taken only when that result checks; else as it lies. Only
+    // under `with_tangent_prepass`.
+    let prepass = TANGENT_PREPASS.with(|c| c.get());
+    let retry = TANGENT_RETRY.with(|c| c.get());
+    let mut tangent_contact = false;
+    if op == BoolOp::Union && (prepass || retry) && !TANGENT.with(|c| c.get()) {
+        let steps = match &meshes {
+            (Some(ma), Some(mb)) => tangent_steps(a, b, ma, mb),
+            _ => Vec::new(),
+        };
+        if !steps.is_empty() {
+            tangent_contact = true;
+            TANGENT_CONTACTS.with(|c| c.set(c.get() + 1));
+        }
+        if prepass && let Some(&d) = steps.first() {
+            TANGENT.with(|c| c.set(true));
+            let d = d * (size * 1e-5);
+            let (r, diagnostics) = capture_boolean_diagnostics(|| {
+                transform(b, d, Vec3::ZERO, Vec3::Z, 0.0).and_then(|nb| Ok(boolean(a, &nb, op)?.map(|r| nudged(r, &nb, &counts))))
+            });
+            TANGENT.with(|c| c.set(false));
+            if let Ok(Some(body)) = r
+                && check(&body).0
+            {
+                merge(diagnostics);
+                let mut event = BooleanFallback::new(BooleanStrategy::ToolNudge);
+                event.translation_mm = d.len();
+                record(event);
+                return Ok(Some(body));
+            }
+        }
+    }
+    // A caller that retries a failed join with a tangent contact under the pre-pass has no use for
+    // the tries from here on (see `with_tangent_retry_available`).
+    let early_exit = tangent_contact && retry && !prepass;
     // One body clear of or inside the other: no intersection needed.
     // Kept for the end when the facetings disagree with it: bodies that touch along curved
     // faces can pass through each other slightly, and often can't be intersected.
@@ -1642,6 +1754,14 @@ where
                 Err(e) => last = e.to_string(),
             }
         }
+        // The operands as they lie and shifted once have failed at both tolerances, and the caller
+        // will retry with the tangent contact moved apart: the nudged tool and the rest would
+        // walk on to the same wrong result (they cost most of the time of a failed join of this
+        // kind).
+        if attempt == 1 && early_exit {
+            EARLY_EXITS.with(|c| c.set(c.get() + 1));
+            return Err(KernelError::Failed(format!("boolean {op:?}: {last}{apart_failed}")));
+        }
         if empty_votes >= 2 && op != BoolOp::Union {
             if let Some(body) = fine(&mut last) {
                 return Ok(Some(body));
@@ -1823,6 +1943,56 @@ where
         }
         None => Err(KernelError::Failed(format!("boolean {op:?}: {last}"))),
     }
+}
+
+/// Displacements (unit, along a plane's normal) of the tool `b` that move one of its planar
+/// faces into a cylinder of `a` lying exactly tangent to it along a line, or one of the planar
+/// faces of `a` toward a cylinder of the tool (the tool moves the other way). Empty when no
+/// plane touches a cylinder of the other body that way, from outside (see below). Tangent to within 1e-6 of the size,
+/// and the line of contact must run through the inside of the plane's face for a length
+/// (neither crossing its edge nor only meeting it at a corner or along its rim): a disc
+/// standing on the edge of a block's face is no such contact, and is joined as it lies.
+fn tangent_steps(a: &Body, b: &Body, ma: &solidcraft_geom::Mesh, mb: &solidcraft_geom::Mesh) -> Vec<Vec3> {
+    use crate::FaceSurface::{Cylinder, Plane};
+    let size = a.size().max(b.size());
+    let (tol, margin) = (size * 1e-6, size * 2e-3);
+    let surfaces = |x: &Body| (0..x.face_count()).map(|i| crate::face_surface(x, i)).collect::<Vec<_>>();
+    let (sa, sb) = (surfaces(a), surfaces(b));
+    // The vertices of one face's triangles in its mesh.
+    let points = |m: &solidcraft_geom::Mesh, face: usize| -> Vec<Vec3> {
+        m.triangles.iter().zip(&m.tri_face).filter(|(_, f)| **f as usize == face).filter_map(|(t, _)| m.tri(t)).flatten().collect()
+    };
+    let range = |ps: &[Vec3], d: Vec3| ps.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.dot(d)), hi.max(p.dot(d))));
+    let mut steps: Vec<Vec3> = Vec::new();
+    // (planes and their mesh, cylinders and their mesh, the planes are the tool's)
+    for (planes, mp, cylinders, mc, tool_plane) in [(&sb, mb, &sa, ma, true), (&sa, ma, &sb, mb, false)] {
+        for (pi, p) in planes.iter().enumerate() {
+            let Some(Plane { normal, point }) = p else { continue };
+            for (ci, c) in cylinders.iter().enumerate() {
+                let Some(Cylinder { origin, axis, radius }) = c else { continue };
+                let s = normal.dot(*origin - *point);
+                if normal.dot(**axis).abs() > 1e-9 || (s - radius).abs() > tol {
+                    continue;
+                }
+                let (u, v) = (**axis, normal.cross(**axis));
+                let line = v.dot(*origin - *normal * s);
+                let (pp, cp) = (points(mp, pi), points(mc, ci));
+                let ((p0, p1), (c0, c1), (l0, l1)) = (range(&pp, u), range(&cp, u), range(&pp, v));
+                if p1.min(c1) - p0.max(c0) <= margin || line - l0 <= margin || l1 - line <= margin {
+                    continue;
+                }
+                // The plane's outward normal points at the axis (`s > 0`: the bodies lie on
+                // either side of the contact line; a cylinder inside the plane's body, flush
+                // with its wall, is no such contact). The tool's plane moves along `+n` into
+                // the cylinder, or the tool's cylinder along `-n` into the plane's body.
+                let d = *normal * if tool_plane { 1.0 } else { -1.0 };
+                if !steps.iter().any(|e| (*e - d).len() < 1e-9) {
+                    steps.push(d);
+                }
+            }
+        }
+    }
+    steps
 }
 
 /// `a` cut by `b` with the walls of `b` that only touch `a` pushed outward (see

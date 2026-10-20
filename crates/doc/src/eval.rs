@@ -701,6 +701,7 @@ struct CachedEval {
     warning: Option<String>,
     boolean_diagnostics: kernel::BooleanDiagnostics,
     ms: f64,
+    tangent: bool,
     state: Arc<ModelState>,
     /// What the state costs, worked out once when it was stored (see
     /// [`ModelState::retained_bytes`]).
@@ -798,6 +799,13 @@ pub struct FeatureResult {
     pub stale: bool,
     #[serde(skip)]
     fingerprint: u64,
+    /// A join in it had a face tangent to a cylinder (see [`kernel::with_tangent_prepass`]):
+    /// what the pre-pass could change.
+    #[serde(skip)]
+    tangent: bool,
+    /// A join in it gave up early for the retry (see [`kernel::with_tangent_retry_available`]).
+    #[serde(skip)]
+    early: bool,
     #[serde(skip)]
     pub state: Arc<ModelState>,
 }
@@ -818,6 +826,9 @@ pub struct Model {
     pub cache: Arc<std::sync::Mutex<EvalCache>>,
     /// Evaluate everything from scratch (no reuse; tests compare the two).
     pub no_cache: bool,
+    /// Evaluate the features from this one on from scratch (no reuse, nothing taken from or put in
+    /// the cache), the ones before as usual.
+    no_cache_from: Option<usize>,
     /// The imported texts' digests the last `evaluate` fingerprinted the features with.
     step_digests: StepDigests,
 }
@@ -1274,13 +1285,68 @@ impl Model {
     }
 
     /// Re-evaluate the document, reusing results up to the first changed feature.
+    ///
+    /// A pattern or mirror that fails in a join with a face tangent to a cylinder (a spoke
+    /// against a hub, #3379) is evaluated once more with the kernel's tangent pre-pass: the exact
+    /// line contacts of its source, joined before, are what defeat its copies. That runs from the
+    /// first join of that kind (the features before it cannot differ) and the result stands only
+    /// if it cures the feature; else the first one does, with its error. Such a join gives up
+    /// early in the first pass, as the retry is at hand; where a join did that and no retry
+    /// cured it, the design is evaluated again without, so that it comes out as it would have.
+    /// A design that evaluates without a failure is not touched.
     pub fn evaluate(&mut self, doc: &Document) {
+        self.evaluate_retrying(doc, true);
+        if self.results.iter().any(|r| r.early) {
+            self.results.clear();
+            self.evaluate_retrying(doc, false);
+        }
+    }
+
+    fn evaluate_retrying(&mut self, doc: &Document, early: bool) {
+        let once = |m: &mut Model, d: &Document| {
+            if early { kernel::with_tangent_retry_available(|| m.evaluate_once(d)) } else { m.evaluate_once(d) }
+        };
+        kernel::take_tangent_contact();
+        once(self, doc);
+        let mut tried: Vec<usize> = Vec::new();
+        let mut seen = kernel::take_tangent_contact();
+        while seen {
+            let failed = |i: &usize| {
+                !tried.contains(i)
+                    && self.results.get(*i).is_some_and(|r| r.error.is_some())
+                    && doc.features.get(*i).is_some_and(|f| matches!(f.kind, FeatureKind::Pattern { .. } | FeatureKind::Mirror { .. }))
+            };
+            let Some(i) = (0..doc.features.len()).find(failed) else { break };
+            tried.push(i);
+            let (kept, recomputed, restored) = (self.results.clone(), self.last_recomputed, self.last_restored);
+            let before = self.results.iter().take(i).filter(|r| r.error.is_some()).count();
+            // Where the pre-pass starts to matter: the first join with such a contact.
+            let from = self.results.iter().take(i + 1).position(|r| r.tangent).unwrap_or(0);
+            let mut head = doc.clone();
+            head.features.truncate(i + 1);
+            let no_cache_from = self.no_cache_from.replace(from);
+            kernel::with_tangent_prepass(|| self.evaluate_once(&head));
+            self.no_cache_from = no_cache_from;
+            let cured =
+                self.results.get(i).is_some_and(|r| r.error.is_none()) && self.results.iter().take(i).filter(|r| r.error.is_some()).count() <= before;
+            if cured {
+                kernel::take_tangent_contact();
+                once(self, doc);
+                seen = kernel::take_tangent_contact();
+            } else {
+                (self.results, self.last_recomputed, self.last_restored) = (kept, recomputed, restored);
+            }
+        }
+    }
+
+    fn evaluate_once(&mut self, doc: &Document) {
         let (vals, perr) = evaluation_values(doc);
         self.param_errors = perr;
         let mut prev_fp = 0u64;
         let mut state = self.empty.clone();
         let mut out: Vec<FeatureResult> = Vec::with_capacity(doc.features.len());
         let mut reuse = !self.no_cache;
+        let fresh_from = if self.no_cache { Some(0) } else { self.no_cache_from };
         let mut recomputed = 0;
         let mut restored = 0;
         let marker = doc.marker.unwrap_or(usize::MAX);
@@ -1297,6 +1363,10 @@ impl Model {
             let rolled_back = i >= marker;
             // Opening was cancelled: the rest is skipped and the result discarded.
             let cancelled = watched.step(i);
+            let fresh = fresh_from.is_some_and(|t| i >= t);
+            if fresh {
+                reuse = false;
+            }
             let fp = chain_fingerprint(doc, &vals, f, prev_fp, rolled_back, &self.step_digests);
             prev_fp = fp;
             if reuse
@@ -1323,15 +1393,15 @@ impl Model {
                     skipped: true,
                     stale: false,
                     fingerprint: fp,
+                    tangent: false,
+                    early: false,
                     state: state.clone(),
                 });
                 continue;
             }
             // The same feature on the same inputs: its earlier result.
             let key = cache_key(f, fp, fingerprint(0, f, &vals, false, &self.step_digests) ^ placement_digest(doc, f), ctx, &state);
-            if !self.no_cache
-                && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.get(key))
-            {
+            if !fresh && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.get(key)) {
                 restored += 1;
                 if c.error.is_none() {
                     state = c.state.clone();
@@ -1346,11 +1416,14 @@ impl Model {
                     skipped: false,
                     stale: false,
                     fingerprint: fp,
+                    tangent: c.tangent,
+                    early: false,
                     state: state.clone(),
                 });
                 continue;
             }
             recomputed += 1;
+            let (contacts0, exits0) = (kernel::tangent_contacts(), kernel::tangent_early_exits());
             let t0 = now();
             let mut next = (*state).clone();
             for b in &mut next.bodies {
@@ -1460,7 +1533,11 @@ impl Model {
                 }
                 Err(e) => Some(e.to_string().trim_start_matches("the operation failed: ").to_string()),
             };
-            if !self.no_cache
+            let tangent = kernel::tangent_contacts() > contacts0;
+            // A feature a join gave up early in is not what the design has without that: not kept.
+            let early = kernel::tangent_early_exits() > exits0;
+            if !fresh
+                && !early
                 && let Ok(mut m) = self.cache.lock()
             {
                 m.put(
@@ -1470,6 +1547,7 @@ impl Model {
                         warning: warning.clone(),
                         boolean_diagnostics: boolean_diagnostics.clone(),
                         ms,
+                        tangent,
                         bytes: state.retained_bytes(),
                         state: state.clone(),
                     },
@@ -1485,6 +1563,8 @@ impl Model {
                 skipped: false,
                 stale: false,
                 fingerprint: fp,
+                tangent,
+                early,
                 state: state.clone(),
             });
         }

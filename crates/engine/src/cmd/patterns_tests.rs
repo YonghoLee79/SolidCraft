@@ -549,3 +549,47 @@ fn copies_of_a_primitive_cut_only_its_targets() {
         assert!(rel(removed, holes * PI * 9.0 * 10.0) < 1e-3, "{id}: {removed} mm³ cut from Plaque");
     }
 }
+
+/// A rim ring and a hub (a cylinder each, 3 mm tall along Y), and a spoke box from x = 12: its
+/// inner face lies exactly tangent to the hub. `inset` keeps it inside the rim's height (the
+/// failing case of #3379); flush makes it as tall as the rim.
+fn spoked_wheel(inset: bool, count: u32) -> Session {
+    let mut s = Session::default();
+    let cyl = |r: f64| json!({"radius": r, "height": 3, "base": [0, 0, 0], "axis": "Y"});
+    let mut rim = cyl(66.0);
+    rim["body_name"] = json!("rim");
+    run(&mut s, "solid.cylinder", rim);
+    let mut bore = cyl(63.0);
+    (bore["operation"], bore["targets"]) = (json!("cut"), json!(["rim"]));
+    run(&mut s, "solid.cylinder", bore);
+    let mut hub = cyl(12.0);
+    (hub["operation"], hub["targets"]) = (json!("join"), json!(["rim"]));
+    run(&mut s, "solid.cylinder", hub);
+    let (width, y) = if inset { (2.0, 0.5) } else { (3.0, 0.0) };
+    let spoke = json!({"length": 52, "width": width, "height": 2.5, "corner": [12, y, -1.25],
+        "operation": "join", "targets": ["rim"], "name": "spoke"});
+    run(&mut s, "solid.box", spoke);
+    run(&mut s, "solid.pattern.circular", json!({"features": ["spoke"], "axis": "Y", "count": count}));
+    s
+}
+
+/// Spokes whose faces are tangent to the hub along a line (#3379): a pattern of five used to
+/// fail with "lumps: shell boundaries intersect or touch" and now joins as one solid.
+#[test]
+fn circular_pattern_of_spokes_tangent_to_a_hub_joins() {
+    let mut s = spoked_wheel(true, 5);
+    // Rim ring + hub + five spokes' 51 mm outside both, 2 mm wide and 2.5 mm tall.
+    let want = 5004.6 + 5.0 * 255.0;
+    let v = volume(&mut s);
+    assert!(rel(v, want) < 3e-3, "volume {v}, expected about {want}");
+}
+
+/// A pattern that works as it lies is not retried with the tangent nudge: its faces and edges
+/// stay as they were before the retry existed (26 faces, 64 edges).
+#[test]
+fn working_tangent_pattern_is_not_nudged() {
+    let mut s = spoked_wheel(false, 5);
+    let m = run(&mut s, "inspect.measure", json!({}));
+    let body = &m["bodies"][0];
+    assert_eq!((body["faces"].as_u64(), body["edges"].as_u64()), (Some(26), Some(64)), "{body}");
+}

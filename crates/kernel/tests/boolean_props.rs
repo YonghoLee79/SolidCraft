@@ -343,3 +343,59 @@ fn crossing_cylinders_union_moved_far() {
     let there = run(&mv(&a), &mv(&b), BoolOp::Union).unwrap();
     assert!(close(here, there, s), "union at origin {here:.4}, moved by 1000 gives {there:.4}");
 }
+
+/// A wheel's spokes joined one at a time: each spoke's inner face lies exactly tangent to the
+/// hub cylinder along a line, and it reaches into the rim ring (a thin slab inset in y from the
+/// hub and rim faces). Every join must hold its volume: base plus the spokes outside the rim.
+#[test]
+fn spokes_tangent_to_hub_join_one_at_a_time() {
+    let part = |r: f64| cylinder(Vec3::ZERO, Vec3::Y, r, 3.0).expect("cylinder");
+    let join = |a: &Body, b: &Body| solidcraft_kernel::with_tangent_prepass(|| boolean(a, b, BoolOp::Union)).expect("join").expect("a body");
+    let ring = boolean(&part(66.0), &part(63.0), BoolOp::Cut).expect("cut").expect("a ring");
+    let mut body = join(&ring, &part(12.0));
+    let base = vol(&body);
+    let spoke = box_solid(Vec3::new(12.0, 0.5, -1.25), Vec3::new(64.0, 2.5, 1.25)).expect("spoke");
+    let outside = 51.0 * 2.0 * 2.5;
+    body = join(&body, &spoke);
+    for k in 1..=4 {
+        let turn = transform(&spoke, Vec3::ZERO, Vec3::ZERO, Vec3::Y, (72.0 * k as f64).to_radians()).expect("turn");
+        body = join(&body, &turn);
+        let (v, want) = (vol(&body), base + (k + 1) as f64 * outside);
+        assert!((v - want).abs() <= 3e-3 * want, "after copy {k}: volume {v:.3}, expected {want:.3}");
+    }
+}
+
+/// With a retry at hand (`with_tangent_retry_available`) a join that works as it lies is
+/// unchanged, and the first spoke whose join fails on the tangent contact is given up on early
+/// instead of walking the strategies on (#3379).
+#[test]
+fn tangent_join_gives_up_early_only_when_it_fails() {
+    use solidcraft_kernel::{tangent_contacts, tangent_early_exits, with_tangent_retry_available};
+    let part = |r: f64| cylinder(Vec3::ZERO, Vec3::Y, r, 3.0).expect("cylinder");
+    let ring = boolean(&part(66.0), &part(63.0), BoolOp::Cut).expect("cut").expect("a ring");
+    let mut body = boolean(&ring, &part(12.0), BoolOp::Union).expect("join").expect("a body");
+    let spoke = box_solid(Vec3::new(12.0, 0.5, -1.25), Vec3::new(64.0, 2.5, 1.25)).expect("spoke");
+    let (contacts, exits) = (tangent_contacts(), tangent_early_exits());
+    let plain = boolean(&body, &spoke, BoolOp::Union).expect("join").expect("a body");
+    assert_eq!(tangent_contacts(), contacts, "nothing is looked for without a retry at hand");
+    let with = with_tangent_retry_available(|| boolean(&body, &spoke, BoolOp::Union)).expect("join").expect("a body");
+    assert!(tangent_contacts() > contacts, "the spoke's contact with the hub is seen");
+    assert_eq!(tangent_early_exits(), exits, "a join that works does not give up");
+    assert_eq!((with.face_count(), with.edge_count()), (plain.face_count(), plain.edge_count()));
+    assert_eq!(vol(&with), vol(&plain));
+    // The same spokes turned in, one by one, until a join fails: that one gives up early.
+    body = with;
+    let mut failed = false;
+    for k in 1..=4 {
+        let turn = transform(&spoke, Vec3::ZERO, Vec3::ZERO, Vec3::Y, (72.0 * k as f64).to_radians()).expect("turn");
+        match with_tangent_retry_available(|| boolean(&body, &turn, BoolOp::Union)) {
+            Ok(Some(b)) => body = b,
+            _ => {
+                failed = true;
+                break;
+            }
+        }
+    }
+    assert!(failed, "the fifth spoke fails to join as it lies");
+    assert_eq!(tangent_early_exits(), exits + 1, "and gives up early");
+}
