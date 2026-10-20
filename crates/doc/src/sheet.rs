@@ -473,6 +473,7 @@ pub struct CornerJoin {
     pub covering: usize,
     pub covered: usize,
     pub overlap: f64,
+    pub gap: Option<f64>,
 }
 
 /// A sheet metal body (see the module docs).
@@ -2995,25 +2996,27 @@ impl SheetBody {
                 .ok_or_else(|| {
                     DocError::Invalid("not supported yet: overlap requires neighbouring flanges on the base made in the same feature".into())
                 })?;
-            if resolved.iter().any(|&(previous, _, _)| previous == index) {
+            if resolved.iter().any(|&(previous, _, _, _)| previous == index) {
                 return Err(DocError::Invalid("a corner can only have one join".into()));
             }
-            if relief.shape.unwrap_or(self.relief) == ReliefShape::Tear {
+            if join.overlap != 0.0 && relief.shape.unwrap_or(self.relief) == ReliefShape::Tear {
                 return Err(DocError::Invalid("not supported yet: overlapping corners with tear relief".into()));
             }
-            resolved.push((index, covering, join.overlap));
+            resolved.push((index, covering, join.overlap, join.gap));
         }
         let mut notes = Vec::new();
         let mut closed = Vec::with_capacity(corners.len());
         for (index, k) in corners.iter().enumerate() {
-            let overlap = resolved.iter().find(|&&(corner, _, _)| corner == index).map(|&(_, covering, amount)| (covering, amount));
-            let result = match overlap {
-                Some(overlap) => self.close_corner_overlap(k, Some(overlap)),
+            let join = resolved.iter().find(|&&(corner, _, _, _)| corner == index);
+            let result = match join {
+                Some(&(_, covering, amount, gap)) => {
+                    self.close_corner_with_gap(k, (amount != 0.0).then_some((covering, amount)), gap.unwrap_or(self.gap))
+                }
                 None => self.close_corner(k),
             };
             match result {
-                Ok(()) => closed.push(*k),
-                Err(why) if overlap.is_some() => return Err(DocError::Invalid(format!("corner overlap at {}: {why}", self.shown(k.c)))),
+                Ok(()) => closed.push((*k, join.and_then(|join| join.3).unwrap_or(self.gap))),
+                Err(why) if join.is_some() => return Err(DocError::Invalid(format!("corner join at {}: {why}", self.shown(k.c)))),
                 Err(why) => notes.push(format!("the flanges at {} are left open: {why}", self.shown(k.c))),
             }
         }
@@ -3022,6 +3025,10 @@ impl SheetBody {
     }
 
     pub fn join_corner(&mut self, covering: usize, covered: usize, overlap: Option<f64>) -> Result<()> {
+        self.join_corner_with_gap(covering, covered, overlap, self.gap)
+    }
+
+    pub fn join_corner_with_gap(&mut self, covering: usize, covered: usize, overlap: Option<f64>, gap: f64) -> Result<()> {
         if self.flat || covering == covered {
             return Err(DocError::Invalid("pick two different flanges on a folded sheet".into()));
         }
@@ -3036,7 +3043,7 @@ impl SheetBody {
                 return Err(DocError::Invalid("not supported yet: corner joins on torn flanges or flanges with returns".into()));
             }
         }
-        self.close_corner_overlap(&corner, overlap.map(|amount| (covering, amount))).map_err(DocError::Invalid)
+        self.close_corner_with_gap(&corner, overlap.map(|amount| (covering, amount)), gap).map_err(DocError::Invalid)
     }
 
     /// A point of the flat frame, in the part's coordinates, for a note.
@@ -3048,7 +3055,7 @@ impl SheetBody {
     /// Cut the relief at each of `corners`, or tear those of them that are `closed`: the rule's,
     /// but for the shape or size `relief` names. Returns a note for every corner without its
     /// relief or not torn.
-    fn relieve_corners(&mut self, corners: &[Corner], closed: &[Corner], relief: ReliefOverride) -> Vec<String> {
+    fn relieve_corners(&mut self, corners: &[Corner], closed: &[(Corner, f64)], relief: ReliefOverride) -> Vec<String> {
         let mut notes = Vec::new();
         let (shape, size) = (relief.shape.unwrap_or(self.relief), relief.size.unwrap_or(self.relief_size));
         match shape {
@@ -3092,8 +3099,8 @@ impl SheetBody {
             }
             // A tear cuts to the flanges' closed ends, so a corner left open gets none.
             ReliefShape::Tear => {
-                for k in closed {
-                    if let Err(why) = self.tear_corner(k) {
+                for (k, gap) in closed {
+                    if let Err(why) = self.tear_corner(k, *gap) {
                         notes.push(format!("the corner at {} keeps its notch: {why}", self.shown(k.c)));
                     }
                 }
@@ -3127,6 +3134,13 @@ impl SheetBody {
     }
 
     fn close_corner_overlap(&mut self, k: &Corner, overlap: Option<(usize, f64)>) -> std::result::Result<(), String> {
+        self.close_corner_with_gap(k, overlap, self.gap)
+    }
+
+    fn close_corner_with_gap(&mut self, k: &Corner, overlap: Option<(usize, f64)>, gap: f64) -> std::result::Result<(), String> {
+        if !gap.is_finite() || gap < MIN_CORNER_GAP {
+            return Err(format!("the flange gap {gap:.4} mm is below {MIN_CORNER_GAP} mm or is not finite"));
+        }
         if let Some((covering, amount)) = overlap
             && (covering != k.a && covering != k.b || !amount.is_finite() || amount <= 0.0 || amount > self.t)
         {
@@ -3153,10 +3167,6 @@ impl SheetBody {
         }
         if (fa.angle >= 0.0) != (fb.angle >= 0.0) {
             return Err("the flanges bend opposite ways".into());
-        }
-        let gap = self.gap;
-        if !(gap >= MIN_CORNER_GAP) {
-            return Err(format!("the flange gap {gap:.4} mm is below {MIN_CORNER_GAP} mm"));
         }
         let (wa, wb) = (self.fold(k.a), self.fold(k.b));
         let (z_in, normal_sign) = if fa.angle >= 0.0 { (self.t, 1.0) } else { (0.0, -1.0) };
@@ -3234,7 +3244,7 @@ impl SheetBody {
     /// would cross the plane square to the base that halves the corner (into the other bend) or
     /// come nearer the plane halving the flanges' inner faces than a straight taper from where
     /// the corner lies to the half gap the panels keep; the corner then stays as it was closed.
-    fn tear_corner(&mut self, k: &Corner) -> std::result::Result<(), String> {
+    fn tear_corner(&mut self, k: &Corner, gap: f64) -> std::result::Result<(), String> {
         let (Some(mut fa), Some(mut fb)) = (self.flanges.get(k.a).cloned(), self.flanges.get(k.b).cloned()) else {
             return Err("a flange is missing".into());
         };
@@ -3259,7 +3269,7 @@ impl SheetBody {
         let (Some(half), Some(bisector)) = (v3(ea - eb).normalized(), self.halving_plane(k)) else {
             return Err("the flanges are parallel".into());
         };
-        let (c, half_gap) = (v3(k.c), self.gap / 2.0);
+        let (c, half_gap) = (v3(k.c), gap / 2.0);
         for (f, at_end, sign) in [(&fa, k.a_end, 1.0), (&fb, k.b_end, -1.0)] {
             // On a torn end a signed distance is a + b·φ + c·cos φ + d·sin φ in the turn φ, on
             // either face of the sheet: its least less a taper from `from` to `to` is exact.

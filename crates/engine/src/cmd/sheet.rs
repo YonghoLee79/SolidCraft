@@ -21,15 +21,15 @@ pub static COMMANDS: &[CommandSpec] = &[
          height (to the outer face), angle? (default 90 deg), radius? (default: rule), \
          position?: inside|outside|middle, flip?, body?, corner_relief_shape?: notch|round|rectangular|tear and corner_relief? (size across): \
          the relief at the corners these flanges make (default: the rule's); \
-         corners?: [{covering: [x,y,z], covered: [x,y,z], corner_type: butt|partial|full, overlap?: length expression (partial only)}], \
-         points name two selected edges meeting on the base; overlap runs across the covered wall's thickness, with the rule's surface gap; \
+         corners?: [{covering: [x,y,z], covered: [x,y,z], corner_type: butt|partial|full, overlap?: length expression (partial only), gap?: length expression}], \
+         points name two selected edges meeting on the base; overlap runs across the covered wall's thickness; gap defaults to the rule and accepts global parameters; \
          type?: base|edge|contour (default from the inputs); name?, body_name? (the new body). \
          Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused, \
          and so is the corner relief on a base or contour flange",
     ),
     CommandSpec::new("sheet.corner_join", "Corner Join", corner_join).at("SHEET METAL", "MODIFY").icon("corner_join").params(
         "covering, covered: flange tags (F<feature>.<edge>, from the sheet's face names); corner_type?: butt|partial|full (default butt); \
-         overlap?: length expression (partial only); body?; name? - join neighbouring base flanges, including separate flange features",
+         overlap?: length expression (partial only); gap?: length expression (default rule, accepts global parameters); body?; name? - join neighbouring base flanges, including separate flange features",
     ),
     CommandSpec::new("sheet.perforate", "Perforate", perforate).at("SHEET METAL", "CREATE").icon("perforate").params(
         "diameter, pitch: expr; margin?: expr (clear of edges, cut-outs and bends; default: the diameter); pattern?: staggered (60°, default) | square; body? - a perforation field over the whole flat sheet: holes in the flat pattern (perforations), the DXF (layer PERFORATION) and the measured volume, not cut into the B-rep (#732)",
@@ -238,7 +238,7 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
                     .ok_or_else(|| bad(cmd, "`corners` must be an array with at most 1000 entries"))?;
                 for entry in entries {
                     let object = entry.as_object().ok_or_else(|| bad(cmd, "each corner must be an object"))?;
-                    if object.keys().any(|key| !["covering", "covered", "corner_type", "overlap"].contains(&key.as_str())) {
+                    if object.keys().any(|key| !["covering", "covered", "corner_type", "overlap", "gap"].contains(&key.as_str())) {
                         return Err(bad(cmd, "unknown corner parameter"));
                     }
                     let covering = entry.get("covering").and_then(vec3).ok_or_else(|| bad(cmd, "a corner needs a covering edge point"))?;
@@ -256,7 +256,17 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
                     if let Some(amount) = &overlap {
                         check_expr(s, amount, Kind::Length, cmd, "overlap")?;
                     }
-                    corners.push(FlangeCorner { covering: Position(covering), covered: Position(covered), corner_type: corner_type.into(), overlap });
+                    let gap = entry.get("gap").filter(|value| !value.is_null()).map(|_| req_expr(cmd, entry, "gap")).transpose()?;
+                    if let Some(gap) = &gap {
+                        check_expr(s, gap, Kind::Length, cmd, "gap")?;
+                    }
+                    corners.push(FlangeCorner {
+                        covering: Position(covering),
+                        covered: Position(covered),
+                        corner_type: corner_type.into(),
+                        overlap,
+                        gap,
+                    });
                 }
             }
             add_feature(
@@ -318,6 +328,10 @@ fn corner_join(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(amount) = &overlap {
         check_expr(s, amount, Kind::Length, cmd, "overlap")?;
     }
+    let gap = p.get("gap").filter(|value| !value.is_null()).map(|_| req_expr(cmd, p, "gap")).transpose()?;
+    if let Some(gap) = &gap {
+        check_expr(s, gap, Kind::Length, cmd, "gap")?;
+    }
     let state = s.model.state();
     let sheet = state
         .sheets
@@ -333,6 +347,7 @@ fn corner_join(s: &mut Session, p: &Value) -> Result<Value> {
         corner_type: corner_type.into(),
         overlap,
         body: BodyName::from(sheet.body.clone()),
+        gap,
     };
     add_feature(s, p, kind)
 }

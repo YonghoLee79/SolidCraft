@@ -594,8 +594,10 @@ pub(super) fn sheet_eval(
                 if covering == covered || !pairs.insert((covering.min(covered), covering.max(covered))) {
                     return Err(DocError::Invalid("a corner must name two distinct edges and can only be specified once".into()));
                 }
+                let gap = corner.gap.as_ref().map(|expression| val(vals, expression, Kind::Length)).transpose()?;
                 let overlap = match corner.corner_type.as_str() {
-                    "butt" if corner.overlap.is_none() => continue,
+                    "butt" if corner.overlap.is_none() && gap.is_none() => continue,
+                    "butt" if corner.overlap.is_none() => 0.0,
                     "full" if corner.overlap.is_none() => sh.t,
                     "partial" => {
                         let expression =
@@ -609,7 +611,7 @@ pub(super) fn sheet_eval(
                     "butt" | "full" => return Err(DocError::Invalid("only partial overlap takes an overlap length".into())),
                     _ => return Err(DocError::Invalid("corner type must be butt, partial or full".into())),
                 };
-                joins.push(sheet::CornerJoin { covering, covered, overlap });
+                joins.push(sheet::CornerJoin { covering, covered, overlap, gap });
             }
             let (_, notes) = sh.add_flanges_joined(&each, rr, position, *flip, relief, &joins)?;
             if !notes.is_empty() {
@@ -622,7 +624,7 @@ pub(super) fn sheet_eval(
             tag_flanges(sh, n0, f.id);
             rebuild_sheet(st, i)
         }
-        FeatureKind::SheetCornerJoin { covering, covered, corner_type, overlap, body } => {
+        FeatureKind::SheetCornerJoin { covering, covered, corner_type, overlap, body, gap } => {
             let index = sheet_for(st, &Some(body.clone()), None)?;
             let sheet = st.sheets.get_mut(index).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             let resolve = |tag: &str| {
@@ -647,7 +649,8 @@ pub(super) fn sheet_eval(
                 "butt" | "full" => return Err(DocError::Invalid("only partial overlap takes an overlap length".into())),
                 _ => return Err(DocError::Invalid("corner type must be butt, partial or full".into())),
             };
-            sheet.join_corner(covering, covered, amount)?;
+            let gap = gap.as_ref().map(|expression| val(vals, expression, Kind::Length)).transpose()?.unwrap_or(sheet.gap);
+            sheet.join_corner_with_gap(covering, covered, amount, gap)?;
             rebuild_sheet(st, index)
         }
         FeatureKind::SheetPerforate { diameter, pitch, margin, pattern, body } => {

@@ -3088,6 +3088,49 @@ fn corner_overlap_reaches_the_part_flat_pattern_dxf_and_saved_design() {
 }
 
 #[test]
+fn corner_gap_follows_global_parameters_and_saved_design() {
+    let edges = [[60, 0, 2], [120, 45, 2], [60, 90, 2], [0, 45, 2]];
+    for (kind, relief) in [("butt", "notch"), ("butt", "tear"), ("partial", "notch"), ("full", "notch")] {
+        let mut session = Session::default();
+        run(
+            &mut session,
+            "sheet.manage_rules",
+            json!({"name":"AL2", "thickness":"2 mm", "k_factor":0.5, "bend_radius":"1 mm", "gap":"0.5 mm", "active":true}),
+        );
+        base(&mut session, 120.0, 90.0);
+        run(&mut session, "parameters.change", json!({"name":"corner_clearance", "expression":"0.25 mm"}));
+        let corners: Vec<Value> = [(0, 1), (0, 3), (2, 1), (2, 3)]
+            .into_iter()
+            .map(|(covering, covered)| {
+                let mut corner = json!({"covering":edges[covering], "covered":edges[covered], "corner_type":kind, "gap":"corner_clearance"});
+                if kind == "partial" {
+                    corner["overlap"] = json!("1 mm");
+                }
+                corner
+            })
+            .collect();
+        run(&mut session, "sheet.flange", json!({"edges":edges, "height":38.6, "corners":corners, "corner_relief_shape":relief}));
+        assert_eq!(session.model.state().sheets[0].gap, 0.5, "an override must not change the rule");
+        if relief == "tear" {
+            assert!(session.model.state().sheets[0].flanges.iter().all(|flange| flange.tear == (true, true)));
+        }
+        let before = volume(&mut session);
+        let before_flat = flat(&mut session);
+        let mut reopened = Session::new(solidcraft_doc::Document::from_json(&session.doc.to_json()).unwrap());
+        assert!((volume(&mut reopened) - before).abs() < 1e-6, "{kind}");
+        run(&mut reopened, "parameters.change", json!({"name":"corner_clearance", "expression":"1 mm"}));
+        let after = volume(&mut reopened);
+        assert!(after < before - 1.0, "{kind}: changing the corner gap did not remove material: {before} -> {after}");
+        assert_ne!(flat(&mut reopened), before_flat, "{kind}");
+        assert!(reopened.model.results.iter().all(|result| result.error.is_none()), "{kind}: {:?}", reopened.model.results);
+        run(&mut reopened, "edit.undo", json!({}));
+        assert!((volume(&mut reopened) - before).abs() < 1e-6, "{kind}");
+        run(&mut reopened, "edit.redo", json!({}));
+        assert!((volume(&mut reopened) - after).abs() < 1e-6, "{kind}");
+    }
+}
+
+#[test]
 fn standalone_corner_join_follows_separate_features_and_saved_parameters() {
     let edges = [[60, 0, 2], [120, 45, 2]];
     for kind in ["butt", "partial", "full"] {
@@ -3099,12 +3142,13 @@ fn standalone_corner_join_follows_separate_features_and_saved_parameters() {
         );
         base(&mut s, 120.0, 90.0);
         run(&mut s, "parameters.change", json!({"name":"lap", "expression":"1 mm"}));
+        run(&mut s, "parameters.change", json!({"name":"corner_clearance", "expression":"0.25 mm"}));
         let first = run(&mut s, "sheet.flange", json!({"edges":[edges[0]], "height":38.6}));
         run(&mut s, "sheet.flange", json!({"edges":[edges[1]], "height":38.6}));
         let state = s.model.state();
         let tags: Vec<String> = state.sheets[0].flanges.iter().map(|flange| flange.tag.clone()).collect();
         let bends = flat(&mut s)["bends"].clone();
-        let mut params = json!({"covering":tags[0], "covered":tags[1], "corner_type":kind});
+        let mut params = json!({"covering":tags[0], "covered":tags[1], "corner_type":kind, "gap":"corner_clearance"});
         if kind == "partial" {
             params["overlap"] = json!("lap");
         }
@@ -3121,6 +3165,12 @@ fn standalone_corner_join_follows_separate_features_and_saved_parameters() {
         assert!((volume(&mut s) - after).abs() < 1e-6);
         let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
         assert_eq!(flat(&mut reopened), flat(&mut s));
+        assert!((volume(&mut reopened) - after).abs() < 1e-6);
+        let before_gap = flat(&mut reopened);
+        run(&mut reopened, "parameters.change", json!({"name":"corner_clearance", "expression":"1 mm"}));
+        assert!(volume(&mut reopened) < after);
+        assert_ne!(flat(&mut reopened), before_gap);
+        run(&mut reopened, "edit.undo", json!({}));
         assert!((volume(&mut reopened) - after).abs() < 1e-6);
         if kind == "partial" {
             run(&mut reopened, "parameters.change", json!({"name":"lap", "expression":"1.5 mm"}));
@@ -3175,6 +3225,12 @@ fn standalone_corner_join_rejects_bad_input_atomically() {
         json!({"corner_type":"partial", "overlap":2}),
         json!({"corner_type":"partial", "overlap":"1 deg"}),
         json!({"corner_type":"full", "overlap":1}),
+        json!({"gap":"-1 mm"}),
+        json!({"gap":"0 mm"}),
+        json!({"gap":"1 deg"}),
+        json!({"gap":"missing_gap_parameter"}),
+        json!({"gap":true}),
+        json!({"gap":{}}),
         json!({"corner_type":"unknown"}),
     ] {
         let mut params = json!({"covering":tags[0], "covered":tags[1]});
@@ -3202,6 +3258,12 @@ fn bad_corner_overlap_is_refused_without_changing_the_design() {
         json!({"corner_type": "partial", "overlap": "1 deg"}),
         json!({"corner_type": "full", "overlap": "1 mm"}),
         json!({"corner_type": "unknown"}),
+        json!({"corner_type": "butt", "gap": "-1 mm"}),
+        json!({"corner_type": "butt", "gap": "0 mm"}),
+        json!({"corner_type": "butt", "gap": "1 deg"}),
+        json!({"corner_type": "full", "gap": "missing_gap_parameter"}),
+        json!({"corner_type": "full", "gap": true}),
+        json!({"corner_type": "full", "gap": {}}),
         json!({"corner_type": "full", "covered": [60, 90, 2]}),
         json!({"corner_type": "full", "covered": [60, 0, 2]}),
         json!({"corner_type": "full", "covered": [999, 999, 2]}),

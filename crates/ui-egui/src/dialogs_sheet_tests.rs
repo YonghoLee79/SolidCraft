@@ -645,6 +645,7 @@ fn flange_dialog_common_corners_keep_custom_values_and_edge_identity() {
     h.app.dialog.as_mut().unwrap().inputs[0].items.push(removed);
     h.frames(3);
     assert_eq!(settings(&h.app), vec![(2, Some(1)); 4], "new corners inherit the common choice");
+    h.call("ui.resize", json!({"width":1200,"height":1100}));
     h.step(&json!({"click":{"handle":"dialog:Customize each corner"}})).unwrap();
     h.frames(12);
     for _ in 0..600 {
@@ -688,7 +689,9 @@ fn flange_dialog_common_corners_keep_custom_values_and_edge_identity() {
     h.step(&json!({"click":{"handle":"dialog:Customize each corner"}})).unwrap();
     h.call("ui.resize", json!({"width":800,"height":600}));
     h.frames(3);
-    if let Some(value_box) = h.ctx.memory(|memory| memory.area_rect(egui::Id::new("sc_canvas_area"))) {
+    if let Some(value_box) = h.ctx.memory(|memory| memory.area_rect(egui::Id::new("sc_canvas_area")))
+        && h.ctx.memory(|memory| memory.areas().visible_last_frame(&egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sc_canvas_area"))))
+    {
         let panel = h.app.viewport.dialog_rect.unwrap();
         assert!(!value_box.intersects(panel), "the floating height must not cover dialog fields: {value_box:?}, {panel:?}");
     }
@@ -698,6 +701,7 @@ fn flange_dialog_common_corners_keep_custom_values_and_edge_identity() {
     let edited = edit_dialog(&h.app, id, None).unwrap();
     assert_eq!(apply_commands(&h.app, &edited).unwrap()[0].1["params"]["corners"], before[0].1["corners"]);
     assert!(h.app.session.model.results.iter().all(|result| result.error.is_none()));
+    h.call("ui.resize", json!({"width":1200,"height":1100}));
     let reopened = h.call("ui.editFeature", json!({"feature":id}));
     assert_eq!(reopened["ok"], true, "{reopened}");
     h.frames(3);
@@ -720,6 +724,64 @@ fn flange_dialog_common_corners_keep_custom_values_and_edge_identity() {
 }
 
 #[test]
+fn flange_corner_gap_fields_keep_expressions_overrides_and_rule_defaults() {
+    let mut harness = crate::scenario::Harness::new();
+    harness.app = plate();
+    harness.call("ui.resize", json!({"width":1200,"height":1100}));
+    harness.app.run("sheet.flange", json!({"sketch":"Base"})).unwrap();
+    harness.app.run("parameters.change", json!({"name":"corner_clearance", "expression":"0.4 mm"})).unwrap();
+    let points = [Vec3::new(50.0, 0.0, 2.5), Vec3::new(50.0, 60.0, 2.5), Vec3::new(0.0, 30.0, 2.5), Vec3::new(100.0, 30.0, 2.5)];
+    harness.app.session.selection = points.iter().filter_map(|point| edge_sel(&harness.app.session, *point)).collect();
+    harness.app.start("sheet.flange");
+    harness.frames(3);
+    assert_eq!(apply_commands(&harness.app, harness.app.dialog.as_ref().unwrap()).unwrap()[0].1["corners"], json!([]));
+    harness.step(&json!({"click":{"handle":"dialog:Corner Gap"}})).unwrap();
+    harness.step(&json!({"key":"A","cmd":true})).unwrap();
+    harness.step(&json!({"text":"corner_clearance + 0.1 mm"})).unwrap();
+    harness.frames(3);
+    let commands = apply_commands(&harness.app, harness.app.dialog.as_ref().unwrap()).unwrap();
+    let corners = commands[0].1["corners"].as_array().unwrap();
+    assert_eq!(corners.len(), 4);
+    assert!(corners.iter().all(|corner| corner["gap"] == "corner_clearance + 0.1 mm" && corner["corner_type"] == "butt"));
+    let removed = harness.app.dialog.as_mut().unwrap().inputs[0].items.pop().unwrap();
+    harness.frames(3);
+    harness.app.dialog.as_mut().unwrap().inputs[0].items.push(removed);
+    harness.frames(3);
+    let reselected = apply_commands(&harness.app, harness.app.dialog.as_ref().unwrap()).unwrap();
+    assert_eq!(reselected[0].1["edges"], commands[0].1["edges"]);
+    let reselected_corners = reselected[0].1["corners"].as_array().unwrap();
+    assert_eq!(reselected_corners.len(), corners.len());
+    assert!(corners.iter().all(|corner| reselected_corners.contains(corner)));
+    harness.step(&json!({"click":{"handle":"dialog:Customize each corner"}})).unwrap();
+    harness.frames(3);
+    harness.step(&json!({"click":{"handle":"dialog:Corner Gap Front / Left"}})).unwrap();
+    harness.step(&json!({"key":"A","cmd":true})).unwrap();
+    harness.step(&json!({"text":"0.8 mm"})).unwrap();
+    harness.frames(3);
+    let mixed = apply_commands(&harness.app, harness.app.dialog.as_ref().unwrap()).unwrap()[0].1["corners"].clone();
+    assert_eq!(mixed.as_array().unwrap().iter().filter(|corner| corner["gap"] == "0.8 mm").count(), 1);
+    harness.frames(5);
+    assert_eq!(apply_commands(&harness.app, harness.app.dialog.as_ref().unwrap()).unwrap()[0].1["corners"], mixed);
+    harness.step(&json!({"widget":"OK"})).unwrap();
+    assert!(harness.app.dialog.is_none());
+    let feature = harness.app.session.doc.features.last().unwrap().id;
+    let edited = edit_dialog(&harness.app, feature, None).unwrap();
+    assert_eq!(apply_commands(&harness.app, &edited).unwrap()[0].1["params"]["corners"], mixed);
+    assert_eq!(harness.call("ui.editFeature", json!({"feature":feature}))["ok"], true);
+    harness.frames(3);
+    harness.step(&json!({"click":{"handle":"dialog:Corner Gap"}})).unwrap();
+    harness.step(&json!({"key":"A","cmd":true})).unwrap();
+    harness.step(&json!({"text":"corner_clearance"})).unwrap();
+    harness.frames(3);
+    harness.step(&json!({"key":"A","cmd":true})).unwrap();
+    harness.step(&json!({"key":"Backspace"})).unwrap();
+    harness.frames(3);
+    assert_eq!(apply_commands(&harness.app, harness.app.dialog.as_ref().unwrap()).unwrap()[0].1["params"]["corners"], json!([]));
+    harness.step(&json!({"widget":"OK"})).unwrap();
+    assert!(matches!(&harness.app.session.doc.features.last().unwrap().kind, FeatureKind::SheetFlange { corners, .. } if corners.is_empty()));
+}
+
+#[test]
 fn standalone_corner_join_dialog_selects_previews_applies_and_reopens() {
     let mut h = crate::scenario::Harness::new();
     h.app
@@ -731,6 +793,7 @@ fn standalone_corner_join_dialog_selects_previews_applies_and_reopens() {
     h.app.run("sheet.flange", json!({"sketch":"Base"})).unwrap();
     h.app.run("sheet.flange", json!({"edges":[[60,0,2]], "height":38.6})).unwrap();
     h.app.run("sheet.flange", json!({"edges":[[120,45,2]], "height":38.6})).unwrap();
+    h.app.run("parameters.change", json!({"name":"corner_clearance", "expression":"0.4 mm"})).unwrap();
     let state = h.app.session.model.state();
     let tags: Vec<String> = state.sheets[0].flanges.iter().map(|flange| flange.tag.clone()).collect();
     h.app.start("sheet.corner_join");
@@ -749,17 +812,24 @@ fn standalone_corner_join_dialog_selects_previews_applies_and_reopens() {
     h.step(&json!({"click":{"handle":"dialog:Covering"}})).unwrap();
     h.step(&json!({"click":{"handle":"dialog:Covering:Flange 2"}})).unwrap();
     h.frames(3);
+    h.step(&json!({"click":{"handle":"dialog:Corner Gap"}})).unwrap();
+    h.step(&json!({"key":"A","cmd":true})).unwrap();
+    h.step(&json!({"text":"corner_clearance"})).unwrap();
+    h.frames(3);
     assert!(h.app.preview.error.is_none(), "{:?}", h.app.preview.error);
     let commands = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
     assert_eq!(commands[0].0, "sheet.corner_join");
     assert_eq!(commands[0].1["covering"], tags[1]);
     assert_eq!(commands[0].1["covered"], tags[0]);
     assert_eq!(commands[0].1["overlap"], "1 mm");
+    assert_eq!(commands[0].1["gap"], "corner_clearance");
     h.step(&json!({"widget":"OK"})).unwrap();
     assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
     let id = h.app.session.doc.features.last().unwrap().id;
     let mut edited = edit_dialog(&h.app, id, None).unwrap();
-    assert!(matches!(&edited.kind, Kind::Sheet(Sm::CornerJoin { kind:1, cover_second:0, overlap }) if overlap == "1 mm"));
+    assert!(
+        matches!(&edited.kind, Kind::Sheet(Sm::CornerJoin { kind:1, cover_second:0, overlap, gap }) if overlap == "1 mm" && gap == "corner_clearance")
+    );
     assert!(edited.inputs.iter().all(|input| input.items.len() == 1));
     let commands = apply_commands(&h.app, &edited).unwrap();
     assert_eq!(commands[0].1["params"]["covering"], tags[1]);

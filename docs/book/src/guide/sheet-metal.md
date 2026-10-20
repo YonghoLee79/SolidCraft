@@ -76,7 +76,7 @@ take the rule's; either one left out follows the rule while the other is the fea
 relieved only between the flanges of one feature, so a feature's choice never meets another's at a
 corner, and two edge flange features of one part can have different reliefs under one rule. A
 base or contour flange takes its corners from the rule only and refuses both parameters. The
-flange gap and the rule's other values stay with the rule for every flange. The feature's choice is
+rule's other values stay with the rule for every flange. The feature's choice is
 saved with the design (file format 23).
 
 ```json
@@ -104,16 +104,25 @@ for all corners. Front is the low-Y edge, rear the high-Y edge, left low-X and r
 in the sheet's local frame; rotating the camera does not rename the walls. The first common
 overlap choice covers with the front and rear walls.
 
+**Corner Gap** sets the clearance for all selected corners. Leave it empty to use the sheet
+rule's **Flange Gap**, or enter a length such as `0.5 mm`, a global parameter such as
+`corner_clearance`, or an expression such as `corner_clearance + 0.1 mm`. The same field under
+**Customize each corner** sets an individual corner's gap. Mixed values are preserved until
+you edit the common field. Parameter changes recalculate the folded part and flat pattern.
+Gap is separate from Overlap and Corner Relief; it must be at least 0.01 mm and must not cut
+a panel away.
+
 Expand **Customize each corner** for independent corner types and covering walls. Mixed
 settings remain unchanged until a common choice is explicitly selected. Nonrectangular bases
 retain individual wall choices without a front/rear preset. Hovering or focusing a corner or
 covering control outlines its walls in the computed preview without changing the selection.
-For these overlapping joins the rule's **Flange Gap** is the clearance between the covered
+For these overlapping joins **Corner Gap** (or the rule's **Flange Gap**) is the clearance between the covered
 wall's end and the covering wall's face, not a distance along the corner's bisector.
 
 The same choices are available as `corners` in `sheet.flange`. Each entry identifies two of
 the selected edges by their picked points, names the `covering` and `covered` edge, and sets
-`corner_type` to `butt`, `partial` or `full`. Only `partial` takes `overlap`. Omitted corners
+`corner_type` to `butt`, `partial` or `full`. Only `partial` takes `overlap`. Any corner can
+set an optional `gap` length expression; omitting it uses the rule. Omitted corners
 stay Butt, so existing designs keep their joins. The example makes the front and rear walls
 cover both side walls of a 120 x 90 mm base under the 2 mm rule above:
 
@@ -139,8 +148,9 @@ the flat pattern, is refused rather than silently replaced with Butt.
 For flanges made in separate operations, add **Corner Join** from **SHEET METAL > MODIFY**
 after both Flange features. Select a flat face on **Flange 1** and **Flange 2**, choose Butt,
 Partial Overlap or Full Overlap, and choose the Covering flange for an overlap. The result is
-a separate timeline feature with live preview and Edit Feature support. It follows earlier
-flange and parameter changes; a removed flange reports a lost reference instead of silently
+a separate timeline feature with live preview and Edit Feature support. **Corner Gap** accepts
+the same lengths and parameter expressions as the Flange dialog, with an empty value following
+the rule. It follows earlier flange and parameter changes; a removed flange reports a lost reference instead of silently
 selecting a replacement. Suppress or edit the join to repair it.
 
 The JSON command takes the sheet's persistent flange tags (`F<feature>.<edge>`, as used in its
@@ -149,7 +159,7 @@ one wall:
 
 ```json
 {"command":"sheet.corner_join","params":{"covering":"F3.0","covered":"F4.0",
- "corner_type":"partial","overlap":"1 mm"}}
+ "corner_type":"partial","overlap":"1 mm","gap":"0.5 mm"}}
 ```
 
 The two flanges must belong to the same folded sheet and still meet at a corner of its base.

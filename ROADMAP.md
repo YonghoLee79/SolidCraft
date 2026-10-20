@@ -73,6 +73,8 @@ neighbouring base flanges made in different operations, using persistent flange 
 with live preview and editing. Torn flanges, returns and removed corners remain unsupported.
 The Flange dialog has common picture choices for all selected corners, front/rear or left/right
 covering presets on rectangular bases, and individual overrides under Customize each corner.
+Corner Gap accepts a length or global parameter expression, commonly or per corner, and in
+standalone Corner Join; an empty value follows the sheet rule's Flange Gap.
 Wall names follow the sheet's coordinates; hovering or focusing a corner choice outlines its
 walls. Per-edge and bend settings stay collapsed by default, leaving the action buttons visible.
 

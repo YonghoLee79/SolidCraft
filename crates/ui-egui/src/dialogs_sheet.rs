@@ -48,6 +48,7 @@ pub struct FlangeCornerChoice {
     pub kind: usize,
     pub cover_second: bool,
     pub overlap: String,
+    pub gap: String,
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +78,7 @@ pub enum Sm {
         kind: usize,
         cover_second: usize,
         overlap: String,
+        gap: String,
     },
     Hem {
         length: String,
@@ -172,7 +174,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
     let (sm, inputs) = match id {
         "sheet.flange" => (new_flange(0), vec![SelInput::new("Profile / Edges", PROFILES | EDGES | CURVES, true)]),
         "sheet.corner_join" => (
-            Sm::CornerJoin { kind: 0, cover_second: 0, overlap: "1 mm".into() },
+            Sm::CornerJoin { kind: 0, cover_second: 0, overlap: "1 mm".into(), gap: String::new() },
             vec![SelInput::new("Flange 1", PLANAR_FACES, false), SelInput::new("Flange 2", PLANAR_FACES, false)],
         ),
         "sheet.hem" => (Sm::Hem { length: "5 mm".into(), gap: String::new(), flip: false }, vec![SelInput::new("Edges", EDGES, true)]),
@@ -326,9 +328,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
             ui.checkbox(flip, "");
             ui.end_row();
         }
-        Sm::CornerJoin { kind, cover_second, overlap } => {
+        Sm::CornerJoin { kind, cover_second, overlap, gap } => {
             row_label(ui, "Corner Type");
             combo(ui, "sm_join_type", &CORNER_LABELS, kind);
+            ui.end_row();
+            row_label(ui, "Corner Gap");
+            enter |= corner_gap_field(ui, gap, "from the rule");
             ui.end_row();
             if *kind > 0 {
                 row_label(ui, "Covering");
@@ -591,6 +596,11 @@ fn update_corner_choices(app: &SolveApp, points: &[Vec3], choices: &mut Vec<Flan
         .first()
         .filter(|first| inherit && choices.iter().all(|choice| choice.kind == first.kind && choice.overlap == first.overlap))
         .map(|choice| (choice.kind, choice.overlap.clone()));
+    let gap = choices
+        .first()
+        .filter(|first| inherit && choices.iter().all(|choice| choice.gap == first.gap))
+        .map(|choice| choice.gap.clone())
+        .unwrap_or_default();
     let walls = rectangle_walls(app, points);
     let group = choices
         .first()
@@ -619,6 +629,7 @@ fn update_corner_choices(app: &SolveApp, points: &[Vec3], choices: &mut Vec<Flan
                 kind: common.as_ref().map_or(0, |choice| choice.0),
                 cover_second,
                 overlap: common.as_ref().map_or_else(|| "1 mm".into(), |choice| choice.1.clone()),
+                gap: gap.clone(),
             });
         }
     }
@@ -693,6 +704,13 @@ fn set_covering_group(corners: &mut [FlangeCornerChoice], points: &[Vec3], walls
     }
 }
 
+fn corner_gap_field(ui: &mut egui::Ui, gap: &mut String, hint: &str) -> bool {
+    let response = ui.add(egui::TextEdit::singleline(gap).hint_text(crate::i18n::tr_label(hint)));
+    crate::dialogs::publish_row(&response);
+    crate::params_dialog::complete(ui, &response, gap);
+    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
+}
+
 fn flange_corner_rows(app: &SolveApp, ui: &mut egui::Ui, points: &[Vec3], corners: &mut [FlangeCornerChoice]) -> bool {
     if corners.is_empty() {
         return false;
@@ -737,6 +755,20 @@ fn flange_corner_rows(app: &SolveApp, ui: &mut egui::Ui, points: &[Vec3], corner
             }
         }
         hover_walls(ui, &response, points);
+    }
+    ui.end_row();
+    let mut gap = corners.first().map(|corner| corner.gap.clone()).unwrap_or_default();
+    let mixed_gap = corners.iter().any(|corner| corner.gap != gap);
+    if mixed_gap {
+        gap.clear();
+    }
+    let before_gap = gap.clone();
+    row_label(ui, "Corner Gap");
+    enter |= corner_gap_field(ui, &mut gap, if mixed_gap { "Custom" } else { "from the rule" });
+    if gap != before_gap {
+        for corner in corners.iter_mut() {
+            corner.gap.clone_from(&gap);
+        }
     }
     ui.end_row();
     if paired && corners.iter().any(|corner| corner.kind > 0) {
@@ -802,6 +834,12 @@ fn flange_corner_rows(app: &SolveApp, ui: &mut egui::Ui, points: &[Vec3], corner
                 let control = ui.scope(|ui| combo(ui, &format!("sm_corner_type_{first}_{second}"), &CORNER_LABELS, &mut corner.kind));
                 hover_corner(ui, &control.response, corner, &[corner.first, corner.second]);
                 ui.end_row();
+                row_label(ui, &format!("Corner Gap {label}"));
+                let control = ui.push_id(("sm_corner_gap", first, second), |ui| {
+                    enter |= corner_gap_field(ui, &mut corner.gap, "from the rule");
+                });
+                hover_corner(ui, &control.response, corner, &[corner.first, corner.second]);
+                ui.end_row();
                 if corner.kind > 0 {
                     let names = [wall_name(&walls, first), wall_name(&walls, second)];
                     let mut covering = usize::from(corner.cover_second);
@@ -865,12 +903,15 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
                     let mut p = json!({"type": "edge", "edges": flange_edges(inputs, own), "height": height, "angle": angle,
                         "position": POSITIONS.get(*position).copied().unwrap_or("inside")});
                     let points = edge_point_list(inputs);
-                    p["corners"] = json!(corners.iter().filter(|corner| corner.kind > 0 && [corner.first, corner.second].iter().all(|edge| points.iter().any(|point| point.dist(*edge) < 1e-6)))
+                    p["corners"] = json!(corners.iter().filter(|corner| (corner.kind > 0 || !corner.gap.trim().is_empty()) && [corner.first, corner.second].iter().all(|edge| points.iter().any(|point| point.dist(*edge) < 1e-6)))
                         .map(|corner| {
                             let (covering, covered) = if corner.cover_second { (corner.second, corner.first) } else { (corner.first, corner.second) };
                             let mut entry = json!({"covering": pt(covering), "covered": pt(covered), "corner_type": CORNER_TYPES.get(corner.kind).copied().unwrap_or("butt")});
                             if corner.kind == 1 {
                                 entry["overlap"] = json!(corner.overlap);
+                            }
+                            if !corner.gap.trim().is_empty() {
+                                entry["gap"] = json!(corner.gap);
                             }
                             entry
                         }).collect::<Vec<_>>());
@@ -914,7 +955,7 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
             }
             ("sheet.flange", p)
         }
-        Sm::CornerJoin { kind, cover_second, overlap } => {
+        Sm::CornerJoin { kind, cover_second, overlap, gap } => {
             let (first_body, first) = corner_flange(app, items(inputs, 0).first())?;
             let (second_body, second) = corner_flange(app, items(inputs, 1).first())?;
             if first_body != second_body {
@@ -925,6 +966,9 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
                 "corner_type": CORNER_TYPES.get(*kind).copied().unwrap_or("butt")});
             if *kind == 1 {
                 params["overlap"] = json!(overlap);
+            }
+            if !gap.trim().is_empty() {
+                params["gap"] = json!(gap);
             }
             ("sheet.corner_join", params)
         }
@@ -1085,12 +1129,13 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
                         kind: CORNER_TYPES.iter().position(|kind| *kind == corner.corner_type).unwrap_or(0),
                         cover_second: false,
                         overlap: corner.overlap.as_deref().map(str::to_string).unwrap_or_else(|| "1 mm".into()),
+                        gap: corner.gap.as_deref().map(str::to_string).unwrap_or_default(),
                     })
                     .collect(),
             };
             (f, picked)
         }
-        FeatureKind::SheetCornerJoin { covering, covered, corner_type, overlap, body } => {
+        FeatureKind::SheetCornerJoin { covering, covered, corner_type, overlap, body, gap } => {
             let (_, mut inputs) = start(app, "sheet.corner_join")?;
             for (input, tag) in inputs.iter_mut().zip([covering, covered]) {
                 input.items = corner_flange_sel(app, &body.0, tag).into_iter().collect();
@@ -1101,6 +1146,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
                     kind,
                     cover_second: 0,
                     overlap: overlap.as_deref().map(str::to_string).unwrap_or_else(|| "1 mm".into()),
+                    gap: gap.as_deref().map(str::to_string).unwrap_or_default(),
                 }),
                 inputs,
                 extra,

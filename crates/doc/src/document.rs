@@ -459,6 +459,9 @@ pub struct FlangeCorner {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[walk(length = "Corner overlap")]
     pub overlap: Option<Expr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[walk(length = "Corner gap")]
+    pub gap: Option<Expr>,
 }
 
 /// One edge of an edge flange feature: a point on the sheet's edge and, where given, this
@@ -1061,6 +1064,9 @@ pub enum FeatureKind {
         #[walk(length = "Overlap")]
         overlap: Option<Expr>,
         body: BodyName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Corner gap")]
+        gap: Option<Expr>,
     },
     /// Flat hems on sheet edges.
     SheetHem {
