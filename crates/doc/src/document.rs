@@ -2718,6 +2718,22 @@ impl Document {
         (expected == *self).then_some((old, new))
     }
 
+    /// The feature whose name alone turns `previous` into this design, when that is all that
+    /// changed.
+    pub fn feature_rename_from(&self, previous: &Document) -> Option<u64> {
+        if self.features.len() != previous.features.len() {
+            return None;
+        }
+        let mut renamed = previous.features.iter().zip(&self.features).filter(|(a, b)| a.id == b.id && a.name != b.name);
+        let (_, b) = renamed.next()?;
+        if renamed.next().is_some() {
+            return None;
+        }
+        let mut expected = previous.clone();
+        expected.feature_mut(b.id)?.name.clone_from(&b.name);
+        (expected == *self).then_some(b.id)
+    }
+
     /// A complete structural proof: no non-render field is allowed to differ. Keeping this
     /// comparison based on the whole Document also includes fields added in future versions.
     /// The clone/comparison is only needed when render intent actually differs.

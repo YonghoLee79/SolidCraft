@@ -633,8 +633,8 @@ impl Session {
     }
 
     /// [`Session::refresh`] after the design changed from `previous`; a change that only renamed
-    /// a body (or undid or redid such a rename) renames it in the model instead, which keeps
-    /// every result and mesh (#3044).
+    /// a body or a feature (or undid or redid such a rename) renames it in the model instead,
+    /// which keeps every result and mesh (#3044).
     fn refresh_from(&mut self, previous: &Arc<Document>) {
         if let Some((old, new)) = self.body_rename(previous)
             && self.model.rename_body(&self.doc, &old, &new)
@@ -643,6 +643,13 @@ impl Session {
             if !self.doc.assembly.joints.is_empty() {
                 cmd::joints::resolve(self);
             }
+            return;
+        }
+        // A feature's name labels it and builds nothing.
+        if let Some(id) = self.doc.feature_rename_from(previous)
+            && self.model.rename_feature(&self.doc, id)
+        {
+            self.revision += 1;
             return;
         }
         self.refresh();

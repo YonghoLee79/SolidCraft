@@ -475,7 +475,7 @@ pub(super) fn app_bar_toggle(app: &mut SolveApp, ui: &mut egui::Ui, rect: egui::
     if response.has_focus() {
         ui.painter().rect_stroke(rect.shrink(1.0), 4.0, egui::Stroke::new(1.0, t.app_bar_text), egui::StrokeKind::Inside);
     }
-    crate::icons::paint_on(ui.painter(), rect.shrink(4.0), "document_browser", Some(true), 1.0);
+    crate::icons::paint_app_bar(ui.painter(), rect.shrink(4.0), "document_browser", 1.0);
     if response.on_hover_text(label).clicked() {
         ui.memory_mut(|memory| memory.request_focus(ui.id().with("document_browser_toggle")));
         app.library.collapsed = !app.library.collapsed;
@@ -758,17 +758,25 @@ mod tests {
     fn header_gear_stays_at_the_right_and_titlebar_toggle_precedes_file() {
         let mut h = Harness::new();
         folder_picker(&mut h, None);
-        for name in ["CAD Files".to_owned(), "Long CAD directory ".repeat(30)] {
-            h.app.library.root = Some(h.dir.join(&name));
-            h.app.library.current = h.app.library.root.clone().unwrap();
-            h.frames(3);
-            let panel = crate::scenario::rect_of("library:panel").unwrap();
-            let gear = crate::scenario::handle_at("library:settings").unwrap();
-            assert!((gear.x - (panel.right() - 20.0)).abs() < 1.0, "{panel:?} {gear:?}");
-            let toggle = crate::scenario::rect_of("library:toggle").unwrap();
-            let file = crate::scenario::rect_of("appbar:file").unwrap();
-            assert!(toggle.right() < file.left());
-            assert!(toggle.bottom() < panel.top());
+        for theme in ["light", "dark"] {
+            h.app.preferences.theme = theme.into();
+            for width in [520, 800, 1280] {
+                h.call("ui.resize", json!({"width":width,"height":720}));
+                for name in ["CAD Files".to_owned(), "Long CAD directory ".repeat(30)] {
+                    h.app.library.root = Some(h.dir.join(&name));
+                    h.app.library.current = h.app.library.root.clone().unwrap();
+                    h.frames(3);
+                    let panel = crate::scenario::rect_of("library:panel").unwrap();
+                    let gear = crate::scenario::handle_at("library:settings").unwrap();
+                    assert!((gear.x - (panel.right() - 20.0)).abs() < 1.0, "{panel:?} {gear:?}");
+                    let toggle = crate::scenario::rect_of("library:toggle").unwrap();
+                    let file = crate::scenario::rect_of("appbar:file").unwrap();
+                    let home = crate::scenario::rect_of("appbar:home").unwrap();
+                    assert!(toggle.right() < home.left());
+                    assert!(home.right() < file.left());
+                    assert!(toggle.bottom() < panel.top());
+                }
+            }
         }
     }
 

@@ -5,7 +5,10 @@ use solidcraft_ui_egui::scenario::Harness;
 
 fn open() -> Harness {
     let mut h = Harness::new();
-    h.step(&json!({"widget":"Parameters"})).unwrap();
+    // The Browser's Parameters row starts this command; the ribbon shows only the active tab, so no
+    // Parameters button is on screen to click.
+    h.call("ui.start", json!({"command":"parameters.change"}));
+    h.frames(3);
     assert!(h.app.params.is_some());
     h
 }
