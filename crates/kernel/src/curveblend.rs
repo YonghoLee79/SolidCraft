@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Polyline, Segment, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::blend::too_large;
@@ -368,7 +368,7 @@ fn tangent_cap(fit: &Fit, g: &mt::Face, tangent_side: u8, seams: [Option<&mt::Ed
         let polyline: Vec<Vec3> = (0..=1024).map(|i| from_p3(curve.subs(a + (b - a) * f64::from(i) / 1024.0))).collect();
         let dist = |v: f64| -> f64 {
             let x = from_p3(surf.subs(u, v));
-            polyline.windows(2).map(|w| x.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min)
+            polyline.distance_to(x)
         };
         let n = 400;
         let step = (hi - lo) / f64::from(n);
@@ -946,7 +946,7 @@ pub(crate) fn straight(e: &mt::Edge, tol: f64) -> bool {
     }
     let (a, b) = (from_p3(e.front().point()), from_p3(e.back().point()));
     let (t0, t1) = c.range_tuple();
-    a.dist(b) > tol && (0..=16).all(|i| from_p3(c.subs(t0 + (t1 - t0) * i as f64 / 16.0)).dist_to_segment(a, b) <= tol)
+    a.dist(b) > tol && (0..=16).all(|i| Segment::new(a, b).dist(from_p3(c.subs(t0 + (t1 - t0) * i as f64 / 16.0))) <= tol)
 }
 
 /// Consuming both seams of a side can leave its old boundary and a fitted contact on the
@@ -1511,7 +1511,7 @@ fn curve_blend_sized(solid: &Solid, ids: &[mt::EdgeID], size: f64, size_law: Siz
         if let Some((side, seam)) = here.get(1).filter(|_| !at_end) {
             let q = if *side == 1 { s.q1 } else { s.q2 };
             let (a, b) = (from_p3(seam.front().point()), from_p3(seam.back().point()));
-            if !straight(seam, tol * 10.0) || q.dist_to_segment(a, b) > tol * 1e3 {
+            if !straight(seam, tol * 10.0) || Segment::new(a, b).dist(q) > tol * 1e3 {
                 return Err(unsupported("seams on both sides of a corner of the edge chain"));
             }
         }

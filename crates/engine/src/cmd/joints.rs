@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::joints::cam::{self, Cam, CamProfile, Follower};
 use solidcraft_doc::joints::{self, Coupling, Joint, JointExprs, JointKind, JointOrigin, MotionLink, NamedOrigin, Size, Snap, XRef};
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Polyline, Vec3};
 
 use super::CommandSpec;
 use crate::params::{bad, bool_, num, str_, vec3};
@@ -1105,14 +1105,7 @@ fn cam_profile(s: &Session, p: &Value, cmd: &str) -> Result<CamProfile> {
     let names = picks
         .iter()
         .map(|q| {
-            let near = |b: &&solidcraft_doc::ModelBody| {
-                b.mesh()
-                    .edges
-                    .iter()
-                    .flat_map(|e| e.windows(2))
-                    .filter_map(|w| Some(q.dist_to_segment(*w.first()?, *w.get(1)?)))
-                    .fold(f64::MAX, f64::min)
-            };
+            let near = |b: &&solidcraft_doc::ModelBody| b.mesh().edges.iter().map(|e| e.distance_to(*q)).fold(f64::MAX, f64::min);
             bodies
                 .iter()
                 .min_by(|x, y| near(x).total_cmp(&near(y)))

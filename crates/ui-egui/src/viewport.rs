@@ -5,7 +5,7 @@ use crate::fonts::RichTextExt as _;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 use serde_json::json;
 use solidcraft_engine::Sel;
-use solidcraft_engine::geom::{Vec2, Vec3};
+use solidcraft_engine::geom::{Polyline, Vec2, Vec3};
 use solidcraft_engine::render::{Camera, Mat4, Rgb};
 use solidcraft_engine::sketch::CurveKind;
 use solidcraft_engine::view::{GridPlane, colors, grid_plane, grid_step, sketch_lines_with_sampler};
@@ -1823,7 +1823,7 @@ pub(crate) fn dialog_pick(app: &mut SolveApp, hit: &Hit, sel: Sel) {
 /// otherwise the edge nearest the point.
 fn edge_of(m: &solidcraft_engine::geom::Mesh, index: usize, point: Vec3) -> Option<&Vec<Vec3>> {
     let tol = m.bounds().diagonal().max(1.0) * 1e-6;
-    let near = |e: &Vec<Vec3>| e.windows(2).map(|w| point.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+    let near = |e: &Vec<Vec3>| e.distance_to(point);
     if let Some(e) = m.edges.get(index)
         && near(e) < tol
     {
@@ -2283,7 +2283,7 @@ fn body_rgb(app: &SolveApp, name: &str) -> (u8, u8, u8) {
 }
 
 pub(crate) fn polyline_mid(pts: &[Vec3]) -> Vec3 {
-    let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let len: f64 = pts.length();
     let mut acc = 0.0;
     for w in pts.windows(2) {
         let l = w[0].dist(w[1]);

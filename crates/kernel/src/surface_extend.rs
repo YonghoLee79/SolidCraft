@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 use mt::{BoundedCurve, ParametricCurve, ParametricSurface};
 use solidcraft_geom::tess::EvalSurface;
-use solidcraft_geom::{UnitVec3, Vec3};
+use solidcraft_geom::{Segment, UnitVec3, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -752,7 +752,7 @@ impl<'a> Extension<'a> {
             let (w, from, to) = if along_u { (a.fq[1], a.fq[0], b.fq[0]) } else { (a.fq[0], a.fq[1], b.fq[1]) };
             return ext.iso(along_u, w, from, to);
         }
-        if fr.is_plane() && first.iter().all(|f| f.f.dist_to_segment(a.f, b.f) <= self.tol) {
+        if fr.is_plane() && first.iter().all(|f| Segment::new(a.f, b.f).dist(f.f) <= self.tol) {
             return Ok(mt::Curve::Line(mt::Line(p3(a.f), p3(b.f))));
         }
         self.fit(|t| self.far(fr, run, t).map(|f| f.f), run.t0, run.t1)

@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{RuledCorners, RuledMode, SheetSection};
-use solidcraft_geom::Seg2;
+use solidcraft_geom::{Polyline, Seg2};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState, warning: &mut Option<String>) -> Result<()> {
     match &f.kind {
@@ -900,7 +900,7 @@ fn chain_frames(
     if pts.len() < 2 || stations < 2 {
         return Vec::new();
     }
-    let total: f64 = pts.windows(2).map(|w| (w[1] - w[0]).len()).sum();
+    let total: f64 = pts.length();
     if !(total > 1e-12) {
         return Vec::new();
     }

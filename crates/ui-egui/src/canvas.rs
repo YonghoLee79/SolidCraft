@@ -8,7 +8,7 @@
 use egui::{Color32, Pos2, Stroke, vec2};
 use solidcraft_engine::Sel;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
-use solidcraft_engine::geom::{Mesh, Vec2, Vec3};
+use solidcraft_engine::geom::{Mesh, Polyline, Vec2, Vec3};
 
 use crate::SolveApp;
 use crate::dialogs::{Dialog, Kind};
@@ -162,7 +162,7 @@ fn pattern_dir2(app: &SolveApp, d: &Dialog) -> Option<Vec3> {
 /// instead would land on a two-point line's far end, putting the value box and its arrow on a
 /// corner. None for a polyline with no length.
 fn poly_mid(poly: &[Vec2]) -> Option<(Vec2, Vec2)> {
-    let total: f64 = poly.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let total: f64 = poly.length();
     if !total.is_finite() || total <= 0.0 {
         return None;
     }

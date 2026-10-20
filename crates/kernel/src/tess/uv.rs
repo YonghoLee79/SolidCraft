@@ -2,8 +2,8 @@
 //! the plan stores are the ones the evaluators use), and the tolerance-driven divisions of a
 //! face's parameter box.
 
-use solidcraft_geom::Vec3;
 use solidcraft_geom::tess::EvalSurface;
+use solidcraft_geom::{Segment, Vec3};
 
 use super::size::Rules;
 
@@ -240,7 +240,7 @@ fn limits<'a>(s: &'a EvalSurface, d: usize, across: (f64, f64), rules: &'a Rules
             if pa.dist(pb) > h * (1.0 + 1e-9) {
                 return false;
             }
-            let sag = [0.25, 0.5, 0.75].iter().filter_map(|f| at(a + (b - a) * f, y)).map(|q| q.dist_to_segment(pa, pb)).fold(0.0, f64::max);
+            let sag = [0.25, 0.5, 0.75].iter().filter_map(|f| at(a + (b - a) * f, y)).map(|q| Segment::new(pa, pb).dist(q)).fold(0.0, f64::max);
             if sag > tol {
                 return false;
             }

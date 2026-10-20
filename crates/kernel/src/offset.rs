@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Polyline, Segment, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3};
@@ -692,7 +692,7 @@ pub(crate) fn arc_mid(e: &mt::Edge, tol: f64) -> Option<Option<Vec3>> {
     if a.dist(b) < tol {
         return None;
     }
-    if pts.iter().all(|p| p.dist_to_segment(a, b) < tol) {
+    if pts.iter().all(|p| Segment::new(a, b).dist(*p) < tol) {
         return Some(None);
     }
     let (u, v) = (b - a, m - a);
@@ -1038,14 +1038,13 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                 let m = move_point(mid, &o, &s, &n, size * 1e-6).ok_or_else(|| fail("faces that don't meet along a collapsed round"))?;
                 let near = size * 1e-5;
                 let twin = merged.iter().find(|(x, y, pts, _)| {
-                    ((*x == a.id() && *y == c.id()) || (*x == c.id() && *y == a.id()))
-                        && pts.windows(2).any(|w| w.first().zip(w.get(1)).is_some_and(|(p, q)| m.dist_to_segment(*p, *q) < near))
+                    ((*x == a.id() && *y == c.id()) || (*x == c.id() && *y == a.id())) && pts.segments().any(|s| s.dist(m) < near)
                 });
                 let ne = match twin {
                     Some((_, _, _, x)) => x.clone(),
                     None => {
                         let (pa, pc) = (from_p3(a.point()), from_p3(c.point()));
-                        let x = if m.dist_to_segment(pa, pc) < near { builder::line(a, c) } else { builder::circle_arc(a, c, p3(m)) };
+                        let x = if Segment::new(pa, pc).dist(m) < near { builder::line(a, c) } else { builder::circle_arc(a, c, p3(m)) };
                         let xc = x.curve();
                         let (u0, u1) = xc.range_tuple();
                         let pts: Vec<Vec3> = (0..=16).map(|j| from_p3(xc.subs(u0 + (u1 - u0) * j as f64 / 16.0))).collect();

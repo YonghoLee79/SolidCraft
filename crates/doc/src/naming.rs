@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use solidcraft_geom::{Aabb3, Mesh, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Polyline, Seg2, Vec2, Vec3};
 
 use crate::history_names::Names;
 use crate::lineage::Lineage;
@@ -689,15 +689,7 @@ fn nearest_curve(ss: &crate::SolvedSketch, q: Vec2) -> Option<String> {
 }
 
 fn seg_dist(s: &Seg2, q: Vec2) -> f64 {
-    let pts = s.polyline(1e-3);
-    pts.windows(2)
-        .map(|w| {
-            let (a, b) = (w[0], w[1]);
-            let d = b - a;
-            let t = if d.len2() > 0.0 { ((q - a).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
-            (a + d * t).dist(q)
-        })
-        .fold(f64::MAX, f64::min)
+    s.polyline(1e-3).distance_to(q)
 }
 
 /// Names of a body's edges (by mesh edge index): `<face A>|<face B>`, numbered when repeated.
@@ -737,7 +729,7 @@ pub fn edge_names_at(b: &ModelBody, pts: &[Vec3]) -> Vec<String> {
             m.edges
                 .iter()
                 .enumerate()
-                .map(|(i, e)| (e.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::MAX, f64::min), i))
+                .map(|(i, e)| (e.distance_to(*p), i))
                 .min_by(|a, b| a.0.total_cmp(&b.0))
                 .and_then(|(_, i)| names.get(i).cloned())
                 .unwrap_or_default()

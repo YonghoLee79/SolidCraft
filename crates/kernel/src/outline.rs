@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 use mt::{BoundedCurve, ParametricCurve};
-use solidcraft_geom::{Vec2, Vec3};
+use solidcraft_geom::{Segment, Vec2, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3};
@@ -110,12 +110,7 @@ impl Piece {
     /// Distance from `p` to the piece.
     fn dist(&self, p: Vec2) -> f64 {
         match *self {
-            Piece::Line { a, b } => {
-                let d = b - a;
-                let l2 = d.len2();
-                let s = if l2 > 0.0 { ((p - a).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
-                p.dist(a + d * s)
-            }
+            Piece::Line { a, b } => Segment::new(a, b).dist(p),
             Piece::Arc { c, r, t0, sweep } => match Self::arc_fraction(t0, sweep, (p - c).angle()) {
                 Some(_) => ((p - c).len() - r).abs(),
                 None => p.dist(self.at(0.0)).min(p.dist(self.at(1.0))),

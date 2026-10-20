@@ -10,7 +10,7 @@
 //!
 //! A result that fails is refused with an error: a wrong result that looks right is worse.
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Polyline, Vec3};
 
 use crate::body::Body;
 use crate::{BoolOp, KernelError, Result};
@@ -22,12 +22,12 @@ const MAX_SAMPLES: usize = 20_000;
 pub(crate) fn point_triangle_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
     let n = (b - a).cross(c - a);
     let Some(nn) = n.normalized() else {
-        return [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min);
+        return [a, b, c, a].distance_to(p);
     };
     let h = (p - a).dot(nn);
     let q = p - nn * h;
     let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= 0.0);
-    if inside { h.abs() } else { [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min) }
+    if inside { h.abs() } else { [a, b, c, a].distance_to(p) }
 }
 
 /// The triangles of a mesh in a uniform grid of cells, each listing the triangles within `reach`

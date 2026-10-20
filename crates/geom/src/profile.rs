@@ -6,7 +6,7 @@ use std::f64::consts::TAU;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Aabb2, Ring, Vec2};
+use crate::{Aabb2, Ring, Segment, Vec2};
 
 /// One boundary segment in sketch coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -658,14 +658,7 @@ fn max_clearance(loops: &[Ring<Vec2>]) -> f64 {
         if !inside(p) {
             return 0.0;
         }
-        sides
-            .iter()
-            .map(|(a, b)| {
-                let ab = *b - *a;
-                let t = ((p - *a).dot(ab) / ab.len2()).clamp(0.0, 1.0);
-                p.dist(*a + ab * t)
-            })
-            .fold(f64::INFINITY, f64::min)
+        sides.iter().map(|(a, b)| Segment::new(*a, *b).dist(p)).fold(f64::INFINITY, f64::min)
     };
     const N: usize = 32;
     let size = hi - lo;
@@ -840,13 +833,8 @@ fn segment_distance(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> f64 {
     if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0)) && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0)) {
         return 0.0;
     }
-    let to = |p: Vec2, s: Vec2, e: Vec2| {
-        let v = e - s;
-        let len2 = v.dot(v);
-        let t = if len2 > 0.0 { ((p - s).dot(v) / len2).clamp(0.0, 1.0) } else { 0.0 };
-        p.dist(s + v * t)
-    };
-    to(a, c, d).min(to(b, c, d)).min(to(c, a, b)).min(to(d, a, b))
+    let (ab, cd) = (Segment::new(a, b), Segment::new(c, d));
+    cd.dist(a).min(cd.dist(b)).min(ab.dist(c)).min(ab.dist(d))
 }
 
 #[cfg(test)]

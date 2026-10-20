@@ -50,7 +50,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use solidcraft_geom::{Loop2, Mesh, Plane, Region2, Ring, Seg2, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Mesh, Plane, Polyline, Region2, Ring, Seg2, Segment, UnitVec3, Vec2, Vec3};
 use solidcraft_kernel::{Body, FaceSurface, face_surface};
 
 use super::{FlatWork, ReliefOverride, RuleValues, SheetBody, SheetFlange, base_flange, polys_cross, signed_area, snap};
@@ -168,7 +168,7 @@ fn outline_segs(pts: &[(Vec2, Option<u32>)], wall: &mut impl FnMut(u32) -> Optio
 /// `segs` (a closed loop) with lines that run on in one line joined: a slot's side in two faces
 /// is one line.
 fn joined_lines(segs: impl IntoIterator<Item = Seg2>, tol: f64) -> Vec<Seg2> {
-    let on = |p: Vec2, a: Vec2, b: Vec2| p.extend(0.0).dist_to_segment(a.extend(0.0), b.extend(0.0)) <= tol;
+    let on = |p: Vec2, a: Vec2, b: Vec2| Segment::new(a, b).dist(p) <= tol;
     let mut out: Vec<Seg2> = Vec::new();
     for seg in segs {
         if let (Some(Seg2::Line { a, b }), Seg2::Line { b: c, .. }) = (out.last_mut(), seg)
@@ -272,7 +272,7 @@ fn outline(b: &Body, mesh: &Mesh, f: usize, tol: f64) -> Result<Face> {
         let before = (i + m - 1) % m;
         let (Some(&a), Some(&p), Some(&b)) = (pts.get(before), pts.get(i), pts.get((i + 1) % m)) else { return true };
         let arc = |k: usize| round.get(k).is_some_and(Option::is_some);
-        tags.get(before) != tags.get(i) || arc(before) || arc(i) || p.dist_to_segment(a, b) > tol
+        tags.get(before) != tags.get(i) || arc(before) || arc(i) || Segment::new(a, b).dist(p) > tol
     };
     let keep: Vec<usize> = (0..m).filter(|i| corner(*i)).collect();
     let mut pts: Vec<Vec3> = keep.iter().filter_map(|i| pts.get(*i).copied()).collect();
@@ -381,7 +381,7 @@ fn bend_cylinder(b: &Body, mesh: &Mesh, f: usize, tol: f64) -> Option<Chamfer> {
         };
         let (Some(&p), Some(&q)) = (line.first(), line.last()) else { continue };
         let along = (q - p).normalized().is_some_and(|d| d.cross(axis).len() <= 1e-6);
-        if g == f || !along || line.iter().any(|x| x.dist_to_segment(p, q) > tol) || sides.iter().any(|(h, _)| *h == g) {
+        if g == f || !along || line.iter().any(|x| Segment::new(p, q).dist(*x) > tol) || sides.iter().any(|(h, _)| *h == g) {
             continue;
         }
         // Tangent: the plane's normal is the cylinder's there, square to the axis.
@@ -663,9 +663,7 @@ fn drawn(trimmed: &[Vec2], from: &[Option<usize>], pts: &[Vec2], round: &[Option
 pub fn bend_edge_names(st: &crate::ModelState, body: &str, pts: &[Vec3]) -> Vec<String> {
     let Some(b) = st.body(body) else { return Vec::new() };
     let (mesh, near, tol) = (b.mesh(), (b.body.size() * 2e-3).max(1e-3), (b.body.size() * 1e-6).max(1e-6));
-    let on = |p: &Vec3| {
-        chamfer_at(b, &mesh, *p, tol, near).is_none() && mesh.edges.iter().any(|e| e.windows(2).any(|w| p.dist_to_segment(w[0], w[1]) <= near))
-    };
+    let on = |p: &Vec3| chamfer_at(b, &mesh, *p, tol, near).is_none() && mesh.edges.iter().any(|e| e.segments().any(|s| s.dist(*p) <= near));
     pts.iter().zip(crate::naming::edge_names_at(b, pts)).map(|(p, name)| if on(p) { name } else { String::new() }).collect()
 }
 
@@ -704,7 +702,7 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
             }
             continue;
         }
-        let dist = |e: &Vec<Vec3>| e.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min);
+        let dist = |e: &Vec<Vec3>| e.distance_to(*p);
         let edge = mesh.edges.iter().zip(&mesh.edge_faces).map(|(e, faces)| (dist(e), faces)).min_by(|x, y| x.0.total_cmp(&y.0));
         match edge.filter(|(d, _)| *d <= near).map(|(_, faces)| faces.as_slice()) {
             Some(&[x, y]) if x != y => picks.push((*p, (x as usize, y as usize))),

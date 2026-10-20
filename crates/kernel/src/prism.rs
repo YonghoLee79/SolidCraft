@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 
-use solidcraft_geom::{Aabb2, Loop2, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Aabb2, Loop2, Plane, Region2, Seg2, Segment, Vec2, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3};
@@ -1035,11 +1035,7 @@ fn inside_clear(regions: &[Region2], point: Vec2, tol: f64) -> bool {
 /// Other curve types keep the shared solver introduced on main.
 fn closest_param(segment: &Seg2, point: Vec2) -> f64 {
     match *segment {
-        Seg2::Line { a, b } => {
-            let direction = b - a;
-            let length2 = direction.dot(direction);
-            if length2 > 1e-300 && length2.is_finite() { ((point - a).dot(direction) / length2).clamp(0.0, 1.0) } else { 0.0 }
-        }
+        Seg2::Line { a, b } => Segment::new(a, b).param(point),
         Seg2::Arc { center, radius, start, sweep } if radius > 0.0 && sweep.abs() > 1e-12 && sweep.abs() <= std::f64::consts::TAU + 1e-9 => {
             let offset = point - center;
             let delta = ((offset.y.atan2(offset.x) - start) * sweep.signum()).rem_euclid(std::f64::consts::TAU);

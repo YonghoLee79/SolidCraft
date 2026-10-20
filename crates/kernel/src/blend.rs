@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Polyline, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3, v3};
@@ -1770,8 +1770,7 @@ fn loop_split(cur: &Body, pts: &[Vec3]) -> Result<Option<(Vec<Vec<Vec3>>, Vec<Ve
         .collect();
     let mut per: Vec<(Vec3, mt::EdgeID)> = Vec::new();
     for p in pts {
-        let dists: Vec<(usize, f64)> =
-            polys.iter().map(|e| (e.index, e.points.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::INFINITY, f64::min))).collect();
+        let dists: Vec<(usize, f64)> = polys.iter().map(|e| (e.index, e.points.distance_to(*p))).collect();
         let best = dists.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
         if best > size * 0.05 + 1e-3 {
             return Ok(None);

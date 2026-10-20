@@ -1,3 +1,4 @@
+use crate::Segment;
 use crate::*;
 
 fn cube_mesh(s: f64) -> Mesh {
@@ -115,7 +116,7 @@ fn vec_ops_and_serde() {
     assert_eq!(a.cross(Vec3::X), Vec3::new(0.0, 3.0, -2.0));
     assert_eq!(Vec2::new(3.0, 4.0).len(), 5.0);
     assert!(Vec2::ZERO.normalized().is_none());
-    assert!(Vec3::new(0.5, 0.0, 0.0).dist_to_segment(Vec3::ZERO, Vec3::X) < 1e-12);
+    assert!(Segment::new(Vec3::ZERO, Vec3::X).dist(Vec3::new(0.5, 0.0, 0.0)) < 1e-12);
     assert_eq!(serde_json::to_string(&a).unwrap(), "[1.0,2.0,3.0]");
     let b: Vec2 = serde_json::from_str("[1,2]").unwrap();
     assert_eq!(b, Vec2::new(1.0, 2.0));

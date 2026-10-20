@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Segment, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::blend::{ChamferSide, too_large};
@@ -136,7 +136,7 @@ fn seg_of(e: &mt::Edge, tol: f64) -> Option<Seg> {
     let (t0, t1) = c.range_tuple();
     let pts: Vec<Vec3> = (0..=16).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 16.0))).collect();
     let closed = a.dist(b) < tol;
-    if !closed && pts.iter().all(|p| p.dist_to_segment(a, b) < tol) {
+    if !closed && pts.iter().all(|p| Segment::new(a, b).dist(*p) < tol) {
         return Some(Seg::Line { a, b });
     }
     let m = *pts.get(8)?;
@@ -183,7 +183,7 @@ fn is_straight(e: &mt::Edge, tol: f64) -> bool {
     }
     let c = e.curve();
     let (t0, t1) = c.range_tuple();
-    (0..=16).all(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 16.0)).dist_to_segment(a, b) < tol)
+    (0..=16).all(|k| Segment::new(a, b).dist(from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 16.0))) < tol)
 }
 
 /// `p` turned about the line (c, axis) by `ang`.

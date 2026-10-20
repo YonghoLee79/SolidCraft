@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Segment, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, edge_order, from_p3, p3};
@@ -753,7 +753,9 @@ impl Sources {
             _ => between
                 .iter()
                 .copied()
-                .filter(|i| edges.ends.get(*i).is_some_and(|(s, t)| ends.0.dist_to_segment(*s, *t) <= tol && ends.1.dist_to_segment(*s, *t) <= tol))
+                .filter(|i| {
+                    edges.ends.get(*i).is_some_and(|(s, t)| Segment::new(*s, *t).dist(ends.0) <= tol && Segment::new(*s, *t).dist(ends.1) <= tol)
+                })
                 .collect(),
         };
         match along.as_slice() {
@@ -938,7 +940,7 @@ fn rebuild(polys: &[Poly], size: f64, q: f64, sources: &Sources) -> Result<Body>
                 .filter_map(|k| {
                     let v = verts.get(k)?;
                     let t = (*v - pa).dot(d) / len2.max(1e-300);
-                    (t > 1e-9 && t < 1.0 - 1e-9 && v.dist_to_segment(pa, pb) < q).then_some((t, k))
+                    (t > 1e-9 && t < 1.0 - 1e-9 && Segment::new(pa, pb).dist(*v) < q).then_some((t, k))
                 })
                 .collect();
             on.sort_by(|x, y| x.0.total_cmp(&y.0));

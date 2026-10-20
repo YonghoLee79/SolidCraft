@@ -219,6 +219,7 @@ fn solve4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solidcraft_geom::Polyline;
 
     #[test]
     fn solves_a_four_by_four_system() {
@@ -246,15 +247,13 @@ mod tests {
             let Some(ix) = Intersection::new(&curve) else { continue };
             let (t0, t1) = curve.range_tuple();
             let dense: Vec<Vec3> = (0..=1000).map(|k| from_p3(curve.subs(t0 + (t1 - t0) * f64::from(k) / 1000.0))).collect();
-            let near = |p: Vec3| dense.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::MAX, f64::min);
+            let near = |p: Vec3| dense.distance_to(p);
             // Arc length along truck's curve to the point nearest `p`.
             let along = |p: Vec3| {
                 let (mut run, mut best) = (0.0, (f64::MAX, 0.0));
-                for w in dense.windows(2) {
-                    let (a, b) = (w[0], w[1]);
-                    let len = a.dist(b);
-                    let f = if len > 0.0 { ((p - a).dot(b - a) / (len * len)).clamp(0.0, 1.0) } else { 0.0 };
-                    let d = p.dist(a + (b - a) * f);
+                for seg in dense.segments() {
+                    let (len, f) = (seg.len(), seg.param(p));
+                    let d = p.dist(seg.lerp(f));
                     if d < best.0 {
                         best = (d, run + f * len);
                     }

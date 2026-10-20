@@ -5,7 +5,7 @@ use solidcraft_doc::FeatureKind;
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::{BodyName, SketchId};
 use solidcraft_doc::{Dir, FacePick, Position};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Polyline, Vec3};
 
 use super::CommandSpec;
 use super::features::{
@@ -449,7 +449,7 @@ pub(super) fn snap_point(s: &Session, kind: &str, at: Vec3) -> Option<Vec3> {
                 .collect(),
         ),
         "edge_mid" => {
-            let d = |e: &solidcraft_doc::kernel::EdgeInfo| e.points.windows(2).map(|w| at.dist_to_segment(w[0], w[1])).fold(f64::MAX, f64::min);
+            let d = |e: &solidcraft_doc::kernel::EdgeInfo| e.points.distance_to(at);
             st.bodies
                 .iter()
                 .filter_map(|b| b.body.edges((b.body.size() * 2e-3).max(1e-3)).ok())

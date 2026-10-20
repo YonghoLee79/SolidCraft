@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 use solidcraft_doc::{EmbossFace, apply_point, mat_inverse, mat_mul};
-use solidcraft_geom::{Mesh, Vec2, Vec3};
+use solidcraft_geom::{Mesh, Polyline, Vec2, Vec3};
 
 use crate::params::{bad, vec3};
 use crate::{Result, Session};
@@ -15,7 +15,7 @@ fn point_triangle_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
     let h = (p - a).dot(nn);
     let q = p - nn * h;
     let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12);
-    if inside { h.abs() } else { [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min) }
+    if inside { h.abs() } else { [a, b, c, a].distance_to(p) }
 }
 
 /// The outward normal of the planar body face at `p`.

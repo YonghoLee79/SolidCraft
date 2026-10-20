@@ -6,7 +6,7 @@
 use std::marker::PhantomData;
 use std::ops::Deref;
 
-use crate::{Aabb2, Vec2, Vec3};
+use crate::{Aabb2, Point, Polyline, Segment, Vec2, Vec3};
 
 /// Whether a chain's last item joins its first.
 pub trait Ends: sealed::Sealed {
@@ -78,6 +78,12 @@ impl<T> Path<T> {
     /// The ring through the same items: the last joined back to the first.
     pub fn close(self) -> Ring<T> {
         Chain::new(self.items)
+    }
+}
+
+impl<P: Point, E: Ends> Polyline<P> for Chain<P, E> {
+    fn segments(&self) -> impl Iterator<Item = Segment<P>> + '_ {
+        self.edges().map(|(a, b)| Segment::new(*a, *b))
     }
 }
 

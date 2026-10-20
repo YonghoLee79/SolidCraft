@@ -6,7 +6,7 @@
 //! described.
 
 use mt::builder;
-use solidcraft_geom::{Grid, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Grid, Plane, Polyline, Region2, Seg2, Vec2, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, p3};
@@ -402,7 +402,7 @@ fn railed_stations(pts: &[Vec3], tangents: &[Vec3], mitre: &[Option<(Vec3, f64)>
         return Err(KernelError::Invalid("not supported yet: guide rails along a path with sharp corners".into()));
     }
     let rails: Vec<Vec<Vec3>> = ctl.rails.iter().map(|r| clean(r)).collect::<Result<_>>()?;
-    let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let len: f64 = pts.length();
     let tol = 1e-3f64.max(1e-6 * len);
     let mut cursors = vec![(0usize, 0.0f64); rails.len()];
     // At each station: the anchor the profile moves with, and the vector across that turns and
@@ -497,7 +497,7 @@ fn densify(pts: &[Vec3], ctl: &SweepControl) -> Vec<Vec3> {
     if !ctl.varies() {
         return pts.to_vec();
     }
-    let total: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    let total: f64 = pts.length();
     let want = MIN_CONTROLLED_RULED.max((ctl.twist.abs() / RULED_TWIST_STEP).ceil() as usize).min(MAX_RULED_STATIONS / 2);
     let mut out = Vec::with_capacity(want + pts.len());
     out.extend(pts.first().copied());
@@ -534,7 +534,7 @@ pub fn sweep_path_with(plane: &Plane, region: &Region2, path: &[Vec3], ctl: &Swe
         .ok_or_else(|| KernelError::Invalid("profile".into()))?;
     if !corner && region.holes.is_empty() {
         // Smooth: evenly spaced stations, tangents from neighbours.
-        let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+        let len: f64 = pts.length();
         let n = smooth_count(pts.len(), ctl);
         let sp = resample(&pts, n);
         let tangents = central_tangents(&sp)?;
@@ -848,7 +848,7 @@ fn smooth_walls(plane: &Plane, profile: &NumberedLoop, st: &[Station], expected:
 mod tests {
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
-    use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
+    use solidcraft_geom::{Loop2, Plane, Polyline, Region2, Vec2, Vec3};
 
     use super::{SweepControl, SweepOrientation, sweep_path, sweep_path_with};
 
@@ -868,7 +868,7 @@ mod tests {
         let t0 = (path[1] - path[0]).normalized().unwrap();
         let plane = Plane::from_normal(path[0], t0).unwrap();
         let b = sweep_path(&plane, &circle(2.0), &path).unwrap();
-        let len: f64 = path.windows(2).map(|w| w[0].dist(w[1])).sum();
+        let len: f64 = path.length();
         let v = b.tessellate(0.01).unwrap().measure().volume;
         let want = std::f64::consts::PI * 4.0 * len;
         assert!((v - want).abs() < 0.02 * want, "{v} vs {want}");
