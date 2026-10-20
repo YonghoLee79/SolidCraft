@@ -29,7 +29,8 @@
 # Every Linux job runs on Blacksmith's Ubuntu 24.04 runners (blacksmith-<N>vcpu-ubuntu-2404), sized
 # per job: 16 vCPU for Build tests, Clippy and the merge queue's test shards, 8 for compiles, the
 # other test shards, doc and reference tests, 4 for the light checks, 2 for Select checks and ci.
-# The Windows jobs run on Blacksmith's Windows Server 2025 runners (blacksmith-8vcpu-windows-2025).
+# The Windows shader job runs on Blacksmith's Windows Server 2025 runners (blacksmith-8vcpu-windows-2025);
+# the Windows app startup smoke stays on windows-latest, which has a desktop session that presents frames.
 # Pull requests, forks included, the merge queue, pushes to main and the nightly run all use them:
 # the runners are ephemeral, fork runs get no secrets, and main saves the build caches that every
 # other run restores read-only. The tests are built once (Build tests) into an archive the shards
@@ -669,7 +670,9 @@ jobs:
     name: Windows app startup
     needs: changes
     if: needs.changes.outputs.windows == 'true'
-    runs-on: blacksmith-8vcpu-windows-2025
+    # GitHub-hosted: the startup smoke needs an interactive desktop that presents frames; on
+    # Blacksmith's Windows runners the window never presents ("no frame was presented").
+    runs-on: windows-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
