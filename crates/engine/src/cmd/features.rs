@@ -67,7 +67,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SOLID", "CREATE")
         .icon("hole")
         .key("H")
-        .params("position: [x,y,z] on a face (numbers, or length expressions the hole follows) | sketch + points: [sketch point ids] (one hole each, perpendicular to the sketch, into the material on whichever side of the sketch plane it is) | sketch alone (every sketch point: standalone points and circle centres); flip?: bool (sketch points: drill to the other side); single?: bool (with one sketch point: a Single hole that follows the point, drilled into the face there); direction?: [x,y,z] (default: into the face, against its outward normal; one that leaves the face is mirrored into it; ignored with sketch points unless single); diameter | thread (a tapped hole: the tap drill, major − pitch) | clearance: \"M6\" with fit?: close|normal|loose (ISO 273); depth? (default through all) | to?: [x,y,z] (To Object: drill to that face or point); type?: simple|drilled|counterbore|countersink; tip_angle?; cb_diameter?, cb_depth?; cs_diameter?, cs_angle?; thread?: \"M6\" (cosmetic)"),
+        .params("position: [x,y,z] on a face (numbers, or length expressions the hole follows) | sketch + points: [sketch point ids] (one hole each, perpendicular to the sketch, into the material on whichever side of the sketch plane it is) | sketch alone (every sketch point: standalone points and circle centres); flip?: bool (sketch points: drill to the other side); single?: bool (with one sketch point: a Single hole that follows the point, drilled into the face there); direction?: [x,y,z] (default: into the face, against its outward normal; one that leaves the face is mirrored into it; ignored with sketch points unless single); diameter | thread (a tapped hole: the tap drill, major − pitch) | clearance: \"M6\" with fit?: close|normal|loose (ISO 273); depth? (default through all) | to?: [x,y,z] (To Object: drill to that face or point); type?: simple|drilled|counterbore|countersink; tip_angle?; cb_diameter?, cb_depth?; cs_diameter?, cs_angle?; thread?: \"M6\" (cosmetic); targets?: [body] (the bodies to drill; holes at the points of a sketch on a body's face default to that body, found along the holes' direction on it alone; explicit targets or participants override, [\"*\"] every body)"),
     CommandSpec::new("solid.pipe", "Pipe", pipe)
         .at("SOLID", "CREATE")
         .icon("pipe")
@@ -1807,15 +1807,25 @@ fn hole(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(vec3(v).ok_or_else(|| bad(cmd, "`to` must be a point [x, y, z] on the face to drill to"))?),
         None => None,
     };
-    // A hole picked on a body of another component (a moved one, shown where it is placed) cuts
-    // that body: the pick is already in that body's frame, and the component's own bodies alone
-    // would leave nothing to cut.
     let mut p = p.clone();
-    if points.is_none()
-        && p.get("participants").is_none()
-        && let Some(body) = body_of_other_component_at(s, position)
-    {
-        p["participants"] = json!([body]);
+    let targets = string_list(&p, "targets");
+    if p.get("participants").is_none() {
+        // The bodies to drill, as `targets` (like an extrude's): its participants.
+        if !targets.is_empty() {
+            p["participants"] = json!(targets);
+        } else if let Some(body) = points.as_ref().filter(|(sp, _, _)| !sp.single).and_then(|(sp, _, _)| sketch_face_body(s, sp.sketch.0)) {
+            // Holes at the points of a sketch on a body's face drill that body (#2882): a body
+            // further along, past the face, doesn't take them. Stored, so recomputes and
+            // reopening keep the same scope.
+            p["participants"] = json!([body]);
+        } else if points.is_none()
+            && let Some(body) = body_of_other_component_at(s, position)
+        {
+            // A hole picked on a body of another component (a moved one, shown where it is
+            // placed) cuts that body: the pick is already in that body's frame, and the
+            // component's own bodies alone would leave nothing to cut.
+            p["participants"] = json!([body]);
+        }
     }
     add_feature(
         s,

@@ -2583,12 +2583,13 @@ fn body_at(st: &ModelState, body: &Option<crate::BodyName>, points: &[Vec3]) -> 
 }
 
 /// A hole stays on its face when the model changes: a position now inside a body moves back
-/// against the drilling direction to the surface, one now above it moves down onto it.
-fn hole_on_surface(st: &ModelState, p: Vec3, dir: Vec3) -> Vec3 {
+/// against the drilling direction to the surface, one now above it moves down onto it. Only the
+/// bodies in `scope` count (every body when it is empty, see [`hole_scope`]).
+fn hole_on_surface(st: &ModelState, p: Vec3, dir: Vec3, scope: &[String]) -> Vec3 {
     let size = st.bodies.iter().map(|b| b.body.size()).fold(1.0, f64::max);
     let eps = size * 1e-6;
     let mut best: Option<Vec3> = None;
-    for b in &st.bodies {
+    for b in st.bodies.iter().filter(|b| in_hole_scope(scope, b)) {
         let m = b.mesh();
         // Already on the surface: the drill enters right here.
         if let Some((t, _)) = m.raycast(p - dir * eps, dir)
@@ -2869,12 +2870,12 @@ pub(crate) fn revolve_axis(ss: &SolvedSketch, axis: &AxisRef) -> Result<(Vec2, V
 
 /// Whether a drill from `p` along `d` reaches material: it starts into a body (`touches`), or,
 /// when `ahead` is set, a body lies further along `d`. A spot exactly on a surface counts only
-/// when the drill enters there, not when it leaves.
-fn hole_reaches(st: &ModelState, p: Vec3, d: Vec3, ahead: bool) -> bool {
+/// when the drill enters there, not when it leaves. Only the bodies in `scope` count.
+fn hole_reaches(st: &ModelState, p: Vec3, d: Vec3, ahead: bool, scope: &[String]) -> bool {
     let size = st.bodies.iter().map(|b| b.body.size()).fold(1.0, f64::max);
     let eps = size * 1e-6;
     let q = p + d * eps;
-    st.bodies.iter().any(|b| {
+    st.bodies.iter().filter(|b| in_hole_scope(scope, b)).any(|b| {
         let m = b.mesh();
         m.contains(q) || (ahead && m.raycast(q, d).is_some())
     })
@@ -2892,13 +2893,13 @@ pub fn sketch_hole_direction(st: &ModelState, sketch: u64, ids: &[String], flip:
     let ss = st.sketch(sketch)?;
     let spots: Vec<Vec3> =
         ids.iter().map(|id| ss.sketch.points.iter().find(|p| &p.id == id).map(|p| ss.plane.to_world(p.pos))).collect::<Option<_>>()?;
-    let dir = sketch_hole_dir(st, &spots, ss.plane.normal());
+    let dir = sketch_hole_dir(st, &spots, ss.plane.normal(), &[]);
     Some(if flip { -dir } else { dir })
 }
 
-fn sketch_hole_dir(st: &ModelState, spots: &[Vec3], n: Vec3) -> Vec3 {
+fn sketch_hole_dir(st: &ModelState, spots: &[Vec3], n: Vec3, scope: &[String]) -> Vec3 {
     let down = -n;
-    let any = |d: Vec3, ahead: bool| spots.iter().any(|p| hole_reaches(st, *p, d, ahead));
+    let any = |d: Vec3, ahead: bool| spots.iter().any(|p| hole_reaches(st, *p, d, ahead, scope));
     if any(down, false) {
         down
     } else if any(n, false) {
@@ -2908,6 +2909,20 @@ fn sketch_hole_dir(st: &ModelState, spots: &[Vec3], n: Vec3) -> Vec3 {
     } else {
         n
     }
+}
+
+/// The bodies a hole at sketch points finds its side and its faces on: the bodies it cuts when it
+/// names them (a hole from a sketch on a body's face cuts that body, #2882), so a body further
+/// along can't take the holes meant for it. Empty (every body) otherwise.
+fn hole_scope(f: &Feature) -> &[String] {
+    match &f.kind {
+        FeatureKind::Hole { points: Some(sp), .. } if !sp.single && !f.participants.iter().any(|b| b == "*") => &f.participants,
+        _ => &[],
+    }
+}
+
+fn in_hole_scope(scope: &[String], b: &ModelBody) -> bool {
+    scope.is_empty() || scope.contains(&b.name)
 }
 
 /// Where a hole feature drills (each on the surface) and in which direction: at its sketch
@@ -2923,21 +2938,21 @@ fn hole_spots(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature) -> R
                 let p = ss.sketch.points.iter().find(|p| &p.id == id).ok_or_else(|| DocError::Unknown(format!("sketch point `{id}`")))?;
                 v.push(ss.plane.to_world(p.pos));
             }
-            let dir = sketch_hole_dir(st, &v, ss.plane.normal());
+            let dir = sketch_hole_dir(st, &v, ss.plane.normal(), hole_scope(f));
             let dir = if sp.flip { -dir } else { dir };
             (v, dir)
         }
         _ => {
             let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
-            let at = hole_on_surface(st, single_hole_position(vals, st, position, at, points)?, dir);
+            let at = hole_on_surface(st, single_hole_position(vals, st, position, at, points)?, dir, &[]);
             let dir = hole_dir_into_face(st, at, dir);
-            return Ok((vec![hole_on_surface(st, at, dir)], dir));
+            return Ok((vec![hole_on_surface(st, at, dir, &[])], dir));
         }
     };
     if spots.is_empty() || spots.len() > 10_000 {
         return Err(DocError::Invalid("a hole needs 1…10000 points".into()));
     }
-    Ok((spots.into_iter().map(|p| hole_on_surface(st, p, dir)).collect(), dir))
+    Ok((spots.into_iter().map(|p| hole_on_surface(st, p, dir, hole_scope(f))).collect(), dir))
 }
 
 /// A hole's depth: down to the To Object (where the hole's axis meets the face there, else the
@@ -2970,14 +2985,14 @@ fn hole_spots_raw(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature) 
             let ss = st.sketch(sp.sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {}", sp.sketch)))?;
             let v: Vec<Vec3> =
                 sp.ids.iter().filter_map(|id| ss.sketch.points.iter().find(|p| &p.id == id)).map(|p| ss.plane.to_world(p.pos)).take(10_000).collect();
-            let dir = sketch_hole_dir(st, &v, ss.plane.normal());
+            let dir = sketch_hole_dir(st, &v, ss.plane.normal(), hole_scope(f));
             let dir = if sp.flip { -dir } else { dir };
             Ok((v, dir))
         }
         _ => {
             let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
             let p = single_hole_position(vals, st, position, at, points)?;
-            Ok((vec![p], hole_dir_into_face(st, hole_on_surface(st, p, dir), dir)))
+            Ok((vec![p], hole_dir_into_face(st, hole_on_surface(st, p, dir, &[]), dir)))
         }
     }
 }
@@ -4664,7 +4679,7 @@ fn replay(
             for (k, m) in mats.iter().enumerate() {
                 let d = crate::apply_vector(m, dir).normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
                 for p in &spots {
-                    let at = hole_on_surface(st, crate::apply_point(m, *p), d);
+                    let at = hole_on_surface(st, crate::apply_point(m, *p), d, hole_scope(src));
                     let to = to.map(|t| crate::apply_point(m, t.0));
                     let depth = hole_depth_to(st, &at, d, &to, depth)?;
                     // Each copy's faces are named as the hole's, with the instance.
