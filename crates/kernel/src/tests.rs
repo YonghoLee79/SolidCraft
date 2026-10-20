@@ -3071,7 +3071,8 @@ fn a_cut_whose_end_face_touches_a_round_side_leaves_no_empty_shell() {
         outer: Loop2::polygon(&[Vec2::new(-12.5, -12.5), Vec2::new(12.5, -12.5), Vec2::new(12.5, 12.5), Vec2::new(-12.5, 12.5)]),
         holes: vec![],
     };
-    let pocket = extrude_whole_sides(&Plane::XY, &[pocket], -50.707106781186546, 0.7071067811865476).unwrap().remove(0);
+    let run_on = std::f64::consts::FRAC_1_SQRT_2;
+    let pocket = extrude_whole_sides(&Plane::XY, &[pocket], -50.0 - run_on, run_on).unwrap().remove(0);
     let pocket = transform_matrix(&pocket, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 50.0, 1.0]]).unwrap();
     let target = boolean(&base, &pocket, BoolOp::Cut).unwrap().unwrap();
     // The sketch plane x = 25 (its x along Y, its y along Z), the tool run 58 back from it.
