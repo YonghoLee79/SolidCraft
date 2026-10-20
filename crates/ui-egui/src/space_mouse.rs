@@ -61,8 +61,9 @@ pub struct Input {
     pub held: egui::Modifiers,
     /// The modifiers the keyboard holds, as the window last reported them (without `held`).
     pub keyboard: egui::Modifiers,
-    /// The device `seen` and `settle` are about.
+    /// The device `seen` is about, and the device and calibration `settle` is about.
     pub read_device: Option<String>,
+    pub settled_for: Option<Calibration>,
 }
 
 /// A key a 3D mouse button can stand in for.
@@ -373,6 +374,11 @@ pub fn navigate_frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMa
         app.space_mouse.seen = 0;
         app.space_mouse.settle = Default::default();
     }
+    let calibration = calibration(app);
+    if app.space_mouse.settled_for != calibration {
+        app.space_mouse.settled_for = calibration;
+        app.space_mouse.settle = Default::default();
+    }
     if let Some((device, wizard)) = &mut app.space_mouse.calibrating {
         if app.space_mouse.device.as_ref() == Some(device) {
             wizard.feed(axes.into(), seconds);
@@ -382,9 +388,15 @@ pub fn navigate_frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMa
         // Another device is being read now, or none: what was recorded isn't its.
         app.space_mouse.calibrating = None;
     }
-    let axes = calibrated(axes, calibration(app));
-    // A hand leaning on the cap, holding it just past the dead zone, doesn't creep the view.
-    let axes: Axes = app.space_mouse.settle.filter(axes.into(), seconds).into();
+    let axes = calibrated(axes, calibration);
+    // A hand leaning on a cap, holding it just past the dead zone, doesn't creep the view. A
+    // trackball's slow roll is steady and meant, and a device without a calibration is read as it reports.
+    let axes: Axes = match calibration {
+        Some(calibration) if calibration.kind == solidcraft_space_mouse::Kind::ReturnToCenter => {
+            app.space_mouse.settle.filter(axes.into(), seconds).into()
+        }
+        _ => axes,
+    };
     // Only the window with focus: with two windows open, the cap moves the one being used, not both.
     if !app.preferences.space_mouse_enabled || app.home.open || app.file_picker_busy() || !axes.moving() || !ctx.input(|i| i.focused) {
         return false;
@@ -755,6 +767,45 @@ mod tests {
         // Translations and the forward tilt are the raw axes.
         let all = Axes { translation: [100, -200, 300], rotation: [-150, 0, 0] };
         assert_eq!(DriverMapping::object_mode().apply(all), DriverMapping::default().apply(all));
+    }
+
+    /// A steady lean of 60 on X for two seconds, 20 ms a frame: whether the cap still moves the view at the end.
+    fn still_moving_after_a_steady_lean(calibration: Option<Calibration>) -> bool {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        if let Some(calibration) = calibration {
+            app.preferences.space_mouse_calibrations.insert("hid 046d:c62b".into(), calibration);
+        }
+        let ctx = window(true);
+        let lean = Axes { translation: [60, 0, 0], rotation: [0; 3] };
+        (0..100).map(|_| frame(&mut app, &ctx, DriverMapping::default(), lean, 0.02)).last().unwrap()
+    }
+
+    #[test]
+    fn only_a_calibrated_cap_settles() {
+        let axes = std::array::from_fn(|source| AxisCalibration { source, reversed: false, rest: 0, dead_zone: 0, full: [350; 2] });
+        let calibration = |kind| Calibration { dead_zone_share: 0.0, kind, axes };
+        assert!(!still_moving_after_a_steady_lean(Some(calibration(solidcraft_space_mouse::Kind::ReturnToCenter))), "a leaning hand on a cap");
+        assert!(still_moving_after_a_steady_lean(Some(calibration(solidcraft_space_mouse::Kind::Trackball))), "a slow steady roll");
+        assert!(still_moving_after_a_steady_lean(None), "a device read as it reports");
+    }
+
+    #[test]
+    fn a_new_calibration_starts_settling_afresh() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        let axes = std::array::from_fn(|source| AxisCalibration { source, reversed: false, rest: 0, dead_zone: 0, full: [350; 2] });
+        app.preferences
+            .space_mouse_calibrations
+            .insert("hid 046d:c62b".into(), Calibration { dead_zone_share: 0.0, kind: solidcraft_space_mouse::Kind::ReturnToCenter, axes });
+        let lean = Axes { translation: [60, 0, 0], rotation: [0; 3] };
+        for _ in 0..30 {
+            frame(&mut app, &ctx, DriverMapping::default(), lean, 0.02);
+        }
+        assert!(!frame(&mut app, &ctx, DriverMapping::default(), lean, 0.02), "settled");
+        app.preferences.space_mouse_calibrations.get_mut("hid 046d:c62b").unwrap().dead_zone_share = 0.01;
+        assert!(frame(&mut app, &ctx, DriverMapping::default(), lean, 0.02), "a changed calibration is a fresh start");
     }
 
     #[test]

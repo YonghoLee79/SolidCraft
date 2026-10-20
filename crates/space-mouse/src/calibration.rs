@@ -107,7 +107,9 @@ pub const SETTLE_WANDER: i16 = 3;
 /// Drops readings that have stopped changing close to the dead zone: a hand leaning on the cap
 /// pushes it a little and holds it there, which shouldn't creep the view, while a push meant to
 /// move it keeps changing or goes further. Past [`SETTLE_SHARE`] a steady reading is a held push
-/// and stays. Takes calibrated readings ([`Calibration::apply`]) once a frame.
+/// and stays. Takes the calibrated readings ([`Calibration::apply`]) of a [`Kind::ReturnToCenter`]
+/// device once a frame: a trackball's slow roll is a steady reading that is meant, and a device
+/// without a calibration is read as it reports.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Settle {
     last: [i16; 6],
@@ -138,7 +140,8 @@ pub const MAX_DEAD_ZONE_SHARE: f32 = 0.5;
 impl Calibration {
     /// A reading in the device's raw axes, on the canonical ones. Past full deflection the value
     /// keeps growing, up to the i16 range; a source the device doesn't have reads 0. Just past the
-    /// dead zone the response feathers in ([`FEATHER_SHARE`]) instead of starting at full rate.
+    /// dead zone a cap's response feathers in ([`FEATHER_SHARE`]) instead of starting at full rate;
+    /// a trackball's reads its speed straight, so a slow roll stays slow and in proportion.
     pub fn apply(&self, raw: [i16; 6]) -> [i16; 6] {
         let share = if self.dead_zone_share.is_finite() { self.dead_zone_share.clamp(0.0, MAX_DEAD_ZONE_SHARE) } else { 0.0 };
         let shared = (f64::from(share) * f64::from(FULL_SCALE)).round() as i32;
@@ -163,7 +166,7 @@ impl Calibration {
             // Feathered: over the first `knee` past the dead zone the response eases in (a
             // parabola from no slope to full slope), then carries on in a straight line, rescaled
             // so full deflection is still full scale. Even, so both pieces meet on a whole unit.
-            let knee = 2 * (FEATHER_SHARE * f64::from(FULL_SCALE) / 2.0).round() as i64;
+            let knee = if self.kind == Kind::Trackball { 0 } else { 2 * (FEATHER_SHARE * f64::from(FULL_SCALE) / 2.0).round() as i64 };
             let eased = if scaled < knee { scaled * scaled / (2 * knee) } else { scaled - knee / 2 };
             // Never 0 past the dead zone, so its edge stays where the motion starts.
             let scaled = (eased * full_scale / (full_scale - knee / 2)).clamp(1, i64::from(i16::MAX));
@@ -286,7 +289,7 @@ impl Samples {
 pub struct Recording {
     rest: Samples,
     /// Readings with a hand resting on the cap, not pushing it: what the dead zone has to hide.
-    touch: Samples,
+    touch: Vec<[i16; 6]>,
     steps: [Samples; 12],
     /// The readings the cap settled on after step `n` was let go: all of a steady run.
     settled: [Samples; 12],
@@ -304,7 +307,10 @@ impl Recording {
 
     /// One reading with a hand resting on the cap.
     pub fn touch(&mut self, raw: [i16; 6]) {
-        self.touch.add(raw);
+        // A recording is a few seconds of frames; the cap keeps a wrong caller from growing it.
+        if self.touch.len() < MAX_TOUCH_READINGS {
+            self.touch.push(raw);
+        }
     }
 
     /// One reading during step `index` of [`STEPS`]; any other index is ignored.
@@ -319,6 +325,15 @@ impl Recording {
         if let Some(settled) = self.settled.get_mut(index) {
             settled.add(raw);
         }
+    }
+
+    /// How far raw axis `source` went from `rest` with a hand on the cap: the [`TOUCH_PERCENTILE`]th
+    /// of its distances, so the jolt of a few frames doesn't count; 0 without readings.
+    fn touch_wander(&self, source: usize, rest: f64) -> f64 {
+        let mut away: Vec<f64> = self.touch.iter().filter_map(|raw| raw.get(source)).map(|&value| (f64::from(value) - rest).abs()).collect();
+        away.sort_by(f64::total_cmp);
+        let index = (away.len() as f64 * TOUCH_PERCENTILE).ceil() as usize;
+        index.checked_sub(1).and_then(|index| away.get(index)).copied().unwrap_or(0.0)
     }
 
     /// Notes that the device doesn't have canonical axis `axis` (a trackball can't tilt, and not
@@ -400,10 +415,7 @@ impl Recording {
             }
             // A hand resting on the cap reads as no motion too, up to `MAX_TOUCH_SHARE` of the
             // shorter direction, so a hand that pushed doesn't hide the axis.
-            let touched = match (self.touch.min.get(source), self.touch.max.get(source)) {
-                (Some(&min), Some(&max)) if self.touch.count > 0 => (rest_value - f64::from(min)).max(f64::from(max) - rest_value).max(0.0),
-                _ => 0.0,
-            };
+            let touched = self.touch_wander(source, rest_value);
             let wander = wander.max(touched.min(MAX_TOUCH_SHARE * full[0].min(full[1])));
             *axis = AxisCalibration {
                 source,
@@ -479,6 +491,12 @@ pub const MIN_SHARE: f64 = 1.0 / 12.0;
 pub const REST_SECONDS: f64 = 1.5;
 /// Seconds of readings with a hand resting on the cap, after the rest.
 pub const TOUCH_SECONDS: f64 = 2.5;
+/// Seconds at the start of the touch stage that aren't recorded: a hand landing on the cap jolts it.
+pub const TOUCH_LANDING_SECONDS: f64 = 0.5;
+/// How much of the touch readings the dead zone has to hide, as a share of them; the rest is a jolt.
+pub const TOUCH_PERCENTILE: f64 = 0.9;
+/// The most touch readings a recording keeps.
+const MAX_TOUCH_READINGS: usize = 10_000;
 /// The most of an axis's travel a resting hand may take as dead zone.
 pub const MAX_TOUCH_SHARE: f64 = 0.25;
 /// Seconds the cap has to be held out in a step's direction before letting go finishes it.
@@ -703,7 +721,9 @@ impl Wizard {
                 }
             }
             Stage::Touch => {
-                self.recording.touch(raw);
+                if self.seconds >= TOUCH_LANDING_SECONDS {
+                    self.recording.touch(raw);
+                }
                 self.seconds += seconds;
                 if self.seconds >= TOUCH_SECONDS {
                     let first = self.next_step(0);
@@ -1822,6 +1842,44 @@ mod tests {
         let pushed = recording.solve().unwrap();
         assert!(f64::from(pushed.axes[0].dead_zone) <= MAX_TOUCH_SHARE * f64::from(pushed.axes[0].full[0].min(pushed.axes[0].full[1])) + 1.0);
         assert!(pushed.is_usable());
+    }
+
+    #[test]
+    fn a_hand_landing_on_the_cap_does_not_set_the_dead_zone() {
+        let mut wizard = Wizard::default();
+        hold(&mut wizard, [0; 6], REST_SECONDS + 0.02);
+        // The landing jolts X to 90 for a quarter second, then the hand leans a little: 12.
+        hold(&mut wizard, [90, 0, 0, 0, 0, 0], 0.3);
+        while wizard.stage() == Stage::Touch {
+            hold(&mut wizard, [12, 0, 0, 0, 0, 0], 0.02);
+            hold(&mut wizard, [-8, 0, 0, 0, 0, 0], 0.02);
+        }
+        hold(&mut wizard, [0; 6], 0.1);
+        for reading in PRO {
+            hold(&mut wizard, reading, 0.5);
+            hold(&mut wizard, [0; 6], 0.1);
+        }
+        let calibration = wizard.result().unwrap().unwrap();
+        assert_eq!(calibration.axes[0].dead_zone, 12);
+        // Even landing late, a few frames past the first half second, one jolt isn't the dead zone.
+        let mut recording = record(PRO, STILL);
+        for _ in 0..3 {
+            recording.touch([90, 0, 0, 0, 0, 0]);
+        }
+        for _ in 0..97 {
+            recording.touch([10, 0, 0, 0, 0, 0]);
+        }
+        assert_eq!(recording.solve().unwrap().axes[0].dead_zone, 10);
+    }
+
+    #[test]
+    fn a_slow_trackball_roll_maps_straight_while_a_cap_feathers_in() {
+        let axis = AxisCalibration { source: 0, reversed: false, rest: 0, dead_zone: 0, full: [350; 2] };
+        let ball = Calibration { dead_zone_share: 0.0, kind: Kind::Trackball, axes: [axis; 6] };
+        assert_eq!(ball.apply([9, 0, 0, 0, 0, 0])[0], 9);
+        assert_eq!(ball.apply([350, 0, 0, 0, 0, 0])[0], FULL_SCALE);
+        let cap = Calibration { kind: Kind::ReturnToCenter, ..ball };
+        assert!(cap.apply([9, 0, 0, 0, 0, 0])[0] < 9);
     }
 
     #[test]
