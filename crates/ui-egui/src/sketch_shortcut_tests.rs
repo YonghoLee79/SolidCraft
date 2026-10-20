@@ -152,3 +152,27 @@ fn a_construct_command_keeps_the_sketch_open() {
     h.settle();
     assert_eq!(h.app.session.active_sketch, sketch);
 }
+
+#[test]
+fn a_feature_started_while_the_marker_rolls_back_waits_for_it() {
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    let sketch = h.app.session.active_sketch.expect("sketch opened");
+    h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[20,10]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.app.run("solid.extrude", json!({"distance": 5})).unwrap();
+    h.app.edit_feature(sketch);
+    h.app.apply_off_thread = Some(std::time::Duration::ZERO);
+    h.app.start("solid.extrude");
+    assert!(h.app.session.active_sketch.is_none());
+    assert!(h.app.deferred.is_some(), "the marker is not rolling back off the window thread");
+    assert!(h.app.dialog.is_none(), "Extrude opened before the marker was back");
+    for _ in 0..500 {
+        if h.app.deferred.is_none() && h.app.deferred_queue.is_empty() {
+            break;
+        }
+        h.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(h.app.session.doc.marker, None);
+}
