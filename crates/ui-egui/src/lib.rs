@@ -74,6 +74,8 @@ pub mod keymap;
 mod linked_source;
 #[cfg(test)]
 mod loft_rails_dialog_tests;
+#[cfg(test)]
+mod look_at_tests;
 mod material_card_review;
 #[cfg(test)]
 mod measurement_ui_tests;
