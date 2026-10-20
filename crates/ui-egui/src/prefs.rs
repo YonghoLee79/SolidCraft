@@ -374,6 +374,8 @@ macro_rules! preference_settings {
 }
 
 preference_settings! {
+    /// Primary order captured by newly opened Joint dialogs.
+    joint_moving_first: bool = false, PAGE_DESIGN => check_id("settings.joint_moving_first");
     /// Units of new designs.
     default_units: String = "mm".into(), 0;
     /// Mouse mapping: `fusion`, `solidworks` or `inventor`.
@@ -1408,6 +1410,8 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             );
         }
         PAGE_DESIGN => {
+            let response = setting::joint_moving_first(app, ui);
+            crate::scenario::publish_rect("prefs:joint_moving_first", response.rect);
             ui_kit::row(ui, app.tr_label("Default modelling orientation"), |ui| {
                 let mut selected = usize::from(app.preferences.up_axis == "y");
                 if ui_kit::segmented(ui, &mut selected, &[crate::i18n::tr_label("Z up"), crate::i18n::tr_label("Y up")], Default::default()) {
