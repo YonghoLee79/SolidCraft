@@ -779,12 +779,18 @@ fn edit_box(app: &mut SolveApp, ctx: &egui::Context) {
                 let expression = app.session.doc.with_design_unit(&e.expr, kind);
                 app.run("parameters.change", json!({"name": e.param, "expression": expression}))
             };
-            if let Err(err) = result {
-                app.set_status(err, true);
-                EDIT.with(|x| *x.borrow_mut() = Some(Edit { fresh: FRESH, ..e }));
-            } else {
-                clear_picks(app);
-                app.set_status("Dimension applied", false);
+            match result {
+                Err(err) => {
+                    app.set_status(err, true);
+                    EDIT.with(|x| *x.borrow_mut() = Some(Edit { fresh: FRESH, ..e }));
+                }
+                Ok(reply) => {
+                    clear_picks(app);
+                    match reply.get("defined").and_then(serde_json::Value::as_str) {
+                        Some(name) => app.set_status(format!("Dimension applied; parameter `{name}` defined"), false),
+                        None => app.set_status("Dimension applied", false),
+                    }
+                }
             }
         }
         Some(false) if escaped => clear_picks(app),
@@ -869,6 +875,46 @@ mod tests {
             assert!(!Arc::ptr_eq(&draft.preview_doc, &refreshed.preview_doc));
             h.step(&json!({"key":"Escape"})).unwrap();
         }
+        cancel();
+    }
+
+    /// Typing `w = 20` into a new dimension's value defines the user parameter `w` and
+    /// dimensions with it, in one undo step, and the status line says so (#2916). A taken name
+    /// is refused and the editor stays open with the text to correct.
+    #[test]
+    fn typing_a_definition_adds_the_parameter_and_dimensions_with_it() {
+        cancel();
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.app.run("sketch.line", json!({"points":[[10,10],[40,10]],"infer":false})).unwrap();
+        h.call("ui.view", json!({"view":"top"}));
+        let undo = h.app.session.undo.len();
+        h.step(&json!({"start":"sketch.dimension"})).unwrap();
+        h.step(&json!({"click":{"sketch":[25,10]}})).unwrap();
+        assert!(editing());
+        h.step(&json!({"text":"w = 20"})).unwrap();
+        h.step(&json!({"key":"Enter"})).unwrap();
+        assert!(!editing(), "{:?}", h.app.status);
+        let w = h.app.session.doc.param("w").expect("the user parameter was added");
+        assert!(!w.model && w.expr.as_str() == "20" && w.unit == "mm", "{w:?}");
+        let sk = h.app.session.doc.sketch(h.app.session.active_sketch.unwrap()).unwrap();
+        let dim = sk.constraints.iter().find_map(|c| c.param.as_deref()).expect("the dimension was added");
+        assert_eq!(h.app.session.doc.param(dim).map(|p| p.expr.as_str()), Some("w"));
+        assert_eq!(h.app.session.undo.len(), undo + 1, "one undo step");
+        assert!(h.app.status.as_ref().is_some_and(|s| !s.2 && s.0.contains("`w`")), "{:?}", h.app.status);
+        // The same name again is refused; the editor keeps the text.
+        h.app.run("sketch.line", json!({"points":[[10,30],[40,30]],"infer":false})).unwrap();
+        let undo = h.app.session.undo.len();
+        h.step(&json!({"start":"sketch.dimension"})).unwrap();
+        h.step(&json!({"click":{"sketch":[25,30]}})).unwrap();
+        h.step(&json!({"text":"w = 25"})).unwrap();
+        h.step(&json!({"key":"Enter"})).unwrap();
+        assert!(editing(), "{:?}", h.app.status);
+        assert!(h.app.status.as_ref().is_some_and(|s| s.2 && s.0.contains("already a parameter `w`")), "{:?}", h.app.status);
+        assert_eq!(EDIT.with(|e| e.borrow().as_ref().map(|e| e.expr.clone())), Some("w = 25".to_string()));
+        assert_eq!(h.app.session.undo.len(), undo, "a refused definition changed nothing");
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.step(&json!({"key":"Escape"})).unwrap();
         cancel();
     }
 
