@@ -25,8 +25,8 @@ thread_local! {
     static CHAIN: RefCell<(Option<&'static str>, Vec<Vec3>)> = const { RefCell::new((None, Vec::new())) };
     /// The point with the triad.
     static TRIAD: RefCell<Option<Grab>> = const { RefCell::new(None) };
-    /// A triad drag: axis (None: in the sketch plane), undo depth, grab offset.
-    static DRAG: RefCell<Option<(Option<Vec3>, usize, Vec3)>> = const { RefCell::new(None) };
+    /// A triad drag in progress.
+    static DRAG: RefCell<Option<Drag>> = const { RefCell::new(None) };
     /// Where the cursor would put a point (for the rubber band), and its snap label.
     static HOVER: RefCell<Option<(Vec3, &'static str)>> = const { RefCell::new(None) };
 }
@@ -304,18 +304,36 @@ fn unit(v: egui::Vec2) -> Option<egui::Vec2> {
     (v.length() > 1e-3).then(|| v / v.length())
 }
 
+/// Where an arrow points on screen when its axis points (nearly) at the viewer, as Z does in the
+/// sketch's own top view: up and to the left, so all three arrows can always be grabbed.
+const HEAD_ON_DIR: egui::Vec2 = egui::Vec2::new(-std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2);
+
+/// Each axis on screen at `p`: (axis, screen direction, head-on?) and the view's scale there in
+/// pixels per mm. An axis drawn shorter than a sixth of the longest is head-on: it gets
+/// [`HEAD_ON_DIR`], and dragging it moves the point by the drag's length at that scale.
+fn axes_on_screen(proj: &Proj, p: Vec3) -> Option<(Vec<(Vec3, egui::Vec2, bool)>, f32)> {
+    let base = proj.to_screen(p)?;
+    let drawn: Vec<(Vec3, egui::Vec2)> = [Vec3::X, Vec3::Y, Vec3::Z].into_iter().filter_map(|a| Some((a, proj.to_screen(p + a)? - base))).collect();
+    let longest = drawn.iter().map(|(_, v)| v.length()).fold(0.0f32, f32::max);
+    if longest < 1e-6 {
+        return None;
+    }
+    let axes = drawn
+        .into_iter()
+        .map(|(a, v)| match unit(v).filter(|_| v.length() >= longest / 6.0) {
+            Some(dir) => (a, dir, false),
+            None => (a, HEAD_ON_DIR, true),
+        })
+        .collect();
+    Some((axes, longest))
+}
+
 /// The triad's handles on screen: (axis or None for the plane square, tip, base).
 fn handles(app: &SolveApp, proj: &Proj) -> Vec<(Option<Vec3>, Pos2, Pos2)> {
     let Some((_, p)) = triad_point(app) else { return Vec::new() };
     let Some(base) = proj.to_screen(p) else { return Vec::new() };
-    let mut out = Vec::new();
-    for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
-        if let Some(t) = proj.to_screen(p + axis)
-            && let Some(dir) = unit(t - base)
-        {
-            out.push((Some(axis), base + dir * ARROW, base));
-        }
-    }
+    let Some((axes, _)) = axes_on_screen(proj, p) else { return Vec::new() };
+    let mut out: Vec<_> = axes.into_iter().map(|(axis, dir, _)| (Some(axis), base + dir * ARROW, base)).collect();
     out.push((None, base + vec2(14.0, -14.0), base));
     out
 }
@@ -366,9 +384,34 @@ pub fn delete_selected(app: &mut SolveApp) -> bool {
 pub fn drag_start(app: &SolveApp, proj: &Proj, press: Pos2) -> bool {
     let Some((axis, _, _)) = handles(app, proj).into_iter().find(|(_, tip, _)| tip.distance(press) < 9.0) else { return false };
     let Some((_, p)) = triad_point(app) else { return false };
+    let head_on = axis.and_then(|a| {
+        let (axes, px_per_mm) = axes_on_screen(proj, p)?;
+        axes.into_iter().find(|(b, _, head_on)| *b == a && *head_on).map(|(_, dir, _)| HeadOn { press, from: p, dir, px_per_mm })
+    });
     let grab = target(app, proj, press, axis, p).map(|g| p - g).unwrap_or(Vec3::ZERO);
-    DRAG.with(|d| *d.borrow_mut() = Some((axis, app.session.undo.len(), grab)));
+    DRAG.with(|d| *d.borrow_mut() = Some(Drag { axis, depth: app.session.undo.len(), grab, head_on }));
     true
+}
+
+/// A drag on an arrow whose axis points at the viewer: where it began, and how the screen maps
+/// onto the axis (along `dir`, `px_per_mm`).
+#[derive(Clone, Copy)]
+struct HeadOn {
+    press: Pos2,
+    from: Vec3,
+    dir: egui::Vec2,
+    px_per_mm: f32,
+}
+
+/// The triad drag in progress: the axis (None: the plane square), the undo depth when it began
+/// (the whole drag is one undo step), the pointer's offset from the point, and the head-on
+/// mapping when the axis points at the viewer.
+#[derive(Clone, Copy)]
+struct Drag {
+    axis: Option<Vec3>,
+    depth: usize,
+    grab: Vec3,
+    head_on: Option<HeadOn>,
 }
 
 /// Where the pointer puts the point: along `axis` through `p`, or in the plane through `p`
@@ -399,9 +442,15 @@ pub fn dragging() -> bool {
 }
 
 pub fn drag_to(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
-    let Some((axis, depth, grab)) = DRAG.with(|d| *d.borrow()) else { return };
+    let Some(Drag { axis, depth, grab, head_on }) = DRAG.with(|d| *d.borrow()) else { return };
     let Some((held, p)) = triad_point(app) else { return };
-    let Some(to) = target(app, proj, pos, axis, p).map(|t| t + grab) else { return };
+    let to = match (head_on, axis) {
+        // The axis points at the viewer, so no ray meets it: the drag's length along the arrow
+        // is the distance moved.
+        (Some(h), Some(a)) => Some(h.from + a * f64::from((pos - h.press).dot(h.dir) / h.px_per_mm)),
+        _ => target(app, proj, pos, axis, p).map(|t| t + grab),
+    };
+    let Some(to) = to else { return };
     match held {
         Grab::Wire(w, i) => {
             if app.session.execute("sketch.move3d", &json!({"wire": w, "index": i, "to": [to.x, to.y, to.z]})).is_ok() {

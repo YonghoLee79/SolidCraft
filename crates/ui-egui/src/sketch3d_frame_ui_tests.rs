@@ -139,7 +139,7 @@ fn second_occurrence_drawn_wire_fit_picks_and_world_triad_drag_stay_aligned() {
     h.app.ui.show_origin = false;
     h.settle();
     h.step(&json!({"click":{"handle":"sketch_palette:options_fold"}})).unwrap();
-    h.step(&json!({"widget":"3D Sketch"})).unwrap();
+    h.app.run("sketch.options", json!({"sketch_3d":true})).unwrap();
     assert!(
         crate::sketch3d::active(&h.app),
         "palette click must enable 3D: raw={:?}, world={:?}, status={:?}, active={:?}",
@@ -195,6 +195,48 @@ fn second_occurrence_drawn_wire_fit_picks_and_world_triad_drag_stay_aligned() {
     assert!(restored.sketch(sketch).unwrap().sketch.wires[0].fit[0].dist(Vec3::new(2.0, 3.0, 5.0)) < 1e-6);
 }
 
+/// Looking straight down on the sketch (its own top view) the Z axis points at the viewer, so
+/// its arrow can't be drawn along it. It still shows, up and to the left, and dragging it lifts
+/// the point by the drag's length at the view's scale: all three arrows are there in any view.
+#[test]
+fn the_z_arrow_shows_and_lifts_a_point_in_the_sketchs_top_view() {
+    let mut h = crate::scenario::Harness::new();
+    let sketch = h.app.run("sketch.create", json!({"plane":"XY","name":"Top"})).unwrap()["sketch"].as_u64().unwrap();
+    h.app.ui.show_origin = false;
+    h.settle();
+    h.app.run("sketch.options", json!({"sketch_3d":true})).unwrap();
+    h.app.run("sketch.point", json!({"point":[10,5]})).unwrap();
+    h.app.run("sketch.point", json!({"point":[-30,-20]})).unwrap();
+    h.call("ui.view", json!({"view":"top"}));
+    h.call("ui.view", json!({"view":"fit"}));
+    h.settle();
+    h.step(&json!({"click":{"world":[10,5,0]}})).unwrap();
+    let names: Vec<&str> = crate::sketch3d::handle_points(&h.app, &crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap()))
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["x", "y", "z", "plane"], "all three arrows in the top view");
+    let [x0, y0] = h.at(&json!({"handle":"triad_z"})).unwrap();
+    let base = h.at(&json!({"world":[10,5,0]})).unwrap();
+    let (dx, dy) = (x0 - base[0], y0 - base[1]);
+    assert!(dx < -20.0 && dy < -20.0, "drawn up and to the left: {dx}, {dy}");
+    let px_per_mm = {
+        let one = h.at(&json!({"world":[11,5,0]})).unwrap();
+        ((one[0] - base[0]).powi(2) + (one[1] - base[1]).powi(2)).sqrt()
+    };
+    // 40 px further along the arrow.
+    let along = 40.0 / std::f64::consts::SQRT_2;
+    let history = h.app.session.undo.len();
+    h.call("ui.drag", json!({"x0":x0,"y0":y0,"x1":x0-along,"y1":y0-along,"steps":8}));
+    let st = h.app.session.model.state();
+    let sk = &st.sketch(sketch).unwrap().sketch;
+    let lifted =
+        sk.wires.iter().flat_map(|w| w.fit.iter()).find(|p| (p.x - 10.0).abs() < 1e-6 && (p.y - 5.0).abs() < 1e-6).expect("the point left the plane");
+    let want = 40.0 / px_per_mm;
+    assert!((lifted.z - want).abs() < 0.05 * want, "lifted {} mm, wanted {want}", lifted.z);
+    assert_eq!(h.app.session.undo.len(), history + 1, "the whole drag is one step");
+}
+
 /// A spline clicked out on the plane of a 3D sketch is an ordinary plane spline; its fit point
 /// still takes the triad, and dragging the Z arrow lifts it off the plane (the spline becomes a
 /// drawn 3D curve), as one undo step.
@@ -204,7 +246,7 @@ fn a_plane_spline_point_takes_the_triad_and_its_z_arrow_lifts_it() {
     let sketch = h.app.run("sketch.create", json!({"plane":"XY","name":"Lift"})).unwrap()["sketch"].as_u64().unwrap();
     h.app.ui.show_origin = false;
     h.settle();
-    h.step(&json!({"widget":"3D Sketch"})).unwrap();
+    h.app.run("sketch.options", json!({"sketch_3d":true})).unwrap();
     assert!(crate::sketch3d::active(&h.app));
     h.app.run("sketch.spline.fit_point", json!({"points":[[0,0],[10,5],[20,0]]})).unwrap();
     h.call("ui.view", json!({"view":"iso"}));
@@ -213,7 +255,7 @@ fn a_plane_spline_point_takes_the_triad_and_its_z_arrow_lifts_it() {
     h.step(&json!({"click":{"world":[10,5,0]}})).unwrap();
     let [x0, y0] = h.at(&json!({"handle":"triad_z"})).expect("a plane point has the triad");
     let before = h.at(&json!({"world":[10,5,0]})).unwrap();
-    let after = h.at(&json!({"world":[10,5,6]})).unwrap();
+    let after = h.at(&json!({"world":[10,5,3]})).unwrap();
     let history = h.app.session.undo.len();
     h.call("ui.drag", json!({"x0":x0,"y0":y0,"x1":x0+after[0]-before[0],"y1":y0+after[1]-before[1],"steps":8}));
     let st = h.app.session.model.state();
@@ -221,7 +263,7 @@ fn a_plane_spline_point_takes_the_triad_and_its_z_arrow_lifts_it() {
     assert!(sk.curves.iter().all(|c| !matches!(c.kind, solidcraft_engine::sketch::CurveKind::Spline { .. })), "the plane spline became a 3D curve");
     let fit = &sk.wires.first().expect("a drawn 3D spline").fit;
     assert_eq!(fit.len(), 3);
-    assert!(fit[1].dist(Vec3::new(10.0, 5.0, 6.0)) < 0.05, "{fit:?}");
+    assert!(fit[1].dist(Vec3::new(10.0, 5.0, 3.0)) < 0.05, "{fit:?}");
     assert!(fit[0].dist(Vec3::new(0.0, 0.0, 0.0)) < 1e-6 && fit[2].dist(Vec3::new(20.0, 0.0, 0.0)) < 1e-6, "{fit:?}");
     assert_eq!(h.app.session.undo.len(), history + 1, "the whole drag is one step");
     h.app.run("edit.undo", json!({})).unwrap();
