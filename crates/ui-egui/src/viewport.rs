@@ -28,6 +28,10 @@ mod removed_later_tests;
 #[path = "viewport_plane_target_tests.rs"]
 mod plane_target_tests;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "viewport_projected_shadow_tests.rs"]
+mod projected_shadow_tests;
+
 #[path = "navigation_cube.rs"]
 mod navigation_cube;
 
@@ -301,12 +305,15 @@ fn scene_key(app: &SolveApp) -> u64 {
     app.ui.show_grid.hash(&mut h);
     app.ui.visual_style.hash(&mut h);
     app.ui.ground_shadow.hash(&mut h);
+    app.preferences.ground_shadow_style.hash(&mut h);
     solidcraft_engine::doc::display_quality::current().hash(&mut h);
     lod_generation(app).hash(&mut h);
     // The section plane (its cut outlines are part of the model scene).
     section_plane(app).map(|(o, n)| [o.x, o.y, o.z, n.x, n.y, n.z].map(f64::to_bits)).hash(&mut h);
     app.cam.up.hash(&mut h);
-    (app.cam.pitch > 0.0).hash(&mut h);
+    if app.preferences.ground_shadow_style != crate::prefs::GroundShadowStyle::Projected || app.preferences.ambient_occlusion {
+        (app.cam.pitch > 0.0).hash(&mut h);
+    }
     app.ui.show_sketches.hash(&mut h);
     app.session.visibility.hidden_bodies.hash(&mut h);
     app.session.visibility.hidden_occurrences.hash(&mut h);
@@ -699,7 +706,10 @@ fn build_scene(app: &SolveApp) -> GpuScene {
     if let Ok(mut b) = app.viewport.blocks.lock() {
         *b = made;
     }
-    if app.ui.ground_shadow && app.ui.visual_style != 2 && app.cam.pitch > 0.0 {
+    if app.ui.ground_shadow
+        && app.ui.visual_style != 2
+        && (app.cam.pitch > 0.0 || app.preferences.ground_shadow_style == crate::prefs::GroundShadowStyle::Projected)
+    {
         ground_shadow(&mut sc, app, &st);
     }
     // Section: the outline of each body where the plane cuts it.
@@ -836,6 +846,7 @@ fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
 }
 
 fn ground_shadow(sc: &mut GpuScene, app: &SolveApp, st: &std::sync::Arc<solidcraft_engine::doc::ModelState>) {
+    let first = sc.trans.len();
     // The bodies' box in the camera's Z-up frame (the ground is its XY plane).
     let mut b = solidcraft_engine::geom::Aabb3::EMPTY;
     let boxes = body_bounds(app, st);
@@ -884,6 +895,12 @@ fn ground_shadow(sc: &mut GpuScene, app: &SolveApp, st: &std::sync::Arc<solidcra
                 sc.trans_tri(p01, [0.0; 3], c0);
             }
         }
+    }
+    if app.preferences.ground_shadow_style == crate::prefs::GroundShadowStyle::Projected
+        && let Some(mut projection) = solidcraft_gpu::view::ground_shadow::Projection::new(b, z, &app.cam, dark as f32 / 255.0 * 0.8, Vec::new())
+    {
+        projection.fallback = sc.trans.split_off(first);
+        sc.projected_shadow = Some(std::sync::Arc::new(projection));
     }
 }
 
@@ -2464,6 +2481,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             pv_key: app.preview.key,
             pv_slot: app.preview.slot.clone(),
             pv_hide: app.preview.rolled_back,
+            preview_bounds: (app.preview.active && !app.preview.rolled_back).then_some(app.preview.bounds),
             clip: section_clip(app),
             cap: t.section_cap.to_normalized_gamma_f32(),
             view_proj: proj.vp.to_f32(),
@@ -3688,7 +3706,8 @@ fn view_menu(app: &mut SolveApp, ui: &mut egui::Ui, button: Rect) -> bool {
             crate::prefs::graphics_preset_selector(app, ui);
             ui.separator();
             ui.checkbox(&mut app.ui.show_grid, crate::i18n::tr_label("Grid"));
-            ui.checkbox(&mut app.ui.ground_shadow, crate::i18n::tr_label("Ground shadow"));
+            ui.label(crate::i18n::tr_label("Ground shadow"));
+            crate::prefs::ground_shadow_selector(app, ui);
             crate::prefs::ambient_occlusion_checkbox(app, ui, "Ambient occlusion");
             ui.separator();
             let s = &mut app.ui.agent_cursor;

@@ -26,6 +26,20 @@ pub fn stored(get: impl Fn(&str) -> Option<String>) -> Option<String> {
 }
 
 use crate::SolveApp;
+
+/// The enabled shadow's style. The existing `UiState::ground_shadow` flag still controls
+/// visibility, preserving saved boolean settings and the control channel's `groundShadow`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroundShadowStyle {
+    #[default]
+    Ellipse,
+    Projected,
+}
+
+#[cfg(test)]
+#[path = "ground_shadow_settings_tests.rs"]
+mod ground_shadow_tests;
 use crate::theme::Tokens;
 use crate::tool_modifiers::ModifierCombo;
 use crate::viewport::NavMode;
@@ -293,6 +307,7 @@ pub struct Prefs {
     pub msaa: u32,
     /// Soft contact shading in the GPU viewport; optional and applied immediately.
     pub ambient_occlusion: bool,
+    pub ground_shadow_style: GroundShadowStyle,
     /// The grid turns to the upright origin plane facing a side view (#1470). Off by default: the
     /// grid stays on the ground plane (XY) whatever the view.
     pub grid_follows_view: bool,
@@ -456,6 +471,7 @@ impl Default for Prefs {
             space_mouse_calibrations: Default::default(),
             msaa: 4,
             ambient_occlusion: false,
+            ground_shadow_style: GroundShadowStyle::default(),
             grid_follows_view: false,
             display_quality: "normal".into(),
             supersampling: 1.0,
@@ -787,6 +803,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
             let msaa = p.msaa != d.msaa;
             p.msaa = d.msaa;
             p.ambient_occlusion = d.ambient_occlusion;
+            p.ground_shadow_style = d.ground_shadow_style;
             p.display_quality = d.display_quality;
             p.supersampling = d.supersampling;
             p.supersampling_adaptive = d.supersampling_adaptive;
@@ -1485,7 +1502,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 .on_hover_text(crate::i18n::tr_label("Side views show the grid on the upright plane facing them instead of the ground"));
             ui.end_row();
             ui.label(crate::i18n::tr_label("Ground shadow"));
-            ui.checkbox(&mut app.ui.ground_shadow, "");
+            ground_shadow_selector(app, ui);
             ui.end_row();
             ui.label(crate::i18n::tr_label("Ambient occlusion"));
             ambient_occlusion_checkbox(app, ui, "");
@@ -2725,6 +2742,40 @@ pub(crate) fn ambient_occlusion_checkbox(app: &mut SolveApp, ui: &mut egui::Ui, 
     crate::scenario::publish_handle("view:ambient_occlusion", response.rect.center());
     if response.changed() {
         let _ = app.run("view.ambient_occlusion", json!({"enabled": enabled}));
+    }
+}
+
+pub(crate) fn ground_shadow_mode(app: &SolveApp) -> &'static str {
+    if !app.ui.ground_shadow {
+        "off"
+    } else {
+        match app.preferences.ground_shadow_style {
+            GroundShadowStyle::Ellipse => "ellipse",
+            GroundShadowStyle::Projected => "projected",
+        }
+    }
+}
+
+pub(crate) fn ground_shadow_selector(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let before = ground_shadow_mode(app);
+    let mut mode = before;
+    let label = |mode| match mode {
+        "off" => "ui.ground_shadow_off",
+        "projected" => "ui.ground_shadow_projected",
+        _ => "ui.ground_shadow_ellipse",
+    };
+    let response = egui::ComboBox::from_id_salt("ground_shadow_mode")
+        .selected_text(app.tr(label(mode)))
+        .show_ui(ui, |ui| {
+            for value in ["off", "ellipse", "projected"] {
+                let choice = ui.selectable_value(&mut mode, value, app.tr(label(value)));
+                crate::scenario::publish_handle(&format!("view:ground_shadow:{value}"), choice.rect.center());
+            }
+        })
+        .response;
+    crate::scenario::publish_handle("view:ground_shadow", response.rect.center());
+    if mode != before {
+        let _ = app.run("view.ground_shadow", json!({"mode":mode}));
     }
 }
 
