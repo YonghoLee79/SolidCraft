@@ -119,6 +119,8 @@ pub use file_picker::FilePickerFuture;
 #[cfg(test)]
 mod blend_arrow_tests;
 #[cfg(test)]
+mod blend_dialog_tests;
+#[cfg(test)]
 mod boundary_dialog_tests;
 pub(crate) mod display_lod;
 #[cfg(test)]
@@ -368,6 +370,9 @@ pub struct SolveApp {
     /// thread, and those asked for meanwhile ([`deferred`]).
     pub deferred: Option<deferred::Deferred>,
     pub deferred_queue: Vec<(String, Value)>,
+    /// A delete's check of what it takes with it or breaks, computing off the window thread
+    /// ([`deferred::DeleteCheck`], #2678).
+    pub delete_check: Option<deferred::DeleteCheck>,
     /// How long OK waits for a feature before computing it off the window thread, saying so;
     /// `None`: it waits as long as it takes (headless use, tests). The desktop app sets it.
     pub apply_off_thread: Option<std::time::Duration>,
@@ -490,6 +495,7 @@ impl SolveApp {
             applying: None,
             deferred: None,
             deferred_queue: Vec::new(),
+            delete_check: None,
             apply_off_thread: None,
             last_command: None,
             esc_handled: false,
@@ -1428,6 +1434,7 @@ impl SolveApp {
     fn cad_ui(&mut self, ui: &mut egui::Ui, report_input: &mut Option<issue_report::CadInput>) {
         scenario::clear_handles();
         self.poll_deferred(ui.ctx());
+        self.poll_delete_check(ui.ctx());
         toolbar::app_bar(self, ui);
         issue_report::CadInput::block(self, ui, report_input);
         file_load::show(self, ui.ctx());

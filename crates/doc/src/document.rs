@@ -1455,6 +1455,11 @@ pub enum FeatureKind {
         /// Points the blend leaves towards, when the faces at the picks do not say: [from, to].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         align: Option<[Position; 2]>,
+        /// Where each chain's stations start, when two closed chains should not pair the way
+        /// that keeps the blend from twisting: a point on each chain, [from, to]. An open chain
+        /// starts at the end nearer its point.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seam: Option<[Position; 2]>,
         /// Sew the blend onto its two bodies where the boundaries meet.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stitch: bool,
