@@ -415,7 +415,8 @@ completed drawings publish atomically. The browser still exports synchronously.
   source fails explicitly; Redefine Sketch Plane previews reattachment or a fixed plane while
   retaining current geometry and dimension identities. Unsupported modified faces need an
   explicit fixed plane. Legacy attachments retain their original resolver behavior.
-- Modelled threads are cut as a faceted body (curved faces within 1/200 of the pitch); Extrude
+- Modelled threads are cut faceted (curved faces within 1/200 of the pitch) round the thread
+  only: faces the groove doesn't reach, other holes and bosses among them, stay exact; Extrude
   and Revolve To Object on a curved face cut the tool back to the target's surface.
 - Explicit sketch breaks preserve exact ellipses, fit/control splines (including high degrees)
   and conics; analytic trim/break also sees free-form cutters. Free-form curves cut at a tangent

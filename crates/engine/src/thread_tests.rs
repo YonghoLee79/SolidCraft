@@ -222,6 +222,34 @@ fn the_cut_nothing_limit_holds_for_coarse_and_fine_pitch() {
     }
 }
 
+/// A modelled thread in one bore turned the whole part into flat facets: the boss beside it and
+/// a second, plain hole lost their cylinders, and a thread on that hole was refused ("no
+/// cylindrical face there to thread"). Only the faces round the thread are faceted now.
+#[test]
+fn a_modelled_thread_leaves_the_rest_of_the_part_exact() {
+    let mut s = Session::default();
+    for (id, p) in [
+        ("solid.box", json!({"corner": [-20, -20, 0], "length": 40, "width": 40, "height": 20, "body_name": "Part"})),
+        ("solid.cylinder", json!({"base": [0, 0, 20], "radius": 10, "height": 10, "body_name": "Boss"})),
+        ("solid.combine", json!({"target": "Part", "tools": ["Boss"], "operation": "join"})),
+        ("solid.cylinder", json!({"base": [0, 0, -1], "radius": 3.3235, "height": 32, "body_name": "Bore"})),
+        ("solid.combine", json!({"target": "Part", "tools": ["Bore"], "operation": "cut"})),
+        ("solid.cylinder", json!({"base": [15, 0, -1], "radius": 2, "height": 22, "body_name": "Other"})),
+        ("solid.combine", json!({"target": "Part", "tools": ["Other"], "operation": "cut"})),
+        ("solid.thread", json!({"face": [3.3235, 0, 10], "designation": "M8", "length": 8, "modeled": true})),
+    ] {
+        run(&mut s, id, p);
+    }
+    let st = s.model.state();
+    let part = st.body("Part").map(|b| b.body.clone());
+    assert_eq!(part.as_ref().map(|b| b.validity()), Some(Vec::new()));
+    let cylinders = part.as_ref().and_then(|b| solidcraft_kernel::measure(b).ok()).and_then(|m| m.merged.face_types.get("cylinder").copied());
+    // The boss's wall and the plain hole (the threaded bore's wall is faceted).
+    assert_eq!(cylinders, Some(2), "exact cylinders left");
+    run(&mut s, "solid.thread", json!({"face": [17, 0, 10], "designation": "M4"}));
+    run(&mut s, "solid.thread", json!({"face": [10, 0, 25], "designation": "M20"}));
+}
+
 /// A 4 mm hex nut (inscribed radius 5) with a plain hole of this diameter through it.
 fn hex_nut(hole: f64) -> Session {
     let mut s = Session::default();
