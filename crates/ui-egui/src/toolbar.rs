@@ -522,6 +522,17 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     save_as_with_extension(app, "json");
                     close = true;
                 }
+                // The browser build: a copy as a downloaded file, whatever Save does.
+                if app.services.download_design.is_some() && item_if(ui, "Download design", "", shown) {
+                    download_design(app);
+                    close = true;
+                }
+                if app.services.browser_files.is_some() && item(ui, "Files in this browser…", "") {
+                    if let Some(show) = &app.services.browser_files {
+                        show();
+                    }
+                    close = true;
+                }
                 ui.separator();
                 if item_if(ui, "Save as mesh…", "", shown) {
                     app.start("file.save_mesh");
@@ -596,7 +607,7 @@ pub fn save(app: &mut SolveApp) {
         return;
     }
     if app.session.path.is_some() {
-        let _ = app.run("file.save", json!({}));
+        crate::save_job::start(app, "file.save", json!({}));
     } else {
         save_as(app);
     }
@@ -609,11 +620,28 @@ fn save_as(app: &mut SolveApp) {
 fn save_as_with_extension(app: &mut SolveApp, extension: &str) {
     let name = format!("{}.{extension}", app.session.doc.name);
     app.pick_save(&name, &[solidcraft_engine::io::DESIGN_EXT, "json"], |app, path| {
-        if let Some(path) = path {
-            let _ = app.run("file.save_as", json!({"path": path}));
+        // A save under way answers a closing tab when it ends.
+        if let Some(path) = path
+            && crate::save_job::start(app, "file.save_as", json!({"path": path}))
+        {
+            return;
         }
         crate::documents::saved_for_close(app);
     });
+}
+
+/// File > Download design (browser build): the open design as a `.solidcraft` file download.
+fn download_design(app: &mut SolveApp) {
+    let name = format!("{}.{}", app.session.doc.name, solidcraft_engine::io::DESIGN_EXT);
+    let result = app
+        .session
+        .design_container(solidcraft_engine::io::DesignCompression::Fast, false, false)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| app.services.download_design.as_ref().map_or(Ok(()), |download| download(&name, &bytes)));
+    match result {
+        Ok(()) => app.set_status(format!("Downloaded {name}"), false),
+        Err(e) => app.set_status(format!("Download design: {e}"), true),
+    }
 }
 
 fn export(app: &mut SolveApp, ext: &str) {
@@ -1469,6 +1497,8 @@ mod header_report_tests {
         h.frames(3);
         h.step(&json!({"click":{"handle":"appbar:folder"}})).unwrap();
         h.step(&json!({"widget":"Save As JSON…"})).unwrap();
+        // Written on a worker: the window keeps drawing until it is done.
+        h.settle();
         let saved = h.app.session.path.clone().unwrap();
         let bytes = std::fs::read(&saved).unwrap();
         assert!(!solidcraft_engine::io::is_design_container(&bytes));
@@ -1481,6 +1511,29 @@ mod header_report_tests {
         assert!(h.dir.join("Exported copy.json").is_file());
         h.app.run("file.save", json!({})).unwrap();
         assert!(!solidcraft_engine::io::is_design_container(&std::fs::read(saved).unwrap()), "subsequent Save keeps a .json choice");
+    }
+
+    /// The browser build's File > Download design hands the open design to the host as a
+    /// `.solidcraft` container named after it; a host that saves real files shows no such item.
+    #[test]
+    fn file_menu_download_design_hands_the_container_to_the_host() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
+        h.app.session.doc_mut().name = "Plate".into();
+        let got = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(String, Vec<u8>)>::new()));
+        let sink = got.clone();
+        h.app.services.download_design = Some(Box::new(move |name, bytes| {
+            sink.borrow_mut().push((name.to_string(), bytes.to_vec()));
+            Ok(())
+        }));
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"appbar:folder"}})).unwrap();
+        h.step(&json!({"widget":"Download design"})).unwrap();
+        let got = got.borrow();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "Plate.solidcraft");
+        assert!(solidcraft_engine::io::is_design_container(&got[0].1));
+        assert!(h.app.session.path.is_none(), "a download is no save: the design keeps no file");
     }
 
     fn sizes(buttons: &[usize]) -> Vec<PanelSize> {
