@@ -1131,6 +1131,9 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
     let placed_mirror = matches!(&f.kind, FeatureKind::Mirror { placements, .. } if !placements.is_empty());
     // A combine moves tools placed differently from its target into the target's frame (#3383).
     let combine = matches!(&f.kind, FeatureKind::Combine { .. });
+    if !to_object && !combine && drawn_tools_change_bodies(&f.kind) {
+        return drawn_tools_digest(doc, f);
+    }
     if to_object || placed_mirror || combine {
         return if doc.occurrences.is_empty() && doc.body_offsets.is_empty() { 0 } else { placements_hash(doc) };
     }
@@ -1824,9 +1827,10 @@ fn apply_traced(state: &mut ModelState, f: &Feature, tools: Vec<Traced>, op: Ope
         return Ok(());
     }
     if matches!(op, Operation::Cut | Operation::Intersect) {
-        let bodies: Vec<Body> = tools.iter().map(|t| t.body.clone()).collect();
         for &i in &target_idx {
             if let Some(mb) = state.bodies.get(i).filter(|b| state.sheets.iter().any(|s| s.body == b.name)) {
+                let m = tool_frame(&mb.name);
+                let bodies: Vec<Body> = tools.iter().map(|t| tool_in(t, m).map(|t| t.body)).collect::<Result<_>>()?;
                 sheet_boolean_unchanged(&mb.body, &bodies, op)?;
             }
         }
@@ -1886,16 +1890,24 @@ fn apply_traced(state: &mut ModelState, f: &Feature, tools: Vec<Traced>, op: Ope
                     if mb.body.is_mesh() || (!met.is_empty() && sheet) {
                         continue;
                     }
-                    if mb.body.meets(&tool.body)? {
+                    // Each body is met where it is shown: the tool goes into its frame (#3383).
+                    if mb.body.meets(&tool_in(tool, tool_frame(name))?.body)? {
                         met.push(name.clone());
                     }
                 }
                 let Some(keep) = met.first().or(live.first()).cloned() else { return Ok(()) };
                 let Some(base) = state.body(&keep).map(ModelBody::traced) else { continue };
-                let mut acc = union(&base, tool)?;
+                let into_keep = tool_frame(&keep);
+                let mut acc = union(&base, &tool_in(tool, into_keep)?)?;
                 for name in met.iter().skip(1) {
                     if let Some(b) = state.body(name) {
-                        acc = union(&acc, &b.traced())?;
+                        // A body placed differently from the one kept joins it where it is shown.
+                        let from = match tool_frame(name) {
+                            Some(m) => crate::mat_inverse(&m),
+                            None => Some(crate::IDENTITY),
+                        };
+                        let m = from.map(|from| crate::mat_mul(&into_keep.unwrap_or(crate::IDENTITY), &from)).filter(|m| !crate::is_identity(m));
+                        acc = union(&acc, &tool_in(&b.traced(), m)?)?;
                     }
                 }
                 let absorbed: std::collections::BTreeSet<String> = met.into_iter().skip(1).collect();
@@ -1918,7 +1930,10 @@ fn apply_traced(state: &mut ModelState, f: &Feature, tools: Vec<Traced>, op: Ope
             let mut remove = Vec::new();
             for &ti in &target_idx {
                 let Some(mut acc) = state.bodies.get(ti).map(|b| Some(b.traced())) else { continue };
+                // The tools meet the target where it is shown: in its frame (#3383).
+                let into = state.bodies.get(ti).and_then(|b| tool_frame(&b.name));
                 for t in &tools {
+                    let t = &tool_in(t, into)?;
                     acc = match acc {
                         Some(a) => kernel::boolean(&a.body, &t.body, bop)?.map(|r| Traced::step(r, &[&a, t])),
                         None => None,
@@ -4913,6 +4928,8 @@ fn chamfer_with(
 }
 
 fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState, warning: &mut Option<String>) -> Result<()> {
+    // Its tools meet bodies in other placements where those are shown (#3383).
+    let _frames = ToolFrames::install(doc, f, st);
     match &f.kind {
         FeatureKind::BodyTransfer { bodies, from, to, transform } => {
             crate::body_transfer::evaluate(doc, st, &crate::plain(bodies), *from, *to, *transform)
@@ -5787,6 +5804,98 @@ fn plane_reads_geometry(plane: &PlaneRef) -> bool {
 fn body_world(doc: &Document, mb: &ModelBody) -> Mat {
     let m = doc.component_transform(doc.model_body_component(mb));
     doc.model_body_offset(mb).map(|offset| crate::mat_mul(&m, offset)).unwrap_or(m)
+}
+
+thread_local! {
+    /// While a feature whose tools are drawn in its own component's frame is evaluated: each body
+    /// placed differently, with the matrix from that frame into the body's own (#3383).
+    static TOOL_FRAMES: std::cell::RefCell<Vec<(String, Mat)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Whether a feature joins, cuts or intersects with tools drawn in its own component's frame: a
+/// primitive, or a solid built from its sketches. (A combine's tools are bodies, each in its own
+/// frame; it moves them itself.)
+fn drawn_tools_change_bodies(kind: &FeatureKind) -> bool {
+    match kind {
+        FeatureKind::Box { operation, .. }
+        | FeatureKind::Cylinder { operation, .. }
+        | FeatureKind::Sphere { operation, .. }
+        | FeatureKind::Torus { operation, .. }
+        | FeatureKind::Extrude { operation, .. }
+        | FeatureKind::Revolve { operation, .. }
+        | FeatureKind::Loft { operation, .. }
+        | FeatureKind::Sweep { operation, .. }
+        | FeatureKind::Pipe { operation, .. }
+        | FeatureKind::Coil { operation, .. } => *operation != Operation::NewBody,
+        _ => false,
+    }
+}
+
+/// The frames of [`TOOL_FRAMES`] for the feature being evaluated; what was there before is put
+/// back when it is dropped.
+struct ToolFrames(Vec<(String, Mat)>);
+
+impl ToolFrames {
+    /// For a feature with drawn tools (see [`drawn_tools_change_bodies`]): the bodies placed
+    /// differently from its component, so its tools meet them where they are shown (#3383).
+    fn install(doc: &Document, f: &Feature, st: &ModelState) -> Option<ToolFrames> {
+        if !drawn_tools_change_bodies(&f.kind) || (doc.occurrences.is_empty() && doc.body_offsets.is_empty()) {
+            return None;
+        }
+        let frame = doc.component_transform(f.component);
+        let frames: Vec<(String, Mat)> = st
+            .bodies
+            .iter()
+            .filter_map(|b| {
+                let world = body_world(doc, b);
+                (world != frame).then(|| crate::mat_inverse(&world).map(|inv| (b.name.clone(), crate::mat_mul(&inv, &frame)))).flatten()
+            })
+            .collect();
+        if frames.is_empty() {
+            return None;
+        }
+        Some(ToolFrames(TOOL_FRAMES.with(|t| std::mem::replace(&mut *t.borrow_mut(), frames))))
+    }
+}
+
+impl Drop for ToolFrames {
+    fn drop(&mut self) {
+        let before = std::mem::take(&mut self.0);
+        TOOL_FRAMES.with(|t| *t.borrow_mut() = before);
+    }
+}
+
+/// [`placement_digest`] of a feature with drawn tools: the placements, when it names the bodies
+/// it changes (they may lie in another component, where its tools meet them, #3383); nothing
+/// otherwise, as it then changes only bodies of its own component.
+fn drawn_tools_digest(doc: &Document, f: &Feature) -> u64 {
+    let targets = match &f.kind {
+        FeatureKind::Extrude { targets, .. }
+        | FeatureKind::Revolve { targets, .. }
+        | FeatureKind::Loft { targets, .. }
+        | FeatureKind::Sweep { targets, .. }
+        | FeatureKind::Pipe { targets, .. }
+        | FeatureKind::Coil { targets, .. } => !targets.is_empty(),
+        _ => false,
+    };
+    if (!targets && f.participants.is_empty()) || (doc.occurrences.is_empty() && doc.body_offsets.is_empty()) {
+        return 0;
+    }
+    placements_hash(doc)
+}
+
+/// The matrix taking the evaluated feature's drawn tools into body `name`'s frame (`None`: the
+/// same frame).
+fn tool_frame(name: &str) -> Option<Mat> {
+    TOOL_FRAMES.with(|t| t.borrow().iter().find(|(n, _)| n == name).map(|(_, m)| *m))
+}
+
+/// `tool` moved by `m` (unchanged for `None`).
+fn tool_in(tool: &Traced, m: Option<Mat>) -> Result<Traced> {
+    match m {
+        Some(m) => Ok(Traced::step(kernel::transform_matrix(&tool.body, m)?, &[tool])),
+        None => Ok(tool.clone()),
+    }
 }
 
 pub fn state_in_frame<'a>(doc: &Document, st: &'a ModelState, comp: u64) -> std::borrow::Cow<'a, ModelState> {

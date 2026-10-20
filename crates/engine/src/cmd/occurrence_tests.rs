@@ -692,3 +692,29 @@ fn combine_across_a_turned_occurrence_meets_the_tool_where_it_is_shown() {
     let want = 40.0 * 40.0 * 10.0 - 10.0 * 10.0 * 5.0;
     assert!((volume(&s, "Base") - want).abs() < 1e-6 * want, "{} vs {want}", volume(&s, "Base"));
 }
+
+/// #3383: a feature joining into a body of another, placed component draws its tool where the
+/// tool is shown, as Combine does. Part is moved 100 mm along x, so its 10 mm cubes sit at x 100..110
+/// and 120..130; a box and an extrude drawn from the root over each add 4 x 4 x 5 to it in one
+/// piece, not a separate lump 100 mm further on.
+#[test]
+fn joins_into_a_moved_occurrence_meet_the_tool_where_it_is_shown() {
+    let volume = |s: &Session, name: &str| s.model.state().body(name).map(|b| solidcraft_kernel::measure(&b.body).unwrap().volume).unwrap_or(0.0);
+    let mut s = Session::default();
+    created(&mut s, "Part");
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "A"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [20, 0, 0], "operation": "new", "body_name": "B"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": "Part:1", "translate": [100, 0, 0]}));
+    run(&mut s, "component.capture_position", json!({}));
+    run(&mut s, "solid.box", json!({"length": 4, "width": 4, "height": 15, "corner": [103, 3, 0], "operation": "join", "targets": ["A"]}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [123, 3], "p1": [127, 7]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 15, "operation": "join", "targets": ["B"]}));
+    let want = 10.0 * 10.0 * 10.0 + 4.0 * 4.0 * 5.0;
+    for b in ["A", "B"] {
+        assert_eq!(s.model.state().body(b).map(|b| b.body.shell_count()), Some(1), "{b}");
+        assert!((volume(&s, b) - want).abs() < 1e-6 * want, "{b}: {} vs {want}", volume(&s, b));
+    }
+}
