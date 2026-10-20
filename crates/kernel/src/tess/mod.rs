@@ -30,7 +30,7 @@ pub(crate) mod ssi;
 pub(crate) mod surface;
 pub(crate) mod uv;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use solidcraft_geom::Vec3;
 use solidcraft_geom::tess::{EvalSurface, FacePlan, TessPlan};
@@ -70,6 +70,8 @@ pub(crate) const OFF_SURFACE: f64 = 1e-3;
 /// spacing a mesh can carry, and far above the parameters a projection tells apart. See
 /// [`drop_collapsed`].
 const SAME_NODE: f64 = 1e-6;
+/// How much finer a refused face's edges are divided, retry by retry.
+const REFINE_STEPS: [f64; 2] = [3.0, 10.0];
 
 fn unsupported(what: impl std::fmt::Display) -> KernelError {
     KernelError::Failed(format!("not supported yet: tessellation: {what}"))
@@ -107,16 +109,9 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
     }
     relax_crowded_faces(&faces, &jobs, &rules, &mut nodes);
     divide_collapsed_faces(&faces, &jobs, &rules, &mut nodes);
-    let oriented = |e: &mt::Edge| -> Option<Vec<Vec3>> {
-        let mut pts = nodes.get(&e.id())?.points.clone();
-        if !e.orientation() {
-            pts.reverse();
-        }
-        Some(pts)
-    };
     let indexed: Vec<(usize, &mt::Face)> = faces.iter().copied().enumerate().collect();
-    let planned = crate::par::map("face tessellation", &indexed, curved >= PARALLEL_FACES, |(fi, face)| {
-        let fi = *fi;
+    // One face, from the edge nodes as they are and with the rules for its level of detail.
+    let plan_one = |fi: usize, face: &mt::Face, nodes: &HashMap<mt::EdgeID, edges::Nodes>, rules: &size::Rules| {
         let (eval, size) = match sized.get(fi) {
             Some((Some(eval), Some(size))) => (eval.clone(), *size),
             _ => return Err(unsupported(format!("face {fi}: surface not evaluable"))),
@@ -146,7 +141,7 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
             }
         }
         let mut stats = PlanStats::default();
-        let replan = |stats: &mut PlanStats| match plan_face(fi, &eval, &loops3, &known, &rules, size, stats) {
+        let replan = |stats: &mut PlanStats| match plan_face(fi, &eval, &loops3, &known, rules, size, stats) {
             Ok(fp) => Ok(fp),
             // A boundary that doubles straight back on itself (a zero-width slit in the face,
             // which some STEP writers leave where two surfaces were trimmed apart) encloses no
@@ -157,7 +152,7 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
                     return Err(first);
                 }
                 *stats = PlanStats::default();
-                plan_face(fi, &eval, &slit3, &slitq, &rules, size, stats).map_err(|_| first)
+                plan_face(fi, &eval, &slit3, &slitq, rules, size, stats).map_err(|_| first)
             }
         };
         let fp = replan(&mut stats)?;
@@ -167,7 +162,48 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
             ..fp
         };
         Ok((fp, eval, stats))
-    });
+    };
+    let mut planned = crate::par::map("face tessellation", &indexed, curved >= PARALLEL_FACES, |(fi, face)| plan_one(*fi, face, &nodes, &rules));
+    // A face refused at this level of detail (a boundary that comes out degenerate, or that a
+    // triangulation cannot follow, between nodes too far apart) has its edges divided again,
+    // finer, and it and the faces beside those edges, which share their nodes, are planned
+    // again from them.
+    let face_edges: Vec<Vec<mt::EdgeID>> =
+        faces.iter().map(|f| f.absolute_boundaries().iter().flat_map(|w| w.edge_iter().map(|e| e.id())).collect()).collect();
+    let job_of: HashMap<mt::EdgeID, (&mt::Edge, f64)> = jobs.iter().map(|(e, h)| (e.id(), (*e, *h))).collect();
+    let mut finer: HashMap<usize, f64> = HashMap::new();
+    for factor in REFINE_STEPS {
+        let refused: Vec<usize> = planned.iter().enumerate().filter(|(_, r)| r.is_err()).map(|(i, _)| i).collect();
+        if refused.is_empty() {
+            break;
+        }
+        let fine = size::Rules { tol: rules.tol / factor, ..rules };
+        let touched: HashSet<mt::EdgeID> = refused.iter().filter_map(|f| face_edges.get(*f)).flatten().copied().collect();
+        for id in &touched {
+            if let Some((e, h)) = job_of.get(id) {
+                nodes.insert(*id, edges::sample_edge(e, &fine, *h / factor));
+            }
+        }
+        finer.extend(refused.iter().map(|f| (*f, factor)));
+        let again: Vec<(usize, &mt::Face)> =
+            indexed.iter().filter(|(f, _)| face_edges.get(*f).is_some_and(|ids| ids.iter().any(|id| touched.contains(id)))).copied().collect();
+        let results = crate::par::map("face tessellation", &again, again.len() >= PARALLEL_FACES, |(fi, face)| {
+            let k = finer.get(fi).copied().unwrap_or(1.0);
+            plan_one(*fi, face, &nodes, &size::Rules { tol: rules.tol / k, ..rules })
+        });
+        for ((f, _), r) in again.iter().zip(results) {
+            if let Some(slot) = planned.get_mut(*f) {
+                *slot = r;
+            }
+        }
+    }
+    let oriented = |e: &mt::Edge| -> Option<Vec<Vec3>> {
+        let mut pts = nodes.get(&e.id())?.points.clone();
+        if !e.orientation() {
+            pts.reverse();
+        }
+        Some(pts)
+    };
     let mut plan = TessPlan::default();
     let mut stats = PlanStats::default();
     for r in planned {
