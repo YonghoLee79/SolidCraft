@@ -137,14 +137,11 @@ fn promote_font_to_front(fonts: &mut egui::FontDefinitions, name: &str) {
     }
 }
 
-/// Install font bytes as fallback for Proportional and Monospace font families.
-/// For CJK languages, promotes the font to the front of Proportional so digits and labels share one baseline.
+/// Install font bytes as a fallback for the Proportional and Monospace families for `language`.
+/// For a CJK language the font is promoted to the front of Proportional so digits and labels share
+/// one baseline with the CJK glyphs; for any other language it stays a fallback (its Cyrillic can
+/// be full-width, so it must not draw the Latin or Cyrillic UI text).
 /// Returns true if the font was parsed and installed successfully.
-pub fn install_cjk_font(ctx: &egui::Context, bytes: Vec<u8>) -> bool {
-    install_cjk_font_for(ctx, bytes, "ja")
-}
-
-/// Install font bytes for `language`.
 pub fn install_cjk_font_for(ctx: &egui::Context, bytes: Vec<u8>, language: &str) -> bool {
     match with_cjk_fallback(egui::FontDefinitions::default(), bytes) {
         Some(mut fonts) => {
@@ -680,8 +677,8 @@ fn find_chinese_font_in(dirs: &[std::path::PathBuf]) -> Option<Vec<u8>> {
 #[cfg(target_arch = "wasm32")]
 pub fn setup_fonts_for(_ctx: &egui::Context, _language: &str, _ui_font: &str) {}
 
-/// On web only the symbol fallback goes in at start (#2955); the Japanese font loads later
-/// through [`install_cjk_font`], which keeps it.
+/// On web only the symbol fallback goes in at start (#2955); the CJK font loads later through
+/// [`install_cjk_font_for`], which keeps it as a fallback unless the UI is a CJK language.
 #[cfg(target_arch = "wasm32")]
 pub fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(with_symbol_fallback(egui::FontDefinitions::default()));
@@ -817,6 +814,30 @@ mod tests {
         let prop = &fonts.families[&egui::FontFamily::Proportional];
         assert_eq!(prop.first().map(String::as_str), Some(CJK_FALLBACK), "CJK font is promoted to first so digits and CJK share one baseline");
         assert!(prop.contains(&defaults.families[&egui::FontFamily::Proportional][0]), "Latin font remains in the fallback chain");
+    }
+
+    /// A Ukrainian UI drew Cyrillic wide and loose: the bundled CJK face (BIZ UDPGothic) sets every
+    /// Cyrillic glyph in a full em, so it may only draw a non-CJK UI's text when nothing else has
+    /// the glyph. A CJK UI still leads with it, so its digits share the CJK baseline.
+    #[test]
+    fn a_non_cjk_ui_keeps_the_cjk_face_as_a_fallback() {
+        let installed = |language: &str| {
+            let ctx = egui::Context::default();
+            assert!(install_cjk_font_for(&ctx, latin_font_bytes(), language), "{language}: the font installs");
+            ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+            ctx.fonts(|f| f.definitions().families[&egui::FontFamily::Proportional].clone())
+        };
+        let latin = egui::FontDefinitions::default().families[&egui::FontFamily::Proportional][0].clone();
+        for language in ["uk", "en", "de"] {
+            let list = installed(language);
+            assert_eq!(list.first(), Some(&latin), "{language} keeps the Latin face first: {list:?}");
+            assert_eq!(list.last().map(String::as_str), Some(SYMBOL_FALLBACK), "{language} ends with the symbol fallback: {list:?}");
+            assert!(list.iter().position(|name| name == CJK_FALLBACK).is_some_and(|at| at > 0), "{language} keeps CJK behind Latin: {list:?}");
+        }
+        for language in ["ja", "zh", "ko"] {
+            let list = installed(language);
+            assert_eq!(list.first().map(String::as_str), Some(CJK_FALLBACK), "{language} leads with the CJK face: {list:?}");
+        }
     }
 
     #[test]

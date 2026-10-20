@@ -1820,11 +1820,17 @@ fn folder_rows_at(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, path: Option
     if let Some(p) = r.secondary {
         acts.menu = Some((p, Target::Folder { component: comp, folder: fstatic.to_string(), scope: prefix.clone() }));
     }
-    // Dropping on the folder row takes items out of their groups, to the end.
+    // Dropping on the folder row takes items out of their groups, to the end. Bodies or sketches
+    // from another component's folder move into this component, as a drop on its row does
+    // (#3270: the Bodies folder looked like the place to drop a body, and took nothing).
     if let Some(resp) = &r.resp
-        && let Some(d) = drop_target(ui, resp, |d: &Drag| d.comp == comp && d.folder == fstatic, DropMark::Box)
+        && let Some(d) = drop_target(ui, resp, |d: &Drag| d.folder == fstatic && (d.comp == comp || d.folder != "construction"), DropMark::Box)
     {
-        acts.drop = Some(DropAction::Move { comp, folder: fstatic, keys: d.keys.clone(), group: None, before: None });
+        acts.drop = Some(if d.comp == comp {
+            DropAction::Move { comp, folder: fstatic, keys: d.keys.clone(), group: None, before: None }
+        } else {
+            DropAction::Component { to: comp, folder: d.folder, keys: d.keys.clone() }
+        });
     }
     if !open {
         return;

@@ -2746,7 +2746,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         }
         if let Some((id, depth, grab)) = app.viewport.point_drag.clone()
-            && resp.dragged_by(egui::PointerButton::Primary)
+            && (resp.dragged_by(egui::PointerButton::Primary) || resp.drag_stopped())
             && let Some(mut q) = hover.and_then(|p| on_plane(app, p))
         {
             let from = grab.unwrap_or(q);
@@ -2783,6 +2783,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             let at = match app.session.execute("sketch.drag", &params) {
                 Ok(r) => {
                     app.session.undo.truncate(depth + 1);
+                    // Budget-limited progress continues even when the mouse stops. A stalled
+                    // search asks for no more frames; release gets one bounded final attempt.
+                    if r.get("retry").and_then(serde_json::Value::as_bool) == Some(true) && !resp.drag_stopped() {
+                        ui.ctx().request_repaint();
+                    }
                     r.get("at").and_then(solidcraft_engine::params::vec2).unwrap_or(q)
                 }
                 Err(_) => from,

@@ -230,3 +230,29 @@ fn occurrence_distance_editor_reads_inches_and_keeps_four_digits_in_model_space(
     crate::browser::revert_occurrence_dialog(&mut h.app, &movement);
     assert!(h.app.session.pending_moves.is_empty());
 }
+
+/// #3270: a body dragged from a child component onto the parent's Bodies folder moves back into
+/// the parent, as a drop on the parent's own row does.
+#[test]
+fn a_body_dropped_on_a_bodies_folder_moves_into_that_component() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Plate"})).unwrap();
+    h.app.run("solid.box", json!({"corner":[20,0,0],"length":5,"width":5,"height":5,"body_name":"Lid"})).unwrap();
+    let part = h.app.run("component.create", json!({"name":"Part"})).unwrap()["component"].as_u64().unwrap();
+    h.app.run("solid.box", json!({"corner":[40,0,0],"length":5,"width":5,"height":5,"body_name":"Pin"})).unwrap();
+    h.app.run("component.activate", json!({"component":0})).unwrap();
+    h.frames(4);
+    let owner = |h: &Harness, name: &str| {
+        let state = h.app.session.model.state();
+        h.app.session.doc.model_body_component(state.body(name).unwrap())
+    };
+    assert_eq!(owner(&h, "Pin"), part);
+    let at = |h: &mut Harness, handle: &str| h.at(&json!({"handle": handle})).unwrap();
+    let (plate, lid, pin) = (at(&mut h, "row:Plate"), at(&mut h, "row:Lid"), at(&mut h, "row:Pin"));
+    // The root's Bodies folder row sits one row above its first body.
+    let folder = [plate[0], plate[1] - (lid[1] - plate[1])];
+    h.step(&json!({"drag": [pin, folder], "steps": 12})).unwrap();
+    h.frames(3);
+    assert_eq!(owner(&h, "Pin"), 0, "Pin moved back into the root component");
+}

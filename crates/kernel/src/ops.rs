@@ -1799,6 +1799,21 @@ where
     if let Some(body) = fine(&mut last) {
         return Ok(Some(body));
     }
+    // An intersection keeps what lies in both bodies: when the sampled answer keeps one of them
+    // whole and is contradicted by facets that cross well past their faceting error, keeping it
+    // would keep exactly what the intersection was asked to trim (#3244: teeth standing 0.27 mm
+    // out of a trimming cylinder came back untrimmed). It fails instead, and the model is kept.
+    // An empty answer stays reported as unverified: the clearance checks measure it another way.
+    let deep = 2.0 * 3.0 * tol_m;
+    if op == BoolOp::Intersect
+        && matches!(doubted, Some(Some(_)))
+        && let (Some(ma), Some(mb)) = &meshes
+        && ma.crosses(mb, deep)
+    {
+        return Err(KernelError::Failed(format!(
+            "boolean {op:?}: the bodies pass through each other by more than {deep:.3e} mm where they could not be intersected; {last}"
+        )));
+    }
     match doubted {
         Some(r) => {
             let mut event = BooleanFallback::new(BooleanStrategy::UnverifiedShortcut);

@@ -1,6 +1,6 @@
 //! Analytic cursor oracle plus feasibility checks on every accepted continuation step.
 use solidcraft_geom::Vec2;
-use solidcraft_sketch::{ConstraintKind, Sketch, move_point_towards, solve};
+use solidcraft_sketch::{ConstraintKind, Sketch, move_line_towards, move_point_towards, solve};
 
 fn linkage() -> (Sketch, usize, usize) {
     let mut sk = Sketch::new();
@@ -14,6 +14,31 @@ fn linkage() -> (Sketch, usize, usize) {
     }
     assert!(solve(&mut sk).ok());
     (sk, a, c)
+}
+
+#[test]
+fn a_material_point_on_a_link_follows_without_relaxing_its_length() {
+    for along in [0.2, 0.5, 0.8] {
+        for target in [Vec2::new(-10.0, 16.0), Vec2::new(20.0, 0.0), Vec2::new(1000.0, -1000.0)] {
+            let (mut sk, a, c) = linkage();
+            let line = sk.add_line_pts(0, a, None).unwrap();
+            let target = target * along;
+            assert!(move_line_towards(&mut sk, line, Vec2::new(along, 0.0), target, 1.25, None, |before, after| {
+                assert!((after.points[a].pos.len() - 10.0).abs() < 1e-9);
+                assert!((after.points[a].pos.dist(after.points[c].pos) - 40.0).abs() < 1e-9);
+                assert!((after.points[c].pos.dist(Vec2::new(42.0, 0.0)) - 20.0).abs() < 1e-9);
+                assert!((after.points[a].pos * along).dist(target) < (before.points[a].pos * along).dist(target));
+                (Vec2::new(42.0, 0.0) - after.points[a].pos).cross(after.points[c].pos - after.points[a].pos) < 0.0
+            }));
+            let closest = target * (10.0 * along / target.len());
+            assert!((sk.points[a].pos * along).dist(closest) < 1e-4);
+            let before = sk.clone();
+            for invalid in [Vec2::new(f64::NAN, 0.0), Vec2::new(0.5, f64::INFINITY), Vec2::new(1e300, 1e300)] {
+                assert!(!move_line_towards(&mut sk, line, invalid, target, 1.25, None, |_, _| true));
+                assert_eq!(sk, before);
+            }
+        }
+    }
 }
 
 #[test]
