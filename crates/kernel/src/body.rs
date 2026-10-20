@@ -1077,6 +1077,52 @@ impl Body {
         if d.is_finite() && d > 0.0 { d } else { 1.0 }
     }
 
+    /// A box around the body worked out without meshing it: its vertices and its edges' control
+    /// points (a spline lies in the hull of its controls; a face's surface does not count, as an
+    /// imported face is often trimmed from a far larger one). A face curving out beyond all of
+    /// its edges (a dome on a circle) can reach past it, so it frames a view while the body is
+    /// still being meshed; [`Mesh::bounds`] is the exact one.
+    /// A mesh body's box is its triangles'.
+    pub fn outline_bounds(&self) -> solidcraft_geom::Aabb3 {
+        crate::guard("outline bounds", || Ok(self.outline_bounds_unguarded())).unwrap_or(solidcraft_geom::Aabb3::EMPTY)
+    }
+
+    fn outline_bounds_unguarded(&self) -> solidcraft_geom::Aabb3 {
+        use mt::BoundedCurve;
+        let mut b = solidcraft_geom::Aabb3::EMPTY;
+        if let Some(m) = &self.mesh {
+            for p in &m.positions {
+                b.add(*p);
+            }
+            return b;
+        }
+        let homogeneous = |b: &mut solidcraft_geom::Aabb3, v: mt::Vector4| {
+            if v.w > 0.0 {
+                b.add(Vec3::new(v.x / v.w, v.y / v.w, v.z / v.w));
+            }
+        };
+        for v in self.solid.vertex_iter() {
+            b.add(from_p3(v.point()));
+        }
+        for e in self.solid.edge_iter() {
+            match e.curve() {
+                mt::Curve::Line(l) => {
+                    b.add(from_p3(l.0));
+                    b.add(from_p3(l.1));
+                }
+                mt::Curve::BSplineCurve(c) => c.control_points().iter().for_each(|p| b.add(from_p3(*p))),
+                mt::Curve::NurbsCurve(c) => c.control_points().iter().for_each(|p| homogeneous(&mut b, *p)),
+                mt::Curve::IntersectionCurve(c) => {
+                    let (t0, t1) = c.range_tuple();
+                    for i in 0..=8 {
+                        b.add(from_p3(mt::ParametricCurve::subs(&e.curve(), t0 + (t1 - t0) * f64::from(i) / 8.0)));
+                    }
+                }
+            }
+        }
+        b
+    }
+
     /// The body's volume from a mesh at `tol`, measured once per (solid, tolerance): clones of
     /// a body share the measurement, so an operand a later boolean takes again is not meshed
     /// twice for the same number. `None` when the body cannot be meshed.

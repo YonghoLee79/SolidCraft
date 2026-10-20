@@ -77,6 +77,7 @@ mod loft_rails_dialog_tests;
 #[cfg(test)]
 mod look_at_tests;
 mod material_card_review;
+
 #[cfg(test)]
 mod measurement_ui_tests;
 #[cfg(test)]
@@ -115,6 +116,7 @@ mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
 mod file_picker;
+pub(crate) mod frame_watch;
 #[cfg(test)]
 mod history_off_thread_tests;
 pub use file_picker::FilePickerFuture;
@@ -129,7 +131,9 @@ pub(crate) mod display_lod;
 mod file_load_ui_tests;
 #[cfg(test)]
 mod fillet_spline_handle_tests;
+pub mod mouse_gesture;
 pub(crate) mod navigation;
+pub(crate) mod open_meshing;
 pub mod palette;
 pub mod params_dialog;
 pub(crate) mod pick_buffer;
@@ -337,6 +341,8 @@ pub struct SolveApp {
     pub palette: palette::Palette,
     /// Context menus, rename box and Properties window.
     pub menu: context_menu::MenuState,
+    /// Mouse gestures: the ring of tools and its customization window.
+    pub gesture: mouse_gesture::State,
     /// Browser tree state (reveal, groups being edited, occurrence moves).
     pub tree: browser::TreeState,
     /// A saved design copied for insertion into another open document.
@@ -437,6 +443,12 @@ pub struct SolveApp {
     /// The 3D mouse: which device, its reading, and the calibration window.
     pub space_mouse: space_mouse::Input,
     pub file_load: file_load::FileLoad,
+    /// An opened design's bodies still being meshed, off the UI thread.
+    pub(crate) open_meshing: Option<open_meshing::Meshing>,
+    /// A design is being put in the window and will be meshed after it: framing it uses outlines.
+    pub(crate) open_meshing_next: bool,
+    /// How long each frame takes on the window thread, by phase.
+    pub(crate) frame_watch: frame_watch::Watch,
     /// The other open designs (tabs).
     pub docs: documents::Documents,
     /// The language the installed font fallback chain is ordered for (`fonts::fallback_order`);
@@ -478,6 +490,7 @@ impl SolveApp {
             material_card_review: None,
             palette: palette::Palette::default(),
             menu: context_menu::MenuState::default(),
+            gesture: mouse_gesture::State::default(),
             tree: browser::TreeState::default(),
             linked_design_clipboard: None,
             sbox: shortcut_box::ShortcutBox::default(),
@@ -533,6 +546,9 @@ impl SolveApp {
             home: home::HomeState::default(),
             space_mouse: Default::default(),
             file_load: file_load::FileLoad::default(),
+            open_meshing: None,
+            open_meshing_next: false,
+            frame_watch: Default::default(),
             docs: documents::Documents::default(),
             applied_fonts_language: "en".into(),
             applied_ui_font: String::new(),
@@ -1314,6 +1330,7 @@ impl SolveApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        frame_watch::begin(self);
         file_picker::tick(self, ctx);
         render_workspace::sync_backend(self);
         render_workspace::tick(self, ctx);
@@ -1322,6 +1339,8 @@ impl SolveApp {
         if self.saving.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        open_meshing::tick(self, ctx);
+        open_meshing::refresh(self, ctx.input(|i| i.time));
         self.esc_handled = false;
         prefs::apply(self, ctx);
         if !self.styled || theme::is_dark() != self.ui.dark || theme::vision() != self.preferences.color_vision {
@@ -1431,6 +1450,7 @@ impl SolveApp {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
         }
         self.frame_ms = now_ms() - t0;
+        frame_watch::end(self);
     }
 
     fn cad_ui(&mut self, ui: &mut egui::Ui, report_input: &mut Option<issue_report::CadInput>) {
@@ -1440,6 +1460,7 @@ impl SolveApp {
         toolbar::app_bar(self, ui);
         issue_report::CadInput::block(self, ui, report_input);
         file_load::show(self, ui.ctx());
+        open_meshing::show(self, ui.ctx());
         documents::prompt(self, ui.ctx());
         update::show(self, ui.ctx());
         install::show(self, ui.ctx());
@@ -1498,6 +1519,7 @@ impl SolveApp {
         stand_up::show(self, ui.ctx());
         prefs::show_reset_notice(self, ui.ctx());
         context_menu::show(self, ui.ctx());
+        mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
@@ -1524,13 +1546,25 @@ impl SolveApp {
                 break;
             }
             // Held requests go first, in order, once the file is in.
-            let held = if self.file_load.busy() || self.file_picker.is_some() { None } else { self.control_held.pop_front() };
+            // A screenshot waiting for an opened design to be meshed holds what came after it.
+            let shot_waits = open_meshing::active(self) && self.control_held.front().is_some_and(|r| r.method == "ui.screenshot");
+            let held = if self.file_load.busy() || self.file_picker.is_some() || shot_waits { None } else { self.control_held.pop_front() };
             let Some(req) = held.or_else(|| rx.as_ref().and_then(|rx| rx.try_recv().ok())) else { break };
+            if shot_waits {
+                if self.control_held.len() < MAX_HELD {
+                    self.control_held.push_back(req);
+                } else {
+                    let _ = req.reply.send(json!({"ok": false, "error": "a file operation is in progress"}));
+                }
+                continue;
+            }
             // A file is loading: commands that change the design wait for it (the window,
             // inspection and screenshots still answer).
             if ((self.file_load.busy() || self.file_picker.is_some())
                 && matches!(req.method.as_str(), "engine.execute" | "command" | "engine.script" | "engine.batch"))
                 || (self.file_picker_busy() && matches!(req.method.as_str(), "ui.file" | "ui.home"))
+                // A screenshot shows the whole design: it waits until an opened one is meshed.
+                || (open_meshing::active(self) && req.method == "ui.screenshot")
             {
                 if self.control_held.len() < MAX_HELD {
                     self.control_held.push_back(req);
