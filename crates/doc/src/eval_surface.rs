@@ -120,9 +120,11 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             };
             let at = |limit| kernel::ExtendOptions { mode, limit, neighbours: *neighbours };
             let out = match up_to {
-                None => {
-                    kernel::extend_surface(&mb.body, &crate::plain(edges), &at(kernel::ExtendLimit::Distance(val(vals, distance, Kind::Length)?)))?
-                }
+                None => kernel::extend_surface(
+                    &mb.body,
+                    &crate::plain(edges),
+                    &at(kernel::ExtendLimit::Distance(positive(val(vals, distance, Kind::Length)?, "the extension distance")?)),
+                )?,
                 Some(crate::ExtendTo::Bounds) => kernel::extend_surface(&mb.body, &crate::plain(edges), &at(kernel::ExtendLimit::Bounds))?,
                 Some(crate::ExtendTo::Plane(plane)) => {
                     let tool = kernel::SplitTool::Plane(doc.resolve_plane_in(vals, plane, 0, Some(st))?);
@@ -475,7 +477,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 RuledCorners::Round => kernel::RuledCorners::Round,
             };
             let mb = st.body(body).cloned().ok_or_else(|| DocError::Unknown(format!("body `{body}`")))?;
-            let r = kernel::Ruled { distance: d, mode, flip: *flip, corners, face: face.map(Vec3::from) };
+            let r = kernel::Ruled { distance: positive(d, "the ruled surface distance")?, mode, flip: *flip, corners, face: face.map(Vec3::from) };
             let made = Traced::step(kernel::ruled_surface(&mb.body, &crate::plain(edges), &r)?, &[&mb.traced()]);
             let name = new_name(st, f, 0);
             st.bodies.push(ModelBody::traced_new(name, made, f.id));

@@ -2,7 +2,7 @@
 //! face and edge origin checked against the geometry of the operands (in tests only: the history
 //! itself is recorded, never sampled), and the exact origins asserted where the outcome is known.
 
-use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Plane, Positive, Region2, Vec2, Vec3};
 
 use crate::body::Body;
 use crate::boolean_record::tests::{self, Reach, changes, to_edge, to_face};
@@ -345,7 +345,7 @@ fn surfaces_keep_their_faces() {
     assert_eq!(h.faces[0].origins, [face(0)]);
     assert_eq!(h.faces[0].change, Change::Modified);
     // Extended: the face and its edges moved out.
-    let x = crate::extend(&copy, &[Vec3::new(40.0, 15.0, 20.0)], 5.0).unwrap();
+    let x = crate::extend(&copy, &[Vec3::new(40.0, 15.0, 20.0)], Positive::new(5.0).unwrap()).unwrap();
     let h = verified(&x, &copy, Reach { made: 0.0, moved: 5.0 * 1.1 });
     assert_eq!(h.faces[0].origins, [face(0)]);
     assert!(h.edges.iter().all(|e| e.origins.len() == 1));

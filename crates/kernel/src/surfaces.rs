@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::{Plane, Region2, Seg2, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Plane, Positive, Region2, Seg2, UnitVec3, Vec2, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -1117,11 +1117,8 @@ pub fn thicken(body: &Body, thickness: f64, symmetric: bool) -> Result<Body> {
 /// A planar surface extended: the chosen straight edges (picked by points on them) move
 /// outward in the face's plane by `distance`, their neighbours lengthened to meet them. The
 /// result's history is over `[body]`: the face and each edge the one it was moved from.
-pub fn extend(body: &Body, at: &[Vec3], distance: f64) -> Result<Body> {
+pub fn extend(body: &Body, at: &[Vec3], distance: Positive) -> Result<Body> {
     body.require_brep("extend")?;
-    if !(distance.is_finite() && distance > 0.0) {
-        return Err(KernelError::Invalid("the extension distance must be positive".into()));
-    }
     let faces: Vec<mt::Face> = body.solid.face_iter().cloned().collect();
     let [face] = faces.as_slice() else { return Err(KernelError::Invalid("not supported yet: extending a surface of more than one face".into())) };
     let Some(crate::splitface::Analytic::Plane { n }) = crate::splitface::analytic_field(&face.oriented_surface()) else {
@@ -1146,7 +1143,7 @@ pub fn extend(body: &Body, at: &[Vec3], distance: f64) -> Result<Body> {
             let d = (b - a).normalized().ok_or_else(|| KernelError::Invalid("a zero-length edge".into()))?;
             // Outward: right of the edge seen along the normal (the face is on its left).
             let out = d.cross(n);
-            let shift = if chosen.contains(&e.id()) || chosen.contains(&e.inverse().id()) { distance } else { 0.0 };
+            let shift = if chosen.contains(&e.id()) || chosen.contains(&e.inverse().id()) { *distance } else { 0.0 };
             lines.push((a + out * shift, d));
         }
         // Corners: where consecutive lines meet.
@@ -1602,11 +1599,10 @@ mod tests {
             holes: vec![],
         };
         let s = patch_region(&Plane::XY, &r).unwrap();
-        let e = extend(&s, &[Vec3::new(10.0, 5.0, 0.0)], 5.0).unwrap();
+        let e = extend(&s, &[Vec3::new(10.0, 5.0, 0.0)], Positive::new(5.0).unwrap()).unwrap();
         assert!(rel(measure(&e).unwrap().area, 150.0) < 1e-9);
-        let e = extend(&s, &[Vec3::new(10.0, 5.0, 0.0), Vec3::new(5.0, 10.0, 0.0)], 5.0).unwrap();
+        let e = extend(&s, &[Vec3::new(10.0, 5.0, 0.0), Vec3::new(5.0, 10.0, 0.0)], Positive::new(5.0).unwrap()).unwrap();
         assert!(rel(measure(&e).unwrap().area, 225.0) < 1e-9);
-        assert!(extend(&s, &[Vec3::new(10.0, 5.0, 0.0)], -1.0).is_err());
     }
 
     #[test]

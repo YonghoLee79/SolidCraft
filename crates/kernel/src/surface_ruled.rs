@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use mt::{BoundedCurve, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Positive, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3, v3};
@@ -58,8 +58,8 @@ pub enum RuledCorners {
 /// A ruled surface's settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ruled {
-    /// How far the strip reaches along its rulings (mm, positive).
-    pub distance: f64,
+    /// How far the strip reaches along its rulings (mm).
+    pub distance: Positive,
     pub mode: RuledMode,
     /// The strip on the other side: every ruling reversed.
     pub flip: bool,
@@ -74,9 +74,9 @@ pub struct Ruled {
 /// the edge it stands on, a corner face in place of the two edges meeting there.
 pub fn ruled_surface(body: &Body, at: &[Vec3], r: &Ruled) -> Result<Body> {
     body.require_brep("ruled surface")?;
-    let d = r.distance;
-    if !(d.is_finite() && d > 0.0 && d < 1e6) {
-        return Err(KernelError::Invalid("the ruled surface distance must be positive and finite".into()));
+    let d = *r.distance;
+    if d >= 1e6 {
+        return Err(KernelError::Invalid("the ruled surface distance must be under 1e6".into()));
     }
     if at.is_empty() || at.len() > 10_000 {
         return Err(KernelError::Invalid("pick the edges of a chain".into()));
@@ -639,7 +639,7 @@ mod tests {
         (a - b).abs() / b.abs().max(1e-9)
     }
     fn ruled(mode: RuledMode, distance: f64, face: Vec3) -> Ruled {
-        Ruled { distance, mode, flip: false, corners: RuledCorners::Mitre, face: Some(face) }
+        Ruled { distance: Positive::new(distance).unwrap(), mode, flip: false, corners: RuledCorners::Mitre, face: Some(face) }
     }
     fn area(b: &Body) -> f64 {
         measure(b).unwrap().area
@@ -858,9 +858,7 @@ mod tests {
         let b = box_solid(Vec3::ZERO, Vec3::new(10.0, 10.0, 10.0)).unwrap();
         let edge = [Vec3::new(5.0, 0.0, 10.0)];
         let top = Vec3::new(5.0, 5.0, 10.0);
-        for d in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e300] {
-            assert!(ruled_surface(&b, &edge, &ruled(RuledMode::Normal, d, top)).is_err(), "{d}");
-        }
+        assert!(ruled_surface(&b, &edge, &ruled(RuledMode::Normal, 1e300, top)).is_err());
         for m in [
             RuledMode::Angle { angle: f64::NAN, reference: None },
             RuledMode::Angle { angle: 0.5, reference: Some(Vec3::ZERO) },

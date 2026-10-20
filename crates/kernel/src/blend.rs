@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Positive, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3, v3};
@@ -1916,12 +1916,9 @@ fn corners(body: &Body, edges: &[Vec3], r: f64, shape: Shape, what: &str, g2: bo
 /// sphere. The corner construction is the all-at-once corner blend, so a configuration it cannot
 /// hold is refused rather than quietly given the ball's sphere; [`fillet`] (the default) is
 /// unchanged.
-pub fn fillet_g2_corners(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
+pub fn fillet_g2_corners(body: &Body, edges: &[Vec3], radius: Positive) -> Result<Body> {
     body.require_brep("fillet")?;
-    if !(radius.is_finite() && radius > 0.0) {
-        return Err(KernelError::Invalid("the blend radius must be finite and positive".into()));
-    }
-    corners(body, edges, radius, Shape::Round, "fillet", true).and_then(|b| closed(body, b))
+    corners(body, edges, *radius, Shape::Round, "fillet", true).and_then(|b| closed(body, b))
 }
 
 /// The step of the radius search: three significant digits of the requested radius.

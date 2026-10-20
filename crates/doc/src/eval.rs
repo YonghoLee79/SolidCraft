@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
-use solidcraft_geom::{Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
+use solidcraft_geom::{Mesh, Plane, Positive, Region2, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
 use solidcraft_sketch::{CurveKind, Profile, SolveReport, find_profiles};
 
@@ -1606,6 +1606,11 @@ fn point(vals: &BTreeMap<String, Value>, p: &crate::PointExpr) -> Result<Vec3> {
     let [x, y, z] = p;
     let v = Vec3::new(val(vals, x, Kind::Length)?, val(vals, y, Kind::Length)?, val(vals, z, Kind::Length)?);
     if [v.x, v.y, v.z].iter().all(|c| c.is_finite() && c.abs() < 1e9) { Ok(v) } else { Err(DocError::Invalid("the position is out of range".into())) }
+}
+
+/// `x` as a [`Positive`], or a refusal naming `what` it is.
+pub(crate) fn positive(x: f64, what: &str) -> Result<Positive> {
+    Positive::new(x).ok_or_else(|| DocError::Invalid(format!("{what} must be finite and positive")))
 }
 
 pub(crate) fn val(vals: &BTreeMap<String, Value>, e: &str, k: Kind) -> Result<f64> {
@@ -5159,7 +5164,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             let groove = thread_groove(&t, cyl.radius, ((t.start - cyl.start).abs() < tol, (t.end - cyl.end).abs() < tol))?;
             // The B-rep boolean can't take helical walls in reasonable time: the body is cut
             // faceted (curved faces within a two-hundredth of the pitch).
-            let nb = kernel::faceted_boolean(&mb.body, &groove, BoolOp::Cut, t.pitch * 0.005)?
+            let nb = kernel::faceted_boolean(&mb.body, &groove, BoolOp::Cut, positive(t.pitch * 0.005, "the thread pitch")?)?
                 .ok_or_else(|| DocError::Invalid("the thread removed everything".into()))?;
             // The groove's faces are its triangles, with no role to name them by.
             let groove = crate::lineage::Lineage::unnamed_faces(groove.triangles.len());
@@ -5495,7 +5500,9 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             }
             // The blended body, and the lineage of what the last blend started from.
             let (nb, from) = match &f.kind {
-                FeatureKind::Fillet { corner: crate::FilletCorner::G2, .. } => (kernel::fillet_g2_corners(&mb.body, &edges, r)?, input),
+                FeatureKind::Fillet { corner: crate::FilletCorner::G2, .. } => {
+                    (kernel::fillet_g2_corners(&mb.body, &edges, positive(r, "the blend radius")?)?, input)
+                }
                 FeatureKind::Fillet { style: crate::FilletStyle::Curvature, .. } => (kernel::fillet_g2(&mb.body, &edges, r)?, input),
                 FeatureKind::Fillet { style: crate::FilletStyle::Chord, .. } => (kernel::fillet_chord(&mb.body, &edges, r)?, input),
                 FeatureKind::Fillet { style: crate::FilletStyle::Variable { radius2, start, mid, smooth }, .. } => {

@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Positive, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, edge_order, from_p3, p3};
@@ -342,15 +342,13 @@ fn faceted_polys(b: &Body, tol: f64, operand: usize) -> Option<Vec<Poly>> {
 /// no edges): a face of the result lies on faces of `a` (a facet of a curved one) or on
 /// triangles of `b`; an edge between facets of one face of `a`, or between triangles of `b`,
 /// has no origin.
-pub fn faceted_boolean(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<Option<Body>> {
+pub fn faceted_boolean(a: &Body, b: &Mesh, op: BoolOp, tol: Positive) -> Result<Option<Body>> {
     crate::profile::timed(crate::profile::Kind::Boolean, || faceted_boolean_untimed(a, b, op, tol))
 }
 
-fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<Option<Body>> {
+fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: Positive) -> Result<Option<Body>> {
     a.require_brep("a boolean")?;
-    if !(tol.is_finite() && tol > 0.0) {
-        return Err(KernelError::Invalid("facet tolerance".into()));
-    }
+    let tol = *tol;
     let Some(pa) = faceted_polys(a, tol, 0) else {
         return Err(KernelError::Failed("the body is too detailed to facet".into()));
     };

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use solidcraft_geom::{Mesh, Vec3};
+use solidcraft_geom::{Mesh, Positive, Vec3};
 
 use crate::body::Body;
 use crate::history::{Change, EdgeOrigin, FaceOrigin, History, Side};
@@ -414,7 +414,7 @@ fn nudged_tool_composes() {
 fn faceted_tool() {
     let a = boxed(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
     let tool = boxed(5.0, 5.0, 5.0, 15.0, 15.0, 15.0).tessellate(0.1).unwrap();
-    let r = crate::faceted_boolean(&a, &tool, BoolOp::Cut, 0.01).unwrap().unwrap();
+    let r = crate::faceted_boolean(&a, &tool, BoolOp::Cut, Positive::new(0.01).unwrap()).unwrap().unwrap();
     let h = r.history().expect("the faceted boolean reports its history");
     h.check_counts((r.face_count(), r.edge_count()), &[(a.face_count(), a.edge_count()), (tool.triangles.len(), 0)]).unwrap();
     // The box's six faces (three notched) and the three tool faces lining the notch.

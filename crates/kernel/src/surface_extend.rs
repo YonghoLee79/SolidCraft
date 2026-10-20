@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 use mt::{BoundedCurve, ParametricCurve, ParametricSurface};
 use solidcraft_geom::tess::EvalSurface;
-use solidcraft_geom::{UnitVec3, Vec3};
+use solidcraft_geom::{Positive, UnitVec3, Vec3};
 use truck_modeling as mt;
 
 use crate::body::{Body, from_p3, p3};
@@ -70,7 +70,7 @@ pub enum ExtendMode {
 #[derive(Clone, Copy, Debug)]
 pub enum ExtendLimit<'a> {
     /// This far from the edge, measured across the surface square to it.
-    Distance(f64),
+    Distance(Positive),
     /// To where it meets a plane, or the surface of a face (extended).
     UpTo(&'a SplitTool<'a>),
     /// Back to the surface's own bounds (natural only), undoing a trim: a free-form surface's
@@ -105,8 +105,8 @@ pub fn extend_surface(body: &Body, at: &[Vec3], opts: &ExtendOptions) -> Result<
         return Err(KernelError::Invalid("an edge point is not finite".into()));
     }
     match opts.limit {
-        ExtendLimit::Distance(d) if !(d.is_finite() && d > 0.0 && d <= 1e6) => {
-            return Err(KernelError::Invalid("the extension distance must be positive".into()));
+        ExtendLimit::Distance(d) if *d > 1e6 => {
+            return Err(KernelError::Invalid("the extension distance must be at most 1e6".into()));
         }
         ExtendLimit::Bounds if opts.mode != ExtendMode::Natural => {
             return Err(KernelError::Invalid("only a natural extension goes back to the surface's bounds".into()));
@@ -431,7 +431,7 @@ impl<'a> Extension<'a> {
         let r = at.out * phi.cos() + at.d * phi.sin();
         let reach = |cos: f64| -> f64 {
             match self.opts.limit {
-                ExtendLimit::Distance(d) => d / cos.max(MIN_COS),
+                ExtendLimit::Distance(d) => *d / cos.max(MIN_COS),
                 _ => 0.0,
             }
         };
@@ -1315,7 +1315,7 @@ mod tests {
         ExtendOptions { mode, limit, neighbours }
     }
     fn natural(d: f64) -> ExtendOptions<'static> {
-        with(ExtendMode::Natural, ExtendLimit::Distance(d), true)
+        with(ExtendMode::Natural, ExtendLimit::Distance(Positive::new(d).unwrap()), true)
     }
     fn edges(b: &Body) -> usize {
         b.solid.edge_iter().map(|e| e.id()).collect::<HashSet<_>>().len()
@@ -1395,7 +1395,7 @@ mod tests {
     #[test]
     fn a_planar_extension_is_unchanged() {
         let s = square();
-        let old = crate::extend(&s, &[Vec3::new(10.0, 5.0, 0.0)], 5.0).unwrap();
+        let old = crate::extend(&s, &[Vec3::new(10.0, 5.0, 0.0)], Positive::new(5.0).unwrap()).unwrap();
         let new = extend_surface(&s, &[Vec3::new(10.0, 5.0, 0.0)], &natural(5.0)).unwrap();
         assert_eq!(measure(&old).unwrap().area, measure(&new).unwrap().area);
         assert_eq!(edges(&old), edges(&new));
@@ -1427,9 +1427,9 @@ mod tests {
         let at = [Vec3::new(10.0, 5.0, 0.0)];
         let lengthened = extend_surface(&q, &at, &natural(5.0)).unwrap();
         assert!(rel(area(&lengthened), 187.5) < 1e-9, "{}", area(&lengthened));
-        let square_ends = extend_surface(&q, &at, &with(ExtendMode::Natural, ExtendLimit::Distance(5.0), false)).unwrap();
+        let square_ends = extend_surface(&q, &at, &with(ExtendMode::Natural, ExtendLimit::Distance(Positive::new(5.0).unwrap()), false)).unwrap();
         assert!(rel(area(&square_ends), 200.0) < 1e-9, "{}", area(&square_ends));
-        let run_off = extend_surface(&q, &at, &with(ExtendMode::Tangent, ExtendLimit::Distance(5.0), true)).unwrap();
+        let run_off = extend_surface(&q, &at, &with(ExtendMode::Tangent, ExtendLimit::Distance(Positive::new(5.0).unwrap()), true)).unwrap();
         assert_eq!((run_off.face_count(), shared(&run_off)), (2, 1));
         assert!(rel(area(&run_off), 187.5) < 1e-6, "{}", area(&run_off));
         let h = run_off.history().unwrap();
@@ -1521,7 +1521,7 @@ mod tests {
         let less = extend_surface(&plate, &notch, &natural(2.0)).unwrap();
         assert!(rel(area(&less), 200.0 - 4.5 * PI) < 1e-4, "{} vs {}", area(&less), 200.0 - 4.5 * PI); // (measured on meshes)
         for mode in [ExtendMode::Natural, ExtendMode::Tangent, ExtendMode::Curvature] {
-            let e = extend_surface(&plate, &notch, &with(mode, ExtendLimit::Distance(6.0), true)).unwrap_err().to_string();
+            let e = extend_surface(&plate, &notch, &with(mode, ExtendLimit::Distance(Positive::new(6.0).unwrap()), true)).unwrap_err().to_string();
             assert!(e.contains("folds") || e.contains("crosses"), "{mode:?}: {e}");
         }
     }
@@ -1557,7 +1557,7 @@ mod tests {
         assert!(off < 1e-7, "{off}");
 
         let kappa = 0.1 / 2f64.powf(1.5);
-        let curv = extend_surface(&p, &edge, &with(ExtendMode::Curvature, ExtendLimit::Distance(5.0), true)).unwrap();
+        let curv = extend_surface(&p, &edge, &with(ExtendMode::Curvature, ExtendLimit::Distance(Positive::new(5.0).unwrap()), true)).unwrap();
         assert_eq!((curv.face_count(), shared(&curv)), (2, 1));
         let arc = 2.5 * (1.0 + 25.0 * kappa * kappa).sqrt() + (5.0 * kappa).asinh() / (2.0 * kappa);
         assert!(rel(area(&curv), base + 10.0 * arc) < 1e-4, "{} vs {}", area(&curv), base + 10.0 * arc); // (measured on meshes)
@@ -1574,7 +1574,7 @@ mod tests {
             assert!(rel(k_across, kappa) < 1e-6, "κ {k_across} vs {kappa} at {u}");
         }
 
-        let flat = extend_surface(&p, &edge, &with(ExtendMode::Tangent, ExtendLimit::Distance(5.0), true)).unwrap();
+        let flat = extend_surface(&p, &edge, &with(ExtendMode::Tangent, ExtendLimit::Distance(Positive::new(5.0).unwrap()), true)).unwrap();
         assert!(rel(area(&flat), base + 50.0) < 1e-4, "{} vs {}", area(&flat), base + 50.0); // (measured on meshes)
         let run = flat.solid.face_iter().nth(1).unwrap().surface();
         let n = run.uder(0.5, 0.0).cross(run.vder(0.5, 0.0)).normalize();
@@ -1591,7 +1591,7 @@ mod tests {
         let grown = extend_surface(&disc, &both, &natural(2.0)).unwrap();
         assert_eq!(grown.face_count(), 1);
         assert!(rel(area(&grown), 49.0 * PI) < 1e-4, "{} vs {}", area(&grown), 49.0 * PI); // (measured on meshes)
-        let ring = extend_surface(&disc, &both, &with(ExtendMode::Tangent, ExtendLimit::Distance(2.0), true)).unwrap();
+        let ring = extend_surface(&disc, &both, &with(ExtendMode::Tangent, ExtendLimit::Distance(Positive::new(2.0).unwrap()), true)).unwrap();
         assert_eq!((ring.face_count(), shared(&ring)), (3, 4));
         assert!(rel(area(&ring), 49.0 * PI) < 1e-4, "{} vs {}", area(&ring), 49.0 * PI); // (measured on meshes)
     }
@@ -1644,9 +1644,7 @@ mod tests {
     fn hostile_requests_are_refused() {
         let s = square();
         let at = [Vec3::new(10.0, 5.0, 0.0)];
-        for d in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e9] {
-            assert!(extend_surface(&s, &at, &natural(d)).is_err(), "{d}");
-        }
+        assert!(extend_surface(&s, &at, &natural(1e9)).is_err());
         assert!(extend_surface(&s, &[], &natural(1.0)).is_err());
         assert!(extend_surface(&s, &[Vec3::new(f64::NAN, 0.0, 0.0)], &natural(1.0)).is_err());
         assert!(extend_surface(&s, &vec![Vec3::ZERO; MAX_PICKS + 1], &natural(1.0)).is_err());
@@ -1661,7 +1659,12 @@ mod tests {
             holes: vec![Loop2::circle(Vec2::new(10.0, 10.0), 3.0).reversed()],
         };
         let holed = patch_region(&Plane::XY, &r).unwrap();
-        let e = extend_surface(&holed, &[Vec3::new(13.0, 10.0, 0.0)], &with(ExtendMode::Tangent, ExtendLimit::Distance(1.0), true)).unwrap_err();
+        let e = extend_surface(
+            &holed,
+            &[Vec3::new(13.0, 10.0, 0.0)],
+            &with(ExtendMode::Tangent, ExtendLimit::Distance(Positive::new(1.0).unwrap()), true),
+        )
+        .unwrap_err();
         assert!(e.to_string().contains("hole"), "{e}");
         // A target the extension never reaches (behind the edge).
         let behind = SplitTool::Plane(Plane::from_normal(Vec3::new(-5.0, 0.0, 0.0), Vec3::X).unwrap());
