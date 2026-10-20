@@ -382,3 +382,54 @@ fn zero_width_slits_are_dropped_from_a_boundary() {
     let kept = drop_slits(std::slice::from_ref(&wide), &[Vec::new()], 1e-6).0;
     assert_eq!(kept, vec![wide]);
 }
+
+/// A pointed end read back from STEP (a screw's tip, a cone): its cone face is written as the
+/// rim, the seam up to the apex and the seam back, and a sector of one as its rim and two
+/// sides meeting at the apex. Unwrapped to the nearest copy at every step, the jump at the
+/// apex made such a loop seem to wind around the cone; the face could not be cut along a seam
+/// it did not have, and the whole body lost its display plan.
+#[test]
+fn a_pointed_end_read_back_from_step_is_planned() {
+    use solidcraft_geom::{Loop2, Plane, Region2, Vec2};
+    let (r, tip, len) = (3.0, 4.0, 20.0);
+    let Some(axis) = Plane::new(Vec3::ZERO, Vec3::X, Vec3::Z) else { panic!("plane") };
+    let pts = [Vec2::new(0.0, 0.0), Vec2::new(r, tip), Vec2::new(r, len), Vec2::new(0.0, len)];
+    for turn in [360.0f64, 300.0, 270.0, 200.0] {
+        let region = Region2 { outer: Loop2::polygon(&pts), holes: vec![] };
+        let Some(body) = ok(crate::revolve(&axis, &[region], Vec2::ZERO, Vec2::Y, turn.to_radians())).pop() else { panic!("revolve") };
+        let imported = ok(crate::step_import(&ok(crate::step_export(&[&body], "pointed end"))));
+        let Some(copy) = imported.bodies.first() else { panic!("no body") };
+        let volume = std::f64::consts::PI * r * r * (len - tip + tip / 3.0) * turn / 360.0;
+        check(&format!("pointed end turned {turn} deg"), &copy.body, 0.02, volume);
+    }
+}
+
+/// A point on a spline that turns many times (a thread's helical flank, as other CAD systems
+/// write it to STEP, has hundreds of spans along the helix) is found from a hint a few turns
+/// away: between 16 starts across the whole spline Newton settled on another turn, the point
+/// was taken as off the surface and the body lost its display plan.
+#[test]
+fn a_point_on_a_long_helical_spline_projects() {
+    let (turns, per_turn, pitch) = (40usize, 24usize, 0.5);
+    let n = turns * per_turn + 1;
+    let at = |i: usize, r: f64| {
+        let t = std::f64::consts::TAU * i as f64 / per_turn as f64;
+        [r * t.cos(), r * t.sin(), pitch * t / std::f64::consts::TAU, 1.0]
+    };
+    let mut ctrl: Vec<[f64; 4]> = Vec::with_capacity(2 * n);
+    for i in 0..n {
+        ctrl.push(at(i, 0.7));
+        ctrl.push(at(i, 0.55));
+    }
+    let mut ku = vec![0.0; 3];
+    ku.extend((1..n - 2).map(|i| i as f64 / (n - 2) as f64));
+    ku.extend([1.0; 3]);
+    let s = EvalSurface::Nurbs { degree: [2, 1], knots: [ku, vec![0.0, 0.0, 1.0, 1.0]], count: [n, 2], ctrl, closed: [false, false] };
+    let dom = uv::domain(&s);
+    for (target, hint) in [([0.5, 1.0], [0.488, 1.0]), ([0.2, 0.0], [0.23, 1.0]), ([0.9, 0.5], [0.1, 0.5])] {
+        let Some((p, _, _)) = s.derivs(target[0], target[1]) else { panic!("evaluate") };
+        let Some(q) = uv::project(&s, &dom, p, Some(hint), 1e-4) else { panic!("{target:?} from {hint:?}: not found") };
+        let Some((back, _, _)) = s.derivs(q[0], q[1]) else { panic!("evaluate") };
+        assert!(back.dist(p) <= 1e-4, "{target:?} from {hint:?}: {q:?} is {} away", back.dist(p));
+    }
+}

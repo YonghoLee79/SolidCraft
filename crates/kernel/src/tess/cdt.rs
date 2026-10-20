@@ -267,12 +267,28 @@ fn refine_sag(cdt: &mut Cdt, sag: &Sag, budget: usize, from: &dyn Fn(Point2<f64>
             if added >= budget {
                 return added;
             }
-            if cdt.insert(spade::mitigate_underflow(p)).is_ok() {
+            if insert_off_boundary(cdt, p) {
                 added += 1;
             }
         }
     }
     added
+}
+
+/// Insert `p` unless it lies exactly on a side of the boundary (the middle of a sliver along
+/// it, at a cone's apex): that would split the side, while the face's boundary nodes are shared
+/// with its neighbours, which would not have the new one, and the face lost its plan.
+fn insert_off_boundary(cdt: &mut Cdt, p: Point2<f64>) -> bool {
+    let p = spade::mitigate_underflow(p);
+    if !(p.x.is_finite() && p.y.is_finite()) {
+        return false;
+    }
+    if let spade::PositionInTriangulation::OnEdge(e) = cdt.locate(p)
+        && cdt.is_constraint_edge(e.as_undirected())
+    {
+        return false;
+    }
+    cdt.insert(p).is_ok()
 }
 
 /// Per face (by index): inside the region the constraint loops bound. A flood fill from the
@@ -448,6 +464,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_point_on_a_boundary_side_is_not_inserted() {
+        let mut cdt = Cdt::new();
+        let corners = [[0.0, 0.0], [4.0, 0.0], [4.0, 1.0], [0.0, 1.0]];
+        let Ok(handles) = corners.iter().map(|p| cdt.insert(Point2::new(p[0], p[1]))).collect::<Result<Vec<_>, _>>() else { panic!("insert") };
+        for k in 0..4 {
+            cdt.add_constraint(handles[k], handles[(k + 1) % 4]);
+        }
+        assert!(!insert_off_boundary(&mut cdt, Point2::new(2.0, 0.0)));
+        assert!(!insert_off_boundary(&mut cdt, Point2::new(f64::NAN, 0.5)));
+        assert_eq!((cdt.num_constraints(), cdt.num_vertices()), (4, 4));
+        assert!(insert_off_boundary(&mut cdt, Point2::new(2.0, 0.5)));
+        assert_eq!((cdt.num_constraints(), cdt.num_vertices()), (4, 5));
     }
 
     #[test]

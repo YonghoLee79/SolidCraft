@@ -441,6 +441,11 @@ fn plan_face(
         }
         let mut l = seam::Loop { uv: luv, pts: pts.clone() };
         drop_collapsed(&mut l, speed);
+        for (d, per) in dom.period.iter().enumerate() {
+            if let Some(per) = per {
+                seam::close_through_pole(s, &mut l, d, *per);
+            }
+        }
         projected.push(l);
     }
     align_periods(&mut projected, &dom);

@@ -112,11 +112,11 @@ pub(crate) fn project(s: &EvalSurface, dom: &Domain, p: Vec3, hint: Option<[f64;
         best = Some((uv, d));
     }
     let (ur, vr) = (dom.range[0]?, dom.range[1]?);
-    const N: usize = 16;
-    let mut starts: Vec<(f64, [f64; 2])> = Vec::with_capacity((N + 1) * (N + 1));
-    for i in 0..=N {
-        for j in 0..=N {
-            let uv = [ur.0 + (ur.1 - ur.0) * i as f64 / N as f64, vr.0 + (vr.1 - vr.0) * j as f64 / N as f64];
+    let [nu, nv] = start_lines(s);
+    let mut starts: Vec<(f64, [f64; 2])> = Vec::with_capacity((nu + 1) * (nv + 1));
+    for i in 0..=nu {
+        for j in 0..=nv {
+            let uv = [ur.0 + (ur.1 - ur.0) * i as f64 / nu as f64, vr.0 + (vr.1 - vr.0) * j as f64 / nv as f64];
             if let Some((q, _, _)) = s.derivs(uv[0], uv[1]) {
                 starts.push(((q - p).len2(), uv));
             }
@@ -131,6 +131,28 @@ pub(crate) fn project(s: &EvalSurface, dom: &Domain, p: Vec3, hint: Option<[f64;
         }
     }
     best.filter(|(_, d)| *d <= accept).map(|(uv, _)| uv)
+}
+
+/// Most starts [`project`] tries along one direction, and over the whole domain.
+const MAX_START_LINES: usize = 4096;
+const MAX_STARTS: usize = 16_384;
+
+/// How many divisions of each direction [`project`] starts from: 16, or two per span of a
+/// spline with more. A long spline (a thread's helical flank, as other CAD systems write it to
+/// STEP: hundreds of spans along the helix) turns many times between 16 starts, and from the
+/// nearest of them Newton settles on another turn, so a point of its boundary was taken as off
+/// the surface and the body lost its display plan.
+fn start_lines(s: &EvalSurface) -> [usize; 2] {
+    const N: usize = 16;
+    let spans = |d: usize| match s {
+        EvalSurface::Nurbs { degree, count, .. } => count.get(d).zip(degree.get(d)).map_or(0, |(c, g)| c.saturating_sub(*g)),
+        _ => 0,
+    };
+    let mut lines = [0, 1].map(|d| (2 * spans(d)).clamp(N, MAX_START_LINES));
+    // The longer direction keeps its spans; the other gives way to the cap on starts.
+    let (long, short) = if lines[0] >= lines[1] { (0, 1) } else { (1, 0) };
+    lines[short] = lines[short].min((MAX_STARTS / (lines[long] + 1)).max(N));
+    lines
 }
 
 /// `x` moved by whole periods to lie within half a period of `near`.
