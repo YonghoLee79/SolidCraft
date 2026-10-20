@@ -11,7 +11,8 @@ use solidcraft_geom::Vec3;
 
 use super::{CommandSpec, not_in_sketch};
 use crate::params::{bad, bool_, expr, req_expr, str_, string_list, vec2, vec3};
-use crate::schema::{BoxParams, ExtrudeParams, FeatureResult, TypedContract, output_schema_for};
+use crate::schema::features::{BoxParams, ExtrudeParams, FeatureResult};
+use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
 
 const BOX_CONTRACT: TypedContract<BoxParams> = TypedContract::new();
