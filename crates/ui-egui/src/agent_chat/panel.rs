@@ -154,7 +154,7 @@ fn context_chips(ui: &mut egui::Ui, context: &Context, removable: bool, gone: &[
         return events;
     }
     let t = Tokens::get();
-    let font = egui::FontId::proportional(11.0);
+    let font = egui::FontId::proportional(t.font_small);
     let (avail, gap) = (ui.available_width(), ui.spacing().item_spacing.x);
     let text_width = |ui: &egui::Ui, text: &str| ui.painter().layout_no_wrap(text.to_string(), font.clone(), t.text).size().x;
     let more = |n: usize| trf("ui.agent_chat_ctx_more", &[("n", &n.to_string())]);
@@ -193,7 +193,7 @@ fn context_chips(ui: &mut egui::Ui, context: &Context, removable: bool, gone: &[
                 for n in row {
                     match &parts[n] {
                         ChipPart::Heading(s) | ChipPart::More(s) => {
-                            ui.label(RichText::new(s).color(t.text_dim).size(11.0));
+                            ui.label(RichText::new(s).color(t.text_dim).size(t.font_small));
                         }
                         ChipPart::Chip(place, item) => {
                             let is_gone = gone.get(*place).copied().unwrap_or(false);
@@ -204,14 +204,13 @@ fn context_chips(ui: &mut egui::Ui, context: &Context, removable: bool, gone: &[
                                 .show(ui, |ui| {
                                     ui.spacing_mut().item_spacing.x = 3.0;
                                     ui.horizontal(|ui| {
-                                        let mut text = RichText::new(shorten(&item.label, CHIP_CHARS)).color(t.text).size(11.0);
+                                        let mut text = RichText::new(shorten(&item.label, CHIP_CHARS)).color(t.text).size(t.font_small);
                                         if is_gone {
                                             text = text.color(t.text_dim).strikethrough();
                                         }
                                         let label = ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
                                         if removable {
-                                            let cross =
-                                                ui.add(egui::Button::new(RichText::new("×").color(t.text_dim).size(11.0)).frame(false).small());
+                                            let cross = ui_kit::button(ui, "×", ui_kit::Button::Small);
                                             crate::scenario::publish_handle(&format!("{handle}:remove:{place}"), cross.rect.center());
                                             if cross.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                                 events.removed = Some(*place);
@@ -242,7 +241,7 @@ fn context_chips(ui: &mut egui::Ui, context: &Context, removable: bool, gone: &[
         }
     }
     if context.omitted > 0 {
-        ui.label(RichText::new(more(context.omitted)).color(t.text_dim).size(11.0));
+        ui.label(RichText::new(more(context.omitted)).color(t.text_dim).size(t.font_small));
     }
     events
 }
@@ -821,12 +820,10 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
             } else {
                 tr("ui.agent_chat_attach_selection").to_string()
             };
-            let pick =
-                ui.add(egui::Checkbox::new(&mut app.agent_chat.attach_selection, label)).on_hover_text(tr("ui.agent_chat_attach_selection_tip"));
+            let pick = ui_kit::checkbox(ui, &label, &mut app.agent_chat.attach_selection).on_hover_text(tr("ui.agent_chat_attach_selection_tip"));
             crate::scenario::publish_handle("agent_chat:attach_selection", pick.rect.center());
             // Choose faces, edges, features and bodies on purpose, then OK.
-            let picker = ui
-                .add_enabled(app.dialog.is_none(), egui::Button::new(tr("ui.agent_chat_pick_context")))
+            let picker = ui_kit::button(ui, tr("ui.agent_chat_pick_context"), ui_kit::Button::Enabled(app.dialog.is_none()))
                 .on_hover_text(tr("ui.agent_chat_pick_context_tip"));
             crate::scenario::publish_handle("agent_chat:pick_context", picker.rect.center());
             pick_clicked = picker.clicked();
