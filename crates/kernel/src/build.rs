@@ -1988,11 +1988,20 @@ fn loft_numbered_wires(sections: &[(Plane, NumberedLoop)], reversed: bool) -> Re
     // with the most segments.
     let n0 = ordered.first().map(|(p, _)| p.normal()).unwrap_or(Vec3::Z);
     let parallel = ordered.iter().all(|(p, _)| p.normal().dot(n0).abs() > 1.0 - 1e-9);
+    // Whether a section faces the first one's way is followed neighbour to neighbour, not by its
+    // normal against the first's: planes turning about an axis pass 90 degrees and would be
+    // flipped, folding the loft (#2847).
+    let mut facing = true;
+    let mut before = n0;
     let oriented: Vec<(Plane, NumberedLoop)> = ordered
         .iter()
         .map(|(p, l)| {
-            let ccw = p.normal().dot(n0) >= 0.0;
-            (*p, l.oriented(!ccw))
+            let n = p.normal();
+            if n.dot(before) < 0.0 {
+                facing = !facing;
+            }
+            before = n;
+            (*p, l.oriented(!facing))
         })
         .collect();
     let lead = oriented.iter().max_by_key(|(_, l)| l.lp.segs.len()).ok_or_else(|| KernelError::Invalid("no sections".into()))?;
