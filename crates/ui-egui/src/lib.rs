@@ -379,6 +379,9 @@ pub struct SolveApp {
     /// How long OK waits for a feature before computing it off the window thread, saying so;
     /// `None`: it waits as long as it takes (headless use, tests). The desktop app sets it.
     pub apply_off_thread: Option<std::time::Duration>,
+    /// Tests: the off-thread evaluation waits for this before it reports done.
+    #[cfg(test)]
+    pub(crate) apply_gate: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>>,
     /// The last command started interactively (id, label), for Repeat.
     pub last_command: Option<(String, String)>,
     /// Esc was already acted on this frame (by the shortcuts), so later handlers skip it.
@@ -505,6 +508,8 @@ impl SolveApp {
             deferred_queue: Vec::new(),
             delete_check: None,
             apply_off_thread: None,
+            #[cfg(test)]
+            apply_gate: None,
             last_command: None,
             esc_handled: false,
             status: None,

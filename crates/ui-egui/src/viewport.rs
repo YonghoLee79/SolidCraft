@@ -48,6 +48,8 @@ pub struct ViewportState {
     /// A tool's click moved on the way (#2448): egui takes a press that moves past its
     /// click distance, or is held past its click time, as a drag, so its release is the click.
     pub(crate) tool_click: bool,
+    /// A Trim drag is drawing its path (`sketch_tools::trim_drag_*`).
+    pub(crate) trim_drag: bool,
     /// Per-body boxes of one world state, held (not just its address, which a later state can
     /// reuse once the old one is freed, so stale boxes would come back).
     pick_bounds: std::sync::Mutex<Option<BodyBounds>>,
@@ -2533,6 +2535,23 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             crate::tools::on_hover(app, &proj, p);
         }
     }
+    // A Trim drag's path follows the pointer; letting go trims what it crossed. A path that
+    // crossed nothing was a click that moved on the way (#2448): the release clicks.
+    if app.viewport.trim_drag {
+        let at = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p));
+        if resp.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+            app.viewport.trim_drag = false;
+            if !crate::sketch_tools::trim_drag_end(app)
+                && let Some(p) = at
+                && app.tool.is_some()
+            {
+                crate::tools::on_hover(app, &proj, p);
+                crate::tools::on_click(app, &proj, p);
+            }
+        } else if let Some(p) = at {
+            crate::sketch_tools::trim_drag_to(app, &proj, p);
+        }
+    }
     // Selection chords via resolve (add-only Shift is a preference; default both toggle).
     let held_mods = crate::tool_modifiers::Held::from_modifiers(mods);
     let (add, allow_toggle) = crate::tool_modifiers::selection_click(held_mods, app.preferences.selection_shift_add_only);
@@ -2540,6 +2559,20 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     if let Some(p) = hover.filter(|_| inside) {
         if app.tool.is_some() {
             crate::tools::on_hover(app, &proj, p);
+        }
+        // Trim also trims by press and drag across the pieces to remove (its own release handling,
+        // so not a click that moved on the way below).
+        if app.tool.as_ref().is_some_and(|t| t.cmd == "sketch.trim")
+            && !held
+            && primary_nav.is_none()
+            && mode.is_none()
+            && resp.drag_started_by(egui::PointerButton::Primary)
+            && let Some(a) = ui.input(|i| i.pointer.press_origin())
+        {
+            app.viewport.trim_drag = crate::sketch_tools::trim_drag_start(app, &proj, a);
+            if app.viewport.trim_drag {
+                crate::sketch_tools::trim_drag_to(app, &proj, p);
+            }
         }
         // Rectangles, circles and polygons also draw by press, drag and release (#1630): the press
         // places the first point as a click there would, the release the second.
@@ -2553,7 +2586,13 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         {
             crate::tools::on_click(app, &proj, a);
             app.viewport.draw_drag = app.tool.as_ref().is_some_and(|t| t.pts.len() == 1).then_some(a);
-        } else if app.tool.is_some() && !held && primary_nav.is_none() && mode.is_none() && resp.drag_started_by(egui::PointerButton::Primary) {
+        } else if app.tool.is_some()
+            && !app.viewport.trim_drag
+            && !held
+            && primary_nav.is_none()
+            && mode.is_none()
+            && resp.drag_started_by(egui::PointerButton::Primary)
+        {
             // Any other press of a tool that turns into a drag is a click that moved on the way
             // (#2448): its release clicks.
             app.viewport.tool_click = true;

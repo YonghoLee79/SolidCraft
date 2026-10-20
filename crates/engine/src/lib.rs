@@ -359,12 +359,25 @@ impl Default for Session {
 }
 
 impl Session {
-    pub fn new(mut doc: Document) -> Self {
+    pub fn new(doc: Document) -> Self {
+        Self::opened(doc, None)
+    }
+
+    /// A session on `doc` whose evaluation is the model its file kept (`saved`), when that is
+    /// `doc`'s evaluation ([`Model::adopt`]); otherwise the timeline is evaluated.
+    /// `SOLIDCRAFT_NO_MODEL_CACHE` set always evaluates.
+    pub fn opened(mut doc: Document, saved: Option<&solidcraft_doc::SavedModel>) -> Self {
         // The session keeps what is hidden (not an undo step); the design file carries it.
         let visibility = std::mem::take(&mut doc.visibility);
         let doc = Arc::new(doc);
-        let mut model = Model::new();
-        model.evaluate(&doc);
+        let adopted = saved
+            .filter(|_| solidcraft_geom::env::var_os("NO_MODEL_CACHE").is_none())
+            .and_then(|saved| Model::adopt(&doc, saved).map_err(|e| log::info!("the saved model is not used: {e}")).ok());
+        let model = adopted.unwrap_or_else(|| {
+            let mut model = Model::new();
+            model.evaluate(&doc);
+            model
+        });
         Session {
             saved: doc.clone(),
             doc,

@@ -29,7 +29,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.create", "Create Sketch", create_sketch)
         .at("SOLID", "CREATE")
         .icon("sketch")
-        .params("plane: XY|XZ|YZ | construction plane name or id | {origin, x_dir, y_dir} | {face: [world x,y,z], body?: exact world body, index?: face index, path?: complete occurrence ids, fixed?: bool}; new face attachments require a unique certified source (a flat face of a sheet metal body attaches to its panel instead, in the flat pattern's coordinates), fixed:true explicitly freezes the selected plane; offset?: expr, flip?: bool | \"x\" | \"y\" (not on a face: sketch the plane from its other side, so the normal and the default extrude direction are reversed; a half turn about the plane's own x or y axis, true picks the one keeping the sketch's y axis upward; offset still moves along the unflipped normal), project_edges?: bool, name?"),
+        .params("plane: XY|XZ|YZ | construction plane name or id | {origin?: [x,y,z] numbers in mm, default [0,0,0] (not an expression), x_dir, y_dir} | {face: [world x,y,z], body?: exact world body, index?: face index, path?: complete occurrence ids, fixed?: bool}; new face attachments require a unique certified source (a flat face of a sheet metal body attaches to its panel instead, in the flat pattern's coordinates), fixed:true explicitly freezes the selected plane; offset?: expr, flip?: bool | \"x\" | \"y\" (not on a face: sketch the plane from its other side, so the normal and the default extrude direction are reversed; a half turn about the plane's own x or y axis, true picks the one keeping the sketch's y axis upward; offset still moves along the unflipped normal), project_edges?: bool, name?"),
     CommandSpec::new("sketch.edit", "Edit Sketch", edit_sketch).noundo().icon("sketch").params("sketch: id or name"),
     CommandSpec::new("sketch.finish", "Finish Sketch", finish_sketch).at("SKETCH", "FINISH SKETCH").icon("finish").enabled(in_sketch).noundo(),
     CommandSpec::new("sketch.line", "Line", draw_line)
@@ -230,7 +230,7 @@ pub(super) fn edit<T>(
     f: impl FnOnce(&mut Sketch, &mut solidcraft_doc::Document) -> Result<T>,
 ) -> Result<(T, Value)> {
     let id = target_sketch(s, p, cmd)?;
-    let (out, rep) = edit_solved(s, id, strict, |sk, doc| Ok((f(sk, doc)?, Left::Unsolved)))?;
+    let (out, rep) = edit_solved(s, id, strict, Analysis::Freedom, |sk, doc| Ok((f(sk, doc)?, Left::Unsolved)))?;
     Ok((out, rep.map(|rep| report_json(&rep)).unwrap_or(Value::Null)))
 }
 
@@ -263,10 +263,13 @@ impl Left {
 /// `edit` of sketch `id` for a step that may solve the sketch itself: when it returns
 /// [`Left::Solved`] (and offsets need not be recomputed) the sketch is not solved again and the
 /// report is `None`.
+/// `analysis` must be `Full` when the report is published without a model evaluation (a live
+/// drag); command JSON only consumes freedom, and its later model evaluation publishes a full report.
 pub(super) fn edit_solved<T>(
     s: &mut Session,
     id: u64,
     strict: bool,
+    analysis: Analysis,
     f: impl FnOnce(&mut Sketch, &mut solidcraft_doc::Document) -> Result<(T, Left)>,
 ) -> Result<(T, Option<SolveReport>)> {
     let mut doc = (*s.doc).clone();
@@ -287,10 +290,11 @@ pub(super) fn edit_solved<T>(
             doc.apply_dimension_values(&doc.param_values().0, &mut sk)?;
             sk.refresh_offsets()?;
             let unsolved = sk.clone();
-            let mut rep = counted_solve(&mut sk, &Hold::default(), Some(&reference), Analysis::Full, None);
+            let first_analysis = if offsets { Analysis::StatusOnly } else { analysis };
+            let mut rep = counted_solve(&mut sk, &Hold::default(), Some(&reference), first_analysis, None);
             if offsets {
                 sk.refresh_offsets()?;
-                rep = counted_solve(&mut sk, &Hold::default(), Some(&reference), Analysis::Full, None);
+                rep = counted_solve(&mut sk, &Hold::default(), Some(&reference), analysis, None);
             }
             Some(settle(strict, rep, &mut sk, unsolved)?)
         }
@@ -300,8 +304,8 @@ pub(super) fn edit_solved<T>(
             sk.refresh_offsets()?;
             let unsolved = sk.clone();
             #[cfg(test)]
-            solve_counts::record(Analysis::Full);
-            let rep = doc.solve_sketch(&vals, &mut sk, &stored, None)?;
+            solve_counts::record(analysis);
+            let rep = doc.solve_sketch_with_analysis(&vals, &mut sk, &stored, None, analysis)?;
             Some(settle(strict, rep, &mut sk, unsolved)?)
         }
     };
@@ -343,7 +347,7 @@ pub(super) fn counted_solve(
 pub(super) fn solve_current(sk: &mut Sketch, doc: &solidcraft_doc::Document) -> Result<SolveReport> {
     let stored = sk.driving_values();
     let (values, _) = doc.param_values();
-    Ok(doc.solve_sketch(&values, sk, &stored, None)?)
+    Ok(doc.solve_sketch_with_analysis(&values, sk, &stored, None, Analysis::Freedom)?)
 }
 
 /// Solves run on this thread by [`counted_solve`] and the edit's own solve: (all of them, those
@@ -361,7 +365,7 @@ pub(super) mod solve_counts {
     pub fn record(analysis: Analysis) {
         COUNTS.with(|c| {
             let (n, full) = c.get();
-            c.set((n + 1, full + usize::from(analysis == Analysis::Full)));
+            c.set((n + 1, full + usize::from(analysis != Analysis::StatusOnly)));
         });
     }
 
@@ -622,7 +626,13 @@ pub(super) fn plane_ref(s: &Session, p: &Value, cmd: &str) -> Result<PlaneRef> {
             if o.contains_key("face") {
                 face::capture(s, v, cmd)?
             } else {
-                let origin = v.get("origin").and_then(vec3).unwrap_or(Vec3::ZERO);
+                // A missing origin is the world origin; one that is given but is not three numbers
+                // (an expression, a number with a unit) is an error, not a silent [0, 0, 0].
+                let origin = match v.get("origin") {
+                    None | Some(Value::Null) => Vec3::ZERO,
+                    Some(o) => vec3(o)
+                        .ok_or_else(|| bad(cmd, "plane `origin` must be three numbers [x, y, z] in mm (expressions are not evaluated here)"))?,
+                };
                 let x = v.get("x_dir").and_then(vec3).ok_or_else(|| bad(cmd, "plane needs x_dir"))?;
                 let y = v.get("y_dir").and_then(vec3).ok_or_else(|| bad(cmd, "plane needs y_dir"))?;
                 PlaneRef::Custom { plane: Plane::new(origin, x, y).ok_or_else(|| bad(cmd, "degenerate plane"))? }
@@ -1515,7 +1525,7 @@ pub(super) fn apply_in_order(sk: &mut Sketch, rep: &SolveReport, first: &[Ent], 
             driven: false,
             text: None,
         }));
-        let ok = solve_with(&mut trial, &h, None, Analysis::Full, None).ok();
+        let ok = solve_with(&mut trial, &h, None, Analysis::StatusOnly, None).ok();
         trial.constraints.retain(|c| c.id != TEMP);
         if ok && !collapsed(sk, &trial) {
             *sk = trial;
@@ -1525,7 +1535,7 @@ pub(super) fn apply_in_order(sk: &mut Sketch, rep: &SolveReport, first: &[Ent], 
     // Both could move but holding either one leads nowhere: solve as usual.
     if !first_locked && !second_locked {
         let mut trial = sk.clone();
-        if solve(&mut trial).ok() {
+        if solve_with(&mut trial, &Hold::default(), None, Analysis::StatusOnly, None).ok() {
             *sk = trial;
             return Ok(());
         }
@@ -1535,7 +1545,7 @@ pub(super) fn apply_in_order(sk: &mut Sketch, rep: &SolveReport, first: &[Ent], 
 
 /// Degrees of freedom of a sketch as it is.
 pub(super) fn dof_now(sk: &Sketch) -> usize {
-    solve(&mut sk.clone()).dof
+    solve_with(&mut sk.clone(), &Hold::default(), None, Analysis::Freedom, None).dof
 }
 
 /// A constraint just added that removes no degree of freedom (`before` → the edit's `info`) is
@@ -2406,7 +2416,7 @@ fn move_point(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.move_point";
     let to = req_vec2(cmd, p, "to")?;
     let id = target_sketch(s, p, cmd)?;
-    let (_, rep) = edit_solved(s, id, false, |sk, _| {
+    let (_, rep) = edit_solved(s, id, false, Analysis::Freedom, |sk, _| {
         let q = point_ref(sk, p.get("point"), cmd, "point")?;
         Ok(((), drag_entity(sk, Ent::Point(q), &[], to, to, false).1.solve_again()))
     })?;
@@ -2432,7 +2442,8 @@ fn drag_frame(s: &mut Session, p: &Value, live: bool) -> Result<(Value, Option<c
     let id = target_sketch(s, p, cmd)?;
     // The sketch's report as last evaluated: a live frame keeps its degrees of freedom.
     let last = s.model.result(id).and_then(|r| r.state.sketch(id)).map(|ss| ss.report.clone());
-    let (d, rep) = edit_solved(s, id, false, |sk, doc| {
+    let analysis = if live { Analysis::Full } else { Analysis::Freedom };
+    let (d, rep) = edit_solved(s, id, false, analysis, |sk, doc| {
         let r = p.get("entity").and_then(Value::as_str).ok_or_else(|| bad(cmd, "`entity` must be a sketch point or curve"))?;
         let e = ent(sk, r).ok_or_else(|| bad(cmd, format!("unknown sketch entity `{r}`")))?;
         let with = match p.get("with") {

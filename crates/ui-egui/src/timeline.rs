@@ -402,6 +402,8 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                         } else if ui.input(|i| i.modifiers.command || i.modifiers.ctrl) {
                             toggle_feature(app, *id);
                         } else {
+                            app.tree.picked_joints.clear();
+                            app.tree.picked_timeline_groups.clear();
                             let _ = app.run("select.set", json!({"items": [{"type": "feature", "id": id}]}));
                         }
                     }

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
 use solidcraft_geom::{Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
@@ -208,7 +208,7 @@ pub struct SolvedSketch {
 }
 
 /// A cosmetic thread: on which cylinder, its size, and the threaded part of the axis.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThreadInfo {
     pub feature: u64,
     pub body: String,
@@ -615,7 +615,7 @@ impl ModelState {
     /// [`quantize`]); the rest keep theirs.
     fn stamp(&mut self, before: &Arc<ModelState>, f: &Feature, key: u64, mats: Vec<Mat>) {
         let feature = f.id;
-        let depth = before.bodies.iter().filter_map(|b| b.names.origin.as_ref().map(|o| o.depth)).max().unwrap_or(0) + 1;
+        let depth = before.bodies.iter().filter_map(|b| b.names.depth()).max().unwrap_or(0) + 1;
         let sheets = if f.kind.is_sheet() { self.sheets.clone() } else { Vec::new() };
         let origin = Arc::new(crate::naming::NamingOrigin { feature: f.clone(), before: before.clone(), depth, mats, sheets });
         // Pieces a cut left are named after their faces, not the kernel's shell order (unless
@@ -4596,8 +4596,11 @@ fn replay(
     Ok(())
 }
 
+#[path = "model_cache.rs"]
+mod model_cache;
 #[path = "eval_more.rs"]
 mod more;
+pub use model_cache::SavedModel;
 #[path = "eval_surface.rs"]
 mod surface;
 
