@@ -241,10 +241,10 @@ fn restore_exact(segs: Vec<Seg2>, tags: &[Option<(Piece, bool)>], exact: &std::c
         i = j;
     }
     // Junctions next to a cut exact run: find the true crossing.
-    let m = runs.len();
-    for a in 0..m {
-        let b = (a + 1) % m;
-        let need = match (runs.get(a), runs.get(b)) {
+    let mut runs = Ring::new(runs);
+    for a in 0..runs.len() {
+        let b = a + 1;
+        let need = match (runs.at(a), runs.at(b)) {
             (Some(Run::Exact { fixed, .. }), _) if !fixed.1 => true,
             (_, Some(Run::Exact { fixed, .. })) if !fixed.0 => true,
             _ => false,
@@ -252,21 +252,21 @@ fn restore_exact(segs: Vec<Seg2>, tags: &[Option<(Piece, bool)>], exact: &std::c
         if !need {
             continue;
         }
-        let (Some(ra), Some(rb)) = (runs.get(a), runs.get(b)) else { continue };
+        let (Some(ra), Some(rb)) = (runs.at(a), runs.at(b)) else { continue };
         let p0 = ra.end();
         let crossing = refine_crossing(ra, rb, p0);
         match crossing {
             Some((p, ta, tb)) if p.dist(p0) < 1e-2 => {
-                if let Some(x) = runs.get_mut(a) {
+                if let Some(x) = runs.at_mut(a) {
                     x.set_end(p, ta);
                 }
-                if let Some(x) = runs.get_mut(b) {
+                if let Some(x) = runs.at_mut(b) {
                     x.set_start(p, tb);
                 }
             }
             _ => {
                 for k in [a, b] {
-                    if let Some(x) = runs.get_mut(k) {
+                    if let Some(x) = runs.at_mut(k) {
                         x.give_up();
                     }
                 }

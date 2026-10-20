@@ -1484,14 +1484,12 @@ fn chain_loops(
                 }
             }
         }
-        let raw: Vec<(Vec2, Option<u32>)> = lp.iter().map(|(p, f)| (plane.to_local(*p), *f)).collect();
+        let raw: Ring<(Vec2, Option<u32>)> = lp.iter().map(|(p, f)| (plane.to_local(*p), *f)).collect();
         // Drop points in the middle of straight runs.
-        let m = raw.len();
-        let pts: Vec<(Vec2, Option<u32>)> = (0..m)
-            .filter_map(|i| {
-                let (p, c, n) = (raw.get((i + m - 1) % m)?.0, *raw.get(i)?, raw.get((i + 1) % m)?.0);
-                ((c.0 - p).cross(n - c.0).abs() > 1e-9 * (c.0 - p).len().max(1e-9) * (n - c.0).len().max(1e-9)).then_some(c)
-            })
+        let pts: Vec<(Vec2, Option<u32>)> = raw
+            .corners()
+            .filter(|&(&(p, _), &(c, _), &(n, _))| (c - p).cross(n - c).abs() > 1e-9 * (c - p).len().max(1e-9) * (n - c).len().max(1e-9))
+            .map(|(_, c, _)| *c)
             .collect();
         if pts.len() >= 3 {
             loops.push(pts);
@@ -1679,16 +1677,19 @@ fn local_frame(z: Vec3, x: Option<Vec3>) -> Result<(Vec3, Vec3, Vec3)> {
 
 /// Offset a closed polygon to its left by `d` (mitred corners).
 fn offset_left(p: &[Vec2], d: f64) -> Vec<Vec2> {
-    let m = p.len();
-    let line = |i: usize| -> Option<(Vec2, Vec2)> {
-        let (a, b) = (*p.get(i)?, *p.get((i + 1) % m)?);
-        let t = (b - a).normalized()?;
-        Some((a + Vec2::new(-t.y, t.x) * d, t))
-    };
-    (0..m)
-        .filter_map(|i| {
-            let (p0, d0) = line((i + m - 1) % m)?;
-            let (p1, d1) = line(i)?;
+    // Each edge moved: a point on it and its direction.
+    let lines: Ring<Option<(Vec2, Vec2)>> = Ring::new(p.to_vec())
+        .edges()
+        .map(|(&a, &b)| {
+            let t = (b - a).normalized()?;
+            Some((a + Vec2::new(-t.y, t.x) * d, t))
+        })
+        .collect();
+    // Corner i: where the edge before it meets edge i.
+    lines
+        .corners()
+        .filter_map(|(before, edge, _)| {
+            let ((p0, d0), (p1, d1)) = ((*before)?, (*edge)?);
             let den = d0.cross(d1);
             if den.abs() < 1e-12 {
                 return Some(p1);

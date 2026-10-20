@@ -14,7 +14,7 @@
 
 use std::f64::consts::{PI, TAU};
 
-use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
+use solidcraft_geom::{Loop2, Region2, Ring, Seg2, Vec2};
 
 use crate::model::{CurveKind, Result, Sketch, SketchError};
 use crate::profiles::{find_profiles, merge_regions};
@@ -93,8 +93,7 @@ pub fn thin_wall_regions(curves: &[Vec<Seg2>], inside: f64, outside: f64) -> Res
         if group.len() < 2 {
             continue;
         }
-        for (i, a) in group.iter().enumerate() {
-            let Some(b) = group.get((i + 1) % group.len()) else { continue };
+        for (a, b) in Ring::new(group.to_vec()).edges() {
             let gap = (b.2.angle() - a.2.angle()).rem_euclid(TAU);
             if gap <= PI + 1e-7 {
                 continue;

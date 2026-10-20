@@ -3,7 +3,7 @@
 //! stays exact; the pieces replace the original curve.
 
 use serde_json::{Value, json};
-use solidcraft_geom::{Seg2, Vec2};
+use solidcraft_geom::{Ring, Seg2, Vec2};
 use solidcraft_sketch::{ConstraintKind, CurveKind, Sketch};
 
 use super::sketch::add_c;
@@ -235,13 +235,11 @@ fn modify(sk: &mut Sketch, ci: usize, at: Vec2, remove: bool, points: Option<&[V
         if bounds.len() < 2 && remove {
             return Err(bad(cmd, "a closed curve needs two crossings to trim"));
         }
-        let m = bounds.len();
-        (0..m)
-            .filter_map(|i| {
-                let (a, ca) = *bounds.get(i)?;
-                let (b, cb) = *bounds.get((i + 1) % m)?;
+        Ring::new(bounds)
+            .edges()
+            .map(|(&(a, ca), &(b, cb))| {
                 let b = if b <= a + 1e-12 { b + n } else { b };
-                Some((a, b, ca, cb))
+                (a, b, ca, cb)
             })
             .collect()
     } else {

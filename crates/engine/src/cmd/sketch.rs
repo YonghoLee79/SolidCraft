@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 use solidcraft_doc::{FeatureKind, PlaneRef, expr::Kind};
-use solidcraft_geom::{Plane, Polyline, Vec2, Vec3};
+use solidcraft_geom::{Plane, Polyline, Ring, Vec2, Vec3};
 use solidcraft_sketch::{Analysis, Budget, ConstraintKind, CurveKind, Hold, PointExprs, Sketch, SolveReport, solve, solve_with};
 
 use super::{CommandSpec, in_sketch};
@@ -886,14 +886,12 @@ fn infer_at_start(sk: &Sketch, c: usize, axis: bool) -> Option<ConstraintKind> {
 
 /// Closed polygon of lines through new or referenced corner points.
 fn polygon_lines(sk: &mut Sketch, corners: &[Vec2]) -> Result<(Vec<usize>, Vec<usize>)> {
-    let pts: Vec<usize> = corners.iter().map(|c| sk.add_point(*c, None)).collect::<std::result::Result<_, _>>()?;
-    let n = pts.len();
+    let pts: Ring<usize> = Ring::new(corners.iter().map(|c| sk.add_point(*c, None)).collect::<std::result::Result<_, _>>()?);
     let mut lines = Vec::new();
-    for i in 0..n {
-        let (Some(a), Some(b)) = (pts.get(i), pts.get((i + 1) % n)) else { continue };
+    for (a, b) in pts.edges() {
         lines.push(sk.add_line_pts(*a, *b, None)?);
     }
-    Ok((lines, pts))
+    Ok((lines, pts.into_vec()))
 }
 
 fn rect_constraints(sk: &mut Sketch, l: &[usize]) -> Result<Vec<String>> {

@@ -961,7 +961,7 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
             let runs: Vec<usize> =
                 (0..m).filter(|j| from.get(*j).copied().flatten().and_then(|i| across.get(i).copied().flatten()) == Some(g)).collect();
             let (a, b) = match runs.as_slice() {
-                &[j] => (trimmed.get(j).copied().map(snap), trimmed.get((j + 1) % m).copied().map(snap)),
+                &[j] => (trimmed.at(j).copied().map(snap), trimmed.at(j + 1).copied().map(snap)),
                 _ => return err("not supported yet: two faces of the sheet that meet along more than one edge"),
             };
             let (Some(a), Some(b)) = (a, b) else { continue };

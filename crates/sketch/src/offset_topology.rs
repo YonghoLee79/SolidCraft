@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Seg2, Vec2};
+use solidcraft_geom::{Ring, Seg2, Vec2};
 
 use crate::{Curve, CurveKind, OffsetChain, Sketch, SketchError};
 type Result<T> = std::result::Result<T, SketchError>;
@@ -89,7 +89,7 @@ impl Source {
     }
 }
 struct Boundary {
-    source: Vec<Source>,
+    source: Ring<Source>,
     orientation: f64,
     pad: f64,
 }
@@ -175,6 +175,7 @@ impl Sketch {
             }
             source.push(piece);
         }
+        let source = Ring::new(source);
         let origin = source.first().ok_or_else(|| invalid("empty offset boundary"))?.a;
         let scale = source.iter().flat_map(|p| [p.a, p.b]).map(|p| p.dist(origin)).fold(1.0, f64::max);
         let pad = 1e-7 + 256.0 * f64::EPSILON * scale;
@@ -182,8 +183,8 @@ impl Sketch {
             return Err(invalid("convex offset coordinate precision exceeds certificate"));
         }
         let mut area = 0.0;
-        for (i, piece) in source.iter().enumerate() {
-            if piece.b.dist(source.get((i + 1) % source.len()).ok_or_else(|| invalid("missing offset neighbour"))?.a) > pad {
+        for (i, (piece, next)) in source.edges().enumerate() {
+            if piece.b.dist(next.a) > pad {
                 return Ok(None);
             }
             area += match piece.arc {
@@ -206,7 +207,7 @@ impl Sketch {
         let orientation = area.signum();
         let mut turn = 0.0;
         let mut lines = 0;
-        for (i, piece) in source.iter().enumerate() {
+        for (i, (piece, after)) in source.edges().enumerate() {
             if let Some(arc) = piece.arc {
                 if sources.get(i).is_none_or(|x| if orientation > 0.0 { !x.1 } else { x.1 }) {
                     return Ok(None);
@@ -216,8 +217,7 @@ impl Sketch {
                 lines += 1;
             }
             let end = piece.tangent(true, orientation).ok_or_else(|| invalid("singular offset tangent"))?;
-            let next =
-                source.get((i + 1) % source.len()).and_then(|p| p.tangent(false, orientation)).ok_or_else(|| invalid("singular offset tangent"))?;
+            let next = after.tangent(false, orientation).ok_or_else(|| invalid("singular offset tangent"))?;
             if end.dot(next) < 1.0 - 1e-8 || end.cross(next).abs() > 1e-6 {
                 return Ok(None);
             }
@@ -588,11 +588,11 @@ impl Sketch {
             }
             nodes.push(point);
         }
+        let nodes = Ring::new(nodes);
         let mut roles = Vec::new();
         let mut outputs = Vec::new();
         for (i, span) in spans.iter().enumerate() {
-            let a = *nodes.get(i).ok_or_else(|| invalid("missing output node"))?;
-            let b = *nodes.get((i + 1) % nodes.len()).ok_or_else(|| invalid("missing output node"))?;
+            let (Some(&a), Some(&b)) = (nodes.at(i), nodes.at(i + 1)) else { return Err(invalid("missing output node")) };
             let kind = if span.arc.is_some() { OffsetRoleKind::Arc } else { OffsetRoleKind::Line };
             let output = candidate.fresh(if kind == OffsetRoleKind::Arc { "a" } else { "l" })?;
             let role = OffsetRole {
