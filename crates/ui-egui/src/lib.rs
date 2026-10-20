@@ -325,7 +325,7 @@ pub struct SolveApp {
     pub pre_sketch_marker: Option<Option<usize>>,
     pub services: Services,
     file_picker: Option<file_picker::Pending>,
-    /// A slicer started alone and waited for before the file is sent (Open in Slicer).
+    /// A slicer started alone and waited for before the file is sent (Send to Slicer).
     pub(crate) slicer_wait: Option<dialogs_save_mesh::SlicerWait>,
     /// A Save or Save As being written on a worker (see [`save_job`]).
     saving: Option<save_job::Saving>,
@@ -694,7 +694,7 @@ impl SolveApp {
             return Err("a file operation is in progress".into());
         }
         // Commands may start only detected slicers and the programs the user added under Custom….
-        if matches!(id, "file.save_mesh" | "file.open_in_slicer") {
+        if matches!(id, "file.save_mesh" | "file.send_to_slicer") {
             solidcraft_engine::slicers::set_chosen_programs(&self.preferences.custom_slicers);
         }
         let t0 = now_ms();
@@ -813,9 +813,9 @@ impl SolveApp {
             let _ = self.run(id, json!({"enabled": !self.preferences.ambient_occlusion}));
             return;
         }
-        // Open in Slicer always asks which slicer (the dialog pre-selects the last one).
-        if id == "file.open_in_slicer" && !dialogs_save_mesh::available(self) {
-            self.set_status(self.tr("ui.open_in_slicer_unavailable").to_string(), true);
+        // Send to Slicer always asks which slicer (the dialog pre-selects the last one).
+        if id == "file.send_to_slicer" && !dialogs_save_mesh::available(self) {
+            self.set_status(self.tr("ui.send_to_slicer_unavailable").to_string(), true);
             return;
         }
         // Another command ends Edit Text (its dialog is not a feature edit to keep).

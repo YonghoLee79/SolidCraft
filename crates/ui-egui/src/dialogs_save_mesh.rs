@@ -1,9 +1,9 @@
 //! The Save as mesh dialog (`file.save_mesh`): which bodies and the mesh format, then a file dialog.
-//! Open in Slicer (`file.open_in_slicer`) shares the dialog without the format and with a slicer to
+//! Send to Slicer (`file.send_to_slicer`) shares the dialog without the format and with a slicer to
 //! send the bodies to: it always asks, and pre-selects the slicer used last time.
 //!
 //! Every place that saves a mesh opens this dialog: File › Save as mesh, the Mesh tab, and the
-//! Save As Mesh item of the body menus. The slicer list (Open in Slicer only) holds the programs the user added (kept
+//! Save As Mesh item of the body menus. The slicer list (Send to Slicer only) holds the programs the user added (kept
 //! between runs, newest first), then the slicers found on this machine, then "Custom…", which asks
 //! for a program and adds it at the top; "Custom…" itself is never the selection. Pressing Delete
 //! over a program the user added removes it.
@@ -32,7 +32,7 @@ const MAX_CUSTOM: usize = 24;
 #[derive(Clone, Debug, PartialEq)]
 pub struct SaveMesh {
     format: usize,
-    /// Open in Slicer: only the bodies and the slicer are asked.
+    /// Send to Slicer: only the bodies and the slicer are asked.
     open: bool,
     /// The chosen slicer: an installed one's id, or the path of one the user added.
     slicer: String,
@@ -88,21 +88,21 @@ impl SlicerMenu {
     }
 }
 
-/// The dialog for `file.save_mesh` or `file.open_in_slicer`, with the choices of last time.
+/// The dialog for `file.save_mesh` or `file.send_to_slicer`, with the choices of last time.
 pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
     let open = match id {
         "file.save_mesh" => false,
-        "file.open_in_slicer" => true,
+        "file.send_to_slicer" => true,
         _ => return None,
     };
     let p = &app.preferences;
     let format = FORMATS.iter().position(|f| f.1 == p.save_mesh_format).unwrap_or(0);
-    let slicer = if open { p.open_slicer.clone() } else { String::new() };
+    let slicer = if open { p.send_slicer.clone() } else { String::new() };
     let kind = Kind::SaveMesh(SaveMesh { format, open, slicer, stale: true });
     Some((kind, vec![SelInput::new("Bodies", BODIES, true)]))
 }
 
-/// Open in Slicer needs a way to start a program: a browser has none.
+/// Send to Slicer needs a way to start a program: a browser has none.
 pub fn available(app: &SolveApp) -> bool {
     app.services.pick_program.is_some()
 }
@@ -113,7 +113,7 @@ pub struct SlicerWait {
     done: std::sync::mpsc::Receiver<bool>,
     /// The slicer that was started, found once.
     slicer: slicers::Slicer,
-    /// What `file.open_in_slicer` answered when it wrote the file: the file that is sent, not
+    /// What `file.send_to_slicer` answered when it wrote the file: the file that is sent, not
     /// exported again, however the design has changed since.
     result: Value,
 }
@@ -132,7 +132,7 @@ fn spawn_wait(
     rx
 }
 
-/// Run `file.open_in_slicer` and report what happened. A slicer that has to be started first is
+/// Run `file.send_to_slicer` and report what happened. A slicer that has to be started first is
 /// started and waited for in the background.
 fn send_to_slicer(app: &mut SolveApp, params: Value) {
     let _language = crate::i18n::scope(&app.preferences.language);
@@ -145,7 +145,7 @@ fn send_to_slicer(app: &mut SolveApp, params: Value) {
     let mut params = params;
     params["single_instance"] = json!(app.preferences.slicer_single_instance);
     params["wait"] = json!("return");
-    let Ok(result) = app.run("file.open_in_slicer", params.clone()) else { return };
+    let Ok(result) = app.run("file.send_to_slicer", params.clone()) else { return };
     if result.get("starting").is_none() {
         return report(app, &result);
     }
@@ -397,7 +397,7 @@ fn bodies(inputs: &[SelInput]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// What the Save (or Open) button asks `file.save_mesh` or `file.open_in_slicer` to do; Save is
+/// What the Save (or Send) button asks `file.save_mesh` or `file.send_to_slicer` to do; Save is
 /// without the file name.
 pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)>, String> {
     let format = FORMATS.get(k.format).map_or("stl", |f| f.1);
@@ -413,27 +413,27 @@ pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)
         }
         p["slicer"] = json!(k.slicer);
         p["format"] = json!("3mf");
-        return Ok(vec![("file.open_in_slicer".into(), p)]);
+        return Ok(vec![("file.send_to_slicer".into(), p)]);
     }
     Ok(vec![("file.save_mesh".into(), p)])
 }
 
-/// Save and Open need at least one body.
+/// Save and Send need at least one body.
 pub fn ready(inputs: &[SelInput]) -> bool {
     !bodies(inputs).is_empty()
 }
 
-/// The button's label: Save, or Open when the file goes to a slicer.
+/// The button's label: Save, or Send when the file goes to a slicer.
 pub fn button(k: &SaveMesh) -> &'static str {
-    if k.open { "Open" } else { "Save" }
+    if k.open { "Send" } else { "Save" }
 }
 
-/// Save: ask for a file name and write the file. Open: write it to the slicer folder and start the
+/// Save: ask for a file name and write the file. Send: write it to the slicer folder and start the
 /// slicer with it, with no file dialog.
 pub fn run(app: &mut SolveApp, k: &SaveMesh, inputs: &[SelInput]) -> Result<(), String> {
     let (_, params) = commands(k, inputs)?.into_iter().next().ok_or("nothing to save")?;
     if k.open {
-        app.preferences.open_slicer = k.slicer.clone();
+        app.preferences.send_slicer = k.slicer.clone();
         send_to_slicer(app, params);
         return Ok(());
     }
@@ -488,12 +488,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn without_a_program_dialog_open_in_slicer_is_unavailable_and_starts_nothing() {
+    fn without_a_program_dialog_send_to_slicer_is_unavailable_and_starts_nothing() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         assert!(app.services.pick_program.is_none());
         assert!(!available(&app));
-        app.preferences.open_slicer = "prusa".into();
-        app.start("file.open_in_slicer");
+        app.preferences.send_slicer = "prusa".into();
+        app.start("file.send_to_slicer");
         assert!(app.dialog.is_none(), "no dialog to choose a slicer in");
         assert!(matches!(&app.status, Some((_, _, true))));
         app.services.pick_program = Some(Box::new(|| Box::pin(async { None })));
@@ -501,7 +501,7 @@ mod tests {
     }
 
     /// An app with a box in it, `fake-slicer` (a script that writes its arguments to `seen`) among the
-    /// user's programs, and the parameters Open in Slicer would send.
+    /// user's programs, and the parameters Send to Slicer would send.
     #[cfg(unix)]
     fn app_with_fake_slicer(tag: &str) -> (SolveApp, std::path::PathBuf, Value) {
         use std::os::unix::fs::PermissionsExt;
@@ -537,8 +537,8 @@ mod tests {
         app.run("select.set", json!({"items": [{"type": "body", "name": "Part"}]})).unwrap();
         // Last time's slicer is remembered and bodies are selected: still the picker, with it pre-selected.
         let key = params["slicer"].as_str().unwrap().to_string();
-        app.preferences.open_slicer = key.clone();
-        app.start("file.open_in_slicer");
+        app.preferences.send_slicer = key.clone();
+        app.start("file.send_to_slicer");
         let Some(Kind::SaveMesh(k)) = app.dialog.as_ref().map(|d| d.kind.clone()) else { panic!("no picker opened") };
         assert!(k.open);
         assert_eq!(k.slicer, key, "pre-selected");
@@ -546,7 +546,7 @@ mod tests {
         // A script names the slicer: no dialog, the file goes.
         app.dialog = None;
         params["wait"] = json!("no");
-        app.run("file.open_in_slicer", params).unwrap();
+        app.run("file.send_to_slicer", params).unwrap();
         assert!(app.dialog.is_none());
         assert_eq!(sent(&seen), 1);
         let _ = std::fs::remove_dir_all(seen.parent().unwrap());
@@ -654,7 +654,7 @@ mod tests {
         app.preferences.custom_slicers = vec![spec.clone()];
         app.preferences.slicer_single_instance = false;
         // A normal send with the preference off: this launcher still gets the flag, it can't hand a file over without.
-        app.run("file.open_in_slicer", json!({"slicer": spec, "bodies": ["Part"], "wait": "no", "single_instance": false})).unwrap();
+        app.run("file.send_to_slicer", json!({"slicer": spec, "bodies": ["Part"], "wait": "no", "single_instance": false})).unwrap();
         assert_eq!(sent(&seen), 1);
         assert!(std::fs::read_to_string(&seen).unwrap().starts_with("--single-instance "), "{:?}", std::fs::read_to_string(&seen));
         // The send that follows a start: the flag, preference or not.
@@ -768,19 +768,19 @@ mod tests {
     }
 
     #[test]
-    fn open_in_slicer_asks_for_bodies_and_a_slicer_but_not_a_format() {
+    fn send_to_slicer_asks_for_bodies_and_a_slicer_but_not_a_format() {
         let k = SaveMesh { format: 0, open: true, slicer: "prusa".into(), stale: false };
         let mut input = SelInput::new("Bodies", BODIES, true);
         assert!(commands(&k, std::slice::from_ref(&input)).is_err());
         input.items = vec![Sel::Body { name: "Part".into() }];
         let cmds = commands(&k, std::slice::from_ref(&input)).unwrap();
-        assert_eq!(cmds, [("file.open_in_slicer".to_string(), json!({"slicer": "prusa", "bodies": ["Part"], "format": "3mf"}))]);
+        assert_eq!(cmds, [("file.send_to_slicer".to_string(), json!({"slicer": "prusa", "bodies": ["Part"], "format": "3mf"}))]);
         // Save as mesh is a plain export in the chosen format: no slicer in it, whatever was set.
         let save = SaveMesh { format: 2, open: false, slicer: "prusa".into(), ..k.clone() };
         let (id, p) = commands(&save, std::slice::from_ref(&input)).unwrap().remove(0);
         assert_eq!((id.as_str(), p["format"].as_str(), p.get("slicer")), ("file.save_mesh", Some("3mf-tagged"), None));
         assert_eq!(button(&save), "Save");
-        assert_eq!(button(&k), "Open");
+        assert_eq!(button(&k), "Send");
         assert!(commands(&SaveMesh { slicer: String::new(), ..k }, &[input]).is_err());
     }
 }

@@ -41,18 +41,18 @@ a mesh body, with its parts where the slicer placed them.
 **File → Save as mesh…** (also on the Mesh tab under Modify, and in the right-click menu of a
 body) saves the selected bodies as STL, 3MF or 3MF with face tags (below), to a file you name.
 
-**File → Open in Slicer** (also on the Mesh tab under Modify, and in the right-click menu of a
+**File → Send to Slicer** (also on the Mesh tab under Modify, and in the right-click menu of a
 body) is the short way: it saves the selected bodies as a 3MF in millimetres, without face tags,
-and opens it in a slicer. It always asks which one and pre-selects the slicer you used last time,
+and sends it to a slicer. It always asks which one and pre-selects the slicer you used last time,
 so the usual case is one click or Enter. The list shows the slicers found on the computer with their
 icons; **Custom…** adds any other program to the top of the list (kept between runs; hover an entry
 you added and press Delete to remove it). On Linux only, a program whose desktop entry says it opens
 3MF or STL files is listed even if SolidCraft doesn't know it by name. Windows and macOS list the
 known slicers only, found in the usual program folders and on `PATH`. It falls back to an STL if the
-3MF can't be written. Scripts and the control channel use `file.open_in_slicer`
+3MF can't be written. Scripts and the control channel use `file.send_to_slicer`
 with a `slicer`, which sends without a dialog. They can start only the slicers in the
 list and programs you added under **Custom…**; any other program path is refused, and an AI agent's
-request to save a mesh or open it in a slicer asks first and names the slicer.
+request to save a mesh or send it to a slicer asks first and names the slicer.
 
 Files sent to a slicer go to a folder only you can
 read: `~/.cache/solidcraft/slicer` on Linux, `~/Library/Caches/SolidCraft/slicer` on macOS and
@@ -67,7 +67,7 @@ the open window instead of starting another one (they are started with `--single
 Other slicers, Bambu Studio and OrcaSlicer among them, are started as they are, so they may open a
 second window. You can turn this off in
 Preferences → General, except for PrusaSlicer 3.0, whose launcher can't hand a file to a running
-window without it. Scripts pass `single_instance: false` to `file.open_in_slicer` or `file.save_mesh`.
+window without it. Scripts pass `single_instance: false` to `file.send_to_slicer` or `file.save_mesh`.
 
 PrusaSlicer 2 and 3 behave differently, so SolidCraft reads which one an install is from the
 version in its installed metadata (a Flatpak's own files, or the `metainfo` file of a package); it

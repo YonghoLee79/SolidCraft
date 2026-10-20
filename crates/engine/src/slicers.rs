@@ -607,7 +607,7 @@ pub fn set_chosen_programs(paths: &[String]) {
 
 /// A slicer from a command parameter: the id or name of a detected one, or a program the user
 /// chose (by its path or name). Any other program path is refused: scripts and agents reach this
-/// through `file.save_mesh` and `file.open_in_slicer`, and must not run arbitrary programs.
+/// through `file.save_mesh` and `file.send_to_slicer`, and must not run arbitrary programs.
 pub fn resolve(spec: &str) -> Option<Slicer> {
     let chosen = CHOSEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     resolve_in(detect(), &chosen, spec)

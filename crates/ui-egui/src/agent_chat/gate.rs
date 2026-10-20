@@ -122,9 +122,9 @@ pub fn command(id: &str, params: &Value, undo_left: usize) -> Verdict {
     let file_command = id.starts_with("file.") || id.starts_with("doc.") || matches!(id, "render.export" | "render.start");
     // The question says which program a send to a slicer would start.
     let with_slicer =
-        |question: String| match params.get("slicer").and_then(Value::as_str).filter(|_| id.ends_with("save_mesh") || id.ends_with("open_in_slicer"))
+        |question: String| match params.get("slicer").and_then(Value::as_str).filter(|_| id.ends_with("save_mesh") || id.ends_with("send_to_slicer"))
         {
-            Some(slicer) => format!("{question}, open in {}", slicer.chars().take(200).collect::<String>()),
+            Some(slicer) => format!("{question}, send to {}", slicer.chars().take(200).collect::<String>()),
             None => question,
         };
     if let Some(p) = names_a_file(id, params) {
@@ -261,12 +261,12 @@ mod tests {
     #[test]
     fn starting_a_slicer_asks_and_names_it() {
         assert!(
-            matches!(exec("file.save_mesh", json!({"path": "a.stl", "slicer": "orca"})), Verdict::Ask(a) if a.contains("a.stl") && a.contains("open in orca"))
+            matches!(exec("file.save_mesh", json!({"path": "a.stl", "slicer": "orca"})), Verdict::Ask(a) if a.contains("a.stl") && a.contains("send to orca"))
         );
         assert!(
-            matches!(exec("file.open_in_slicer", json!({"slicer": "prusa", "bodies": ["Part"]})), Verdict::Ask(a) if a.ends_with("open in prusa"))
+            matches!(exec("file.send_to_slicer", json!({"slicer": "prusa", "bodies": ["Part"]})), Verdict::Ask(a) if a.ends_with("send to prusa"))
         );
-        assert!(matches!(exec("file.open_in_slicer", json!({})), Verdict::Ask(_)));
+        assert!(matches!(exec("file.send_to_slicer", json!({})), Verdict::Ask(_)));
     }
 
     /// `path`, `source` and friends are also geometry (curve ids, edges, occurrence ids): those

@@ -195,12 +195,12 @@ fn installed_slicers_are_listed() {
 }
 
 #[test]
-fn open_in_slicer_needs_a_slicer_and_bodies() {
+fn send_to_slicer_needs_a_slicer_and_bodies() {
     let mut s = imported_box();
-    assert!(s.execute("file.open_in_slicer", &json!({"bodies":["Mesh"]})).is_err());
-    assert!(s.execute("file.open_in_slicer", &json!({"slicer":"no such slicer anywhere","bodies":["Mesh"]})).is_err());
+    assert!(s.execute("file.send_to_slicer", &json!({"bodies":["Mesh"]})).is_err());
+    assert!(s.execute("file.send_to_slicer", &json!({"slicer":"no such slicer anywhere","bodies":["Mesh"]})).is_err());
     // Nothing selected and nothing named.
-    assert!(s.execute("file.open_in_slicer", &json!({"slicer":"no such slicer anywhere"})).is_err());
+    assert!(s.execute("file.send_to_slicer", &json!({"slicer":"no such slicer anywhere"})).is_err());
 }
 
 /// The chosen-programs list is process-wide: tests that set it take turns.
@@ -223,7 +223,7 @@ fn unsaved_designs_of_one_name_send_to_different_files_and_one_design_to_one() {
     // Chosen list is process-wide: set it for this test, clear it before leaving.
     crate::slicers::set_chosen_programs(std::slice::from_ref(&spec));
     let send = |s: &mut Session| {
-        s.execute("file.open_in_slicer", &json!({"slicer": spec, "bodies": ["Mesh"]})).map(|r| r["path"].as_str().unwrap().to_string())
+        s.execute("file.send_to_slicer", &json!({"slicer": spec, "bodies": ["Mesh"]})).map(|r| r["path"].as_str().unwrap().to_string())
     };
     let (a1, a2, b1) = (send(&mut a), send(&mut a), send(&mut b));
     crate::slicers::set_chosen_programs(&[]);
@@ -251,7 +251,7 @@ fn the_first_save_as_changes_the_file_name_once() {
     let mut s = imported_box();
     crate::slicers::set_chosen_programs(std::slice::from_ref(&spec));
     let send = |s: &mut Session| {
-        s.execute("file.open_in_slicer", &json!({"slicer": spec, "bodies": ["Mesh"]})).map(|r| r["path"].as_str().unwrap().to_string())
+        s.execute("file.send_to_slicer", &json!({"slicer": spec, "bodies": ["Mesh"]})).map(|r| r["path"].as_str().unwrap().to_string())
     };
     let before = [send(&mut s), send(&mut s)];
     // What Save As does to the session: the design now has a path.
@@ -268,7 +268,7 @@ fn the_first_save_as_changes_the_file_name_once() {
 
 #[cfg(unix)]
 #[test]
-fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
+fn send_to_slicer_writes_3mf_and_starts_the_program_with_it() {
     use std::os::unix::fs::PermissionsExt;
     let _turn = CHOSEN_PROGRAMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut s = imported_box();
@@ -280,9 +280,9 @@ fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     run(&mut s, "select.set", json!({"items":[{"type":"body","name":"Mesh"}]}));
     // A program nobody chose is refused; once it is among the user's chosen ones it starts.
-    assert!(s.execute("file.open_in_slicer", &json!({"slicer": script})).is_err());
+    assert!(s.execute("file.send_to_slicer", &json!({"slicer": script})).is_err());
     crate::slicers::set_chosen_programs(&[script.to_string_lossy().into_owned()]);
-    let r = s.execute("file.open_in_slicer", &json!({"slicer": script}));
+    let r = s.execute("file.send_to_slicer", &json!({"slicer": script}));
     // Never leave the chosen list set for other tests in this process.
     if r.is_err() {
         crate::slicers::set_chosen_programs(&[]);
@@ -299,9 +299,9 @@ fn open_in_slicer_writes_3mf_and_starts_the_program_with_it() {
     }
     assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), file);
     // Sending the same bodies again replaces the file; the same name in the same private folder.
-    let again = s.execute("file.open_in_slicer", &json!({"slicer": script})).unwrap();
+    let again = s.execute("file.send_to_slicer", &json!({"slicer": script})).unwrap();
     assert_eq!((again["path"].as_str(), again["numbered"].as_bool()), (Some(file.as_str()), Some(false)));
-    let stl = s.execute("file.open_in_slicer", &json!({"slicer": script, "format": "stl"})).unwrap();
+    let stl = s.execute("file.send_to_slicer", &json!({"slicer": script, "format": "stl"})).unwrap();
     assert!(stl["path"].as_str().unwrap().ends_with(".stl"));
     assert_ne!(stl["path"], r["path"]);
     crate::slicers::set_chosen_programs(&[]);

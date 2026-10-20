@@ -53,8 +53,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id or name from file.slicers, or a program the user added under Custom… (open the saved file there); single_instance?: bool (default true; see file.open_in_slicer)"),
-    CommandSpec::new("file.open_in_slicer", "Open in Slicer", open_in_slicer)
+        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id or name from file.slicers, or a program the user added under Custom… (open the saved file there); single_instance?: bool (default true; see file.send_to_slicer)"),
+    CommandSpec::new("file.send_to_slicer", "Send to Slicer", send_to_slicer)
         .enabled(starts_programs)
         .at("MESH", "MODIFY")
         .icon("mesh_export")
@@ -609,8 +609,8 @@ fn starts_programs(_: &Session) -> std::result::Result<(), String> {
 
 /// Save the bodies to this user's slicer folder and start the slicer with the file. The file
 /// name stays the same for the same design and bodies, so sending again replaces it.
-fn open_in_slicer(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "file.open_in_slicer";
+fn send_to_slicer(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "file.send_to_slicer";
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (s, p);

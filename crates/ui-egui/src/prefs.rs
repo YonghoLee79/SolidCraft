@@ -369,8 +369,8 @@ pub struct Prefs {
     pub view_dxf_dashed: bool,
     /// Model-space chord tolerance for current-view DXF curves, in millimetres.
     pub view_dxf_tolerance: f64,
-    /// Open in Slicer: the last slicer used (an installed slicer's id or a program path).
-    pub open_slicer: String,
+    /// Send to Slicer: the last slicer used (an installed slicer's id or a program path).
+    pub send_slicer: String,
     /// Slicers that can load a file into the window that is already open do so (default on).
     pub slicer_single_instance: bool,
     /// The line about sending again replacing the slicer's file has been shown.
@@ -498,7 +498,7 @@ impl Default for Prefs {
             save_mesh_format: "stl".into(),
             view_dxf_dashed: false,
             view_dxf_tolerance: 0.01,
-            open_slicer: String::new(),
+            send_slicer: String::new(),
             slicer_single_instance: true,
             slicer_resend_hint_seen: false,
             custom_slicers: Vec::new(),
