@@ -1203,6 +1203,8 @@
   "ui.agent_chat_view_attached": "View attached",
   "ui.agent_cursor": "Agent cursor",
   "ui.agent_cursor_speed": "Agent cursor speed",
+  "ui.agent_off_thread": "Keep the window responsive while agents run commands",
+  "ui.agent_off_thread_note": "An agent's slow commands (from the AI panel or an MCP client) compute beside the window: you can keep turning and inspecting the view, and stop one from the chip in the view. Off: each runs on the window's thread and the window waits for it.",
   "ui.ai_add": "Add",
   "ui.ai_add_agent": "Add agent…",
   "ui.ai_add_agent_title": "Add agent",

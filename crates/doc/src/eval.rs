@@ -777,6 +777,48 @@ impl EvalCache {
     }
 }
 
+/// The results an evaluation ahead on a copy of a model computed or took from the cache, kept for
+/// the run that follows on the model itself (#1989). The evaluation cache is bounded by bytes and
+/// charges every entry its whole model, so on a design with large bodies it holds only the last
+/// few states: by the time the run came, the cache had dropped most of what was computed ahead,
+/// and the run computed it all again, on the window thread.
+#[derive(Debug, Default)]
+pub struct KeptResults(std::sync::Mutex<std::collections::HashMap<u64, CachedEval>>);
+
+impl KeptResults {
+    /// Results kept.
+    pub fn len(&self) -> usize {
+        self.0.lock().map_or(0, |m| m.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, key: u64) -> Option<CachedEval> {
+        self.0.lock().ok().and_then(|m| m.get(&key).cloned())
+    }
+
+    fn put(&self, key: u64, e: &CachedEval) {
+        if let Ok(mut m) = self.0.lock()
+            && (m.len() < CACHE_ENTRIES || m.contains_key(&key))
+        {
+            m.insert(key, e.clone());
+        }
+    }
+}
+
+/// Where a model keeps its results besides the cache ([`Model::keep`]). A copy of the model
+/// starts without: it keeps nothing it computes for someone else's run.
+#[derive(Debug, Default)]
+struct KeptSlot(Option<Arc<KeptResults>>);
+
+impl Clone for KeptSlot {
+    fn clone(&self) -> Self {
+        KeptSlot(None)
+    }
+}
+
 impl SolvedSketch {
     /// Rough heap footprint (see [`ModelState::retained_bytes`]).
     pub fn retained_bytes(&self) -> usize {
@@ -808,6 +850,14 @@ impl ModelState {
             if go_on() {
                 let _ = b.mesh();
             }
+        });
+    }
+    /// [`ModelState::warm_meshes`], and every body's display plan at the current display quality
+    /// (what a GPU viewport draws).
+    pub fn warm_display(&self) {
+        kernel::for_each_on_threads(&self.bodies, 16, |b| {
+            let _ = b.mesh();
+            let _ = b.display_plan();
         });
     }
     pub fn sketch(&self, feature: u64) -> Option<&SolvedSketch> {
@@ -844,6 +894,9 @@ pub struct Model {
     empty: Arc<ModelState>,
     /// Features recomputed by the last `evaluate`.
     pub last_recomputed: usize,
+    /// Features recomputed by every `evaluate` of this model (and of the model it was copied
+    /// from) so far.
+    pub recomputed: usize,
     /// Features whose result the last `evaluate` took from the cache instead of recomputing: the
     /// same feature on the same inputs was evaluated before (an edit set back, undo, redo, a
     /// configuration row). Their geometry did change since the previous evaluation.
@@ -852,6 +905,8 @@ pub struct Model {
     pub cache: Arc<std::sync::Mutex<EvalCache>>,
     /// Evaluate everything from scratch (no reuse; tests compare the two).
     pub no_cache: bool,
+    /// Results kept besides the cache ([`Model::keep`]).
+    kept: KeptSlot,
     /// The imported texts' digests the last `evaluate` fingerprinted the features with.
     step_digests: StepDigests,
 }
@@ -1290,6 +1345,20 @@ impl Model {
         })
     }
 
+    /// While `kept` is set, every result this model evaluates or takes from the cache is also
+    /// kept there, and a result the cache no longer has is taken from there (#1989): an
+    /// evaluation ahead on a copy keeps what it computes, and the run that follows on the model
+    /// itself finds it all, whatever the cache dropped meanwhile. Copies of the model keep
+    /// nothing.
+    pub fn keep(&mut self, kept: Option<Arc<KeptResults>>) {
+        self.kept = KeptSlot(kept);
+    }
+
+    /// Where this model keeps its results besides the cache, if it does ([`Model::keep`]).
+    pub fn kept(&self) -> Option<Arc<KeptResults>> {
+        self.kept.0.clone()
+    }
+
     /// Whether the results are `doc`'s evaluation: one per feature, each on the inputs `doc`
     /// gives it, none stale, so [`Model::evaluate`] would keep every one of them. A document
     /// changed without an evaluation since is not.
@@ -1363,9 +1432,13 @@ impl Model {
             }
             // The same feature on the same inputs: its earlier result.
             let key = cache_key(f, fp, fingerprint(0, f, &vals, false, &self.step_digests) ^ placement_digest(doc, f), ctx, &state);
+            let kept = self.kept.0.as_ref().filter(|_| !self.no_cache);
             if !self.no_cache
-                && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.get(key))
+                && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.get(key)).or_else(|| kept.and_then(|k| k.get(key)))
             {
+                if let Some(k) = kept {
+                    k.put(key, &c);
+                }
                 restored += 1;
                 if c.error.is_none() {
                     state = c.state.clone();
@@ -1494,20 +1567,21 @@ impl Model {
                 }
                 Err(e) => Some(e.to_string().trim_start_matches("the operation failed: ").to_string()),
             };
-            if !self.no_cache
-                && let Ok(mut m) = self.cache.lock()
-            {
-                m.put(
-                    key,
-                    CachedEval {
-                        error: error.clone(),
-                        warning: warning.clone(),
-                        boolean_diagnostics: boolean_diagnostics.clone(),
-                        ms,
-                        bytes: state.retained_bytes(),
-                        state: state.clone(),
-                    },
-                );
+            if !self.no_cache {
+                let e = CachedEval {
+                    error: error.clone(),
+                    warning: warning.clone(),
+                    boolean_diagnostics: boolean_diagnostics.clone(),
+                    ms,
+                    bytes: state.retained_bytes(),
+                    state: state.clone(),
+                };
+                if let Some(k) = &self.kept.0 {
+                    k.put(key, &e);
+                }
+                if let Ok(mut m) = self.cache.lock() {
+                    m.put(key, e);
+                }
             }
             out.push(FeatureResult {
                 id: f.id,
@@ -1524,6 +1598,7 @@ impl Model {
         }
         self.results = out;
         self.last_recomputed = recomputed;
+        self.recomputed += recomputed;
         self.last_restored = restored;
     }
 }

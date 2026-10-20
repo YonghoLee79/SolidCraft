@@ -22,6 +22,7 @@ mod colour_tokens_tests;
 mod colour_vision_tests;
 pub mod context_menu;
 pub mod control;
+pub mod control_job;
 pub mod crash_ui;
 pub mod deferred;
 pub mod delete;
@@ -457,8 +458,13 @@ pub struct SolveApp {
     /// The modifiers of the synthetic press in progress (a Ctrl-drag keeps Ctrl while it moves).
     pub synthetic_mods: egui::Modifiers,
     control_rx: Option<Receiver<ControlRequest>>,
-    /// Control requests that change the design, held while a file loads.
+    /// Control requests that change the design, held while a file loads or an agent's design
+    /// change computes.
     control_held: std::collections::VecDeque<ControlRequest>,
+    /// An agent's design change computing off the window thread ([`control_job`]).
+    control_job: Option<control_job::ControlJob>,
+    /// Agent exports computing on copies of the design.
+    control_answering: Vec<control_job::ControlJob>,
     /// The agent cursor acting out control requests.
     pub agent: agent_cursor::AgentCursor,
     /// The agent chat panel (docs/design/in-app-agent-chat.md).
@@ -570,6 +576,8 @@ impl SolveApp {
             control_rx: None,
             agent_chat: Default::default(),
             control_held: Default::default(),
+            control_job: None,
+            control_answering: Vec::new(),
             agent: Default::default(),
             pending_shots: Vec::new(),
             queued_shots: Vec::new(),
@@ -1397,6 +1405,7 @@ impl SolveApp {
             self.set_up_axis(self.ui.up_axis);
         }
         self.step_view_animation(ctx);
+        self.poll_control_jobs(ctx);
         self.drain_control(ctx);
         self.follow_view_request(true);
         agent_cursor::step(self, ctx);
@@ -1640,15 +1649,15 @@ impl SolveApp {
             return;
         }
         let rx = self.control_rx.take();
-        // While the agent cursor acts out a request, later ones wait their turn.
         for _ in 0..PER_FRAME {
-            if self.agent.busy() {
-                break;
-            }
-            // Held requests go first, in order, once the file is in.
+            // A file loading, an agent's design change computing, or the agent cursor acting one
+            // out: commands that change the design wait their turn (the window, inspection and
+            // screenshots still answer, #1989).
+            let waits = self.file_load.busy() || self.file_picker.is_some() || self.control_job.is_some() || self.agent.busy();
             // A screenshot waiting for an opened design to be meshed holds what came after it.
             let shot_waits = open_meshing::active(self) && self.control_held.front().is_some_and(|r| r.method == "ui.screenshot");
-            let held = if self.file_load.busy() || self.file_picker.is_some() || shot_waits { None } else { self.control_held.pop_front() };
+            // Held requests go first, in order, once nothing makes them wait.
+            let held = if waits || shot_waits { None } else { self.control_held.pop_front() };
             let Some(req) = held.or_else(|| rx.as_ref().and_then(|rx| rx.try_recv().ok())) else { break };
             if shot_waits {
                 if self.control_held.len() < MAX_HELD {
@@ -1658,10 +1667,7 @@ impl SolveApp {
                 }
                 continue;
             }
-            // A file is loading: commands that change the design wait for it (the window,
-            // inspection and screenshots still answer).
-            if ((self.file_load.busy() || self.file_picker.is_some())
-                && matches!(req.method.as_str(), "engine.execute" | "command" | "engine.script" | "engine.batch"))
+            if (waits && control_job::changes_the_design(&req.method))
                 || (self.file_picker_busy() && matches!(req.method.as_str(), "ui.file" | "ui.home"))
                 // A screenshot shows the whole design: it waits until an opened one is meshed.
                 || (open_meshing::active(self) && req.method == "ui.screenshot")
@@ -1683,25 +1689,36 @@ impl SolveApp {
                 ctx.request_repaint();
                 continue;
             }
-            match control::handle(self, ctx, &req) {
-                control::Outcome::Done(v) => {
-                    let _ = reply.send(v);
-                }
-                // A window that is minimised or covered (another macOS Space) presents no frame:
-                // say so at once rather than after the deadline (#1677).
-                control::Outcome::Screenshot { .. } if window_hidden(ctx) => {
-                    let _ = reply.send(json!({"ok": false, "hidden": true, "error": "no frame was presented (window hidden?); use ui.render"}));
-                }
-                control::Outcome::Screenshot { path } => {
-                    self.shot_token += 1;
-                    let token = self.shot_token;
-                    self.queued_shots.push((token, now_ms() + 150.0, 0));
-                    self.pending_shots.push((token, path, reply, now_ms() + 8000.0));
-                }
-            }
-            ctx.request_repaint();
+            // A slow design change or export: computed off the window thread (#1989).
+            let Some(req) = self.offload_control(ctx, req) else {
+                ctx.request_repaint();
+                continue;
+            };
+            self.run_control(ctx, req);
         }
         self.control_rx = rx;
+    }
+
+    /// Run a control request here, now, and reply (or queue the screenshot it asks for).
+    pub(crate) fn run_control(&mut self, ctx: &egui::Context, req: ControlRequest) {
+        let reply = req.reply.clone();
+        match control::handle(self, ctx, &req) {
+            control::Outcome::Done(v) => {
+                let _ = reply.send(v);
+            }
+            // A window that is minimised or covered (another macOS Space) presents no frame:
+            // say so at once rather than after the deadline (#1677).
+            control::Outcome::Screenshot { .. } if window_hidden(ctx) => {
+                let _ = reply.send(json!({"ok": false, "hidden": true, "error": "no frame was presented (window hidden?); use ui.render"}));
+            }
+            control::Outcome::Screenshot { path } => {
+                self.shot_token += 1;
+                let token = self.shot_token;
+                self.queued_shots.push((token, now_ms() + 150.0, 0));
+                self.pending_shots.push((token, path, reply, now_ms() + 8000.0));
+            }
+        }
+        ctx.request_repaint();
     }
 
     fn issue_screenshots(&mut self, ctx: &egui::Context) {

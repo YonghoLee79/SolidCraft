@@ -2975,6 +2975,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::select_other::show(app, ui.ctx());
     axis_view(app, ui, rect);
     nav_bar(app, ui, rect);
+    agent_chip(app, ui, rect);
     transient_messages(app, ui, rect);
 }
 
@@ -2995,6 +2996,38 @@ fn paint_box_selection(painter: &egui::Painter, bx: BoxSel, sketch: bool) {
         }
     } else {
         painter.rect_stroke(bx.rect, 0.0, Stroke::new(1.2, col), egui::StrokeKind::Inside);
+    }
+}
+
+/// An agent's command computing off the window thread (#1989): which one, in the agent cursor's
+/// colour, and a button that stops waiting for it.
+fn agent_chip(app: &mut SolveApp, ui: &egui::Ui, rect: Rect) {
+    let t = Tokens::get();
+    let painter = ui.painter().clone();
+    if let Some((since, label)) = app.agent_computing().map(|(since, label)| (since, label.to_string())) {
+        let seconds = ((crate::now_ms() - since) / 1000.0).floor().max(0.0);
+        let computing = crate::i18n::format("dialog.computing", &[("seconds", &format!("{seconds:.0}"))]);
+        let above = if app.computing_since().is_some() { 106.0 } else { 76.0 };
+        let pos = pos2(rect.left() + 12.0, rect.bottom() - above);
+        let galley = painter.layout_no_wrap(format!("{label} · {computing}"), FontId::proportional(t.font_label), t.text);
+        let stop = painter.layout_no_wrap(crate::i18n::tr("ui.agent_chat_stop").to_string(), FontId::proportional(t.font_label), t.text);
+        let r = Rect::from_min_size(pos, vec2(galley.size().x + stop.size().x + 54.0, galley.size().y.max(stop.size().y) + 8.0));
+        painter.rect_filled(r, 4.0, t.overlay);
+        painter.rect_stroke(r, 4.0, Stroke::new(1.0, crate::icons::pointer::agent()), egui::StrokeKind::Inside);
+        egui::Spinner::new()
+            .color(crate::icons::pointer::agent())
+            .size(t.space_12)
+            .paint_at(ui, Rect::from_center_size(pos2(r.left() + 13.0, r.center().y), vec2(12.0, 12.0)));
+        painter.galley(pos + vec2(26.0, 4.0), galley.clone(), t.text);
+        let button = Rect::from_min_size(pos2(pos.x + galley.size().x + 34.0, r.top() + 2.0), vec2(stop.size().x + 12.0, r.height() - 4.0));
+        let clicked = ui.interact(button, egui::Id::new("sc_agent_stop"), Sense::click());
+        painter.rect_filled(button, 3.0, if clicked.hovered() { t.hover } else { t.overlay });
+        painter.galley(button.min + vec2(6.0, 2.0), stop, t.text);
+        crate::scenario::publish_handle("agent:stop", button.center());
+        if clicked.clicked() {
+            app.stop_agent_command();
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
 }
 
