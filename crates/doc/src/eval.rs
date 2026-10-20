@@ -3368,6 +3368,9 @@ fn feature_tools_with_constructor(
             let n = ss.plane.normal();
             let tst =
                 if extent.to.is_some() || extent.from.is_some() { state_in_frame(doc, st, f.component) } else { std::borrow::Cow::Borrowed(st) };
+            // Through all, and where the tool meets its targets, is measured where they are shown.
+            let shown = targets_as_shown(st, f, &crate::plain(targets))?;
+            let st: &ModelState = &shown;
             // The face names follow `face_points`: To, then From.
             let name = |k: usize| f.face_names.get(k).map(String::as_str);
             let (to_name, from_name) = if extent.to.is_some() { (name(0), name(1)) } else { (None, name(0)) };
@@ -3716,6 +3719,9 @@ fn feature_tools_with_constructor(
             let (o, d) = revolve_axis(&ss, axis)?;
             // To Object is in this feature's component frame: the model as seen from there.
             let tst = if to.is_some() { state_in_frame(doc, st, f.component) } else { std::borrow::Cow::Borrowed(st) };
+            // Where the tool meets its targets is measured where they are shown (#3383).
+            let shown = targets_as_shown(st, f, &feature_op(f).1)?;
+            let st: &ModelState = &shown;
             let angles = if to.is_some() {
                 (0.0, None)
             } else {
@@ -5888,6 +5894,35 @@ fn drawn_tools_digest(doc: &Document, f: &Feature) -> u64 {
 /// same frame).
 fn tool_frame(name: &str) -> Option<Mat> {
     TOOL_FRAMES.with(|t| t.borrow().iter().find(|(n, _)| n == name).map(|(_, m)| *m))
+}
+
+/// The model as the evaluated feature's drawn tools meet it: the bodies it changes (`targets`,
+/// else the feature's participants; `*` for all) that are placed differently, moved into its
+/// component's frame. A through-all extent, and every test of where a tool meets its targets, is
+/// measured on it, so a target in another, moved component is met where it is shown (#3383).
+/// The model itself when no such body is placed differently.
+fn targets_as_shown<'a>(st: &'a ModelState, f: &Feature, targets: &[String]) -> Result<std::borrow::Cow<'a, ModelState>> {
+    let names: &[String] = if targets.is_empty() { &f.participants } else { targets };
+    let all = names.iter().any(|n| n == "*");
+    let mut out: Option<ModelState> = None;
+    for (i, b) in st.bodies.iter().enumerate() {
+        if !(all || names.contains(&b.name)) {
+            continue;
+        }
+        let Some(back) = tool_frame(&b.name).and_then(|m| crate::mat_inverse(&m)) else { continue };
+        let shown = out.get_or_insert_with(|| st.clone());
+        let mut moved = ModelBody::new(b.name.clone(), kernel::transform_matrix(&b.body, back)?, b.feature);
+        moved.component = b.component;
+        moved.transferred = b.transferred;
+        moved.names = crate::naming::NameCell::same(b);
+        if let Some(slot) = shown.bodies.get_mut(i) {
+            *slot = moved;
+        }
+    }
+    Ok(match out {
+        Some(shown) => std::borrow::Cow::Owned(shown),
+        None => std::borrow::Cow::Borrowed(st),
+    })
 }
 
 /// `tool` moved by `m` (unchanged for `None`).

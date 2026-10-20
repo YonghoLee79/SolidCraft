@@ -696,7 +696,8 @@ fn combine_across_a_turned_occurrence_meets_the_tool_where_it_is_shown() {
 /// #3383: a feature joining into a body of another, placed component draws its tool where the
 /// tool is shown, as Combine does. Part is moved 100 mm along x, so its 10 mm cubes sit at x 100..110
 /// and 120..130; a box and an extrude drawn from the root over each add 4 x 4 x 5 to it in one
-/// piece, not a separate lump 100 mm further on.
+/// piece, not a separate lump 100 mm further on. A through-all cut is as long as the target is
+/// far where it is shown.
 #[test]
 fn joins_into_a_moved_occurrence_meet_the_tool_where_it_is_shown() {
     let volume = |s: &Session, name: &str| s.model.state().body(name).map(|b| solidcraft_kernel::measure(&b.body).unwrap().volume).unwrap_or(0.0);
@@ -717,4 +718,19 @@ fn joins_into_a_moved_occurrence_meet_the_tool_where_it_is_shown() {
         assert_eq!(s.model.state().body(b).map(|b| b.body.shell_count()), Some(1), "{b}");
         assert!((volume(&s, b) - want).abs() < 1e-6 * want, "{b}: {} vs {want}", volume(&s, b));
     }
+
+    // Through all reaches the target where it is shown: Part moved 100 mm along x and up, a cut
+    // drawn on the root's XY plane goes 100 mm up through its cube, not 10 mm.
+    let mut s = Session::default();
+    created(&mut s, "Part");
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "C"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": "Part:1", "translate": [100, 0, 100]}));
+    run(&mut s, "component.capture_position", json!({}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [103, 3], "p1": [107, 7]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"through_all": true, "operation": "cut", "targets": ["C"]}));
+    let want = 10.0 * 10.0 * 10.0 - 4.0 * 4.0 * 10.0;
+    assert!((volume(&s, "C") - want).abs() < 1e-6 * want, "C: {} vs {want}", volume(&s, "C"));
 }
