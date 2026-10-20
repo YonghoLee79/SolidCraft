@@ -1015,9 +1015,9 @@ impl SolveApp {
         }
     }
 
-    /// Edit a sketch: roll the timeline back to just after it (so later
-    /// features don't hide it), turn the camera to face it, and remember both so Finish Sketch
-    /// puts them back. Editing the sketch that is already open does nothing; editing another one
+    /// Edit a sketch: roll the timeline to just after it (back, so later features don't hide
+    /// it, or forward from before it, where it isn't built yet: #2716), turn the camera to face
+    /// it, and remember both so Finish Sketch puts them back. Editing the sketch that is already open does nothing; editing another one
     /// finishes the current sketch first, so edit sessions never nest.
     pub fn edit_sketch(&mut self, id: u64) {
         if let solidcraft_engine::doc::FaceAttachmentStatus::Lost { message, .. } =
@@ -1037,7 +1037,7 @@ impl SolveApp {
         self.dialog = None;
         let Some(idx) = self.session.doc.feature_index(id) else { return };
         let marker = self.session.doc.marker;
-        let rolled = marker.is_none_or(|m| m > idx + 1) && self.run("timeline.roll_to", json!({ "position": idx + 1 })).is_ok();
+        let rolled = marker != Some(idx + 1) && self.run("timeline.roll_to", json!({ "position": idx + 1 })).is_ok();
         let before = self.cam;
         if self.run("sketch.edit", json!({ "sketch": id })).is_err() {
             if rolled {

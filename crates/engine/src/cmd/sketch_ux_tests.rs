@@ -60,7 +60,7 @@ fn every_dimension_kind_has_a_drawable_frame() {
     }
     for f in [
         DimFrame::Linear { p0: Default::default(), p1: Default::default(), dir: Default::default() },
-        DimFrame::Radial { center: Default::default(), radius: 1.0, diameter: true },
+        DimFrame::Radial { center: Default::default(), radius: 1.0, diameter: true, arc: None },
         DimFrame::Angular { vertex: Default::default(), d0: Default::default(), sweep: 1.0 },
         DimFrame::ArcLength { center: Default::default(), radius: 1.0, start: 0.0, sweep: 1.0 },
     ] {

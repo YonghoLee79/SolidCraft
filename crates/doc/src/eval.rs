@@ -1494,6 +1494,58 @@ impl Model {
     }
 }
 
+impl Model {
+    /// Follow a rename of body `old` to `new` without evaluating anything (#3044): `doc` is the
+    /// design after the rename, which changed nothing but names, so every result keeps its
+    /// geometry and meshes and only the body's name (and the names worked out from it) changes.
+    /// False, leaving the model as it was, when the rename can't be followed that way and the
+    /// design must be evaluated: the model isn't the design's, the body is changed by a later
+    /// feature, or is sheet metal, threaded, or named in a later feature's face references.
+    pub fn rename_body(&mut self, doc: &Document, old: &str, new: &str) -> bool {
+        if self.results.len() != doc.features.len() || self.results.iter().zip(&doc.features).any(|(r, f)| r.id != f.id || r.stale) {
+            return false;
+        }
+        let Some(at) = self.results.iter().position(|r| r.state.body(old).is_some()) else { return false };
+        let Some(made) = self.results.get(at).and_then(|r| r.state.body(old)).map(|b| Arc::as_ptr(&b.mesh)) else { return false };
+        // Untouched from the feature that made it to the end, and nothing else holds its name.
+        let untouched = self.results.iter().skip(at).all(|r| r.state.body(old).is_some_and(|b| Arc::as_ptr(&b.mesh) == made));
+        let named_elsewhere = self
+            .results
+            .iter()
+            .any(|r| r.state.body(new).is_some() || r.state.sheets.iter().any(|x| x.body == old) || r.state.threads.iter().any(|t| t.body == old));
+        let faces_named = doc.features.iter().skip(at + 1).any(|f| f.face_names.iter().any(|n| n.contains(old)));
+        if !untouched || named_elsewhere || faces_named {
+            return false;
+        }
+        // States shared between results stay shared.
+        let mut renamed: std::collections::HashMap<*const ModelState, Arc<ModelState>> = std::collections::HashMap::new();
+        for r in self.results.iter_mut().skip(at) {
+            let state = renamed
+                .entry(Arc::as_ptr(&r.state))
+                .or_insert_with(|| {
+                    let mut st = (*r.state).clone();
+                    for b in st.bodies.iter_mut().filter(|b| b.name == old) {
+                        b.name = new.to_string();
+                        b.names = b.names.renamed();
+                    }
+                    Arc::new(st)
+                })
+                .clone();
+            r.state = state;
+        }
+        // The fingerprints of the renamed design, so the next evaluation reuses every result.
+        let (vals, _) = evaluation_values(doc);
+        let marker = doc.marker.unwrap_or(usize::MAX);
+        self.step_digests = StepDigests::of(doc, &self.step_digests);
+        let mut prev = 0;
+        for (i, (r, f)) in self.results.iter_mut().zip(&doc.features).enumerate() {
+            prev = chain_fingerprint(doc, &vals, f, prev, i >= marker, &self.step_digests);
+            r.fingerprint = prev;
+        }
+        true
+    }
+}
+
 /// Key of the design's length unit (mm per unit) among the values (no parameter can be named
 /// so).
 pub(crate) const DESIGN_LEN: &str = "\u{1}design_len";

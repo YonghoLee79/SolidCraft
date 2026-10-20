@@ -2637,6 +2637,87 @@ impl Document {
         }
     }
 
+    /// Rename body `old` to `new` where the design keeps things by body name outside its
+    /// features: materials, appearances, configuration columns, offsets, components and the
+    /// browser's groups and order. (The features are the rename command's to change.)
+    pub fn rename_body_keys(&mut self, old: &str, new: &str) {
+        if let Some(m) = self.materials.remove(old) {
+            self.materials.insert(new.to_string(), m);
+        }
+        if let Some(c) = self.appearances.bodies.remove(old) {
+            self.appearances.bodies.insert(new.to_string(), c);
+        }
+        for f in self.appearances.faces.iter_mut().filter(|f| f.body == old) {
+            f.body = new.to_string();
+        }
+        for column in &mut self.configs.columns {
+            match column {
+                crate::config::Column::Material(body) | crate::config::Column::Appearance(body) if *body == old => {
+                    *body = new.to_string();
+                }
+                crate::config::Column::FaceAppearance(target) if target.body == old => {
+                    target.body = new.to_string();
+                }
+                _ => {}
+            }
+        }
+        if let Some(o) = self.body_offsets.remove(old) {
+            self.body_offsets.insert(new.to_string(), o);
+        }
+        if let Some(c) = self.body_components.remove(old) {
+            self.body_components.insert(new.to_string(), c);
+        }
+        for g in self.browser_groups.iter_mut().filter(|g| g.folder == "bodies") {
+            for k in g.items.iter_mut().filter(|k| *k == old) {
+                *k = new.to_string();
+            }
+        }
+        for (_, v) in self.browser_order.iter_mut().filter(|(k, _)| k.ends_with("/bodies")) {
+            for k in v.iter_mut().filter(|k| *k == old) {
+                *k = new.to_string();
+            }
+        }
+    }
+
+    /// The single body rename (old name, new name) that turns `previous` into this design,
+    /// when that is all that changed: the features' stored body names (`made` gives the names
+    /// each feature's bodies have now, by feature id) and what [`Document::rename_body_keys`]
+    /// renames. `None` for any other change.
+    pub fn body_rename_from(&self, previous: &Document, made: impl Fn(u64) -> Vec<String>) -> Option<(String, String)> {
+        if self.features.len() != previous.features.len() {
+            return None;
+        }
+        let mut rename: Option<(String, String)> = None;
+        for (a, b) in previous.features.iter().zip(&self.features) {
+            if a.id != b.id {
+                return None;
+            }
+            if a.body_names == b.body_names {
+                continue;
+            }
+            let now = made(a.id);
+            for (k, name) in b.body_names.iter().enumerate() {
+                let current = now.get(k);
+                // Slots the rename left alone, and the ones it set to the names they have now.
+                if a.body_names.get(k) == Some(name) || name.trim().is_empty() || current == Some(name) {
+                    continue;
+                }
+                let pair = (current?.clone(), name.clone());
+                match &rename {
+                    Some(r) if *r != pair => return None,
+                    _ => rename = Some(pair),
+                }
+            }
+        }
+        let (old, new) = rename?;
+        let mut expected = previous.clone();
+        for (f, g) in expected.features.iter_mut().zip(&self.features) {
+            f.body_names.clone_from(&g.body_names);
+        }
+        expected.rename_body_keys(&old, &new);
+        (expected == *self).then_some((old, new))
+    }
+
     /// A complete structural proof: no non-render field is allowed to differ. Keeping this
     /// comparison based on the whole Document also includes fields added in future versions.
     /// The clone/comparison is only needed when render intent actually differs.

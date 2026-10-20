@@ -1391,6 +1391,36 @@ pub(crate) fn take_snap_work() -> (usize, usize) {
 mod face_snap_tests {
     use super::*;
 
+    /// A planar face's plane is found once per model state: an open Section Analysis on a face
+    /// asks for it several times a frame, and each lookup tessellates the body.
+    #[test]
+    fn a_planar_face_is_looked_up_once_per_model_state() {
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length":40,"width":30,"height":20})).unwrap();
+        let top = |s: &Session| {
+            let st = s.world_state();
+            let b = st.bodies.first().unwrap();
+            let faces = b.body.faces(1e-3).unwrap();
+            let f = faces.iter().max_by(|a, b| a.centroid.z.total_cmp(&b.centroid.z)).unwrap();
+            (b.name.clone(), f.index)
+        };
+        let (body, face) = top(&s);
+        take_snap_work();
+        let first = planar_face(&s, &body, face).expect("the top face is planar");
+        for _ in 0..5 {
+            assert_eq!(planar_face(&s, &body, face), Some(first));
+        }
+        assert_eq!(take_snap_work().0, 1, "the same model state looks the face up once");
+        assert!((first.0.z - 20.0).abs() < 1e-9 && (first.1 - Vec3::Z).len() < 1e-9, "{first:?}");
+
+        // A changed model is looked at again.
+        s.execute("solid.box", &json!({"length":10,"width":10,"height":50,"operation":"join"})).unwrap();
+        let (body, face) = top(&s);
+        let again = planar_face(&s, &body, face).expect("the new top face is planar");
+        assert_eq!(take_snap_work().0, 1);
+        assert!((again.0.z - 50.0).abs() < 1e-9, "{again:?}");
+    }
+
     #[test]
     fn a_point_more_than_a_micrometre_off_a_sliver_is_off_the_face() {
         // A triangle with half-micrometre legs. Points 2 µm below its lower side and 1.6 µm past
@@ -1443,13 +1473,42 @@ fn profiles_used(s: &Session, sketch: u64) -> bool {
 
 /// The plane of a planar body face: (point on it, unit normal).
 pub fn planar_face(s: &Session, body: &str, face: usize) -> Option<(Vec3, Vec3)> {
+    let st = s.world_state();
+    let known = FACE_PLANES.with(|c| {
+        let c = c.borrow();
+        c.0.as_ref().filter(|k| std::sync::Arc::ptr_eq(k, &st)).and_then(|_| c.1.iter().find(|(b, f, _)| b == body && *f == face).map(|x| x.2))
+    });
+    if let Some(found) = known {
+        return found;
+    }
     #[cfg(test)]
     SNAP_WORK.with(|w| w.set((w.get().0 + 1, w.get().1)));
-    let st = s.world_state();
-    let b = st.body(body)?;
-    let tol = (b.body.size() * 1e-3).max(1e-3);
-    let f = b.body.faces(tol).ok()?.into_iter().find(|f| f.index == face)?;
-    Some((f.centroid, f.plane_normal?))
+    let found = st.body(body).and_then(|b| {
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        let f = b.body.faces(tol).ok()?.into_iter().find(|f| f.index == face)?;
+        Some((f.centroid, f.plane_normal?))
+    });
+    FACE_PLANES.with(|c| {
+        let mut c = c.borrow_mut();
+        if !c.0.as_ref().is_some_and(|k| std::sync::Arc::ptr_eq(k, &st)) {
+            *c = (Some(st.clone()), Vec::new());
+        }
+        if c.1.len() >= 8 {
+            c.1.remove(0);
+        }
+        c.1.push((body.to_string(), face, found));
+    });
+    found
+}
+
+thread_local! {
+    /// The planar faces looked up last, with the model state they were found in (kept, so the
+    /// pointer stays its own). Each lookup tessellates the whole body, about 0.1 s for an
+    /// imported part of a few million triangles, and an open Section Analysis on a face asks
+    /// for its plane several times a frame.
+    #[allow(clippy::type_complexity)]
+    static FACE_PLANES: std::cell::RefCell<(Option<std::sync::Arc<solidcraft_engine::doc::ModelState>>, Vec<(String, usize, Option<(Vec3, Vec3)>)>)> =
+        const { std::cell::RefCell::new((None, Vec::new())) };
 }
 
 fn polyline_mid(pts: &[Vec3]) -> Vec3 {

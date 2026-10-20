@@ -85,6 +85,17 @@ impl NameCell {
     pub(crate) fn id(&self) -> usize {
         Arc::as_ptr(&self.names) as usize
     }
+    /// The same origin, lineage and depth with nothing worked out yet: for a body given a new
+    /// name, whose faces' names may be made from it.
+    pub(crate) fn renamed(&self) -> Self {
+        NameCell {
+            origin: self.origin.clone(),
+            lineage: self.lineage.clone(),
+            copy_of: self.copy_of.clone(),
+            saved_depth: self.saved_depth,
+            ..NameCell::default()
+        }
+    }
     fn shared(names: Arc<Names>) -> Self {
         let cell = OnceLock::new();
         let _ = cell.set(names);
