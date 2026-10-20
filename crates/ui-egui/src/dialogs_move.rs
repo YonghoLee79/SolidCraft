@@ -92,11 +92,30 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Kind) -> bool {
     enter
 }
 
-fn sel_point(s: Option<&Sel>) -> Option<Vec3> {
+/// The point a pick stands for: where a vertex, a face or an edge was picked, but the centre of a
+/// circular edge (a hole's rim, a shaft's end), as a move from one round part into another
+/// means (#3486).
+fn sel_point(app: &SolveApp, d: &Dialog, s: Option<&Sel>) -> Option<Vec3> {
     match s? {
-        Sel::Vertex { point, .. } | Sel::Face { point, .. } | Sel::Edge { point, .. } => Some(*point),
+        Sel::Edge { body, index, point } => Some(circle_center(app, d, body, *index).unwrap_or(*point)),
+        Sel::Vertex { point, .. } | Sel::Face { point, .. } => Some(*point),
         _ => None,
     }
+}
+
+/// The centre of mesh edge `index` of `body` (where it is before this move) when its curve is a
+/// circle or an arc of one.
+fn circle_center(app: &SolveApp, d: &Dialog, body: &str, index: usize) -> Option<Vec3> {
+    let st = match d.editing {
+        Some((id, _)) => app.session.model.state_before(id),
+        None => app.session.model.state(),
+    };
+    let b = st.body(body)?;
+    let c = solidcraft_engine::kernel::edge_circle(&b.body, index)?;
+    // The kernel's edge is the one picked: the drawn edge lies on its circle.
+    let m = b.mesh();
+    let tol = (m.bounds().diagonal().max(1.0) * 1e-6).max(1e-9) * 10.0;
+    m.edges.get(index)?.iter().all(|p| (p.dist(c.center) - c.radius).abs() <= tol).then_some(c.center)
 }
 
 fn items(d: &Dialog, i: usize) -> &[Sel] {
@@ -127,7 +146,7 @@ fn bodies_center(app: &SolveApp, d: &Dialog) -> Option<Vec3> {
 /// What a Free Move turns about: the picked pivot, else the kept one (editing), else the
 /// bodies' centre.
 fn pivot(app: &SolveApp, d: &Dialog) -> Option<Vec3> {
-    if let Some(p) = sel_point(items(d, 1).first()) {
+    if let Some(p) = sel_point(app, d, items(d, 1).first()) {
         return Some(p);
     }
     if let Some(a) = d.extra.get("pivot").and_then(|v| serde_json::from_value::<[f64; 3]>(v.clone()).ok()) {
@@ -163,7 +182,7 @@ pub fn params(app: &SolveApp, d: &Dialog) -> Result<Value, String> {
     if bodies.is_empty() {
         return Err("select bodies first".into());
     }
-    let need_point = |i: usize, what: &str| sel_point(items(d, i).first()).ok_or(format!("select {what} first"));
+    let need_point = |i: usize, what: &str| sel_point(app, d, items(d, i).first()).ok_or(format!("select {what} first"));
     let num = |t: Vec3| json!([mm(t.x), mm(t.y), mm(t.z)]);
     let mut p = json!({ "bodies": bodies });
     match *mode {

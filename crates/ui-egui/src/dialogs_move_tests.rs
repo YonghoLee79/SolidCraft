@@ -69,3 +69,45 @@ fn every_move_type_has_somewhere_to_put_its_value_box() {
         assert!(at.is_some(), "{} has nowhere to put its value box", TYPES[mode]);
     }
 }
+
+/// #3486: Point to Point from a pin's bottom rim to a bushing's top rim put the pin on the rim,
+/// where the edges were clicked; a round edge stands for its centre, so the pin goes into it.
+/// A straight edge is still taken where it was picked.
+#[test]
+fn point_to_point_from_round_edges_moves_centre_to_centre() {
+    let mut s = Session::default();
+    s.execute("solid.cylinder", &json!({"radius": 5, "height": 20, "base": [0, 0, 0], "operation": "new_body"})).unwrap();
+    s.execute("solid.box", &json!({"length": 30, "width": 30, "height": 10, "corner": [40, -15, 0], "operation": "new_body"})).unwrap();
+    s.execute("solid.cylinder", &json!({"radius": 5, "height": 10, "base": [55, 0, 0], "operation": "cut"})).unwrap();
+    let mut app = SolveApp::new(s, Services::default());
+    app.start("solid.move");
+    let mut d = app.dialog.clone().unwrap();
+    let st = app.session.model.state();
+    let names: Vec<String> = st.bodies.iter().map(|b| b.name.clone()).collect();
+    // A mesh edge of a body all of whose points satisfy `on`, and a point on it.
+    let edge = |body: &str, on: &dyn Fn(Vec3) -> bool| -> Sel {
+        let m = st.body(body).unwrap().mesh();
+        let (index, pts) = m.edges.iter().enumerate().find(|(_, e)| e.iter().all(|p| on(*p))).unwrap();
+        Sel::Edge { body: body.into(), index, point: pts[pts.len() / 2] }
+    };
+    let rim = |c: Vec3, z: f64| move |p: Vec3| (p.z - z).abs() < 1e-6 && ((p - c).len() - 5.0).abs() < 1e-6;
+    let (pin, block) = (names[0].as_str(), names[1].as_str());
+    let from = edge(pin, &rim(Vec3::new(0.0, 0.0, 0.0), 0.0));
+    let to = edge(block, &rim(Vec3::new(55.0, 0.0, 10.0), 10.0));
+    d.kind = kind(POINT_TO_POINT);
+    d.inputs = inputs(POINT_TO_POINT);
+    d.inputs[0].items = vec![Sel::Body { name: pin.into() }];
+    d.inputs[1].items = vec![from];
+    d.inputs[2].items = vec![to];
+    let p = params(&app, &d).unwrap();
+    assert_eq!(p["translate"], json!(["55 mm", "0 mm", "10 mm"]), "{p}");
+    // The block's straight top edge along y = 15, picked at its middle.
+    let straight = edge(block, &|p: Vec3| (p.z - 10.0).abs() < 1e-6 && (p.y - 15.0).abs() < 1e-6);
+    let Sel::Edge { point, .. } = &straight else { panic!("not an edge") };
+    // From the pin's centre at the origin.
+    let want = *point;
+    d.inputs[2].items = vec![straight.clone()];
+    let p = params(&app, &d).unwrap();
+    let got: Vec<f64> = p["translate"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().trim_end_matches(" mm").parse().unwrap()).collect();
+    assert!((got[0] - want.x).abs() < 1e-5 && (got[1] - want.y).abs() < 1e-5 && (got[2] - want.z).abs() < 1e-5, "{p}");
+}
