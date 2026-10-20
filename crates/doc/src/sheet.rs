@@ -78,7 +78,7 @@ fn flat_polyline(lp: &Loop2) -> Result<Ring<Vec2>> {
     Ok(Ring::new(points))
 }
 
-fn flat_points(polys: &[Vec<Vec2>]) -> Result<usize> {
+fn flat_points(polys: &[Ring<Vec2>]) -> Result<usize> {
     let n = polys.iter().try_fold(0usize, |n, p| n.checked_add(p.len()).ok_or_else(flat_budget_error))?;
     if n > MAX_FLAT_POINTS || polys.len() > MAX_FLAT_PIECES {
         return Err(flat_budget_error());
@@ -449,7 +449,7 @@ pub struct SheetFlange {
     /// A fold's panel: the part of the sheet past the bend (flat coordinates, counter-clockwise)
     /// instead of a rectangle `leg` long.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shape: Option<Vec<Vec2>>,
+    pub shape: Option<Ring<Vec2>>,
     /// A converted face's panel as drawn: `shape` with arcs where the face's edges are round
     /// (flat coordinates, counter-clockwise).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -683,11 +683,9 @@ fn snap(v: Vec2) -> Vec2 {
 }
 
 /// Clip a polygon to the half-plane (p − o)·n ≥ 0.
-fn clip(poly: &[Vec2], o: Vec2, n: Vec2) -> Vec<Vec2> {
+fn clip(poly: &Ring<Vec2>, o: Vec2, n: Vec2) -> Ring<Vec2> {
     let mut out = Vec::new();
-    let m = poly.len();
-    for i in 0..m {
-        let (Some(&a), Some(&b)) = (poly.get(i), poly.get((i + 1) % m)) else { continue };
+    for (&a, &b) in poly.edges() {
         let (da, db) = ((a - o).dot(n), (b - o).dot(n));
         if da >= 0.0 {
             out.push(a);
@@ -697,7 +695,7 @@ fn clip(poly: &[Vec2], o: Vec2, n: Vec2) -> Vec<Vec2> {
             out.push(snap(a + (b - a) * t));
         }
     }
-    out
+    Ring::new(out)
 }
 
 /// [`clip`] to the half-plane (p − o)·n ≥ 0 (`n` a unit vector) at a trim line: a corner within
@@ -706,15 +704,13 @@ fn clip(poly: &[Vec2], o: Vec2, n: Vec2) -> Vec<Vec2> {
 /// twice. Also says whether a corner lay on the line: the polygon may then run along the line
 /// out and back (a ledge beside the edge that ends on the line, or a hair either side of it,
 /// all of it in the strip that goes), which is no material.
-fn clip_at_line(poly: &[Vec2], o: Vec2, n: Vec2) -> (Vec<Vec2>, bool) {
+fn clip_at_line(poly: &Ring<Vec2>, o: Vec2, n: Vec2) -> (Ring<Vec2>, bool) {
     let side = |p: Vec2| {
         let v = (p - o).dot(n);
         if v.abs() <= LINEAR_TOL { 0.0 } else { v }
     };
     let (mut out, mut on) = (Vec::new(), false);
-    let m = poly.len();
-    for i in 0..m {
-        let (Some(&a), Some(&b)) = (poly.get(i), poly.get((i + 1) % m)) else { continue };
+    for (&a, &b) in poly.edges() {
         let (da, db) = (side(a), side(b));
         if da > 0.0 {
             out.push(a);
@@ -726,7 +722,7 @@ fn clip_at_line(poly: &[Vec2], o: Vec2, n: Vec2) -> (Vec<Vec2>, bool) {
             out.push(snap(a + (b - a) * (da / (da - db))));
         }
     }
-    (out, on)
+    (Ring::new(out), on)
 }
 
 /// The smallest gap closed corners are given: closer than this the flanges' ends would touch.
@@ -754,8 +750,8 @@ struct Corner {
 }
 
 /// The corners of a straight-edged region (counter-clockwise).
-fn corners_of(r: &Region2) -> Vec<Vec2> {
-    dedup(&r.outer.ccw().polyline(1e-3)).into_vec()
+fn corners_of(r: &Region2) -> Ring<Vec2> {
+    dedup(&r.outer.ccw().polyline(1e-3))
 }
 
 /// A corner relief planned but not yet cut (see [`SheetBody::plan_relief`]): the corner it is
@@ -765,29 +761,27 @@ fn corners_of(r: &Region2) -> Vec<Vec2> {
 struct PlannedRelief {
     corner: Corner,
     segs: Vec<Seg2>,
-    cut: Vec<Vec2>,
+    cut: Ring<Vec2>,
 }
 
 /// The area two convex counter-clockwise polygons share.
-fn convex_overlap(a: &[Vec2], b: &[Vec2]) -> f64 {
-    let mut poly = a.to_vec();
-    let m = b.len();
-    for i in 0..m {
-        let (Some(&p), Some(&q)) = (b.get(i), b.get((i + 1) % m)) else { continue };
+fn convex_overlap(a: &Ring<Vec2>, b: &Ring<Vec2>) -> f64 {
+    let mut poly = a.clone();
+    for (&p, &q) in b.edges() {
         let d = q - p;
         poly = clip(&poly, p, Vec2::new(-d.y, d.x));
         if poly.len() < 3 {
             return 0.0;
         }
     }
-    signed_area(&poly).abs()
+    poly.signed_area().abs()
 }
 
 /// A polygon counter-clockwise, so that the two of them can be compared (see
 /// [`convex_overlap`]).
-fn ccw(p: &[Vec2]) -> Vec<Vec2> {
-    let mut q = p.to_vec();
-    if signed_area(&q) < 0.0 {
+fn ccw(p: &Ring<Vec2>) -> Ring<Vec2> {
+    let mut q = p.clone();
+    if q.signed_area() < 0.0 {
         q.reverse();
     }
     q
@@ -799,9 +793,8 @@ fn ccw(p: &[Vec2]) -> Vec<Vec2> {
 const FLAT_SLIVER: f64 = 1e-6;
 
 /// Whether two convex counter-clockwise flat pieces overlap by more than a sliver along an edge.
-fn pieces_overlap(a: &[Vec2], b: &[Vec2]) -> bool {
-    let perimeter = |p: &[Vec2]| (0..p.len()).filter_map(|i| Some(p.get(i)?.dist(*p.get((i + 1) % p.len())?))).sum::<f64>();
-    convex_overlap(a, b) > FLAT_SLIVER * perimeter(a).max(perimeter(b)).max(1.0)
+fn pieces_overlap(a: &Ring<Vec2>, b: &Ring<Vec2>) -> bool {
+    convex_overlap(a, b) > FLAT_SLIVER * a.length().max(b.length()).max(1.0)
 }
 
 /// How far inside a panel (mm) its edge is tested for what cut-outs have left of it: a cut-out
@@ -966,11 +959,9 @@ impl SheetBody {
     /// (a corner) or a corner relief cut into it, the bend stops and the flange panel runs on
     /// alone. A setback on the flange panel's side also limits the bend to that panel's edge.
     pub fn zone_span(&self, f: &SheetFlange) -> (f64, f64) {
-        let edge_span = |pts: &[Vec2], origin: Vec2| {
-            let m = pts.len();
+        let edge_span = |pts: &Ring<Vec2>, origin: Vec2| {
             let mut span: Option<(f64, f64)> = None;
-            for k in 0..m {
-                let (Some(&a), Some(&b)) = (pts.get(k), pts.get((k + 1) % m)) else { continue };
+            for (&a, &b) in pts.edges() {
                 let on = (a - origin).dot(f.n).abs() < 1e-6 && (b - origin).dot(f.n).abs() < 1e-6;
                 if !on {
                     continue;
@@ -1158,7 +1149,7 @@ impl SheetBody {
         let raw = self
             .flanges
             .iter()
-            .fold(self.base.outer.segs.len(), |n, f| n.saturating_add(f.shape.as_ref().map_or(4, Vec::len)))
+            .fold(self.base.outer.segs.len(), |n, f| n.saturating_add(f.shape.as_ref().map_or(4, |s| s.len())))
             .saturating_add(self.holes.iter().fold(0usize, |n, h| n.saturating_add(h.outer.segs.len())));
         if raw > MAX_FLAT_POINTS {
             return Err(flat_budget_error());
@@ -1766,7 +1757,7 @@ impl SheetBody {
         if self.flanges.len().saturating_mul(2).saturating_add(1) > MAX_FLAT_PIECES || self.holes.len() > MAX_FLAT_PIECES {
             return Err(flat_budget_error());
         }
-        let raw = self.flanges.iter().fold(self.base.outer.segs.len(), |n, f| n.saturating_add(f.shape.as_ref().map_or(4, Vec::len)));
+        let raw = self.flanges.iter().fold(self.base.outer.segs.len(), |n, f| n.saturating_add(f.shape.as_ref().map_or(4, |s| s.len())));
         if raw > MAX_FLAT_POINTS {
             return Err(flat_budget_error());
         }
@@ -1878,15 +1869,15 @@ impl SheetBody {
     }
 
     /// Outline loops of the flat pattern (flat coordinates): the pieces' edges, shared ones left out.
-    pub fn outline(&self) -> Result<Vec<Vec<Vec2>>> {
+    pub fn outline(&self) -> Result<Vec<Ring<Vec2>>> {
         if self.flanges.len().saturating_mul(2).saturating_add(1) > MAX_FLAT_PIECES {
             return Err(flat_budget_error());
         }
-        let mut polys: Vec<Vec<Vec2>> = vec![dedup(&flat_polyline(&self.base.outer.ccw())?).into_vec()];
+        let mut polys = vec![dedup(&flat_polyline(&self.base.outer.ccw())?)];
         for f in &self.flanges {
-            polys.push(dedup(&flat_polyline(&self.zone(f).outer.ccw())?).into_vec());
+            polys.push(dedup(&flat_polyline(&self.zone(f).outer.ccw())?));
             if f.leg > 1e-9 {
-                polys.push(dedup(&flat_polyline(&self.panel(f).outer.ccw())?).into_vec());
+                polys.push(dedup(&flat_polyline(&self.panel(f).outer.ccw())?));
             }
             flat_points(&polys)?;
         }
@@ -2094,9 +2085,7 @@ impl SheetBody {
             let Some(inv) = mat_inverse(&w) else { continue };
             let q = apply_point(&inv, p);
             let pts = r.outer.ccw().polyline(1e-3);
-            let m = pts.len();
-            for i in 0..m {
-                let (Some(&a), Some(&b)) = (pts.get(i), pts.get((i + 1) % m)) else { continue };
+            for (&a, &b) in pts.edges() {
                 if a.dist(b) < 1e-9 {
                     continue;
                 }
@@ -2151,10 +2140,7 @@ impl SheetBody {
                 let mut work = FlatWork::new();
                 let off = merge_loops(&[clip_at_line(&pts, o, inward * -1.0).0], &mut work)?;
                 let mid = (a + b) * 0.5;
-                let touches = |p: &Vec<Vec2>| {
-                    let m = p.len();
-                    (0..m).filter_map(|i| Some(Segment::new(*p.get(i)?, *p.get((i + 1) % m)?))).any(|s| s.dist(mid) < 1e-6)
-                };
+                let touches = |p: &Ring<Vec2>| p.segments().any(|s| s.dist(mid) < 1e-6);
                 let mut keep = Vec::new();
                 // What goes, as strips to cut out of an outline with arcs or curves.
                 let mut taken = Vec::new();
@@ -2173,7 +2159,7 @@ impl SheetBody {
                     keep.insert(0, cut);
                     cut = match merge_loops(&keep, &mut work)?.as_slice() {
                         [one] => one.clone(),
-                        [] => Vec::new(),
+                        [] => Ring::default(),
                         _ => return Err(DocError::Invalid("not supported yet: a flange setback that splits the sheet".into())),
                     };
                 }
@@ -2349,10 +2335,9 @@ impl SheetBody {
             let (start, len) = match panel {
                 None => {
                     let pts = self.base.outer.ccw().polyline(1e-3);
-                    let m = pts.len();
-                    let on_line: Vec<(Vec2, f64)> = (0..m)
-                        .filter_map(|k| {
-                            let (p0, p1) = (*pts.get(k)?, *pts.get((k + 1) % m)?);
+                    let on_line: Vec<(Vec2, f64)> = pts
+                        .edges()
+                        .filter_map(|(&p0, &p1)| {
                             let e = p1 - p0;
                             let on = (p0 - line_o).dot(outward).abs() < 1e-6 && (p1 - line_o).dot(outward).abs() < 1e-6;
                             (on && e.dot(d) > 0.0).then_some((p0, e.len()))
@@ -2379,10 +2364,9 @@ impl SheetBody {
                 Some(i) => {
                     let f = self.flanges.get(i).ok_or_else(|| DocError::Invalid("flange".into()))?;
                     let points = self.panel(f).outer.ccw().polyline(1e-3);
-                    let count = points.len();
-                    (0..count)
-                        .filter_map(|index| {
-                            let (p0, p1) = (*points.get(index)?, *points.get((index + 1) % count)?);
+                    points
+                        .edges()
+                        .filter_map(|(&p0, &p1)| {
                             let edge = p1 - p0;
                             let on = (p0 - line_o).dot(outward).abs() < 1e-6 && (p1 - line_o).dot(outward).abs() < 1e-6;
                             (on && edge.dot(d) > 1e-9).then_some((p0, edge.len()))
@@ -2788,7 +2772,7 @@ impl SheetBody {
             v
         };
         let mine = [pieces(self, &new_a), pieces(self, &new_b)];
-        let overlap = |p: &[Vec<Vec2>], q: &[Vec<Vec2>]| p.iter().any(|a| q.iter().any(|b| pieces_overlap(a, b)));
+        let overlap = |p: &[Ring<Vec2>], q: &[Ring<Vec2>]| p.iter().any(|a| q.iter().any(|b| pieces_overlap(a, b)));
         let [mine_a, mine_b] = &mine;
         let clash = overlap(mine_a, mine_b)
             || self.flanges.iter().enumerate().any(|(j, g)| {
@@ -3194,14 +3178,13 @@ impl SheetBody {
             return Err(format!("the relief size {size:.4} mm is below {MIN_CORNER_RELIEF} mm"));
         }
         let r = size / 2.0;
-        let segs = self.base.outer.ccw().segs;
+        // The base's edges at the corner: `i` ends there and the next one, `j`, starts there.
+        let segs = Ring::new(self.base.outer.ccw().segs);
         let n = segs.len();
-        // The base's edges at the corner: `i` ends there and the next one starts there.
-        let at_corner =
-            |i: usize| segs.get(i).is_some_and(|s| s.end().dist(k.c) < 1e-6) && segs.get((i + 1) % n).is_some_and(|s| s.start().dist(k.c) < 1e-6);
-        let Some(i) = (0..n).find(|&i| at_corner(i)) else { return Err("the bends don't meet at a corner of the base".into()) };
-        let j = (i + 1) % n;
-        let (Some(&Seg2::Line { a: pa, b: c }), Some(&Seg2::Line { b: pb, .. })) = (segs.get(i), segs.get(j)) else {
+        let at_corner = |(_, (s, t)): &(usize, (&Seg2, &Seg2))| s.end().dist(k.c) < 1e-6 && t.start().dist(k.c) < 1e-6;
+        let Some((i, edges)) = segs.edges().enumerate().find(at_corner) else { return Err("the bends don't meet at a corner of the base".into()) };
+        let j = if i + 1 == n { 0 } else { i + 1 };
+        let (&Seg2::Line { a: pa, b: c }, &Seg2::Line { b: pb, .. }) = edges else {
             return Err("the base's edges at the corner are not straight".into());
         };
         let (Some(da), Some(db)) = ((pa - c).normalized(), (pb - c).normalized()) else {
@@ -3252,7 +3235,7 @@ impl SheetBody {
             }
             _ => vec![c, c + da * r, snap(c + (da + db) * (r / (1.0 + da.dot(db)))), c + db * r],
         };
-        Ok(Some(PlannedRelief { corner: *k, segs: relief, cut: ccw(&cut) }))
+        Ok(Some(PlannedRelief { corner: *k, segs: relief, cut: ccw(&Ring::new(cut)) }))
     }
 
     /// Cut a planned relief into the base: its edges then start that far from the corner, so
@@ -3261,12 +3244,12 @@ impl SheetBody {
     /// flange panels keep the ends `close_corner` gave them.
     fn cut_relief(&mut self, p: &PlannedRelief) -> std::result::Result<(), String> {
         let k = &p.corner;
-        let segs = self.base.outer.ccw().segs;
+        // The base's edges at the corner: `i` ends there and the next one, `j`, starts there.
+        let segs = Ring::new(self.base.outer.ccw().segs);
         let n = segs.len();
-        let at_corner =
-            |i: usize| segs.get(i).is_some_and(|s| s.end().dist(k.c) < 1e-6) && segs.get((i + 1) % n).is_some_and(|s| s.start().dist(k.c) < 1e-6);
-        let Some(i) = (0..n).find(|&i| at_corner(i)) else { return Err("the bends don't meet at a corner of the base".into()) };
-        let j = (i + 1) % n;
+        let at_corner = |(_, (s, t)): &(usize, (&Seg2, &Seg2))| s.end().dist(k.c) < 1e-6 && t.start().dist(k.c) < 1e-6;
+        let Some((i, _)) = segs.edges().enumerate().find(at_corner) else { return Err("the bends don't meet at a corner of the base".into()) };
+        let j = if i + 1 == n { 0 } else { i + 1 };
         let (Some(start), Some(end)) = (p.segs.first().map(Seg2::start), p.segs.last().map(Seg2::end)) else {
             return Err("the relief has no cut".into());
         };
@@ -3381,7 +3364,7 @@ impl SheetBody {
             }
             let pts = dedup(&r.outer.ccw().polyline(1e-3));
             let (a2, b2) = (Vec2::new(fa.x, fa.y), Vec2::new(fb.x, fb.y));
-            if pts.contains((a2 + b2) * 0.5) || polys_cross(&pts, &[a2, b2, (a2 + b2) * 0.5]) {
+            if pts.contains((a2 + b2) * 0.5) || polys_cross(&pts, &Ring::from([a2, b2, (a2 + b2) * 0.5])) {
                 found = Some((pi, inv, a2, b2, pts));
                 break;
             }
@@ -3392,7 +3375,7 @@ impl SheetBody {
         let l0 = a2.dot(n);
         // Which side moves. A flange keeps the side its own bend is on.
         let on_line = n * l0;
-        let side_area = |m: Vec2| signed_area(&clip(&pts, on_line, m)).abs();
+        let side_area = |m: Vec2| clip(&pts, on_line, m).signed_area().abs();
         let moves_n = match (panel, fixed) {
             (Some(j), _) => {
                 let f = self.flanges.get(j).ok_or_else(|| DocError::Invalid("flange".into()))?;
@@ -3452,7 +3435,7 @@ impl SheetBody {
         let fixed_part = clip(&pts, n * s0, n * -1.0);
         let moving = clip(&pts, n * (s0 + ba), n);
         let strip = clip(&clip(&pts, n * s0, n), n * (s0 + ba), n * -1.0);
-        if signed_area(&fixed_part).abs() < 1e-9 || signed_area(&moving).abs() < 1e-9 {
+        if fixed_part.signed_area().abs() < 1e-9 || moving.signed_area().abs() < 1e-9 {
             return Err(DocError::Invalid("the fold line must cross the sheet with material on both sides of the bend".into()));
         }
         // Separate tabs on one line (the zone falls apart into several pieces): fold the ones
@@ -3473,7 +3456,7 @@ impl SheetBody {
         // run across the bend as a helix, which the sheet's faces can't carry yet).
         let us: Vec<f64> = strip.iter().map(|q| q.dot(d)).collect();
         let (u0, u1) = (us.iter().cloned().fold(f64::MAX, f64::min), us.iter().cloned().fold(f64::MIN, f64::max));
-        if ((u1 - u0) * ba - signed_area(&strip).abs()).abs() > 1e-6 * (u1 - u0).max(1.0) * ba.max(1.0) {
+        if ((u1 - u0) * ba - strip.signed_area().abs()).abs() > 1e-6 * (u1 - u0).max(1.0) * ba.max(1.0) {
             // A corner of the outline inside the zone (e.g. a fold right at a tab's root): name
             // it and how far the line has to move to clear it.
             let corners: Vec<(Vec2, f64)> = pts.iter().map(|q| (*q, q.dot(n) - s0)).filter(|(_, s)| *s > 1e-6 && *s < ba - 1e-6).collect();
@@ -3492,12 +3475,7 @@ impl SheetBody {
         let up = !flip;
         let leg = moving.iter().map(|q| q.dot(n) - s0 - ba).fold(0.0, f64::max);
         let p0 = n * s0 + d * u0;
-        let ccw = |mut v: Vec<Vec2>| {
-            if signed_area(&v) < 0.0 {
-                v.reverse();
-            }
-            v.into_iter().map(snap).collect::<Vec<_>>()
-        };
+        let ccw = |v: Ring<Vec2>| ccw(&v).iter().copied().map(snap).collect::<Ring<_>>();
         match panel {
             None => self.base = Region2 { outer: Loop2::polygon(&fixed_part).ccw(), holes: self.base.holes.clone() },
             Some(j) => {
@@ -3551,28 +3529,26 @@ impl SheetBody {
     fn fold_tabs(
         &mut self,
         panel: Option<usize>,
-        pts: &[Vec2],
+        pts: &Ring<Vec2>,
         (n, d): (Vec2, Vec2),
         (s0, ba): (f64, f64),
         span: (f64, f64),
         (angle, radius): (f64, f64),
-        strips: &[Vec<Vec2>],
+        strips: &[Ring<Vec2>],
     ) -> Result<usize> {
         const EPS: f64 = 1e-6;
-        let urange = |p: &[Vec2]| p.iter().fold((f64::MAX, f64::MIN), |(lo, hi), q| (lo.min(q.dot(d)), hi.max(q.dot(d))));
+        let urange = |p: &Ring<Vec2>| p.iter().fold((f64::MAX, f64::MIN), |(lo, hi), q| (lo.min(q.dot(d)), hi.max(q.dot(d))));
         let overlap = |a: (f64, f64), b: (f64, f64)| a.1.min(b.1) - a.0.max(b.0);
         let mut work = FlatWork::new();
         // The material beyond the zone, piece by piece, and the zone piece each one hangs from.
         let beyond = merge_loops(&[clip(pts, n * (s0 + ba), n)], &mut work)?;
-        let far_edges = |p: &[Vec2]| -> Vec<(f64, f64)> {
-            let m = p.len();
-            (0..m)
-                .filter_map(|i| Some((*p.get(i)?, *p.get((i + 1) % m)?)))
+        let far_edges = |p: &Ring<Vec2>| -> Vec<(f64, f64)> {
+            p.edges()
                 .filter(|(a, b)| (a.dot(n) - s0 - ba).abs() < EPS && (b.dot(n) - s0 - ba).abs() < EPS)
                 .map(|(a, b)| (a.dot(d).min(b.dot(d)), a.dot(d).max(b.dot(d))))
                 .collect()
         };
-        let strip_u: Vec<(f64, f64)> = strips.iter().map(|s| urange(s)).collect();
+        let strip_u: Vec<(f64, f64)> = strips.iter().map(urange).collect();
         let mut hangs: Vec<Vec<usize>> = vec![Vec::new(); strips.len()];
         for (k, part) in beyond.iter().enumerate() {
             let edges = far_edges(part);
@@ -3601,14 +3577,14 @@ impl SheetBody {
             keep.extend(hangs.get(i).into_iter().flatten().filter_map(|&k| beyond.get(k).cloned()));
         }
         let fixed = match merge_loops(&keep, &mut work)?.as_slice() {
-            [one] if signed_area(one) > 1e-9 => one.clone(),
+            [one] if one.signed_area() > 1e-9 => one.clone(),
             _ => return Err(DocError::Invalid("not supported yet: a fold that splits the part that stays".into())),
         };
         let mut made = Vec::new();
         for &i in &chosen {
             let (Some(strip), Some(&(u0, u1))) = (strips.get(i), strip_u.get(i)) else { continue };
             // Each piece of the zone must be a rectangle (see `add_fold`).
-            if ((u1 - u0) * ba - signed_area(strip).abs()).abs() > 1e-6 * (u1 - u0).max(1.0) * ba.max(1.0) {
+            if ((u1 - u0) * ba - strip.signed_area().abs()).abs() > 1e-6 * (u1 - u0).max(1.0) * ba.max(1.0) {
                 return Err(DocError::Invalid("not supported yet: folds whose bend zone crosses a slanted or curved edge of the sheet".into()));
             }
             let moving = match hangs.get(i).map(Vec::as_slice) {
@@ -3634,12 +3610,7 @@ impl SheetBody {
                 _ => {}
             }
         }
-        let ccw = |mut v: Vec<Vec2>| {
-            if signed_area(&v) < 0.0 {
-                v.reverse();
-            }
-            v.into_iter().map(snap).collect::<Vec<_>>()
-        };
+        let ccw = |v: Ring<Vec2>| ccw(&v).iter().copied().map(snap).collect::<Ring<_>>();
         match panel {
             None => self.base = Region2 { outer: Loop2::polygon(&fixed).ccw(), holes: self.base.holes.clone() },
             Some(j) => {
@@ -3720,11 +3691,9 @@ impl SheetBody {
         let mut best: Option<(f64, Vec3)> = None;
         for (pi, r) in self.panels() {
             let pts = r.outer.ccw().polyline(1e-3);
-            let m = pts.len();
             let w = self.world(pi);
             let local = mat_inverse(&w).map(|inv| apply_point(&inv, near));
-            for i in 0..m {
-                let (Some(&a), Some(&b)) = (pts.get(i), pts.get((i + 1) % m)) else { continue };
+            for (&a, &b) in pts.edges() {
                 if a.dist(b) < 1e-9 {
                     continue;
                 }
@@ -4037,18 +4006,10 @@ impl SheetBody {
 /// The boundary of a union of counter-clockwise polygons that meet edge to edge: edges are
 /// split where corners touch them, edges running both ways cancel, the rest chain into loops
 /// (outer loops counter-clockwise, holes clockwise; straight runs merged).
-fn merge_loops(polys: &[Vec<Vec2>], work: &mut FlatWork) -> Result<Vec<Vec<Vec2>>> {
+fn merge_loops(polys: &[Ring<Vec2>], work: &mut FlatWork) -> Result<Vec<Ring<Vec2>>> {
     let n = flat_points(polys)?;
     work.charge(n.saturating_mul(n).saturating_mul(2))?;
-    let mut segs: Vec<(Vec2, Vec2)> = Vec::new();
-    for p in polys {
-        let m = p.len();
-        for i in 0..m {
-            if let (Some(&a), Some(&b)) = (p.get(i), p.get((i + 1) % m)) {
-                segs.push((a, b));
-            }
-        }
-    }
+    let segs: Vec<(Vec2, Vec2)> = polys.iter().flat_map(|p| p.edges().map(|(a, b)| (*a, *b))).collect();
     let pts: Vec<Vec2> = segs.iter().flat_map(|(a, b)| [*a, *b]).collect();
     let mut split: Vec<(Vec2, Vec2)> = Vec::new();
     for (a, b) in &segs {
@@ -4102,12 +4063,11 @@ fn merge_loops(polys: &[Vec<Vec2>], work: &mut FlatWork) -> Result<Vec<Vec<Vec2>
                 None => break,
             }
         }
-        let m = lp.len();
-        let clean: Vec<Vec2> = (0..m)
-            .filter_map(|i| {
-                let (p, q, r) = (*lp.get((i + m - 1) % m)?, *lp.get(i)?, *lp.get((i + 1) % m)?);
-                ((q - p).cross(r - q).abs() > 1e-9 * (q - p).len().max(1.0) * (r - q).len().max(1.0)).then_some(q)
-            })
+        // Straight runs merged: only the corners that turn stay.
+        let clean: Ring<Vec2> = Ring::new(lp)
+            .corners()
+            .filter(|&(&p, &q, &r)| (q - p).cross(r - q).abs() > 1e-9 * (q - p).len().max(1.0) * (r - q).len().max(1.0))
+            .map(|(_, &q, _)| q)
             .collect();
         if clean.len() >= 3 {
             loops.push(clean);
@@ -4119,11 +4079,6 @@ fn merge_loops(polys: &[Vec<Vec2>], work: &mut FlatWork) -> Result<Vec<Vec<Vec2>
 /// Whether `q` lies within `tol` of the closed polygon `poly`'s outline.
 fn near_outline(poly: &Ring<Vec2>, q: Vec2, tol: f64) -> bool {
     poly.segments().any(|s| s.dist(q) < tol)
-}
-
-fn signed_area(p: &[Vec2]) -> f64 {
-    let m = p.len();
-    (0..m).filter_map(|i| Some(p.get(i)?.cross(*p.get((i + 1) % m)?))).sum::<f64>() / 2.0
 }
 
 /// Where the line from `a` along the unit vector `d` meets a boundary segment, as distances from
@@ -4202,7 +4157,7 @@ fn clear_of(a: Vec2, d: Vec2, len: f64, cuts: &[Region2]) -> Vec<(f64, f64)> {
 /// a→b being what the cut-out left of a longer edge. Nothing where the base ends at the line.
 /// With it comes the stretch of the edge's line between what stays, as distances from `a`:
 /// infinite toward an end beyond which nothing stays.
-fn kept_past_edge(piece: &[Vec2], a: Vec2, b: Vec2, cut_at: (bool, bool), work: &mut FlatWork) -> Result<(Vec<Vec<Vec2>>, (f64, f64))> {
+fn kept_past_edge(piece: &Ring<Vec2>, a: Vec2, b: Vec2, cut_at: (bool, bool), work: &mut FlatWork) -> Result<(Vec<Ring<Vec2>>, (f64, f64))> {
     let Some(d) = (b - a).normalized() else { return Ok((Vec::new(), (f64::NEG_INFINITY, f64::INFINITY))) };
     let outward = Vec2::new(d.y, -d.x);
     let mut kept = merge_loops(&[clip(piece, a, outward)], work)?;
@@ -4210,9 +4165,7 @@ fn kept_past_edge(piece: &[Vec2], a: Vec2, b: Vec2, cut_at: (bool, bool), work: 
     let um = a.dist(b) / 2.0;
     let (mut lo, mut hi) = (if cut_at.0 { 0.0 } else { f64::NEG_INFINITY }, if cut_at.1 { a.dist(b) } else { f64::INFINITY });
     for q in &kept {
-        let m = q.len();
-        for i in 0..m {
-            let (Some(&p0), Some(&p1)) = (q.get(i), q.get((i + 1) % m)) else { continue };
+        for (&p0, &p1) in q.edges() {
             if (p0 - a).dot(outward).abs() > 1e-6 || (p1 - a).dot(outward).abs() > 1e-6 {
                 continue;
             }
@@ -4248,11 +4201,11 @@ const TRIM_PAD: f64 = 2e-3;
 /// half-way to the next piece along the line (tabs side by side), so that it crosses the
 /// outline at the trimmed line only. None where another piece lies beside this one across the
 /// line.
-fn taken_strip(pieces: &[Vec<Vec2>], k: usize, a: Vec2, b: Vec2, by: f64, (lo, hi): (f64, f64)) -> Option<Vec<Vec2>> {
+fn taken_strip(pieces: &[Ring<Vec2>], k: usize, a: Vec2, b: Vec2, by: f64, (lo, hi): (f64, f64)) -> Option<Ring<Vec2>> {
     let d = (b - a).normalized()?;
     let inward = Vec2::new(-d.y, d.x);
     let at = |u: f64, w: f64| a + d * u + inward * w;
-    let span = |p: &Vec<Vec2>| p.iter().map(|q| (*q - a).dot(d)).fold((f64::MAX, f64::MIN), |(u0, u1), u| (u0.min(u), u1.max(u)));
+    let span = |p: &Ring<Vec2>| p.iter().map(|q| (*q - a).dot(d)).fold((f64::MAX, f64::MIN), |(u0, u1), u| (u0.min(u), u1.max(u)));
     let (p0, p1) = span(pieces.get(k)?);
     let (mut u0, mut u1) = (p0 - 1.0, p1 + 1.0);
     for (j, q) in pieces.iter().enumerate() {
@@ -4268,7 +4221,7 @@ fn taken_strip(pieces: &[Vec<Vec2>], k: usize, a: Vec2, b: Vec2, by: f64, (lo, h
         }
     }
     if !lo.is_finite() && !hi.is_finite() {
-        return Some(vec![at(u0, -TRIM_PAD), at(u1, -TRIM_PAD), at(u1, by), at(u0, by)]);
+        return Some(Ring::from([at(u0, -TRIM_PAD), at(u1, -TRIM_PAD), at(u1, by), at(u0, by)]));
     }
     // Along the trimmed line, back down the far end, along the edge's line (stepping outside it
     // past an end beyond which nothing stays), and up again.
@@ -4284,7 +4237,7 @@ fn taken_strip(pieces: &[Vec<Vec2>], k: usize, a: Vec2, b: Vec2, by: f64, (lo, h
     } else {
         strip.extend([at(0.0, 0.0), at(0.0, -TRIM_PAD), at(u0, -TRIM_PAD)]);
     }
-    Some(strip)
+    Some(Ring::new(strip))
 }
 
 /// The outline `outer` (counter-clockwise) less the `strips` a trim takes ([`taken_strip`]), cut
@@ -4292,20 +4245,19 @@ fn taken_strip(pieces: &[Vec<Vec2>], k: usize, a: Vec2, b: Vec2, by: f64, (lo, h
 /// curve that is cut is followed by tangent arcs. `cut` is what the same trim leaves of the
 /// outline's polyline. None unless that leaves one piece holding the polygon's material to
 /// within the chords (the trim keeps the polygon then).
-fn trimmed_exactly(outer: &Loop2, strips: &[Vec<Vec2>], cut: &[Vec2]) -> Option<Loop2> {
+fn trimmed_exactly(outer: &Loop2, strips: &[Ring<Vec2>], cut: &Ring<Vec2>) -> Option<Loop2> {
     let strips: Vec<Region2> = strips.iter().map(|s| Region2 { outer: Loop2::polygon(s).ccw(), holes: Vec::new() }).collect();
     let base = Region2 { outer: outer.clone(), holes: Vec::new() };
     let mut left = material_boolean(&[base], &strips, kernel::BoolOp::Cut, &mut FlatWork::new()).ok()?;
     let exact = left.pop().filter(|r| left.is_empty() && r.holes.is_empty())?.outer.ccw();
     let outline: f64 = outer.segs.iter().map(Seg2::length).sum();
-    ((exact.signed_area() - signed_area(cut).abs()).abs() <= TRIM_PAD * outline).then_some(exact)
+    ((exact.signed_area() - cut.signed_area().abs()).abs() <= TRIM_PAD * outline).then_some(exact)
 }
 
 /// Do two polygons' edges cross?
-fn polys_cross(a: &[Vec2], b: &[Vec2]) -> bool {
-    let seg = |p: &[Vec2], i: usize| -> Option<(Vec2, Vec2)> { Some((*p.get(i)?, *p.get((i + 1) % p.len())?)) };
-    (0..a.len()).filter_map(|i| seg(a, i)).any(|(p, q)| {
-        (0..b.len()).filter_map(|j| seg(b, j)).any(|(r, s)| {
+fn polys_cross(a: &Ring<Vec2>, b: &Ring<Vec2>) -> bool {
+    a.edges().any(|(&p, &q)| {
+        b.edges().any(|(&r, &s)| {
             let d1 = (q - p).cross(r - p);
             let d2 = (q - p).cross(s - p);
             let d3 = (s - r).cross(p - r);
@@ -4951,10 +4903,10 @@ mod tests {
         let mut s = plate(100.0, 60.0);
         s.holes = vec![Region2 { outer: Loop2::circle(Vec2::new(20.0, 20.0), 1.0), holes: vec![] }; MAX_FLAT_PIECES + 1];
         assert!(s.flat_regions().unwrap_err().to_string().contains("budget"));
-        let p = vec![vec![Vec2::ZERO; MAX_FLAT_POINTS]];
+        let p = vec![Ring::new(vec![Vec2::ZERO; MAX_FLAT_POINTS])];
         assert!(merge_loops(&p, &mut FlatWork::new()).unwrap_err().to_string().contains("budget"));
         // Exhausting a clipping/merge allowance must report an error before work begins.
-        assert!(merge_loops(&[vec![Vec2::ZERO, Vec2::X, Vec2::Y]], &mut FlatWork(0)).is_err());
+        assert!(merge_loops(&[Ring::from([Vec2::ZERO, Vec2::X, Vec2::Y])], &mut FlatWork(0)).is_err());
     }
 
     #[test]
@@ -6018,12 +5970,12 @@ mod tests {
 
     /// The base's outline has these corners, and their polygon's area.
     fn base_is(s: &SheetBody, want: &[(f64, f64)], what: &str) {
-        let want: Vec<Vec2> = want.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
+        let want: Ring<Vec2> = want.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
         let got = corners_of(&s.base);
         for p in &want {
             assert!(got.iter().any(|q| q.dist(*p) < 1e-9), "{what}: {p:?} not in {got:?}");
         }
-        let area = signed_area(&want).abs();
+        let area = want.signed_area().abs();
         assert!((s.base.area() - area).abs() < 1e-9, "{what}: {} vs {area}", s.base.area());
     }
 
@@ -6689,7 +6641,7 @@ mod tests {
     /// the bend from the radius and turn about the bend's axis.
     struct Material {
         back: Mat,
-        panel: Vec<Vec2>,
+        panel: Ring<Vec2>,
         axis: (Vec3, Vec3),
         p: Vec2,
         d: Vec2,
@@ -6806,7 +6758,7 @@ mod tests {
     /// flat y = s0 − BA − (w − s0). Each flange is taken in its own frame: the origin at the start
     /// corner of its edge, u along the edge, v into the base; flange i − 1 is at its start and
     /// flange i + 1 at its end.
-    fn hand_panel(rv: &RuleValues, angles: [f64; 4], heights: [f64; 4], i: usize) -> Vec<Vec2> {
+    fn hand_panel(rv: &RuleValues, angles: [f64; 4], heights: [f64; 4], i: usize) -> Ring<Vec2> {
         let (t, r, g) = (rv.thickness, rv.bend_radius, rv.gap);
         let (o, d, v, len) = [
             (Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0), 120.0),
@@ -6823,7 +6775,7 @@ mod tests {
         let (prev, next) = (angles[(i + 3) % 4].to_radians(), angles[(i + 1) % 4].to_radians());
         let flat = |u: f64, w: f64| o + d * u + v * (s0 - ba - (w - s0));
         let h = heights[i];
-        vec![flat(x_end(prev, s0), s0), flat(x_end(prev, h), h), flat(len - x_end(next, h), h), flat(len - x_end(next, s0), s0)]
+        Ring::from([flat(x_end(prev, s0), s0), flat(x_end(prev, h), h), flat(len - x_end(next, h), h), flat(len - x_end(next, s0), s0)])
     }
 
     /// The tray's flat area by hand: the base inside the four bend start lines, every bend zone
@@ -6834,7 +6786,7 @@ mod tests {
         let s0 = angles.map(|a| (rv.bend_radius + rv.thickness) * (a.to_radians() / 2.0).tan());
         let ba = angles.map(|a| a.to_radians() * (rv.bend_radius + rv.k_factor * rv.thickness));
         let (w, h) = (120.0 - s0[3] - s0[1], 90.0 - s0[0] - s0[2]);
-        let panels: f64 = (0..4).map(|i| signed_area(&hand_panel(rv, angles, heights, i)).abs()).sum();
+        let panels: f64 = (0..4).map(|i| hand_panel(rv, angles, heights, i).signed_area().abs()).sum();
         w * h + (ba[0] + ba[2]) * w + (ba[1] + ba[3]) * h + panels
     }
 

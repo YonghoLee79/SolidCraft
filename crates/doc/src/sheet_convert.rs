@@ -53,7 +53,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use solidcraft_geom::{Loop2, Mesh, Plane, Polyline, Region2, Ring, Seg2, Segment, UnitVec3, Vec2, Vec3};
 use solidcraft_kernel::{Body, FaceSurface, face_surface};
 
-use super::{FlatWork, ReliefOverride, RuleValues, SheetBody, SheetFlange, base_flange, polys_cross, signed_area, snap};
+use super::{FlatWork, ReliefOverride, RuleValues, SheetBody, SheetFlange, base_flange, polys_cross, snap};
 use crate::{DocError, ModelBody, Result, apply_point, mat_inverse};
 
 const MAX_BENDS: usize = 1000;
@@ -468,19 +468,23 @@ fn rip_cut(x: &Face, y: &Face, e: Vec3, t: f64, gap: f64) -> Result<f64> {
 /// A counter-clockwise outline with each edge moved in by its own amount. Moved edges meet
 /// where their lines cross; two edges in one line that move by different amounts are joined by
 /// a square step. Returns the corners and, per edge, the edge it was (none for a step).
-fn inset(pts: &[Vec2], by: &[f64]) -> Result<(Vec<Vec2>, Vec<Option<usize>>)> {
-    let n = pts.len();
-    if n < 3 {
+fn inset(pts: &Ring<Vec2>, by: &[f64]) -> Result<(Ring<Vec2>, Vec<Option<usize>>)> {
+    if pts.len() < 3 || by.len() != pts.len() {
         return err("a face of the sheet has no outline");
     }
-    let moved = |i: usize| -> Option<(Vec2, Vec2)> {
-        let (a, b) = (*pts.get(i % n)?, *pts.get((i + 1) % n)?);
-        let d = (b - a).normalized()?;
-        Some((a + Vec2::new(-d.y, d.x) * *by.get(i % n)?, d))
-    };
+    // Each edge moved in: a point on it and its direction.
+    let moved: Ring<Option<(Vec2, Vec2)>> = pts
+        .edges()
+        .zip(by)
+        .map(|((&a, &b), by)| {
+            let d = (b - a).normalized()?;
+            Some((a + Vec2::new(-d.y, d.x) * *by, d))
+        })
+        .collect();
     let (mut out, mut from) = (Vec::new(), Vec::new());
-    for i in 0..n {
-        let (Some((p0, d0)), Some((p1, d1))) = (moved(i + n - 1), moved(i)) else { return err("a face of the sheet has an edge without length") };
+    // Corner i: where the edge before it meets edge i.
+    for (i, (before, edge, _)) in moved.corners().enumerate() {
+        let (Some((p0, d0)), Some((p1, d1))) = (*before, *edge) else { return err("a face of the sheet has an edge without length") };
         let cross = d0.cross(d1);
         if cross.abs() > 1e-9 {
             out.push(p0 + d0 * ((p1 - p0).cross(d1) / cross));
@@ -497,12 +501,12 @@ fn inset(pts: &[Vec2], by: &[f64]) -> Result<(Vec<Vec2>, Vec<Option<usize>>)> {
         from.push(Some(i));
     }
     // Every edge still runs the way it did, and the outline is still one simple loop.
-    let m = out.len();
-    let kept = (0..m).all(|j| match (from.get(j).copied().flatten().and_then(moved), out.get(j), out.get((j + 1) % m)) {
-        (Some((_, d)), Some(&a), Some(&b)) => (b - a).dot(d) > 1e-9,
-        _ => true,
+    let out = Ring::new(out);
+    let kept = out.edges().zip(&from).all(|((&a, &b), i)| match i.and_then(|i| moved.get(i).copied().flatten()) {
+        Some((_, d)) => (b - a).dot(d) > 1e-9,
+        None => true,
     });
-    if !kept || !(signed_area(&out) > 0.0) || polys_cross(&out, &out) {
+    if !kept || !(out.signed_area() > 0.0) || polys_cross(&out, &out) {
         return err("the bends' setbacks and the gaps at the cut edges use up an edge of a face");
     }
     Ok((out, from))
@@ -600,7 +604,7 @@ fn end_at_wall(base: &mut Face, wall: &mut Face, ids: (usize, usize), by: f64, b
 
 /// Give flange `i` its panel: `outline` in flat coordinates, counter-clockwise, its edge at the
 /// bend first trimmed to the end of the bend zone.
-fn set_panel(sh: &mut SheetBody, i: usize, outline: &[Vec2]) {
+fn set_panel(sh: &mut SheetBody, i: usize, outline: &Ring<Vec2>) {
     let ba = sh.flanges.get(i).map_or(0.0, |f| sh.allowance(f));
     let Some(f) = sh.flanges.get_mut(i) else { return };
     // Its corners along the bend (u) and past the bend zone (v); those at the zone exactly on it.
@@ -625,20 +629,18 @@ fn set_panel(sh: &mut SheetBody, i: usize, outline: &[Vec2]) {
 /// pieces of one circle in a row one arc of up to half a turn. None when the face has no round
 /// edges. A round edge keeps both its ends: one that a bend's setback or a cut edge would move is
 /// not supported yet.
-fn drawn(trimmed: &[Vec2], from: &[Option<usize>], pts: &[Vec2], round: &[Option<(Vec2, Vec2)>]) -> Result<Option<Loop2>> {
+fn drawn(trimmed: &Ring<Vec2>, from: &[Option<usize>], pts: &Ring<Vec2>, round: &[Option<(Vec2, Vec2)>]) -> Result<Option<Loop2>> {
     if round.iter().all(Option::is_none) {
         return Ok(None);
     }
-    let (m, n) = (trimmed.len(), pts.len());
-    let mut segs: Vec<Seg2> = Vec::with_capacity(m);
-    for j in 0..m {
-        let (Some(&a), Some(&b)) = (trimmed.get(j), trimmed.get((j + 1) % m)) else { continue };
+    let mut segs: Vec<Seg2> = Vec::with_capacity(trimmed.len());
+    for (j, (&a, &b)) in trimmed.edges().enumerate() {
         let arc = from.get(j).copied().flatten().and_then(|i| Some((i, round.get(i).copied().flatten()?)));
         let Some((i, (c, mid))) = arc else {
             segs.push(Seg2::Line { a: snap(a), b: snap(b) });
             continue;
         };
-        let (Some(&p), Some(&q)) = (pts.get(i), pts.get((i + 1) % n)) else { continue };
+        let Some((&p, &q)) = pts.edges().nth(i) else { continue };
         if a.dist(p) > 1e-6 || b.dist(q) > 1e-6 {
             return err("not supported yet: a round edge of a face that ends at a bend or a cut edge of the sheet");
         }
@@ -858,7 +860,8 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
             Vec2::new(q.x, q.y)
         };
         let mut round: Vec<Option<(Vec2, Vec2)>> = panel.face.round.iter().map(|r| r.map(|(c, m)| (flat(c), flat(m)))).collect();
-        if signed_area(&pts) < 0.0 {
+        let mut pts = Ring::new(pts);
+        if pts.signed_area() < 0.0 {
             pts.reverse();
             turn(&mut by);
             turn(&mut across);
@@ -1012,18 +1015,18 @@ mod tests {
     #[test]
     fn edges_move_in_by_their_own_amounts_and_step_along_one_line() {
         let v = Vec2::new;
-        let square = [v(0.0, 0.0), v(10.0, 0.0), v(10.0, 10.0), v(0.0, 10.0)];
+        let square = Ring::from([v(0.0, 0.0), v(10.0, 0.0), v(10.0, 10.0), v(0.0, 10.0)]);
         let (p, from) = inset(&square, &[1.0, 0.0, 2.0, 0.0]).unwrap();
-        assert_eq!(p, vec![v(0.0, 1.0), v(10.0, 1.0), v(10.0, 8.0), v(0.0, 8.0)]);
+        assert_eq!(p, Ring::from([v(0.0, 1.0), v(10.0, 1.0), v(10.0, 8.0), v(0.0, 8.0)]));
         assert_eq!(from, vec![Some(0), Some(1), Some(2), Some(3)]);
         // Two edges in one line that move by different amounts: a square step between them,
         // so 5 x 2 goes from the 10 x 10.
-        let split = [v(0.0, 0.0), v(5.0, 0.0), v(10.0, 0.0), v(10.0, 10.0), v(0.0, 10.0)];
+        let split = Ring::from([v(0.0, 0.0), v(5.0, 0.0), v(10.0, 0.0), v(10.0, 10.0), v(0.0, 10.0)]);
         let (p, from) = inset(&split, &[0.0, 2.0, 0.0, 0.0, 0.0]).unwrap();
-        assert_eq!(p, vec![v(0.0, 0.0), v(5.0, 0.0), v(5.0, 2.0), v(10.0, 2.0), v(10.0, 10.0), v(0.0, 10.0)]);
+        assert_eq!(p, Ring::from([v(0.0, 0.0), v(5.0, 0.0), v(5.0, 2.0), v(10.0, 2.0), v(10.0, 10.0), v(0.0, 10.0)]));
         assert_eq!(from, vec![Some(0), None, Some(1), Some(2), Some(3), Some(4)]);
         // A slanted end keeps its line: the corner slides along it (2 up a 45° edge is 2 along).
-        let slanted = [v(0.0, 0.0), v(10.0, 0.0), v(15.0, 5.0), v(0.0, 5.0)];
+        let slanted = Ring::from([v(0.0, 0.0), v(10.0, 0.0), v(15.0, 5.0), v(0.0, 5.0)]);
         let (p, _) = inset(&slanted, &[2.0, 0.0, 0.0, 0.0]).unwrap();
         assert!(p[1].dist(v(12.0, 2.0)) < 1e-12 && p[0].dist(v(0.0, 2.0)) < 1e-12, "{p:?}");
         // Setbacks longer than the face leave nothing of it.

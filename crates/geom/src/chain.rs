@@ -6,6 +6,8 @@
 use std::marker::PhantomData;
 use std::ops::Deref;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::{Aabb2, Point, Polyline, Segment, Vec2, Vec3};
 
 /// Whether a chain's last item joins its first.
@@ -62,6 +64,24 @@ impl<T, E: Ends> Chain<T, E> {
 
     pub fn into_vec(self) -> Vec<T> {
         self.items
+    }
+
+    /// The same items the other way round.
+    pub fn reverse(&mut self) {
+        self.items.reverse();
+    }
+}
+
+/// Saved as the bare list of its items.
+impl<T: Serialize, E> Serialize for Chain<T, E> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.items.serialize(s)
+    }
+}
+
+impl<'de, T: Deserialize<'de>, E: Ends> Deserialize<'de> for Chain<T, E> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Vec::deserialize(d).map(Chain::new)
     }
 }
 

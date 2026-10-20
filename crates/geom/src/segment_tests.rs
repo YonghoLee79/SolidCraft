@@ -51,3 +51,11 @@ fn a_chain_measured_along_its_segments() {
     assert_eq!(path.distance_to(Vec2::new(1.0, -2.0)), 2.0);
     assert_eq!(Path::<Vec2>::from([Vec2::ZERO]).distance_to(Vec2::ZERO), f64::INFINITY);
 }
+
+#[test]
+fn a_ring_is_saved_as_its_points() {
+    let ring = Ring::from([Vec2::ZERO, Vec2::X, Vec2::Y]);
+    let json = serde_json::to_value(&ring).unwrap();
+    assert_eq!(json, serde_json::json!([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]));
+    assert_eq!(serde_json::from_value::<Ring<Vec2>>(json).unwrap(), ring);
+}
