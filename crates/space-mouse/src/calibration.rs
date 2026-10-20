@@ -43,7 +43,15 @@ impl Kind {
 }
 
 /// [`AxisCalibration::source`] for a canonical axis the device doesn't have: it always reads 0.
-pub const NO_SOURCE: usize = usize::MAX;
+/// A fixed width, so a calibration saved by a 64-bit build reads the same on wasm32 and back.
+pub const NO_SOURCE: usize = u16::MAX as usize;
+
+/// Reads a source; anything from [`NO_SOURCE`] up, as `usize::MAX` saved by earlier builds is, means none.
+#[cfg(feature = "serde")]
+fn source_that_reads<'de, D: serde::Deserializer<'de>>(saved: D) -> Result<usize, D::Error> {
+    let saved = <u64 as serde::Deserialize>::deserialize(saved)?;
+    Ok(usize::try_from(saved).map_or(NO_SOURCE, |source| source.min(NO_SOURCE)))
+}
 
 /// The motions, in the order they are asked for. The positive direction of each is what both
 /// 3Dconnexion devices we measured report as positive: slide right, pull towards you, press down,
@@ -63,6 +71,7 @@ pub const STEPS: [Step; 12] = {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AxisCalibration {
     /// The raw axis it is read from, or [`NO_SOURCE`].
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "source_that_reads"))]
     pub source: usize,
     /// The raw axis runs the other way.
     pub reversed: bool,

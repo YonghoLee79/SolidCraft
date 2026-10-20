@@ -1927,6 +1927,24 @@ mod tests {
         assert!(!jobs.contains_key("spacenavd"));
     }
 
+    /// A calibration as saved: the same text loads and is usable on 32 and 64 bits, and one saved
+    /// with the old `usize::MAX` (64-bit native) still reads as having no source on 64 bits.
+    #[test]
+    fn a_saved_calibration_with_no_source_reads_the_same_on_every_width() {
+        use solidcraft_space_mouse::{Calibration, NO_SOURCE};
+        let axis = |source: &str, full: u32| format!(r#"{{"source":{source},"reversed":false,"rest":0,"dead_zone":3,"full":[{full},{full}]}}"#);
+        let json = |absent: &str| {
+            let axes = [axis("0", 300), axis("1", 300), axis("2", 300), axis(absent, 1), axis(absent, 1), axis("3", 300)].join(",");
+            format!(r#"{{"dead_zone_share":0.0,"kind":"Trackball","axes":[{axes}]}}"#)
+        };
+        let fixed: Calibration = serde_json::from_str(&json("65535")).unwrap();
+        assert_eq!(fixed.axes.map(|axis| axis.source), [0, 1, 2, NO_SOURCE, NO_SOURCE, 3]);
+        assert!(fixed.is_usable());
+        assert_eq!(serde_json::to_string(&fixed.axes[3].source).unwrap(), "65535");
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(serde_json::from_str::<Calibration>(&json("18446744073709551615")).unwrap(), fixed);
+    }
+
     /// The interface font (#1290): a font that can be read, or empty for the built-in one; saved
     /// with the others and reset by Restore Defaults.
     #[test]
