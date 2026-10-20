@@ -803,9 +803,9 @@ fn has_bus_name(list: &str, prefix: &str) -> bool {
 ///
 /// No probe is started after the limit has passed. A probe that is already running when it passes
 /// may finish, and a yes from it is accepted on purpose: the file should still go. So the wait takes
-/// `limit` plus at most that last probe's own time; the production probe is given the time left and
-/// ends by the limit (and never takes longer than `PROBE_LIMIT`), so there it is `limit` and a
-/// sleep step.
+/// `limit` plus at most that last probe's own time. The production probe is given the time left,
+/// which is a polling and read budget, not a wall-clock promise: its clock starts after the process
+/// is spawned, and killing and reaping it, and scheduling, take time of their own.
 pub fn wait_until(mut ready: impl FnMut(std::time::Duration) -> bool, limit: std::time::Duration, poll: std::time::Duration) -> bool {
     let end = std::time::Instant::now() + limit;
     let mut first = true;
