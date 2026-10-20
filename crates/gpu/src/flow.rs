@@ -33,6 +33,35 @@ pub fn population_bytes(cells: usize) -> Option<u64> {
     u64::try_from(words).ok()?.checked_mul(4)
 }
 
+/// The openings as the shader reads them (at least one slot, so the buffer is never empty).
+/// An opening whose inside cell is another opening is refused: the GPU rewrites all openings
+/// at once, so one may not read another.
+fn pack_openings(lattice: &Lattice) -> Result<Vec<u8>> {
+    let openings = lattice.openings();
+    let opening_cells: std::collections::HashSet<usize> = openings.iter().map(|o| o.0).collect();
+    if openings.iter().any(|o| opening_cells.contains(&o.1)) {
+        return Err(GpuError::Unsupported("an opening whose inside cell is another opening".into()));
+    }
+    let mut packed = Vec::with_capacity(openings.len().max(1) * OPENING_BYTES);
+    for &(cell, inside, kind) in openings {
+        let (kind, value) = match kind {
+            Opening::Velocity(u) => (0u32, [u[0] as f32, u[1] as f32, u[2] as f32, 0.0]),
+            Opening::Density(rho) => (1u32, [(rho - 1.0) as f32, 0.0, 0.0, 0.0]),
+            Opening::Inflow { velocity: u, density } => (2u32, [u[0] as f32, u[1] as f32, u[2] as f32, (density - 1.0) as f32]),
+        };
+        for word in [cell as u32, inside as u32, kind, 0] {
+            packed.extend_from_slice(&word.to_le_bytes());
+        }
+        for v in value {
+            packed.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    if packed.is_empty() {
+        packed.resize(OPENING_BYTES, 0);
+    }
+    Ok(packed)
+}
+
 /// The compute pipelines, ready to step lattices on one device.
 pub struct FlowGpu {
     adapter: String,
@@ -144,26 +173,7 @@ impl FlowGpu {
         let limits = d.limits();
 
         let openings = lattice.openings();
-        let opening_cells: std::collections::HashSet<usize> = openings.iter().map(|o| o.0).collect();
-        if openings.iter().any(|o| opening_cells.contains(&o.1)) {
-            return Err(GpuError::Unsupported("an opening whose inside cell is another opening".into()));
-        }
-        let mut packed = Vec::with_capacity(openings.len().max(1) * OPENING_BYTES);
-        for &(cell, inside, kind) in openings {
-            let (kind, value) = match kind {
-                Opening::Velocity(u) => (0u32, [u[0] as f32, u[1] as f32, u[2] as f32, 0.0]),
-                Opening::Density(rho) => (1u32, [(rho - 1.0) as f32, 0.0, 0.0, 0.0]),
-            };
-            for word in [cell as u32, inside as u32, kind, 0] {
-                packed.extend_from_slice(&word.to_le_bytes());
-            }
-            for v in value {
-                packed.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        if packed.is_empty() {
-            packed.resize(OPENING_BYTES, 0);
-        }
+        let packed = pack_openings(lattice)?;
         let opening_count = u32::try_from(openings.len()).map_err(|_| GpuError::FlowTooLarge { cells, max })?;
 
         // Dispatch rows: as many workgroups across as the device allows, then further rows.
@@ -176,7 +186,7 @@ impl FlowGpu {
         let opening_groups = opening_count.div_ceil(WORKGROUP);
         let opening_dispatch = (opening_groups.min(across), opening_groups.div_ceil(across));
 
-        let mut params = Vec::with_capacity(64);
+        let mut params = Vec::with_capacity(80);
         let [nx, ny, nz] = lattice.dims;
         let periodic = lattice.periodic.map(u32::from);
         for w in [nx as u32, ny as u32, nz as u32, n, periodic[0], periodic[1], periodic[2], opening_count] {
@@ -186,7 +196,13 @@ impl FlowGpu {
         for v in [g[0] as f32, g[1] as f32, g[2] as f32, lattice.tau as f32, lattice.smagorinsky() as f32] {
             params.extend_from_slice(&v.to_le_bytes());
         }
-        for w in [across * WORKGROUP, 0, 0] {
+        let (sponge, sponge_tau) = lattice.sponge().map_or((0, 0.0), |(w, t)| (u32::try_from(w).unwrap_or(u32::MAX), t as f32));
+        for w in [across * WORKGROUP, u32::from(lattice.is_regularized()), sponge] {
+            params.extend_from_slice(&w.to_le_bytes());
+        }
+        params.extend_from_slice(&sponge_tau.to_le_bytes());
+        params.extend_from_slice(&(lattice.bulk().unwrap_or(0.0) as f32).to_le_bytes());
+        for w in [0u32; 2] {
             params.extend_from_slice(&w.to_le_bytes());
         }
 
@@ -211,7 +227,7 @@ impl FlowGpu {
         let init = |label, contents: &[u8], usage| d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage });
         let params = init("flow params", &params, wgpu::BufferUsages::UNIFORM);
         let solid_buf = init("flow solid", &solid_words, wgpu::BufferUsages::STORAGE);
-        let opening_buf = init("flow openings", &packed, wgpu::BufferUsages::STORAGE);
+        let opening_buf = init("flow openings", &packed, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let pops = [init("flow populations a", &start, storage), init("flow populations b", &start, storage)];
         if let Some(e) = popped(scope.pop()) {
             return Err(GpuError::Failed(e.to_string()));
@@ -236,6 +252,7 @@ impl FlowGpu {
             collide: self.collide.clone(),
             openings: self.openings.clone(),
             cells,
+            opening_count: openings.len(),
             bytes,
             dispatch: (across, rows),
             opening_dispatch,
@@ -255,6 +272,7 @@ pub struct GpuLattice {
     collide: wgpu::ComputePipeline,
     openings: wgpu::ComputePipeline,
     cells: usize,
+    opening_count: usize,
     bytes: u64,
     dispatch: (u32, u32),
     opening_dispatch: (u32, u32),
@@ -283,6 +301,18 @@ impl GpuLattice {
             self.current = 1 - self.current;
             self.steps += 1;
         }
+    }
+
+    /// Take over `lattice`'s openings (the same ones as uploaded, with new speeds or
+    /// densities, for example a fan inlet following its curve).
+    pub fn set_openings(&mut self, lattice: &Lattice) -> Result<()> {
+        if lattice.openings().len() != self.opening_count || lattice.solid().len() != self.cells {
+            return Err(GpuError::Failed("the openings are not the ones uploaded".into()));
+        }
+        let packed = pack_openings(lattice)?;
+        let [_, _, openings] = &self._inputs;
+        self.queue.write_buffer(openings, 0, &packed);
+        Ok(())
     }
 
     /// Time steps taken since the upload.
@@ -349,6 +379,41 @@ impl GpuLattice {
         drop(bytes);
         read.unmap();
         lattice.set_populations(&f).map_err(|e| GpuError::Failed(e.to_string()))
+    }
+}
+
+/// The GPU as a study's [`solidcraft_sim::Backend`] (native only: runs block on the device).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct Backend(pub std::sync::Arc<FlowGpu>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl solidcraft_sim::Backend for Backend {
+    fn name(&self) -> String {
+        self.0.adapter_name().to_string()
+    }
+
+    fn stepper(&self, lattice: &Lattice) -> solidcraft_sim::Result<Box<dyn solidcraft_sim::Stepper>> {
+        Ok(Box::new(self.0.upload(lattice).map_err(sim_error)?))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sim_error(e: GpuError) -> solidcraft_sim::SimError {
+    solidcraft_sim::SimError::Backend(e.to_string())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl solidcraft_sim::Stepper for GpuLattice {
+    fn run(&mut self, steps: u32) -> solidcraft_sim::Result<()> {
+        GpuLattice::run(self, steps).map_err(sim_error)
+    }
+
+    fn read(&mut self, lattice: &mut Lattice) -> solidcraft_sim::Result<()> {
+        self.download(lattice).map_err(sim_error)
+    }
+
+    fn openings(&mut self, lattice: &Lattice) -> solidcraft_sim::Result<()> {
+        self.set_openings(lattice).map_err(sim_error)
     }
 }
 

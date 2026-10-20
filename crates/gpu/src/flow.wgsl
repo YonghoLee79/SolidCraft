@@ -1,6 +1,6 @@
 // The Airflow solver's lattice Boltzmann step on the GPU: the f32 twin of
 // solidcraft_sim::Lattice (D3Q19, BGK with the Smagorinsky model, Guo forcing, half-way
-// bounce-back, openings by non-equilibrium extrapolation). See flow.rs.
+// bounce-back, regularized collision, openings by non-equilibrium extrapolation). See flow.rs.
 //
 // Populations are stored as their offset from the rest state (f - w), direction by direction:
 // direction q of cell c is at q * cells + c. The offsets keep a small flow's digits in f32.
@@ -24,12 +24,21 @@ struct Params {
     cs: f32,
     // Invocations per dispatch row: an index is gid.x + gid.y * row.
     row: u32,
-    pad0: u32,
+    // Regularized collision (1): relax only the non-equilibrium stress.
+    reg: u32,
+    // The sponge along the walled faces: its width in cells (0: none) and the relaxation time
+    // at the face.
+    sponge: u32,
+    sponge_tau: f32,
+    // The bulk relaxation time (regularized collision; 0: the shear one).
+    bulk: f32,
     pad1: u32,
+    pad2: u32,
 }
 
 // An opening cell: kind 0 imposes the velocity value.xyz, kind 1 the density offset value.x
-// (rho - 1).
+// (rho - 1), kind 2 the velocity value.xyz eased by the density's departure from the offset
+// value.w (an inlet that lets sound out).
 struct Opening {
     cell: u32,
     inside: u32,
@@ -120,28 +129,61 @@ fn collide_stream(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var q = 0u; q < 19u; q++) {
         eq[q] = feq(q, drho, u);
     }
+    let i = i32(cell % params.nx);
+    let j = i32((cell / params.nx) % params.ny);
+    let k = i32(cell / (params.nx * params.ny));
     var tau = params.tau;
-    if (params.cs > 0.0) {
-        // The non-equilibrium momentum flux, a symmetric tensor.
-        var d = vec3<f32>(0.0);
-        var o = vec3<f32>(0.0);
+    if (params.sponge > 0u) {
+        var d = 0x7fffffff;
+        if (params.px == 0u) {
+            d = min(d, min(i, i32(params.nx) - 1 - i));
+        }
+        if (params.py == 0u) {
+            d = min(d, min(j, i32(params.ny) - 1 - j));
+        }
+        if (params.pz == 0u) {
+            d = min(d, min(k, i32(params.nz) - 1 - k));
+        }
+        let w = i32(params.sponge);
+        if (d < w) {
+            let t = f32(w - d) / f32(w);
+            tau = tau + (params.sponge_tau - tau) * t * t;
+        }
+    }
+    // The non-equilibrium momentum flux, a symmetric tensor: diagonal d, off-diagonal o
+    // (xy, xz, yz).
+    var d = vec3<f32>(0.0);
+    var o = vec3<f32>(0.0);
+    if (params.cs > 0.0 || params.reg != 0u) {
         for (var q = 0u; q < 19u; q++) {
             let c = dir(q);
             let neq = f[q] - eq[q];
             d += c * c * neq;
             o += vec3<f32>(c.x * c.y, c.x * c.z, c.y * c.z) * neq;
         }
+    }
+    if (params.cs > 0.0) {
         let norm = sqrt(dot(d, d) + 2.0 * dot(o, o));
         tau = 0.5 * (tau + sqrt(tau * tau + 18.0 * sqrt(2.0) * params.cs * params.cs * norm / (1.0 + drho)));
     }
-    let i = i32(cell % params.nx);
-    let j = i32((cell / params.nx) % params.ny);
-    let k = i32(cell / (params.nx * params.ny));
     let keep = 1.0 - 0.5 / tau;
+    let relax = 1.0 - 1.0 / tau;
+    var relax_bulk = relax;
+    if (params.bulk > 0.0) {
+        relax_bulk = 1.0 - 1.0 / params.bulk;
+    }
+    let trace = (d.x + d.y + d.z) / 3.0;
     for (var q = 0u; q < 19u; q++) {
         let c = dir(q);
         let source = dot(3.0 * (c - u) + 9.0 * dot(c, u) * c, g);
-        let post = f[q] - (f[q] - eq[q]) / tau + keep * W[q] * source;
+        var relaxed = relax * (f[q] - eq[q]);
+        if (params.reg != 0u) {
+            // w (9/2) (c c - I/3) : Pi, as its deviatoric (shear) and isotropic (bulk) parts.
+            let ccpi = dot(c * c, d) + 2.0 * dot(vec3<f32>(c.x * c.y, c.x * c.z, c.y * c.z), o);
+            let c2 = dot(c, c);
+            relaxed = relax * W[q] * 4.5 * (ccpi - c2 * trace) + relax_bulk * W[q] * 4.5 * (c2 - 1.0) * trace;
+        }
+        let post = eq[q] + relaxed + keep * W[q] * source;
         let to = neighbour(i, j, k, q);
         var slot = OPP[q] * n + cell;
         if (to != NONE) {
@@ -179,6 +221,11 @@ fn apply_openings(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (o.kind == 1u) {
         drho = o.value.x;
         u = u_in;
+    } else if (o.kind == 2u) {
+        let speed = length(o.value.xyz);
+        if (speed > 0.0) {
+            u = o.value.xyz * (1.0 - 0.57735027 * (drho_in - o.value.w) / (1.0 + drho_in) / speed);
+        }
     }
     for (var q = 0u; q < 19u; q++) {
         dst[q * n + o.cell] = feq(q, drho, u) + f[q] - feq(q, drho_in, u_in);

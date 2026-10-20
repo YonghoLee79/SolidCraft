@@ -37,6 +37,7 @@ pub const W: [f64; 19] = {
 };
 const Q: usize = 19;
 
+#[derive(Clone)]
 pub struct Lattice {
     pub dims: [usize; 3],
     /// Relaxation time; the kinematic viscosity is (tau − ½) / 3.
@@ -47,6 +48,17 @@ pub struct Lattice {
     pub periodic: [bool; 3],
     /// The Smagorinsky constant (0: laminar BGK; about 0.1–0.17 for turbulent flow).
     smagorinsky: f64,
+    /// Regularized collision: relax only the non-equilibrium part's stress (its second-order
+    /// Hermite projection), which keeps the lattice stable at relaxation times close to ½.
+    regularized: bool,
+    /// A sponge along the walled grid faces: (width in cells, relaxation time at the face). The
+    /// air grows more viscous toward the faces, so waves and eddies die out before they reach the
+    /// open boundary there.
+    sponge: Option<(usize, f64)>,
+    /// With the regularized collision: the relaxation time of the stress's isotropic part (bulk
+    /// viscosity). Above the shear one it damps sound waves, which at a low viscosity otherwise
+    /// ring for a long time, and leaves the incompressible flow alone.
+    bulk: Option<f64>,
     solid: Vec<bool>,
     f: Vec<f64>,
     next: Vec<f64>,
@@ -61,6 +73,25 @@ pub enum Opening {
     Velocity([f64; 3]),
     /// A pressure outlet, as a density (pressure = density / 3).
     Density(f64),
+    /// A velocity inlet that lets sound out: the speed along the inflow gives way to the
+    /// density's departure from `density` (the inlet's mean), as an acoustic wave leaving
+    /// upstream carries it, u = velocity (1 − c (ρ − density) / (ρ |velocity|)). A plain velocity
+    /// inlet reflects every pressure wave, so a duct between it and an open end rings like a pipe.
+    Inflow { velocity: [f64; 3], density: f64 },
+}
+
+/// The lattice's speed of sound, 1/√3.
+pub const SOUND: f64 = 0.577_350_269_189_625_8;
+
+impl Opening {
+    fn valid(&self) -> bool {
+        let speed_ok = |u: &[f64; 3]| u.iter().all(|v| v.is_finite() && v.abs() < 0.3);
+        match self {
+            Opening::Velocity(u) => speed_ok(u),
+            Opening::Density(rho) => rho.is_finite() && *rho > 0.0,
+            Opening::Inflow { velocity, density } => speed_ok(velocity) && density.is_finite() && *density > 0.0,
+        }
+    }
 }
 
 fn equilibrium(q: usize, rho: f64, u: [f64; 3]) -> f64 {
@@ -87,7 +118,20 @@ impl Lattice {
                 }
             }
         }
-        Ok(Lattice { dims: grid.dims, tau, force, periodic, solid, next: f.clone(), f, openings: Vec::new(), smagorinsky: 0.0 })
+        Ok(Lattice {
+            dims: grid.dims,
+            tau,
+            force,
+            periodic,
+            solid,
+            next: f.clone(),
+            f,
+            openings: Vec::new(),
+            smagorinsky: 0.0,
+            regularized: false,
+            sponge: None,
+            bulk: None,
+        })
     }
 
     /// Model turbulence with the Smagorinsky constant `cs` (0 turns it off).
@@ -99,11 +143,81 @@ impl Lattice {
         Ok(self)
     }
 
+    /// Relax only the non-equilibrium stress (Latt & Chopard 2006): the populations' higher-order
+    /// non-equilibrium content, which grows unstable when the viscosity is low, is dropped.
+    pub fn regularized(mut self) -> Lattice {
+        self.regularized = true;
+        self
+    }
+
+    pub fn is_regularized(&self) -> bool {
+        self.regularized
+    }
+
+    /// Damp the flow over the last `width` cells before each non-periodic grid face, the
+    /// relaxation time rising (quadratically) to `tau` at the face.
+    pub fn with_sponge(mut self, width: usize, tau: f64) -> Result<Lattice> {
+        if width == 0 || !tau.is_finite() || tau < self.tau || tau > 2.0 {
+            return Err(SimError::InvalidRelaxation);
+        }
+        self.sponge = Some((width, tau));
+        Ok(self)
+    }
+
+    /// Relax the stress's isotropic part with `tau` (regularized collision only).
+    pub fn with_bulk(mut self, tau: f64) -> Result<Lattice> {
+        if !tau.is_finite() || tau <= 0.5 || tau > 2.0 {
+            return Err(SimError::InvalidRelaxation);
+        }
+        self.bulk = Some(tau);
+        Ok(self)
+    }
+
+    pub fn bulk(&self) -> Option<f64> {
+        self.bulk
+    }
+
+    pub fn sponge(&self) -> Option<(usize, f64)> {
+        self.sponge
+    }
+
+    /// The molecular relaxation time at (i, j, k): `tau`, raised in the sponge.
+    fn base_tau(&self, at: [usize; 3]) -> f64 {
+        let Some((width, face)) = self.sponge else { return self.tau };
+        let mut d = usize::MAX;
+        for ((v, n), periodic) in at.iter().zip(self.dims).zip(self.periodic) {
+            if !periodic {
+                d = d.min(*v).min(n.saturating_sub(1 + v));
+            }
+        }
+        if d >= width {
+            return self.tau;
+        }
+        let t = (width - d) as f64 / width as f64;
+        self.tau + (face - self.tau) * t * t
+    }
+
+    /// The non-equilibrium momentum flux Π = Σ c c (f − feq), as xx, yy, zz, xy, xz, yz.
+    fn stress(dist: &[f64], feq: &[f64; Q]) -> [f64; 6] {
+        let mut pi = [0.0f64; 6];
+        for q in 0..Q {
+            let neq = dist.get(q).copied().unwrap_or(0.0) - feq[q];
+            let c = C[q].map(f64::from);
+            pi[0] += c[0] * c[0] * neq;
+            pi[1] += c[1] * c[1] * neq;
+            pi[2] += c[2] * c[2] * neq;
+            pi[3] += c[0] * c[1] * neq;
+            pi[4] += c[0] * c[2] * neq;
+            pi[5] += c[1] * c[2] * neq;
+        }
+        pi
+    }
+
     /// The relaxation time of a cell with density `rho` whose populations are `dist` around the
     /// equilibrium `feq`: the molecular one plus the Smagorinsky eddy viscosity's share.
-    fn local_tau(&self, dist: &[f64], feq: &[f64; Q], rho: f64) -> f64 {
+    fn local_tau(&self, base: f64, dist: &[f64], feq: &[f64; Q], rho: f64) -> f64 {
         if self.smagorinsky == 0.0 {
-            return self.tau;
+            return base;
         }
         let mut pi = [[0.0f64; 3]; 3];
         for q in 0..Q {
@@ -116,17 +230,13 @@ impl Lattice {
         }
         let norm = pi.iter().flatten().map(|v| v * v).sum::<f64>().sqrt();
         let cs2 = self.smagorinsky * self.smagorinsky;
-        0.5 * (self.tau + (self.tau * self.tau + 18.0 * std::f64::consts::SQRT_2 * cs2 * norm / rho).sqrt())
+        0.5 * (base + (base * base + 18.0 * std::f64::consts::SQRT_2 * cs2 * norm / rho).sqrt())
     }
 
     /// Make fluid `cells` an opening; `inward` points from each of them to the fluid cell just
     /// inside, which must be fluid too.
     pub fn add_opening(&mut self, cells: &[[usize; 3]], inward: [i32; 3], kind: Opening) -> Result<()> {
-        let valid = match kind {
-            Opening::Velocity(u) => u.iter().all(|v| v.is_finite() && v.abs() < 0.3),
-            Opening::Density(rho) => rho.is_finite() && rho > 0.0,
-        };
-        if !valid {
+        if !kind.valid() {
             return Err(SimError::BadOpening);
         }
         for at in cells {
@@ -140,6 +250,19 @@ impl Lattice {
         Ok(())
     }
 
+    /// Impose `kind` on the openings `range` (indices into [`Lattice::openings`]), for example a
+    /// fan inlet's new speed.
+    pub fn set_openings(&mut self, range: std::ops::Range<usize>, kind: Opening) -> Result<()> {
+        let slots = self.openings.get_mut(range).ok_or(SimError::BadOpening)?;
+        if !kind.valid() {
+            return Err(SimError::BadOpening);
+        }
+        for o in slots {
+            o.2 = kind;
+        }
+        Ok(())
+    }
+
     /// Rewrite the opening cells: the imposed density or velocity, the other moment and the
     /// non-equilibrium part taken from the cell just inside.
     fn apply_openings(&mut self) {
@@ -149,6 +272,11 @@ impl Lattice {
             let (rho, u) = match kind {
                 Opening::Velocity(u) => (rho_in, u),
                 Opening::Density(rho) => (rho, u_in),
+                Opening::Inflow { velocity, density } => {
+                    let speed = (velocity[0] * velocity[0] + velocity[1] * velocity[1] + velocity[2] * velocity[2]).sqrt();
+                    let ease = if speed > 0.0 { SOUND * (rho_in - density) / rho_in / speed } else { 0.0 };
+                    (rho_in, velocity.map(|v| v - v * ease))
+                }
             };
             let mut out = [0.0; Q];
             for (q, v) in out.iter_mut().enumerate() {
@@ -263,7 +391,8 @@ impl Lattice {
                     for (q, e) in feq.iter_mut().enumerate() {
                         *e = equilibrium(q, rho, u);
                     }
-                    let tau = self.local_tau(dist, &feq, rho);
+                    let tau = self.local_tau(self.base_tau([i, j, k]), dist, &feq, rho);
+                    let pi = if self.regularized { Self::stress(dist, &feq) } else { [0.0; 6] };
                     for q in 0..Q {
                         let c = C[q].map(f64::from);
                         let cu = c[0] * u[0] + c[1] * u[1] + c[2] * u[2];
@@ -272,7 +401,21 @@ impl Lattice {
                             source += (3.0 * (c[a] - u[a]) + 9.0 * cu * c[a]) * g[a];
                         }
                         let fq = dist.get(q).copied().unwrap_or(0.0);
-                        post[q] = fq - (fq - feq[q]) / tau + (1.0 - 0.5 / tau) * W[q] * source;
+                        let relaxed = if self.regularized {
+                            // w (9/2) (c c − I/3) : Π, split into the deviatoric part (shear) and
+                            // the isotropic part (bulk): w (9/2) (c·Π·c − c² tr/3) and
+                            // w (9/2) (c² − 1) tr/3.
+                            let ccpi = c[0] * c[0] * pi[0]
+                                + c[1] * c[1] * pi[1]
+                                + c[2] * c[2] * pi[2]
+                                + 2.0 * (c[0] * c[1] * pi[3] + c[0] * c[2] * pi[4] + c[1] * c[2] * pi[5]);
+                            let (trace, c2) = ((pi[0] + pi[1] + pi[2]) / 3.0, c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+                            let (shear, iso) = (W[q] * 4.5 * (ccpi - c2 * trace), W[q] * 4.5 * (c2 - 1.0) * trace);
+                            (1.0 - 1.0 / tau) * shear + (1.0 - 1.0 / self.bulk.unwrap_or(tau)) * iso
+                        } else {
+                            (1.0 - 1.0 / tau) * (fq - feq[q])
+                        };
+                        post[q] = feq[q] + relaxed + (1.0 - 0.5 / tau) * W[q] * source;
                     }
                     for (q, value) in post.iter().enumerate() {
                         let to = match self.neighbour([i, j, k], C[q]) {

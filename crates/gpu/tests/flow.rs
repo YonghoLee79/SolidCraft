@@ -54,10 +54,17 @@ fn duct(outer: f64, wall: f64, len: f64) -> Grid {
 
 /// The duct with a velocity inlet at x = 0 and a pressure outlet at the far end.
 fn duct_with_openings(grid: &Grid, tau: f64, u0: f64, cs: f64) -> (Lattice, Vec<(usize, usize)>) {
+    duct_with(grid, tau, u0, cs, false)
+}
+
+fn duct_with(grid: &Grid, tau: f64, u0: f64, cs: f64, regularized: bool) -> (Lattice, Vec<(usize, usize)>) {
     let [nx, ny, nz] = grid.dims;
     let bore: Vec<(usize, usize)> =
         (0..ny).flat_map(|j| (0..nz).map(move |k| (j, k))).filter(|&(j, k)| grid.get(0, j, k) == Some(Cell::Fluid)).collect();
     let mut lattice = ok(ok(Lattice::new(grid, tau, [0.0; 3], [false; 3])).with_smagorinsky(cs));
+    if regularized {
+        lattice = ok(lattice.regularized().with_bulk(0.9));
+    }
     let inlet: Vec<[usize; 3]> = bore.iter().map(|&(j, k)| [0, j, k]).collect();
     let outlet: Vec<[usize; 3]> = bore.iter().map(|&(j, k)| [nx - 1, j, k]).collect();
     ok(lattice.add_opening(&inlet, [1, 0, 0], Opening::Velocity([u0, 0.0, 0.0])));
@@ -82,17 +89,17 @@ fn difference(a: &Lattice, b: &Lattice) -> (f64, f64) {
     (rho, u)
 }
 
-/// The same duct, openings and turbulence model stepped on the CPU in f64 and on the GPU in f32
+/// The same duct, openings, turbulence model and collision (plain or regularized) stepped on the CPU in f64 and on the GPU in f32
 /// give the same flow, cell by cell, while it develops.
 #[test]
 fn the_gpu_step_follows_the_cpu_reference() {
     let Some(gpu) = gpu() else { return };
     let grid = duct(14.0, 2.0, 24.0);
     let u0 = 0.05;
-    for cs in [0.0, 0.17] {
-        let (mut cpu, _) = duct_with_openings(&grid, 0.56, u0, cs);
+    for (cs, reg) in [(0.0, false), (0.17, false), (0.17, true), (0.0, true)] {
+        let (mut cpu, _) = duct_with(&grid, 0.56, u0, cs, reg);
         let mut on_gpu = ok(gpu.upload(&cpu));
-        let mut back = duct_with_openings(&grid, 0.56, u0, cs).0;
+        let mut back = duct_with(&grid, 0.56, u0, cs, reg).0;
         for steps in [1u32, 49, 250] {
             for _ in 0..steps {
                 cpu.step();
@@ -100,7 +107,7 @@ fn the_gpu_step_follows_the_cpu_reference() {
             ok(on_gpu.run(steps));
             ok(on_gpu.download(&mut back));
             let (rho, u) = difference(&cpu, &back);
-            eprintln!("cs {cs}, after {} steps: density within {rho:e}, velocity within {u:e}", on_gpu.steps());
+            eprintln!("cs {cs}, regularized {reg}, after {} steps: density within {rho:e}, velocity within {u:e}", on_gpu.steps());
             assert!(rho < 1e-5 && u < 1e-4 * u0, "cs {cs}: density {rho:e}, velocity {u:e} apart after {} steps", on_gpu.steps());
         }
     }
@@ -191,4 +198,122 @@ fn what_the_gpu_cannot_run_is_an_error() {
     let on_gpu = ok(gpu.upload(&plain));
     let mut other = ok(Lattice::new(&duct(10.0, 2.0, 12.0), 0.8, [0.0; 3], [false; 3]));
     assert!(on_gpu.download(&mut other).is_err(), "another grid");
+}
+
+/// A whole study (a duct in millimetres, an inlet at a set speed, a fan inlet on its curve)
+/// run on the GPU gives the CPU run's flows, and settles the same way.
+#[test]
+fn a_study_runs_on_the_gpu_as_on_the_cpu() {
+    use solidcraft_sim::{AIR, FanCurve, FlowSetup, Inlet, Limits, Outlet, Patch, Run, Source, State};
+    let Some(gpu) = gpu() else { return };
+    let backend = solidcraft_gpu::flow::Backend(std::sync::Arc::new(gpu));
+    let (a, w, len) = (8.0, 2.0, 24.0);
+    let mesh = {
+        let mut m = Mesh::default();
+        let o = a + 2.0 * w;
+        add_box(&mut m, [0.0, 0.0, 0.0], [len, o, w]);
+        add_box(&mut m, [0.0, 0.0, o - w], [len, o, o]);
+        add_box(&mut m, [0.0, 0.0, w], [len, w, o - w]);
+        add_box(&mut m, [0.0, o - w, w], [len, o, o - w]);
+        m
+    };
+    let across = |x: f64| {
+        let (lo, hi) = (w, w + a);
+        let p = |y: f64, z: f64| Vec3::new(x, y, z);
+        Patch { triangles: vec![[p(lo, lo), p(hi, lo), p(hi, hi)], [p(lo, lo), p(hi, hi), p(lo, hi)]], normal: Vec3::X }
+    };
+    for source in [Source::Speed(0.05), Source::Fan(ok(FanCurve::linear(4e-6, 0.05)))] {
+        let setup = FlowSetup {
+            cell: 1.0,
+            pad: 4.0,
+            air: AIR,
+            inlets: vec![Inlet { name: "in".into(), patch: across(0.0), source: source.clone(), cap: true }],
+            outlets: vec![Outlet { name: "out".into(), patch: across(len) }],
+            turbulence: 0.0,
+            max_cells: 200_000,
+        };
+        let limits = Limits { max_steps: 30_000, check_every: 250, tolerance: 0.005 };
+        let mut cpu = ok(Run::new(ok(solidcraft_sim::prepare(&[&mesh], &setup)), &solidcraft_sim::Cpu, limits));
+        let mut on_gpu = ok(Run::new(ok(solidcraft_sim::prepare(&[&mesh], &setup)), &backend, limits));
+        assert_eq!(ok(on_gpu.finish(|_| true)), State::Settled, "{source:?}");
+        assert_eq!(ok(cpu.finish(|_| true)), State::Settled);
+        let (c, g) = (cpu.last().unwrap(), on_gpu.last().unwrap());
+        eprintln!(
+            "{source:?}: CPU {} steps, {:e} m³/s at {} Pa; GPU {} steps, {:e} m³/s at {} Pa",
+            cpu.steps, c.outlets[0].flow, c.inlets[0].pressure, on_gpu.steps, g.outlets[0].flow, g.inlets[0].pressure
+        );
+        assert!((c.outlets[0].flow - g.outlets[0].flow).abs() / c.outlets[0].flow < 0.01);
+        assert!((c.inlets[0].pressure - g.inlets[0].pressure).abs() / c.inlets[0].pressure < 0.02);
+        assert_eq!(on_gpu.backend, backend.0.adapter_name());
+    }
+}
+
+/// The default Airflow case: a 50 mm bore pipe (2 mm wall), 300 mm long, air at 5 m/s, 1 mm
+/// cells, turbulence on. Reports what it takes and the pressure drop next to the Blasius
+/// friction factor's (fully developed; the short pipe's developing flow and exit add to it).
+/// Heavy: run with `--ignored`.
+#[test]
+#[ignore]
+fn the_default_pipe_case_runs_stably() {
+    use solidcraft_sim::{AIR, FlowSetup, Inlet, Limits, Outlet, Patch, Run, Source};
+    let Some(gpu) = gpu() else { return };
+    let backend = solidcraft_gpu::flow::Backend(std::sync::Arc::new(gpu));
+    let (r, wall, len, speed) = (25.0, 2.0, 300.0, 5.0);
+    let outer = ok(solidcraft_kernel::cylinder(Vec3::ZERO, Vec3::Z, r + wall, len));
+    let bore = ok(solidcraft_kernel::cylinder(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, r, len + 2.0));
+    let pipe = ok(solidcraft_kernel::boolean(&outer, &bore, solidcraft_kernel::BoolOp::Cut)).unwrap();
+    let mesh = ok(pipe.display_plan(0.05)).evaluate();
+    let disk = |z: f64| {
+        let n = 96;
+        let p = |i: usize| {
+            let t = std::f64::consts::TAU * i as f64 / n as f64;
+            Vec3::new(r * t.cos(), r * t.sin(), z)
+        };
+        Patch { triangles: (0..n).map(|i| [Vec3::new(0.0, 0.0, z), p(i), p(i + 1)]).collect(), normal: Vec3::Z }
+    };
+    let setup = FlowSetup {
+        cell: 1.0,
+        pad: 20.0,
+        air: AIR,
+        inlets: vec![Inlet { name: "inlet".into(), patch: disk(0.0), source: Source::Speed(speed), cap: true }],
+        outlets: vec![Outlet { name: "outlet".into(), patch: disk(len) }],
+        turbulence: 0.17,
+        max_cells: 20_000_000,
+    };
+    let t = std::time::Instant::now();
+    let prepared = ok(solidcraft_sim::prepare(&[&mesh], &setup));
+    let cells = prepared.grid.len();
+    eprintln!(
+        "prepared {:?} = {cells} cells in {:.1} s; tau {}, warnings {:?}",
+        prepared.grid.dims,
+        t.elapsed().as_secs_f64(),
+        prepared.lattice.tau,
+        prepared.warnings
+    );
+    let t = std::time::Instant::now();
+    let mut run = ok(Run::new(prepared, &backend, Limits { max_steps: 60_000, check_every: 1_000, tolerance: 0.01 }));
+    let state = ok(run.finish(|r| {
+        if let Some(s) = r.last() {
+            eprintln!(
+                "  {} steps ({:.4} s simulated): in {:.3} Pa, {:.3e} m³/s; out {:.3e} m³/s",
+                s.step, s.time, s.inlets[0].pressure, s.inlets[0].flow, s.outlets[0].flow
+            );
+        }
+        true
+    }));
+    let secs = t.elapsed().as_secs_f64();
+    let last = run.average().unwrap();
+    let re = speed * 2.0 * r * 1e-3 / AIR.viscosity;
+    let f = 0.316 * re.powf(-0.25);
+    let blasius = f * len / (2.0 * r) * 0.5 * AIR.density * speed * speed;
+    eprintln!(
+        "{state:?} after {} steps in {secs:.1} s ({:.0} million cell updates a second); mean inlet {:.3} Pa vs Blasius {blasius:.3} Pa (Re {re:.0}); flow in {:.4e}, out {:.4e} m³/s (nominal {:.4e})",
+        run.steps,
+        cells as f64 * run.steps as f64 / secs / 1e6,
+        last.inlets[0].pressure,
+        last.inlets[0].flow,
+        last.outlets[0].flow,
+        speed * std::f64::consts::PI * (r * 1e-3).powi(2)
+    );
+    assert!(last.inlets[0].pressure > 0.5 * blasius && last.inlets[0].pressure < 10.0 * blasius);
 }

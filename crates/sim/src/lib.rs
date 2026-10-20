@@ -1,18 +1,24 @@
 //! Flow simulation setup, without GPU code: a body's triangle mesh becomes a Cartesian voxel
 //! grid of solid and fluid cells ([`voxelize`]), and a flood fill from a seed finds the fluid
 //! region a study runs in ([`fluid_region`]), reporting whether it leaks to the grid's edge.
-//! The solvers (wgpu compute) sit above this crate, beside the app's GPU code.
+//! A study in physical units ([`study`]) becomes a lattice ([`lbm`], the CPU reference), and a
+//! [`Run`] steps it until the flow settles. The GPU solver (wgpu compute) sits above this crate,
+//! beside the app's GPU code, and plugs in as a [`Backend`].
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
 mod fluid;
 mod grid;
 pub mod lbm;
+pub mod run;
+pub mod study;
 mod voxelize;
 
 pub use fluid::{Region, fluid_region};
 pub use grid::{Cell, Grid};
 pub use lbm::{Lattice, Opening};
+pub use run::{Backend, Cpu, Fields, Limits, Quantity, Run, Sample, State, Stepper};
+pub use study::{AIR, Air, FanCurve, FlowSetup, Inlet, Outlet, Patch, Prepared, Source, Through, Units, Warning, prepare};
 pub use voxelize::voxelize;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -35,6 +41,20 @@ pub enum SimError {
     BadSeed,
     #[error("the populations must be finite and one set per cell")]
     BadPopulations,
+    #[error(
+        "a fan curve needs 2 to 64 points (flow m³/s, pressure Pa) with the flow rising and the pressure falling, from a positive shut-off pressure to a positive free-air flow"
+    )]
+    BadFanCurve,
+    #[error("the study needs at least one inlet")]
+    NoInlet,
+    #[error("the opening `{0}` covers no air cell; pick its face again or use smaller cells")]
+    OpeningTooSmall(String),
+    #[error("the flow went unstable after {steps} steps; use smaller cells, a lower speed or turn turbulence on")]
+    Unstable { steps: u64 },
+    #[error("the solver failed: {0}")]
+    Backend(String),
+    #[error("the study was cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, SimError>;
