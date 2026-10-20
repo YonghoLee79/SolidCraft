@@ -22,6 +22,15 @@ use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::space_mouse::{Axes, AxisRule, Calibration, DriverMapping, WheelGuard, calibrated, calibration, navigate_frame};
 
 const STALE_AFTER: Duration = Duration::from_millis(150);
+/// How long a held (spacenavd) reading that is nearly at rest may go without a new record before
+/// it reads as rest: spacenavd sends no final record when the cap springs back, only the last
+/// small leftover. Longer than `STALE_AFTER` so a light, steady hold gets a moment before it ends.
+const HELD_SETTLE_AFTER: Duration = Duration::from_millis(500);
+/// How far from rest (raw units, full deflection is 350) every axis of a held reading must be for
+/// it to settle. The dead zone is 20, but the last records of real releases reach 129 on one axis
+/// (tangency-labs/solidcraft#3523), so this sits well above it. A firmer push is a deliberate
+/// hold and stays.
+const HELD_SETTLE_BAND: u16 = 150;
 /// Whether the 3Dconnexion driver (macOS) has the device: it then reports the cap, and reading
 /// the HID device would fail or report it twice.
 static DRIVER_CONNECTED: AtomicBool = AtomicBool::new(false);
@@ -199,9 +208,11 @@ struct Reading {
     /// When each of X, Y, Z, Rx, Ry and Rz last arrived. Each ages on its own: a device may send
     /// translation and rotation in separate reports, or spread even one group over several.
     at: [Instant; 6],
-    /// The source says when the cap is back at rest, so a reading stays until the next one.
-    /// A HID device repeats its report while the cap is held; spacenavd sends a record only when
-    /// the values change, and a steady hold can go seconds without one.
+    /// The source sends a record only when the values change, so a reading stays until the next
+    /// one: a steady hold can go seconds without one. It never says when the cap springs back,
+    /// though, so a reading within `HELD_SETTLE_BAND` of rest on every axis settles after
+    /// `HELD_SETTLE_AFTER`. A HID device repeats its report while the cap is held, so it ages out
+    /// per axis instead.
     held: bool,
 }
 
@@ -214,7 +225,14 @@ impl Reading {
     /// is calibrated, so a device that rests off zero calibrates to no motion rather than drifting.
     fn current(self, now: Instant, rest: Axes) -> Axes {
         let mut axes = self.axes;
-        if !self.held {
+        if self.held {
+            let values = axes.translation.into_iter().chain(axes.rotation);
+            let rests = rest.translation.into_iter().chain(rest.rotation);
+            let near_rest = values.zip(rests).all(|(value, rest)| value.abs_diff(rest) <= HELD_SETTLE_BAND);
+            if near_rest && now.duration_since(self.at[0]) >= HELD_SETTLE_AFTER {
+                return rest;
+            }
+        } else {
             let rest = rest.translation.into_iter().chain(rest.rotation);
             for ((value, at), rest) in axes.translation.iter_mut().chain(axes.rotation.iter_mut()).zip(self.at).zip(rest) {
                 if now.duration_since(at) >= STALE_AFTER {
@@ -623,6 +641,55 @@ mod tests {
         // A HID device repeats its report: silence means the cap, or the device, is gone.
         let hid = Reading { axes, ..Reading::new(now) };
         assert_eq!(hid.current(later, Axes::default()), Axes::default());
+    }
+
+    #[test]
+    fn a_held_reading_near_rest_settles_after_the_timeout() {
+        // The last records of seven releases from tangency-labs/solidcraft#3523: spacenavd sends
+        // nothing after them.
+        let leftovers = [
+            [15, -60, 13, 59, 34, 129],
+            [-12, -69, 4, -26, 7, -6],
+            [0, -45, -3, 16, 8, -60],
+            [-31, 27, 22, -5, 6, -10],
+            [0, -30, -3, 3, -6, 0],
+            [5, 32, -2, 43, -8, 12],
+            [3, 2, -22, 3, 6, 5],
+        ];
+        let now = Instant::now();
+        for [x, y, z, rx, ry, rz] in leftovers {
+            let axes = Axes { translation: [x, y, z], rotation: [rx, ry, rz] };
+            let held = Reading { axes, held: true, ..Reading::new(now) };
+            assert_eq!(held.current(now + HELD_SETTLE_AFTER - Duration::from_millis(1), Axes::default()), axes);
+            assert_eq!(held.current(now + HELD_SETTLE_AFTER, Axes::default()), Axes::default());
+        }
+    }
+
+    #[test]
+    fn a_settled_held_reading_reads_as_the_devices_own_rest() {
+        let now = Instant::now();
+        let rest = Axes { translation: [10, -8, 0], rotation: [0, 5, 0] };
+        // 40 from zero on X, but only 30 from this device's rest.
+        let held = Reading { axes: Axes { translation: [40, -8, 0], rotation: [0, 5, 0] }, held: true, ..Reading::new(now) };
+        assert_eq!(held.current(now + HELD_SETTLE_AFTER, rest), rest);
+    }
+
+    #[test]
+    fn a_firm_held_push_stays_however_long_it_lasts() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(10);
+        let push = Axes { translation: [0, 350, 0], rotation: [0; 3] };
+        let held = Reading { axes: push, held: true, ..Reading::new(now) };
+        assert_eq!(held.current(later, Axes::default()), push);
+        // One firm axis keeps the small ones with it.
+        let mixed = Axes { translation: [5, 300, -10], rotation: [3, 0, 20] };
+        let held = Reading { axes: mixed, held: true, ..Reading::new(now) };
+        assert_eq!(held.current(later, Axes::default()), mixed);
+        // The band is per reading, edge included: at it is a leftover, one past it is a hold.
+        let band = HELD_SETTLE_BAND as i16;
+        let twist = |value| Reading { axes: Axes { translation: [0; 3], rotation: [0, 0, value] }, held: true, ..Reading::new(now) };
+        assert_eq!(twist(band).current(later, Axes::default()), Axes::default());
+        assert_eq!(twist(band + 1).current(later, Axes::default()).rotation, [0, 0, band + 1]);
     }
 
     #[test]
