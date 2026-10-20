@@ -75,7 +75,8 @@ def test_a_dimension_driven_to_zero_can_break_the_next_change():
         ])
 
 
-def test_a_slot_held_by_other_constraints_can_cross_to_the_other_side_at_zero():
+def slot_centre(*changes: list) -> float:
+    """The slot's centre on x after the given parameter changes."""
     body = execute([
         cmd("parameters.add", name="n", expression="3", unit=""),
         cmd("sketch.create", plane="XY", name="Slot sketch"),
@@ -86,11 +87,19 @@ def test_a_slot_held_by_other_constraints_can_cross_to_the_other_side_at_zero():
         cmd("sketch.dimension", entities=["origin", "a1.center"], type="horizontal", value="(n - 1) * 3 mm"),
         cmd("sketch.finish"),
         cmd("solid.extrude", sketch="Slot sketch", distance="1 mm", body_name="Slot"),
-        cmd("parameters.change", name="n", expression="1"),
-        cmd("parameters.change", name="n", expression="3"),
+        *changes,
     ])["bodies"][0]
-    # Started at x = -6; after n 3 -> 1 -> 3 it sits at +6, with no error
-    assert (body["bbox"]["min"][0] + body["bbox"]["max"][0]) / 2 == pytest.approx(6, abs=1e-3)
+    return (body["bbox"]["min"][0] + body["bbox"]["max"][0]) / 2
+
+
+def test_a_slot_held_by_other_constraints_keeps_its_side_at_zero():
+    # Drawn at x = -6. At n = 1 the distance is 0, so the slot slides to the origin; when the
+    # value comes back the solver takes the shortest step that fits and the slot keeps the side
+    # it was drawn on, so it no longer comes back mirrored.
+    assert slot_centre() == pytest.approx(-6, abs=1e-3)
+    assert slot_centre(cmd("parameters.change", name="n", expression="1")) == pytest.approx(0, abs=1e-3)
+    assert slot_centre(cmd("parameters.change", name="n", expression="1"),
+                       cmd("parameters.change", name="n", expression="3")) == pytest.approx(-6, abs=1e-3)
 
 
 def centred_row(position: list) -> list:
