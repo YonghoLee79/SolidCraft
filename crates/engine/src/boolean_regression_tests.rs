@@ -421,6 +421,34 @@ fn lip_swept_flush_round_a_corner_joins() {
     assert!((volume - block - lip).abs() < 0.02, "{volume} expected {}", block + lip);
 }
 
+/// A column joined into a housing's channel, standing on its floor and along its curved wall,
+/// failed (`Union: no result`): run on into the floor, the tool defeated the boolean that the
+/// column as drawn passes. It joins as drawn now, adding what the same column made as a new body
+/// and combined adds.
+#[test]
+fn column_standing_in_a_channel_joins_as_drawn() {
+    let script: Value = serde_json::from_str(include_str!("../../../examples/regressions/join_column_in_channel.json")).unwrap();
+    let steps = script.get("commands").and_then(Value::as_array).unwrap();
+    let (join, before) = steps.split_last().unwrap();
+    let mut s = Session::default();
+    s.run_script(&Value::Array(before.to_vec())).unwrap();
+    let housing = volume(&s, "Body7");
+    let mut column = join.get("params").unwrap().clone();
+    column["operation"] = json!("new");
+    column["body_name"] = json!("Column");
+    column.as_object_mut().unwrap().remove("targets");
+    s.execute("solid.extrude", &column).unwrap();
+    s.execute("solid.combine", &json!({"target": "Body7", "tools": ["Column"], "operation": "join"})).unwrap();
+    let combined = volume(&s, "Body7");
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!((volume(&s, "Body7") - housing).abs() < 1e-6);
+    s.run_script(&Value::Array(vec![join.clone()])).unwrap();
+    let joined = volume(&s, "Body7");
+    assert!(joined > housing + 1.0, "{housing} -> {joined}");
+    assert!((joined - combined).abs() < 1e-3, "joined {joined}, combined {combined}");
+}
+
 /// #1275: an Extrude Cut of a whole face of a rounded-rectangle block with a bottom chamfer. The
 /// tool's corner cylinders lay on the block's; they are grown off them now, as straight edges
 /// were, and the cut takes 5 mm off the top.

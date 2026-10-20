@@ -3378,12 +3378,15 @@ pub(crate) fn thin_regions(vals: &BTreeMap<String, Value>, ss: &SolvedSketch, th
 const APART_GAP: f64 = 1e-3;
 
 /// The tool bodies a feature adds or removes (extrude, revolve, primitives), in the current state.
+/// With `as_drawn`, an untapered Join extrude's tools are its profiles over the extent as given,
+/// not run on into the target, grown past or trimmed at the faces they touch.
 fn feature_tools_with_constructor(
     doc: &Document,
     vals: &BTreeMap<String, Value>,
     f: &Feature,
     st: &ModelState,
     constructor: &mut Option<ExtrudeConstructor>,
+    as_drawn: bool,
 ) -> Result<Vec<Traced>> {
     let unnamed = |bodies: Vec<Body>| -> Vec<Traced> { bodies.into_iter().map(Traced::unnamed).collect() };
     match &f.kind {
@@ -3615,12 +3618,14 @@ fn feature_tools_with_constructor(
             for r in regions.iter().filter(|_| !touching_batch) {
                 if *operation == Operation::Join {
                     let exact = centered_extrude(&ss.plane, r, lo + off, hi + off, Some(&ss))?;
-                    if exact.iter().all(|tool| {
-                        st.bodies
-                            .iter()
-                            .filter(|b| targets.is_empty() || targets.iter().any(|t| *t == b.name))
-                            .any(|b| kernel::can_join_touching_faces(&b.body, &tool.body))
-                    }) {
+                    if as_drawn
+                        || exact.iter().all(|tool| {
+                            st.bodies
+                                .iter()
+                                .filter(|b| targets.is_empty() || targets.iter().any(|t| *t == b.name))
+                                .any(|b| kernel::can_join_touching_faces(&b.body, &tool.body))
+                        })
+                    {
                         // Preserve a whole touching face: extending into a chamfer replaces
                         // the sewable seam with a coincident curved intersection.
                         tools.extend(exact);
@@ -4628,7 +4633,7 @@ fn replay(
             }
         } else {
             // Each copy's faces are named as the source feature's, with the instance.
-            let tools = feature_tools_with_constructor(doc, vals, src, st, &mut None)?;
+            let tools = feature_tools_with_constructor(doc, vals, src, st, &mut None, false)?;
             for (k, m) in mats.iter().enumerate() {
                 for t in &tools {
                     copies.push(t.copied(kernel::transform_matrix(&t.body, *m)?, src.id, k + 1));
@@ -5061,7 +5066,20 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
         | FeatureKind::Coil { operation, targets, .. }
         | FeatureKind::Sweep { operation, targets, .. } => {
             let mut constructor = None;
-            let tools = feature_tools_with_constructor(doc, vals, f, st, &mut constructor)?;
+            let tools = feature_tools_with_constructor(doc, vals, f, st, &mut constructor, false)?;
+            // A Join tool run on into its target (or grown past the faces it touches), so that the
+            // boolean meets no touching faces, can defeat the boolean itself where the tool as
+            // drawn, standing on those faces, joins: a column in a channel whose floor it runs into
+            // and whose curved wall it lies along. Then it joins as drawn.
+            if *operation == Operation::Join && matches!(&f.kind, FeatureKind::Extrude { extent, .. } if extent.taper.is_none()) {
+                let before = st.clone();
+                let Err(e) = apply_traced(st, f, tools, *operation, &crate::plain(targets)) else { return Ok(()) };
+                let mut drawn = before;
+                let tools = feature_tools_with_constructor(doc, vals, f, &drawn, &mut None, true)?;
+                apply_traced(&mut drawn, f, tools, *operation, &crate::plain(targets)).map_err(|_| e)?;
+                *st = drawn;
+                return Ok(());
+            }
             // Cuts through sheet metal become cut-outs of its flat pattern.
             if matches!(operation, Operation::Cut | Operation::Intersect) && matches!(f.kind, FeatureKind::Extrude { .. }) && !st.sheets.is_empty() {
                 let bodies: Vec<Body> = tools.iter().map(|t| t.body.clone()).collect();
