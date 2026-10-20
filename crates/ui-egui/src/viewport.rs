@@ -322,6 +322,8 @@ fn scene_key(app: &SolveApp) -> u64 {
     crate::theme::is_dark().hash(&mut h);
     crate::theme::vision().hash(&mut h);
     app.session.active_sketch.hash(&mut h);
+    // A flow result drawn in the view (and the see-through bodies it brings).
+    crate::simulation_workspace::scene_key(app).hash(&mut h);
     h.finish()
 }
 

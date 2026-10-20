@@ -113,6 +113,18 @@ fn shown(app: &SolveApp) -> Option<(String, u64, Arc<FlowResult>)> {
     Some((name.clone(), st.revision, st.result.clone()?))
 }
 
+/// What the view's scene depends on here: the shown result and how it is drawn (None: nothing).
+pub fn scene_key(app: &SolveApp) -> Option<(String, u64, [u64; 6])> {
+    let (name, revision, _) = shown(app)?;
+    let d = app.simulation.display;
+    let q = match d.quantity {
+        Quantity::Speed => 0,
+        Quantity::Pressure => 1,
+        Quantity::Component(c) => 2 + u64::from(c),
+    };
+    Some((name, revision, [q, d.section.map_or(9, u64::from), u64::from(d.offset.to_bits()), u64::from(d.streamlines), d.lines as u64, u64::from(d.see_through)]))
+}
+
 /// The view draws the bodies see-through while a result is shown with that choice.
 pub fn see_through(app: &SolveApp) -> bool {
     app.simulation.display.see_through && shown(app).is_some()
@@ -304,6 +316,55 @@ fn results_table(ui: &mut egui::Ui, r: &FlowResult) {
             row(ui, n, t, (total.abs() > 0.0).then(|| t.flow / total));
         }
     });
+}
+
+/// `ui.simulation`: which study's result the view shows and how (`shown`, `quantity`: speed |
+/// pressure, `section`: x | y | z | off, `offset` 0..1, `streamlines`, `lines`, `see_through`);
+/// returns them all.
+pub fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    if let Some(name) = p.get("shown").and_then(serde_json::Value::as_str) {
+        if app.session.flow_studies().get(name).is_none() {
+            return Err(format!("no study `{name}`"));
+        }
+        app.simulation.shown = Some(name.to_string());
+    }
+    let d = &mut app.simulation.display;
+    match p.get("quantity").and_then(serde_json::Value::as_str) {
+        None => {}
+        Some("speed") => d.quantity = Quantity::Speed,
+        Some("pressure") => d.quantity = Quantity::Pressure,
+        Some(q) => return Err(format!("quantity `{q}`: use speed or pressure")),
+    }
+    match p.get("section").and_then(serde_json::Value::as_str) {
+        None => {}
+        Some("off") => d.section = None,
+        Some("x") => d.section = Some(0),
+        Some("y") => d.section = Some(1),
+        Some("z") => d.section = Some(2),
+        Some(a) => return Err(format!("section `{a}`: use x, y, z or off")),
+    }
+    if let Some(o) = p.get("offset").and_then(serde_json::Value::as_f64) {
+        d.offset = o.clamp(0.0, 1.0) as f32;
+    }
+    if let Some(b) = p.get("streamlines").and_then(serde_json::Value::as_bool) {
+        d.streamlines = b;
+    }
+    if let Some(n) = p.get("lines").and_then(serde_json::Value::as_u64) {
+        d.lines = (n as usize).clamp(1, 400);
+    }
+    if let Some(b) = p.get("see_through").and_then(serde_json::Value::as_bool) {
+        d.see_through = b;
+    }
+    let d = app.simulation.display;
+    Ok(json!({
+        "shown": app.simulation.shown,
+        "quantity": if d.quantity == Quantity::Pressure { "pressure" } else { "speed" },
+        "section": match d.section { Some(0) => "x", Some(1) => "y", Some(2) => "z", _ => "off" },
+        "offset": d.offset,
+        "streamlines": d.streamlines,
+        "lines": d.lines,
+        "see_through": d.see_through,
+    }))
 }
 
 /// The results panel on the right: one block per study.

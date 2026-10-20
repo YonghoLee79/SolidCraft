@@ -184,7 +184,12 @@ impl Run {
             self.steps += chunk;
             done += chunk;
         }
-        self.stepper.read(&mut self.prepared.lattice)?;
+        // Populations that are no longer finite (refused on the way back) mean the flow blew up.
+        match self.stepper.read(&mut self.prepared.lattice) {
+            Err(SimError::BadPopulations) => return Err(SimError::Unstable { steps: self.steps }),
+            Err(SimError::Backend(e)) if e.contains("finite") => return Err(SimError::Unstable { steps: self.steps }),
+            r => r?,
+        }
         if !self.stable() {
             return Err(SimError::Unstable { steps: self.steps });
         }
