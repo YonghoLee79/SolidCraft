@@ -4200,6 +4200,7 @@ name = "solidcraft-cli"
 version = "0.18.2"
 dependencies = [
  "image",
+ "log",
  "serde_json",
  "solidcraft-engine",
  "solidcraft-gpu",
