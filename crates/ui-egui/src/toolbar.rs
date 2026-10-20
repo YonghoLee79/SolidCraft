@@ -503,7 +503,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                 }
                 crate::ui_kit::Menu::button(ui, app.tr("ui.open_recent"), |ui| {
                     for path in app.home.recent.clone() {
-                        let missing = !solidcraft_engine::io::vfs::exists(&path);
+                        let missing = !crate::home::available(app, &path);
                         let label = format!("{path}{}", if missing { " (missing)" } else { "" });
                         if crate::context_menu::button(ui, &label, "open").clicked() {
                             crate::home::open_recent(app, &path);
@@ -1845,6 +1845,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 app.start("ui.palette");
             }
             Key::V => crate::context_menu::toggle_visibility(app),
+            Key::R if mods.shift && !mods.alt => {
+                app.repeat_last();
+            }
             Key::F2 => {
                 let at = ctx.input(|i| i.pointer.latest_pos()).unwrap_or(ctx.content_rect().center());
                 crate::context_menu::rename_selection(app, at);
