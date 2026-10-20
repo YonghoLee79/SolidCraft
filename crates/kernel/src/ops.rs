@@ -903,6 +903,12 @@ pub fn with_attempt_budget<T>(attempts: usize, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// The attempts left under [`with_attempt_budget`] on this thread (`None`: no budget), so a
+/// caller can tell how many of the kernel's own intersections a boolean took.
+pub fn attempts_left() -> Option<usize> {
+    ATTEMPTS.with(|c| c.get())
+}
+
 /// Takes one of the attempts left under [`with_attempt_budget`]; false when none is left.
 fn take_attempt() -> bool {
     ATTEMPTS.with(|c| match c.get() {

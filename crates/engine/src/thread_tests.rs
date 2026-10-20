@@ -239,8 +239,9 @@ fn hex_nut(hole: f64) -> Session {
 
 /// Two threaded screws crossing each other, cut and joined (#1983, the hang half of #2038): each
 /// is thousands of flat faces, and the boolean went through every B-rep retry on them for many
-/// minutes. It now takes the exact polygon route alone and answers in seconds, with a result or
-/// a clear refusal. A cross hole through one of them (a curved tool) is still drilled.
+/// minutes. It now takes the exact polygon route alone, with a result or a clear refusal, and
+/// tries no B-rep boolean at all: counted, not timed, so a busy machine cannot fail it. A cross
+/// hole through one of them (a curved tool) still takes the B-rep boolean, and is drilled.
 #[test]
 fn booleans_of_two_modelled_threads_finish() {
     let mut s = Session::default();
@@ -257,9 +258,11 @@ fn booleans_of_two_modelled_threads_finish() {
         assert!(faces > 1000, "{b} is faceted: {faces} faces");
     }
     for op in ["cut", "join"] {
-        let started = std::time::Instant::now();
-        let r = s.execute("solid.combine", &json!({"target": "A", "tools": ["B"], "operation": op, "keep_tools": true}));
-        assert!(started.elapsed().as_secs() < 30, "the {op} took {:?}", started.elapsed());
+        let (r, left) = solidcraft_kernel::with_attempt_budget(4, || {
+            let r = s.execute("solid.combine", &json!({"target": "A", "tools": ["B"], "operation": op, "keep_tools": true}));
+            (r, solidcraft_kernel::attempts_left())
+        });
+        assert_eq!(left, Some(4), "the {op} tried the B-rep boolean on two flat bodies");
         if let Err(e) = r {
             assert!(e.to_string().contains("not supported yet"), "{op}: {e}");
         }
