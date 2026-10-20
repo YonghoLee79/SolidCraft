@@ -597,6 +597,26 @@ fn edit_refuses_unknown_fields() {
     assert_eq!(def["combine"], json!(true), "{def}");
 }
 
+/// The check before a delete (`timeline.dependents`) evaluates on the session's model, so it
+/// shares the evaluation cache (#2678): the delete that follows finds the features after the
+/// deleted one already computed instead of computing them again. (What it reports is covered by
+/// the timeline tests in `tests.rs`.)
+#[test]
+fn the_dependents_check_leaves_the_delete_its_results() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 60, "width": 20, "height": 10, "name": "Base"}));
+    run(&mut s, "solid.box", json!({"corner": [5, 5, 10], "length": 10, "width": 10, "height": 5, "operation": "join", "name": "Boss"}));
+    run(&mut s, "solid.cylinder", json!({"base": [40, 10, -1], "radius": 2, "height": 20, "operation": "cut", "name": "Hole"}));
+    let report = run(&mut s, "timeline.dependents", json!({"feature": "Boss"}));
+    assert_eq!(report, json!({"deleted_with_it": [], "would_fail": []}));
+    let hits = |s: &Session| s.model.cache.lock().map(|c| c.hits).unwrap_or(0);
+    let before = hits(&s);
+    run(&mut s, "timeline.delete", json!({"features": ["Boss"]}));
+    assert!(hits(&s) > before, "the delete takes the hole the check computed from the cache");
+    let volume = run(&mut s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap();
+    assert!((volume - (12000.0 - std::f64::consts::PI * 4.0 * 10.0)).abs() < 1.0, "{volume}");
+}
+
 fn suppressed(s: &Session, name: &str) -> bool {
     s.doc.find_feature(name).unwrap().suppressed
 }
