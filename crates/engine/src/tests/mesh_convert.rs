@@ -128,6 +128,47 @@ fn a_mesh_that_is_not_a_prism_converts_and_takes_a_boolean() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// The point of converting: the body a general (non-prismatic) mesh becomes takes the solid
+/// operations — a fillet, a hole, and a sketch on one of its faces extruded into it.
+#[test]
+fn a_converted_mesh_takes_fillets_holes_and_sketches_on_its_faces() {
+    let path = stepped_block_stl("operations");
+    let mut s = Session::default();
+    run(&mut s, "doc.open", json!({"path": path}));
+    let name = s.model.state().bodies[0].name.clone();
+    run(&mut s, "mesh.convert", json!({"body": name, "tolerance": "0.05 mm"}));
+    let base = volume(&mut s);
+    assert!((base - 8250.).abs() < 1e-6);
+    let failed = |s: &Session| s.model.results.iter().filter_map(|r| r.error.clone()).collect::<Vec<_>>();
+
+    // A fillet on one of the base's vertical edges.
+    run(&mut s, "solid.fillet", json!({"body": name, "edges": [[30., 20., 5.]], "radius": 2}));
+    assert!(failed(&s).is_empty(), "{:?}", failed(&s));
+    let filleted = volume(&mut s);
+    assert!(filleted < base - 1.0, "the fillet removed material: {base} -> {filleted}");
+
+    // A hole into the base's top face, beside the boss.
+    run(&mut s, "solid.hole", json!({"position": [25., 17., 10.], "diameter": 4}));
+    assert!(failed(&s).is_empty(), "{:?}", failed(&s));
+    let holed = volume(&mut s);
+    assert!(holed < filleted - 100.0, "{filleted} -> {holed}");
+
+    // A sketch on the boss's top face is accepted. The conversion carries no face history, so the
+    // attachment is fixed: the sketch sits on the face but does not follow a later upstream edit
+    // (docs/mesh-to-solid.md).
+    run(&mut s, "sketch.create", json!({"plane": {"face": [12.5, 10., 25.], "fixed": true}}));
+    run(&mut s, "sketch.finish", json!({}));
+    // Its circle, on a plane at the boss's own centre, cuts a pocket into the boss.
+    let sk = run(&mut s, "sketch.create", json!({"plane": {"origin": [12.5, 10., 25.], "x_dir": [1., 0., 0.], "y_dir": [0., 1., 0.]}}));
+    run(&mut s, "sketch.circle.center", json!({"center": [0., 0.], "radius": 3.}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": sk["sketch"], "distance": 5., "direction": "negative", "operation": "cut", "targets": [name]}));
+    assert!(failed(&s).is_empty(), "{:?}", failed(&s));
+    let cut = volume(&mut s);
+    assert!(cut < holed - 100.0, "{holed} -> {cut}");
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn inserting_a_mesh_as_a_solid_keeps_it_a_solid_after_a_cold_reopen() {
     let path = stepped_block_stl("assolid");

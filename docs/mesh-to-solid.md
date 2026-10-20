@@ -54,3 +54,8 @@ Booleans (join, cut, intersect), fillet, chamfer, shell, hole, extrude-cut, a sk
 measure, and export to STEP, IGES, 3MF and STL. A fillet on a faceted wall selects that facet's
 edge, as on any other B-rep: the conversion does not smooth the input's facets into a surface the
 file never had.
+
+The conversion cannot name its faces from history (there is none to carry over from a triangle
+mesh), so a sketch placed on one of them is a **fixed** attachment: it sits on that face but does
+not follow a later upstream edit that reshapes the mesh. The sketch command says so when the face
+is picked.
