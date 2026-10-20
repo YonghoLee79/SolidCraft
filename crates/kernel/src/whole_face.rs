@@ -46,7 +46,7 @@ pub fn matching_face(target: &Body, plane: &Plane, region: &Region2, heights: &[
     let n = plane.normal();
     let tol = outline_tol(target);
     let mesh = target.tessellate(tol * 0.2).ok()?;
-    let ring: Vec<Vec2> = region.outer.polyline(tol * 0.1);
+    let ring: Vec<Vec2> = region.outer.polyline(tol * 0.1).into_vec();
     if ring.len() < 3 || ring.len() > MAX_SAMPLES {
         return None;
     }
