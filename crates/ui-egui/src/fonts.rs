@@ -12,6 +12,10 @@ use std::sync::Arc;
 /// Name of the CJK fallback entry in [`egui::FontDefinitions`].
 pub const CJK_FALLBACK: &str = "cjk_fallback";
 
+/// Keep the downloaded definitions independently of egui's active fonts: `set_fonts`
+/// takes effect next pass, and a language change can happen in the installation pass.
+const WEB_CJK_FONTS: &str = "solidcraft.web_cjk_fonts";
+
 /// Name of the Chinese fallback entry in [`egui::FontDefinitions`], after [`CJK_FALLBACK`].
 /// A Japanese-only CJK font (Meiryo, Hiragino Gothic) lacks simplified characters, so
 /// Chinese falls through to this one per glyph.
@@ -137,6 +141,20 @@ fn promote_font_to_front(fonts: &mut egui::FontDefinitions, name: &str) {
     }
 }
 
+/// The web CJK face also contains full-width Cyrillic. Keep it first only for a CJK UI;
+/// switching back to Russian or English restores the normal proportional face while
+/// retaining the downloaded font as a fallback for Japanese names and chat text.
+fn set_web_cjk_priority(fonts: &mut egui::FontDefinitions, language: &str) {
+    if needs_cjk_font(language) {
+        promote_font_to_front(fonts, CJK_FALLBACK);
+    } else if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional)
+        && let Some(pos) = list.iter().position(|name| name == CJK_FALLBACK)
+    {
+        let name = list.remove(pos);
+        list.push(name);
+    }
+}
+
 /// Install font bytes as fallback for Proportional and Monospace font families.
 /// For CJK languages, promotes the font to the front of Proportional so digits and labels share one baseline.
 /// Returns true if the font was parsed and installed successfully.
@@ -148,9 +166,8 @@ pub fn install_cjk_font(ctx: &egui::Context, bytes: Vec<u8>) -> bool {
 pub fn install_cjk_font_for(ctx: &egui::Context, bytes: Vec<u8>, language: &str) -> bool {
     match with_cjk_fallback(egui::FontDefinitions::default(), bytes) {
         Some(mut fonts) => {
-            if needs_cjk_font(language) {
-                promote_font_to_front(&mut fonts, CJK_FALLBACK);
-            }
+            ctx.data_mut(|data| data.insert_temp(egui::Id::new(WEB_CJK_FONTS), fonts.clone()));
+            set_web_cjk_priority(&mut fonts, language);
             ctx.set_fonts(with_symbol_fallback(fonts));
             true
         }
@@ -618,10 +635,20 @@ fn find_system_chinese_font() -> Option<Vec<u8>> {
     None
 }
 
-/// On web, setup_fonts does not perform synchronous disk reads.
-/// Use asynchronous loading through [`solidcraft_web`] or host scripts.
+/// Reorder the web font already loaded asynchronously for the current UI language.
+/// Keep its bytes and its Monospace fallback; changing languages must not fetch it again.
 #[cfg(target_arch = "wasm32")]
-pub fn setup_fonts_for(_ctx: &egui::Context, _language: &str, _ui_font: &str) {}
+pub fn setup_fonts_for(ctx: &egui::Context, language: &str, _ui_font: &str) {
+    setup_web_fonts_for(ctx, language);
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn setup_web_fonts_for(ctx: &egui::Context, language: &str) {
+    if let Some(mut fonts) = ctx.data(|data| data.get_temp::<egui::FontDefinitions>(egui::Id::new(WEB_CJK_FONTS))) {
+        set_web_cjk_priority(&mut fonts, language);
+        ctx.set_fonts(with_symbol_fallback(fonts));
+    }
+}
 
 /// On web only the symbol fallback goes in at start (#2955); the Japanese font loads later
 /// through [`install_cjk_font`], which keeps it.
@@ -633,6 +660,67 @@ pub fn setup_fonts(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn first_face_for(fonts: &egui::FontDefinitions, c: char) -> Option<&str> {
+        fonts.families[&egui::FontFamily::Proportional].iter().find_map(|name| {
+            let data = &fonts.font_data[name];
+            ttf_parser::Face::parse(&data.font, data.index).unwrap().glyph_index(c).map(|_| name.as_str())
+        })
+    }
+
+    #[test]
+    fn leaving_a_cjk_ui_restores_proportional_cyrillic() {
+        let defaults = egui::FontDefinitions::default();
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/biz-udp-gothic/BIZUDPGothic-Regular.ttf"));
+        let mut fonts = with_cjk_fallback(defaults.clone(), bytes.to_vec()).unwrap();
+        set_web_cjk_priority(&mut fonts, "ja");
+        assert_eq!(first_face_for(&fonts, 'Я'), Some(CJK_FALLBACK), "the Japanese face also covers Cyrillic");
+        let mono = fonts.families[&egui::FontFamily::Monospace].clone();
+        for language in ["ru", "en", "uk"] {
+            set_web_cjk_priority(&mut fonts, language);
+            for c in "Настройки Ёё Йй Preferences 0123456789 mm".chars() {
+                assert_eq!(first_face_for(&fonts, c), first_face_for(&defaults, c), "{language}: {c:?} uses the original proportional face");
+            }
+            assert_eq!(first_face_for(&fonts, '語'), Some(CJK_FALLBACK), "Japanese text still has a fallback");
+            assert_eq!(fonts.families[&egui::FontFamily::Monospace], mono);
+        }
+        let ctx = egui::Context::default();
+        ctx.set_fonts(with_symbol_fallback(fonts.clone()));
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        ctx.fonts_mut(|f| {
+            let mut width = |text: &str| f.layout_no_wrap(text.to_owned(), egui::FontId::proportional(14.0), egui::Color32::WHITE).size().x;
+            assert!(width("гггг") < width("ШШШШ") * 0.7);
+        });
+        set_web_cjk_priority(&mut fonts, "ja");
+        assert_eq!(first_face_for(&fonts, '語'), Some(CJK_FALLBACK));
+        assert_eq!(first_face_for(&fonts, '1'), Some(CJK_FALLBACK), "switching back keeps the CJK baseline");
+    }
+
+    #[test]
+    fn a_cjk_download_finishing_in_a_russian_ui_keeps_its_proportional_face() {
+        let ctx = egui::Context::default();
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/biz-udp-gothic/BIZUDPGothic-Regular.ttf"));
+        assert!(install_cjk_font_for(&ctx, bytes.to_vec(), "ru"));
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        ctx.fonts(|f| assert_eq!(first_face_for(f.definitions(), 'Я'), first_face_for(&egui::FontDefinitions::default(), 'Я')));
+    }
+
+    #[test]
+    fn a_language_change_in_the_installation_pass_keeps_the_downloaded_font() {
+        let ctx = egui::Context::default();
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/biz-udp-gothic/BIZUDPGothic-Regular.ttf"));
+        assert!(install_cjk_font_for(&ctx, bytes.to_vec(), "ja"));
+        // The fonts queued by install_cjk_font_for have not become active yet.
+        setup_web_fonts_for(&ctx, "ru");
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        ctx.fonts(|f| {
+            assert_eq!(first_face_for(f.definitions(), 'Я'), first_face_for(&egui::FontDefinitions::default(), 'Я'));
+            assert_eq!(first_face_for(f.definitions(), '語'), Some(CJK_FALLBACK));
+        });
+        setup_web_fonts_for(&ctx, "ja");
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        ctx.fonts(|f| assert_eq!(first_face_for(f.definitions(), '1'), Some(CJK_FALLBACK)));
+    }
 
     /// Whether a face of the Proportional family has `c`. Checked in the font data:
     /// `Fonts::has_glyph` misses a glyph in the face that also gives the replacement glyph.
