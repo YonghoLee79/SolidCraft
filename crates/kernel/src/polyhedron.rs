@@ -641,7 +641,11 @@ fn shell_opened(b: &Body, healed: &Body, open: &[Vec3], opened: &[usize], thickn
         Ok(c) => c,
         Err(e) => return shell_by_opening(healed, opened, thickness, margin).map_err(|_| e),
     };
-    let cavity = match opening_overreach(healed, &cavity, opened, thickness, margin) {
+    // Without the faceted last resort, for the same reason as the cut below: where trimming the
+    // opening fails, the shell goes on with the cavity untrimmed, and a trim answered on facets
+    // would take that away by succeeding - and hand every step after it a faceted cavity.
+    let trim = crate::ops::without_the_last_resort(|| opening_overreach(healed, &cavity, opened, thickness, margin));
+    let cavity = match trim {
         Ok(Some(trimmed)) => trimmed,
         Ok(None) => cavity,
         Err(e) => {
@@ -649,12 +653,20 @@ fn shell_opened(b: &Body, healed: &Body, open: &[Vec3], opened: &[usize], thickn
             cavity
         }
     };
-    let r = crate::ops::boolean(healed, &cavity, crate::BoolOp::Cut);
+    // Asked without the faceted last resort (#1865): where this cut fails, `shell_by_opening`
+    // builds the same shell another way and exactly, and a cut answered on facets would take
+    // that away by succeeding.
+    let r = crate::ops::without_the_last_resort(|| crate::ops::boolean(healed, &cavity, crate::BoolOp::Cut));
     if r.is_err()
-        && let Ok(x) = shell_by_opening(healed, opened, thickness, margin)
+        && let Ok(x) = crate::ops::without_the_last_resort(|| shell_by_opening(healed, opened, thickness, margin))
     {
         return Ok(x);
     }
+    // Nothing is asked again here, and every route above was asked without the last resort: the
+    // shell's whole preferred path is the exact one. The error arm below is the only place that
+    // asks with it - the body as it was, its faces to open found again - so the facets are a
+    // shell where there would be none, after every route the shell has of its own, and never
+    // instead of one of them.
     match r {
         Ok(Some(r)) => {
             // Over `[healed]`, the cavity's faces offsets of the faces they line; then over `[b]`.

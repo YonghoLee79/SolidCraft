@@ -358,6 +358,81 @@ impl History {
         Ok(self)
     }
 
+    /// Renumber the faces of operand `operand`: its face `i` becomes `map(i)`, for an operation
+    /// that was handed that operand as something other than its own faces and so recorded them
+    /// under other numbers. The faceted boolean is the one that does this: it takes the tool as
+    /// a triangle mesh, and numbers the tool's faces as that mesh's triangles, which a caller
+    /// reading a history by the operands' own face counts cannot use. An origin the map does
+    /// not place fails, without changing `self`: a history pointing at a face the operand never
+    /// had is worse than no history at all.
+    ///
+    /// Several numbers may become one (the triangles of one face), which joins their origins, so
+    /// what a face says about its origin is decided again - and never upward. A result face left
+    /// with one origin is a region of that face (`Modified`), several make a `Merged` one, and
+    /// either becomes `Split` where other result faces lie on the same origin, which is what
+    /// every facet of a curved face does. Nothing comes back `Kept`: the facets of a face are
+    /// pieces of it, not the face itself.
+    pub(crate) fn renumber_faces_of(&mut self, operand: usize, map: impl Fn(usize) -> Option<usize>) -> Result<()> {
+        let to = |f: usize| map(f).ok_or_else(|| failed("a face the operand does not have"));
+        let face = |o: FaceOrigin| -> Result<FaceOrigin> {
+            Ok(match o {
+                FaceOrigin::Face { operand: x, face } if x == operand => FaceOrigin::Face { operand, face: to(face)? },
+                FaceOrigin::Offset { operand: x, face } if x == operand => FaceOrigin::Offset { operand, face: to(face)? },
+                // This maps face numbers, and an edge number is not one of them. The operation
+                // that needs this gives the operand it renumbers no edges at all, so such an
+                // origin means the history is not the one this was meant for.
+                FaceOrigin::Edge { operand: x, .. } if x == operand => {
+                    return Err(failed("an origin lies on an edge of the operand whose faces are renumbered"));
+                }
+                other => other,
+            })
+        };
+        let on_operand = |o: &FaceOrigin| match *o {
+            FaceOrigin::Face { operand: x, .. } | FaceOrigin::Offset { operand: x, .. } | FaceOrigin::Edge { operand: x, .. } => x == operand,
+            FaceOrigin::Profile { .. } | FaceOrigin::Cap { .. } => false,
+        };
+        let mut faces = Vec::with_capacity(self.faces.len());
+        for f in &self.faces {
+            let origins: BTreeSet<FaceOrigin> = f.origins.iter().map(|o| face(*o)).collect::<Result<_>>()?;
+            // A face that says nothing about this operand keeps what it said.
+            let change = if !f.origins.iter().any(on_operand) {
+                f.change
+            } else {
+                match origins.len() {
+                    0 => Change::Generated,
+                    1 => Change::Modified,
+                    _ => Change::Merged,
+                }
+            };
+            faces.push(FaceProv { origins: origins.into_iter().collect(), change });
+        }
+        let mut edges = Vec::with_capacity(self.edges.len());
+        for e in &self.edges {
+            let origins: BTreeSet<EdgeOrigin> = e
+                .origins
+                .iter()
+                .map(|o| match o {
+                    EdgeOrigin::Edge { operand: x, .. } if *x == operand => {
+                        Err(failed("an edge origin lies on the operand whose faces are renumbered"))
+                    }
+                    EdgeOrigin::Edge { operand, edge } => Ok(EdgeOrigin::Edge { operand: *operand, edge: *edge }),
+                    EdgeOrigin::Meet { a, b } => Ok(EdgeOrigin::meet(a.try_map(face)?, b.try_map(face)?)),
+                })
+                .collect::<Result<_>>()?;
+            edges.push(EdgeProv { faces: e.faces.clone(), origins: origins.into_iter().collect() });
+        }
+        crate::record::mark_shared_split(&mut faces);
+        self.faces = faces;
+        self.edges = edges;
+        Ok(())
+    }
+
+    /// [`History::renumber_faces_of`], consuming.
+    pub(crate) fn renumbered_faces_of(mut self, operand: usize, map: impl Fn(usize) -> Option<usize>) -> Result<History> {
+        self.renumber_faces_of(operand, map)?;
+        Ok(self)
+    }
+
     /// [`History::substitute`], consuming.
     pub(crate) fn substituted(mut self, k: usize, inner: &History) -> Result<History> {
         self.substitute(k, inner)?;

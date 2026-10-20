@@ -524,3 +524,50 @@ fn stacked_pieces_of_one_cylinder_keep_their_walls() {
         }
     }
 }
+
+/// The faceted route, the last resort for bodies that meet along faces that curve (#1865), is
+/// given the tool as a triangle mesh, so what it records numbers the tool's faces as those
+/// triangles. Put back over the two bodies by the mesh's `tri_face`, every face of the result
+/// lies on a face of one of them, and the tool's flat cap comes through as one face carrying
+/// that cap's origin - which is what a sketch or a blend on it needs to find it again. The
+/// operation that takes this route is the intersection of two cylinders on one axis, of one
+/// radius, overlapping along it: the lower from z 0 to 30, the tool from z 22 to 46, so the
+/// result is the 8 mm they share, its round side a ring of facets between the two caps.
+#[test]
+fn the_faceted_route_puts_its_history_over_the_two_bodies() {
+    let r = 25.6;
+    let target = crate::cylinder(Vec3::ZERO, Vec3::Z, r, 30.0).unwrap();
+    let tool = crate::cylinder(Vec3::new(0.0, 0.0, 22.0), Vec3::Z, r, 24.0).unwrap();
+    let (result, how) = crate::capture_boolean_diagnostics(|| boolean(&target, &tool, BoolOp::Intersect));
+    let result = result.unwrap().expect("a result");
+    assert!(
+        how.events.iter().any(|e| e.strategy == crate::BooleanStrategy::FacetedFallback),
+        "this pair is meant to reach the faceted route: {how:?}"
+    );
+    // Checked against the two bodies themselves, and every origin against the geometry: a
+    // facet of a face lies on that face. The facets are chords of a circle of radius 25.6 at
+    // 2.56e-3 mm, so they stand off the face they came from by about that.
+    let h = verified(&result, &[&target, &tool], 0.05);
+    assert!(h.faces.iter().all(|f| !f.origins.is_empty()), "a face of the result came from nothing\n{}", show(h));
+    // The route is reported as keeping the references, which is what carrying this through is.
+    assert!(how.events.iter().filter(|e| e.strategy == crate::BooleanStrategy::FacetedFallback).all(|e| e.references_kept), "{how:?}");
+    // The tool's own faces, by geometry: the cap it stands on (z = 22, inside the target, so it
+    // bounds the result) and the cap at its far end (z = 46, outside it, so it does not).
+    let cap_of = |b: &Body, z: f64| {
+        (0..b.face_count()).find(|i| b.planar_face(*i).is_some_and(|p| (p.origin.z - z).abs() < 1e-9)).expect("a cap at that height")
+    };
+    let near_cap = cap_of(&tool, 22.0);
+    // One result face, not the triangles the cap was meshed into: coplanar facets of a planar
+    // face come back as the one face, and it is the face the cap became.
+    let from_near_cap = from(h, face(1, near_cap));
+    assert_eq!(from_near_cap.len(), 1, "the tool's cap came back as {} faces\n{}", from_near_cap.len(), show(h));
+    let piece = *from_near_cap.first().expect("the one face");
+    assert!(result.planar_face(piece).is_some_and(|p| (p.origin.z - 22.0).abs() < 1e-6), "{}", show(h));
+    assert!(from(h, face(1, cap_of(&tool, 46.0))).is_empty(), "a face came from the tool's far cap\n{}", show(h));
+    // And the target's top cap (z = 30) is the other end of the result, one face likewise.
+    assert_eq!(from(h, face(0, cap_of(&target, 30.0))).len(), 1, "{}", show(h));
+    // The round side is facets: both bodies' walls lie in each other there, so the facets
+    // between the caps come from a wall of one body or of both, and there are many of them.
+    let walls: Vec<usize> = (0..result.face_count()).filter(|i| *i != piece && result.planar_face(*i).is_some()).collect();
+    assert!(walls.len() > 20, "the round side should come back as facets, got {} faces\n{}", walls.len(), show(h));
+}
