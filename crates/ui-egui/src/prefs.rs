@@ -384,6 +384,7 @@ preference_settings! {
     /// Per 3D mouse, what each of its buttons does, by number from 1, once the user has changed
     /// any of them; until then a measured device has its printed keys' jobs
     /// (`space_mouse::default_button_jobs`). Kept, like calibrations, when settings are reset.
+    #[serde(deserialize_with = "button_jobs_that_read")]
     space_mouse_buttons: std::collections::BTreeMap<String, std::collections::BTreeMap<u8, crate::space_mouse::ButtonJob>> = Default::default();
     /// Anti-aliasing samples (applies on restart).
     msaa: u32 = 4, PAGE_GRAPHICS;
@@ -1699,6 +1700,37 @@ fn calibrations_that_read<'de, D: serde::Deserializer<'de>>(
         .collect())
 }
 
+/// The saved button jobs that still read. A job this version doesn't know (from a newer release)
+/// drops that button only, with a log line, not its device's other buttons or the other devices.
+fn button_jobs_that_read<'de, D: serde::Deserializer<'de>>(
+    saved: D,
+) -> Result<std::collections::BTreeMap<String, std::collections::BTreeMap<u8, crate::space_mouse::ButtonJob>>, D::Error> {
+    let saved = std::collections::BTreeMap::<String, serde_json::Value>::deserialize(saved)?;
+    Ok(saved
+        .into_iter()
+        .filter_map(|(device, jobs)| {
+            let jobs = match jobs {
+                serde_json::Value::Object(jobs) => jobs,
+                _ => {
+                    log::warn!("preferences: the 3D mouse buttons for `{device}` can't be read; using the defaults");
+                    return None;
+                }
+            };
+            let jobs = jobs
+                .into_iter()
+                .filter_map(|(number, job)| {
+                    let read = number.parse::<u8>().ok().and_then(|number| Some((number, serde_json::from_value(job).ok()?)));
+                    if read.is_none() {
+                        log::warn!("preferences: button {number} of the 3D mouse `{device}` can't be read; leaving it empty");
+                    }
+                    read
+                })
+                .collect();
+            Some((device, jobs))
+        })
+        .collect())
+}
+
 /// Every theme the Theme list offers, as (id, name): the modes, the built-in theme files, then
 /// the imported ones.
 fn theme_choices(app: &SolveApp) -> Vec<(String, String)> {
@@ -1879,6 +1911,22 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
 
 #[cfg(test)]
 mod tests {
+    /// One button job this build can't read (a newer release's) costs that button, not the lot.
+    #[test]
+    fn one_unreadable_button_job_keeps_the_others() {
+        use crate::space_mouse::{ButtonJob, ButtonKey};
+        let saved = serde_json::json!({ "space_mouse_buttons": {
+            "hid 046d:c62b": { "1": { "key": "esc" }, "2": { "teleport": 3 }, "x": "settings", "3": "settings" },
+            "hid 256f:c63a": { "4": { "view": "top" } },
+            "spacenavd": 7,
+        } });
+        let prefs: super::Prefs = serde_json::from_value(saved).expect("reads");
+        let jobs = &prefs.space_mouse_buttons;
+        assert_eq!(jobs["hid 046d:c62b"], [(1, ButtonJob::Key(ButtonKey::Esc)), (3, ButtonJob::Settings)].into());
+        assert_eq!(jobs["hid 256f:c63a"], [(4, ButtonJob::View("top".into()))].into());
+        assert!(!jobs.contains_key("spacenavd"));
+    }
+
     /// The interface font (#1290): a font that can be read, or empty for the built-in one; saved
     /// with the others and reset by Restore Defaults.
     #[test]

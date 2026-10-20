@@ -59,6 +59,10 @@ pub struct Input {
     pub seen: u32,
     /// The modifiers the buttons hold down, as of the last frame.
     pub held: egui::Modifiers,
+    /// The modifiers the keyboard holds, as the window last reported them (without `held`).
+    pub keyboard: egui::Modifiers,
+    /// The device `seen` and `settle` are about.
+    pub read_device: Option<String>,
 }
 
 /// A key a 3D mouse button can stand in for.
@@ -120,29 +124,53 @@ pub fn default_button_jobs(device: &str) -> std::collections::BTreeMap<u8, Butto
         .collect()
 }
 
+/// Whether a button may do anything now: only where navigation and the keyboard shortcuts would
+/// work (`navigate_frame`, `toolbar::shortcuts`), so a press in the background, with a picker open
+/// or while a field takes the keyboard doesn't move the view or run a command.
+fn buttons_active(app: &SolveApp, ctx: &egui::Context, focused: bool) -> bool {
+    app.preferences.space_mouse_enabled
+        && focused
+        && !app.prefs_window.open
+        && app.space_mouse.calibrating.is_none()
+        && !app.home.open
+        && !app.file_picker_busy()
+        && !app.file_load.busy()
+        && !crate::keymap::capturing(app)
+        && !egui::Popup::is_any_open(ctx)
+        && !ctx.egui_wants_keyboard_input()
+        && !crate::dim_view::editing()
+        && !crate::dialogs_save_mesh::popup_open(ctx)
+        && crate::toolbar::design_shown(app)
+}
+
 /// The 3D mouse's buttons this frame (`buttons`, bit N for button N + 1), before the app sees the
 /// frame's input: each button just pressed does its job, and those standing in for Shift, Ctrl or
-/// Alt hold them while down. Nothing runs with navigation off, during calibration, or while
-/// Preferences is open, so pressing a button there finds it in the list instead.
+/// Alt hold them while down. Nothing runs where navigation wouldn't (`buttons_active`), so pressing
+/// a button in Preferences finds it in the list instead, and a press made then isn't run later.
 pub fn buttons_hook(app: &mut SolveApp, ctx: &egui::Context, buttons: u32, raw: &mut egui::RawInput) {
     let pressed = buttons & !app.space_mouse.buttons;
     app.space_mouse.buttons = buttons;
     app.space_mouse.seen |= buttons;
+    // The keyboard's own modifiers, from what the window was told before anything is added to it.
+    // egui drops its modifiers when the window loses focus, so those go too.
+    let mut focused = ctx.input(|i| i.focused);
+    for event in &raw.events {
+        match event {
+            egui::Event::ModifiersChanged(modifiers) => app.space_mouse.keyboard = *modifiers,
+            egui::Event::WindowFocused(now) => {
+                focused = *now;
+                if !now {
+                    app.space_mouse.keyboard = egui::Modifiers::NONE;
+                }
+            }
+            _ => {}
+        }
+    }
+    let keyboard = app.space_mouse.keyboard;
     let mut held = egui::Modifiers::NONE;
-    let device = app
-        .space_mouse
-        .device
-        .clone()
-        .filter(|_| app.preferences.space_mouse_enabled && !app.prefs_window.open && app.space_mouse.calibrating.is_none());
+    let device = app.space_mouse.device.clone().filter(|_| buttons_active(app, ctx, focused));
     let jobs = device.map(|device| button_jobs(app, &device)).unwrap_or_default();
-    // The keyboard's own modifiers: egui's, less what the buttons held last frame.
     let before = std::mem::replace(&mut app.space_mouse.held, egui::Modifiers::NONE);
-    let mut keyboard = ctx.input(|i| i.modifiers);
-    keyboard.shift &= !before.shift;
-    keyboard.alt &= !before.alt;
-    keyboard.ctrl &= !before.ctrl;
-    keyboard.command &= !before.command;
-    keyboard.mac_cmd &= !before.mac_cmd;
     for (number, job) in jobs {
         let Some(bit) = number.checked_sub(1).and_then(|index| 1_u32.checked_shl(u32::from(index))) else { continue };
         if buttons & bit == 0 {
@@ -178,7 +206,9 @@ pub fn buttons_hook(app: &mut SolveApp, ctx: &egui::Context, buttons: u32, raw: 
                 add(modifiers);
                 changed = true;
             }
-            egui::Event::PointerButton { modifiers, .. } | egui::Event::Key { modifiers, .. } => add(modifiers),
+            egui::Event::PointerButton { modifiers, .. } | egui::Event::Key { modifiers, .. } | egui::Event::MouseWheel { modifiers, .. } => {
+                add(modifiers);
+            }
             _ => {}
         }
     }
@@ -337,6 +367,12 @@ pub fn calibrated(axes: Axes, calibration: Option<Calibration>) -> Axes {
 /// calibration window is open, the reading goes to it instead and the view stays put.
 pub fn navigate_frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMapping, axes: Axes, seconds: f64) -> bool {
     app.space_mouse.raw = axes;
+    if app.space_mouse.read_device != app.space_mouse.device {
+        // Another device: its buttons and its resting hand are not the last one's.
+        app.space_mouse.read_device = app.space_mouse.device.clone();
+        app.space_mouse.seen = 0;
+        app.space_mouse.settle = Default::default();
+    }
     if let Some((device, wizard)) = &mut app.space_mouse.calibrating {
         if app.space_mouse.device.as_ref() == Some(device) {
             wizard.feed(axes.into(), seconds);
@@ -429,42 +465,180 @@ mod tests {
         }
     }
 
+    /// One frame of the window: the hook sees the frame's input, then egui runs it, as the app does.
+    fn press(app: &mut SolveApp, ctx: &egui::Context, buttons: u32, events: Vec<egui::Event>) -> egui::RawInput {
+        let mut raw = egui::RawInput { focused: true, events, ..Default::default() };
+        buttons_hook(app, ctx, buttons, &mut raw);
+        ctx.run_ui(raw.clone(), |_| {}).textures_delta.clear();
+        raw
+    }
+
+    fn escapes(raw: &egui::RawInput) -> usize {
+        raw.events.iter().filter(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. })).count()
+    }
+
+    const ESC: u32 = 1 << 22;
+    const SHIFT: u32 = 1 << 24;
+
     #[test]
     fn a_button_does_its_job_once_per_press_and_holds_its_modifier() {
         let mut app = app();
         app.space_mouse.device = Some("hid 046d:c62b".into());
-        let ctx = egui::Context::default();
-        let frame = |app: &mut SolveApp, buttons: u32| {
-            let mut raw = egui::RawInput::default();
-            buttons_hook(app, &ctx, buttons, &mut raw);
-            // As the frame would: egui takes its modifiers from the events.
-            ctx.run_ui(raw.clone(), |_| {}).textures_delta.clear();
-            raw
-        };
-        let shifted = |_: &egui::RawInput| ctx.input(|i| i.modifiers.shift);
+        let ctx = window(true);
+        let shifted = || ctx.input(|i| i.modifiers.shift);
         // Esc (button 23) presses Escape once, not again while it's held.
-        let esc = 1 << 22;
-        let escapes =
-            |raw: &egui::RawInput| raw.events.iter().filter(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. })).count();
-        assert_eq!(escapes(&frame(&mut app, esc)), 1);
-        assert_eq!(escapes(&frame(&mut app, esc)), 0);
+        assert_eq!(escapes(&press(&mut app, &ctx, ESC, vec![])), 1);
+        assert_eq!(escapes(&press(&mut app, &ctx, ESC, vec![])), 0);
         // Shift (button 25) holds Shift for as long as it's down.
-        let shift = 1 << 24;
-        assert!(shifted(&frame(&mut app, shift)));
-        assert!(shifted(&frame(&mut app, shift)));
-        assert!(!shifted(&frame(&mut app, 0)));
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(shifted());
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(shifted());
+        press(&mut app, &ctx, 0, vec![]);
+        assert!(!shifted());
         // Menu (button 1) opens Preferences; there, buttons only light up their rows.
-        frame(&mut app, 1);
+        press(&mut app, &ctx, 1, vec![]);
         assert!(app.prefs_window.open);
-        frame(&mut app, 0);
-        assert_eq!(escapes(&frame(&mut app, esc)), 0);
-        assert_eq!(app.space_mouse.seen & esc, esc);
+        press(&mut app, &ctx, 0, vec![]);
+        assert_eq!(escapes(&press(&mut app, &ctx, ESC, vec![])), 0);
+        assert_eq!(app.space_mouse.seen & ESC, ESC);
         // A job the user set replaces the defaults.
         app.prefs_window.open = false;
-        frame(&mut app, 0);
+        press(&mut app, &ctx, 0, vec![]);
         app.preferences.space_mouse_buttons.insert("hid 046d:c62b".into(), [(23, ButtonJob::Key(ButtonKey::Alt))].into());
-        let raw = frame(&mut app, esc);
+        let raw = press(&mut app, &ctx, ESC, vec![]);
         assert_eq!((escapes(&raw), ctx.input(|i| i.modifiers.alt)), (0, true));
+    }
+
+    /// The keyboard and a button hold the same modifier: it stays down until both let go, whichever
+    /// lets go first, for each of Shift, Ctrl and Alt.
+    #[test]
+    fn a_modifier_the_keyboard_and_a_button_share_stays_down_until_both_let_go() {
+        for key in [ButtonKey::Shift, ButtonKey::Ctrl, ButtonKey::Alt] {
+            let down = |ctx: &egui::Context| {
+                let m = ctx.input(|i| i.modifiers);
+                match key {
+                    ButtonKey::Shift => m.shift,
+                    ButtonKey::Ctrl => m.ctrl,
+                    _ => m.alt,
+                }
+            };
+            let keyboard = |on: bool| {
+                let mut m = egui::Modifiers::NONE;
+                match key {
+                    ButtonKey::Shift => m.shift = on,
+                    ButtonKey::Ctrl => m.ctrl = on,
+                    _ => m.alt = on,
+                }
+                vec![egui::Event::ModifiersChanged(m)]
+            };
+            for button_first in [true, false] {
+                let mut app = app();
+                app.space_mouse.device = Some("hid 046d:c62b".into());
+                app.preferences.space_mouse_buttons.insert("hid 046d:c62b".into(), [(1, ButtonJob::Key(key))].into());
+                let ctx = window(true);
+                press(&mut app, &ctx, 0, keyboard(true));
+                press(&mut app, &ctx, 1, vec![]);
+                assert!(down(&ctx), "{key:?} both");
+                if button_first {
+                    press(&mut app, &ctx, 0, vec![]);
+                    assert!(down(&ctx), "{key:?} the keyboard still holds it");
+                    press(&mut app, &ctx, 0, keyboard(false));
+                } else {
+                    press(&mut app, &ctx, 1, keyboard(false));
+                    assert!(down(&ctx), "{key:?} the button still holds it");
+                    press(&mut app, &ctx, 0, vec![]);
+                }
+                assert!(!down(&ctx), "{key:?} neither");
+            }
+        }
+    }
+
+    #[test]
+    fn buttons_do_nothing_where_navigation_would_not() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        app.preferences
+            .space_mouse_buttons
+            .insert("hid 046d:c62b".into(), [(1, ButtonJob::Key(ButtonKey::Esc)), (2, ButtonJob::Key(ButtonKey::Shift))].into());
+        let (focused, unfocused) = (window(true), window(false));
+        // A press while the window is in the background does nothing, and isn't run on refocus.
+        assert_eq!(escapes(&press(&mut app, &unfocused, 1, vec![])), 0);
+        assert_eq!(escapes(&press(&mut app, &focused, 1, vec![])), 0, "still held: not a new press");
+        press(&mut app, &focused, 0, vec![]);
+        assert_eq!(escapes(&press(&mut app, &focused, 1, vec![])), 1, "a press that is its own");
+        // A held modifier button lets go in the background, and takes hold again on refocus.
+        press(&mut app, &focused, 2, vec![]);
+        assert!(focused.input(|i| i.modifiers.shift));
+        press(&mut app, &unfocused, 2, vec![]);
+        assert!(!unfocused.input(|i| i.modifiers.shift));
+        // A file picker being open is no place for one either.
+        press(&mut app, &focused, 0, vec![]);
+        let slot: crate::picker_test_support::Slot = Default::default();
+        crate::picker_test_support::open(&mut app, &slot);
+        app.pick_open(|_, _| {});
+        assert_eq!(escapes(&press(&mut app, &focused, 1, vec![])), 0);
+        app.file_picker = None;
+        press(&mut app, &focused, 0, vec![]);
+        assert_eq!(escapes(&press(&mut app, &focused, 1, vec![])), 1);
+    }
+
+    #[test]
+    fn preferences_and_calibration_let_go_of_a_held_modifier_button() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(ctx.input(|i| i.modifiers.shift));
+        app.prefs_window.open = true;
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(!ctx.input(|i| i.modifiers.shift), "Preferences open");
+        app.prefs_window.open = false;
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(ctx.input(|i| i.modifiers.shift));
+        crate::space_mouse_calibration::start(&mut app);
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(!ctx.input(|i| i.modifiers.shift), "calibrating");
+    }
+
+    #[test]
+    fn losing_focus_clears_what_the_buttons_hold_and_the_keyboard_is_remembered_again_on_regain() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(app.space_mouse.held.shift);
+        press(&mut app, &ctx, SHIFT, vec![egui::Event::WindowFocused(false)]);
+        assert_eq!(app.space_mouse.held, egui::Modifiers::NONE);
+        assert!(!ctx.input(|i| i.modifiers.shift));
+        // Back, the button still down: it holds Shift again, and a keyboard Shift lost with the
+        // focus stays lost until the window says it is down.
+        press(&mut app, &ctx, SHIFT, vec![egui::Event::WindowFocused(true)]);
+        assert!(ctx.input(|i| i.modifiers.shift));
+        assert_eq!(escapes(&press(&mut app, &ctx, SHIFT, vec![])), 0);
+    }
+
+    #[test]
+    fn wheel_events_carry_the_held_modifiers() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        let raw = press(&mut app, &ctx, SHIFT, vec![wheel(1.0)]);
+        assert!(raw.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { modifiers, .. } if modifiers.shift)));
+    }
+
+    #[test]
+    fn another_device_starts_with_no_buttons_seen_and_no_settling() {
+        let mut app = app();
+        let ctx = window(true);
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.016);
+        app.space_mouse.seen = 0b101;
+        frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.016);
+        assert_eq!(app.space_mouse.seen, 0b101);
+        app.space_mouse.device = Some("hid 256f:c63a".into());
+        frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.016);
+        assert_eq!(app.space_mouse.seen, 0);
     }
 
     #[test]
