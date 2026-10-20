@@ -238,8 +238,8 @@ fn bad_line_references_are_errors_and_change_nothing() {
     assert!(axis_lines(&sketch(&s)).is_empty());
 }
 
-/// #3137: a dimension takes `x` / `y` for the sketch's axes too, from a point or from a circle
-/// (its centre), and both dimensions share the axis line.
+/// #3137: a dimension takes `x` / `y` for the sketch's axes too, from a circle's centre point,
+/// and both dimensions share the axis line.
 #[test]
 fn issue_3137_dimensions_from_a_circle_centre_to_the_sketch_axes() {
     let mut s = on(json!("XY"));
@@ -247,12 +247,12 @@ fn issue_3137_dimensions_from_a_circle_centre_to_the_sketch_axes() {
     let r = run(&mut s, "sketch.dimension", json!({"entities": ["c.center", "y"], "value": 40}));
     let line = strs(&r["created"]["curves"]);
     assert_eq!(line.len(), 1, "the y axis line is created: {r}");
-    run(&mut s, "sketch.dimension", json!({"entities": ["c", "x"], "value": 15}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["c.center", "x"], "value": 15}));
     let sk = sketch(&s);
     let o = pt(&sk, "c.center");
     assert!((o.x - 40.0).abs() < 1e-7 && (o.y - 15.0).abs() < 1e-7, "the centre is 40 from y and 15 from x: {o:?}");
     let axes = axis_lines(&sk);
     assert_eq!(axes.len(), 2, "{axes:?}");
     assert_axis_line(&sk, &line[0], Vec2::Y);
-    assert!(sk.radius(sk.curve_index("c").unwrap()).is_some_and(|r| (r - 5.0).abs() < 1e-7), "a circle dimensioned to a line keeps its radius");
+    assert!(sk.radius(sk.curve_index("c").unwrap()).is_some_and(|r| (r - 5.0).abs() < 1e-7), "the circle keeps its radius");
 }

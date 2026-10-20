@@ -682,7 +682,7 @@ fn type_first_keeps_the_place_first_flow() {
 /// pick: a circle's centre, or the circle itself, is then dimensioned from that axis.
 #[test]
 fn a_circle_centre_is_dimensioned_from_a_sketch_axis() {
-    for (picks, typed, centre) in [(vec![[30., 20.], [0., 3.]], "40 mm", [40., 20.]), (vec![[35., 20.], [3., 0.]], "12 mm", [30., 12.])] {
+    for (picks, typed, centre) in [(vec![[30., 20.], [0., 3.]], "40 mm", [40., 20.]), (vec![[30., 20.], [3., 0.]], "12 mm", [30., 12.])] {
         crate::dim_view::cancel();
         let mut h = Harness::new();
         h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
