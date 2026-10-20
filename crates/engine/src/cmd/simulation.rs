@@ -18,7 +18,7 @@ use crate::params::{bad, bool_, num, str_};
 use crate::seek;
 use crate::{EngineError, Result, Session};
 
-const OPENING_DOC: &str = "Openings are faces: `{\"face\": [x, y, z] (a point on it) or its name, \"body\"?: name (default the study's body), \"name\"?: label, \"region\"?: \"hole\" | \"face\"}`. A face with a hole in it (a duct's rim) stands for the hole; a face without one (a fan's outlet face) for itself.";
+const OPENING_DOC: &str = "Openings are faces: `{\"face\": [x, y, z] (a point on it) or its name, \"body\"?: name (default the study's body), \"name\"?: label, \"region\"?: \"hole\" | \"face\"}`. A face with a hole in it (a duct's rim) stands for the hole (holes under a tenth of the largest, such as screw holes, are left out); a face without one (a fan's outlet face) for itself. On a mesh body (an STL) the flat piece of surface around the point is the face. Or a section across the duct: `{\"section\": {\"point\": [x, y, z] inside the passage, \"normal\": the way the air goes}}`, the passage where that plane cuts the body (an inlet's section closes the duct behind it, where the fan sits).";
 
 pub static COMMANDS: &[CommandSpec] = &[
 CommandSpec::new("sim.flow.new", "Airflow Study", flow_new).noundo().at("SIMULATION", "STUDY").icon("sim_flow")
@@ -32,7 +32,7 @@ CommandSpec::new("sim.flow.status", "Airflow Study Status", flow_status).noundo(
 CommandSpec::new("sim.flow.results", "Airflow Study Results", flow_results).noundo().icon("sim_flow")
     .params("study: its name. Flow (m³/s and CFM), mean pressure (Pa, gauge), mean and top speed (m/s) per inlet and outlet, each outlet's share of the flow, the pressure drop, the ranges of speed and pressure, and setup warnings (leaks, thin walls)."),
 CommandSpec::new("sim.flow.probe", "Probe Airflow Result", flow_probe).noundo().icon("sim_flow")
-    .params("study: its name; point: [x, y, z] mm. The velocity (m/s) and pressure (Pa) there, or null outside the air."),
+    .params("study: its name; point: [x, y, z] mm. The velocity (m/s) and pressure (Pa) there, or null outside the air. Or grid: {min, max: [x, y, z] mm, step: mm, min_speed?: m/s}: every grid point in the air (at or over min_speed) as [x, y, z, ux, uy, uz, pressure_pa], at most 4,000,000 points."),
 CommandSpec::new("sim.flow.cancel", "Cancel Airflow Study", flow_cancel).noundo().icon("sim_flow")
     .params("study: its name. Stops its run; the last results stay."),
 CommandSpec::new("sim.flow.delete", "Delete Airflow Study", flow_delete).noundo().icon("sim_flow")
@@ -132,8 +132,18 @@ fn openings(s: &Session, cmd: &str, list: &Value, body: &str, inlet: bool) -> Re
         if s.world_state().body(on).is_none() {
             return Err(bad(cmd, format!("`{name}`: no body `{on}`")));
         }
-        let face = o.get("face").ok_or_else(|| bad(cmd, format!("`{name}` needs a `face`. {OPENING_DOC}")))?;
-        let point = super::face::face_ref(s, face, Some(on), cmd)?;
+        let (point, section) = match (o.get("face"), o.get("section")) {
+            (Some(face), None) => (super::face::face_ref(s, face, Some(on), cmd)?, None),
+            (None, Some(sec)) => {
+                let point = vec3_of(sec.get("point"), cmd, &format!("`{name}`: section.point"))?;
+                let normal = vec3_of(sec.get("normal"), cmd, &format!("`{name}`: section.normal"))?;
+                if normal.normalized().is_none() {
+                    return Err(bad(cmd, format!("`{name}`: section.normal must not be zero")));
+                }
+                (point, Some(normal))
+            }
+            _ => return Err(bad(cmd, format!("`{name}` needs a `face` or a `section`. {OPENING_DOC}"))),
+        };
         let region = match str_(o, "region") {
             None => None,
             Some("hole") => Some(Region::Hole),
@@ -141,7 +151,7 @@ fn openings(s: &Session, cmd: &str, list: &Value, body: &str, inlet: bool) -> Re
             Some(other) => return Err(bad(cmd, format!("`{name}`: region `{other}`: use hole or face"))),
         };
         let source = if inlet { Some(source(cmd, o, &name)?) } else { None };
-        out.push(OpeningSpec { name, body: on.to_string(), point, region, source });
+        out.push(OpeningSpec { name, body: on.to_string(), point, region, section, source });
     }
     Ok(out)
 }
@@ -214,12 +224,13 @@ fn max_cells(s: &Session) -> u64 {
 
 /// Prepare `spec` on the design as it is now: the check `sim.flow.new` makes, and the lattice a
 /// run starts from.
-fn prepare(s: &Session, spec: &Spec, cmd: &str) -> Result<(sim::Prepared, sim::FlowSetup)> {
+fn prepare(s: &Session, spec: &Spec, cmd: &str) -> Result<(sim::Prepared, flow::Remake)> {
     let st = s.world_state();
     let (setup, meshes) = flow::setup(&st, spec, max_cells(s)).map_err(|e| bad(cmd, e))?;
     let refs: Vec<&solidcraft_geom::Mesh> = meshes.iter().map(|m| m.as_ref()).collect();
     let prepared = sim::prepare(&refs, &setup).map_err(|e| bad(cmd, e.to_string()))?;
-    Ok((prepared, setup))
+    drop(refs);
+    Ok((prepared, flow::Remake { meshes, setup }))
 }
 
 fn summary(name: &str, prepared: &sim::Prepared, setup: &sim::FlowSetup) -> Value {
@@ -242,7 +253,7 @@ fn flow_new(s: &mut Session, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad(cmd, "a study's name is 1…128 characters")),
         None => (1..).map(|i| format!("Airflow {i}")).find(|n| s.flow.get(n).is_none()).unwrap_or_else(|| "Airflow".into()),
     };
-    let (prepared, setup) = prepare(s, &spec, cmd)?;
+    let (prepared, flow::Remake { setup, .. }) = prepare(s, &spec, cmd)?;
     let out = summary(&name, &prepared, &setup);
     s.flow.list.retain(|st| st.name != name);
     s.flow.list.push(flow::Study { name, spec, job: None, result: None, revision: 0 });
@@ -262,7 +273,7 @@ fn flow_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let name = study_name(s, p, cmd)?.to_string();
     let base = s.flow.get(&name).map(|st| st.spec.clone());
     let spec = spec(s, p, cmd, base)?;
-    let (prepared, setup) = prepare(s, &spec, cmd)?;
+    let (prepared, flow::Remake { setup, .. }) = prepare(s, &spec, cmd)?;
     let out = summary(&name, &prepared, &setup);
     if let Some(st) = s.flow.get_mut(&name) {
         st.spec = spec;
@@ -291,7 +302,7 @@ fn flow_run(s: &mut Session, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad(cmd, "`max_steps` is 100…10000000")),
         None => spec.max_steps,
     };
-    let (prepared, _) = prepare(s, &spec, cmd)?;
+    let (prepared, remake) = prepare(s, &spec, cmd)?;
     // Measure about sixteen times per crossing of the box, at least every 50 steps.
     let longest = prepared.grid.dims.iter().copied().max().unwrap_or(1) as f64;
     let check_every = ((longest / sim::study::LATTICE_SPEED) / 16.0).clamp(50.0, 2000.0) as u32;
@@ -300,7 +311,7 @@ fn flow_run(s: &mut Session, p: &Value) -> Result<Value> {
     let names = (spec.inlets.iter().map(|o| o.name.clone()).collect(), spec.outlets.iter().map(|o| o.name.clone()).collect());
     let wait = bool_(p, "wait").unwrap_or(false);
     let cells = prepared.grid.len();
-    let job = flow::start(prepared, backend, limits, names, wait);
+    let job = flow::start(prepared, backend, limits, names, wait, Some(remake));
     if let Some(st) = s.flow.get_mut(&name) {
         st.job = Some(job);
     }
@@ -340,8 +351,39 @@ fn flow_probe(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sim.flow.probe";
     s.poll_flow();
     let name = study_name(s, p, cmd)?;
-    let at = crate::params::req_vec3(cmd, p, "point")?;
     let r = s.flow.get(name).and_then(|st| st.result.clone()).ok_or_else(|| bad(cmd, format!("`{name}` has no results yet")))?;
+    if let Some(g) = p.get("grid") {
+        // A grid of samples: [x, y, z, ux, uy, uz, pressure] at each point in the air at or over
+        // `min_speed`.
+        let lo = vec3_of(g.get("min"), cmd, "grid.min")?;
+        let hi = vec3_of(g.get("max"), cmd, "grid.max")?;
+        let step = g
+            .get("step")
+            .and_then(Value::as_f64)
+            .filter(|x| x.is_finite() && *x > 0.0)
+            .ok_or_else(|| bad(cmd, "`grid.step` must be a positive number, mm"))?;
+        let floor = g.get("min_speed").and_then(Value::as_f64).filter(|x| x.is_finite()).unwrap_or(0.0);
+        let count = |a: f64, b: f64| ((b - a) / step).floor() + 1.0;
+        let (nx, ny, nz) = (count(lo.x, hi.x), count(lo.y, hi.y), count(lo.z, hi.z));
+        if !(nx >= 1.0 && ny >= 1.0 && nz >= 1.0) || nx * ny * nz > 4.0e6 {
+            return Err(bad(cmd, "`grid` must run from min to max in at most 4,000,000 points"));
+        }
+        let mut out = Vec::new();
+        for i in 0..nx as usize {
+            for j in 0..ny as usize {
+                for k in 0..nz as usize {
+                    let at = lo + solidcraft_geom::Vec3::new(i as f64, j as f64, k as f64) * step;
+                    if let Some((u, pressure)) = r.fields.sample(at)
+                        && u.len() >= floor
+                    {
+                        out.push([at.x, at.y, at.z, u.x, u.y, u.z, pressure]);
+                    }
+                }
+            }
+        }
+        return Ok(json!({"columns": ["x", "y", "z", "ux", "uy", "uz", "pressure_pa"], "samples": out}));
+    }
+    let at = crate::params::req_vec3(cmd, p, "point")?;
     Ok(match r.fields.sample(at) {
         Some((u, pressure)) => json!({"velocity_ms": [u.x, u.y, u.z], "speed_ms": u.len(), "pressure_pa": pressure}),
         None => json!(null),
@@ -363,7 +405,11 @@ fn flow_delete(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn opening_json(o: &OpeningSpec) -> Value {
-    let mut v = json!({"name": o.name, "body": o.body, "face": [o.point.x, o.point.y, o.point.z]});
+    let p = [o.point.x, o.point.y, o.point.z];
+    let mut v = match o.section {
+        Some(n) => json!({"name": o.name, "body": o.body, "section": {"point": p, "normal": [n.x, n.y, n.z]}}),
+        None => json!({"name": o.name, "body": o.body, "face": p}),
+    };
     if let Some(r) = o.region {
         v["region"] = json!(if r == Region::Hole { "hole" } else { "face" });
     }
@@ -738,6 +784,17 @@ mod tests {
         let probe = s.execute("sim.flow.probe", &json!({"study": "Airflow 1", "point": [12, 6, 6]})).unwrap();
         assert!(probe["velocity_ms"][0].as_f64().unwrap() > 0.05, "the centre runs faster than the mean: {probe}");
         assert!(s.execute("sim.flow.probe", &json!({"study": "Airflow 1", "point": [12, 0.5, 6]})).unwrap().is_null(), "inside the wall");
+        let grid = s
+            .execute(
+                "sim.flow.probe",
+                &json!({"study": "Airflow 1", "grid": {"min": [12, 0.5, 6], "max": [12, 11.5, 6], "step": 1, "min_speed": 0.01}}),
+            )
+            .unwrap();
+        let rows = grid["samples"].as_array().unwrap();
+        assert!(!rows.is_empty() && rows.len() < 12, "the bore's points, not the walls': {grid}");
+        assert!(
+            s.execute("sim.flow.probe", &json!({"study": "Airflow 1", "grid": {"min": [0, 0, 0], "max": [1e6, 1e6, 1e6], "step": 0.1}})).is_err()
+        );
         assert_eq!(s.execute("sim.flow.status", &json!({"study": "Airflow 1"})).unwrap()["state"], "done");
         assert_eq!(serde_json::to_string(&*s.doc).unwrap(), before, "studies never touch the design");
         let listed = s.execute("sim.flow.list", &json!({})).unwrap();
@@ -747,6 +804,67 @@ mod tests {
         assert!(s.execute("sim.flow.results", &json!({"study": "Airflow 1"})).is_err());
         s.execute("sim.flow.delete", &json!({"study": "Airflow 1"})).unwrap();
         assert!(s.execute("sim.flow.list", &json!({})).unwrap()["studies"].as_array().unwrap().is_empty());
+    }
+
+    /// A rim with screw holes through it (a fan flange): the bore is the opening, the screw holes
+    /// are not.
+    #[test]
+    fn a_flanges_screw_holes_are_not_part_of_the_opening() {
+        let mut s = Session::default();
+        duct(&mut s);
+        s.execute("solid.box", &json!({"corner": [-2, -4, -4], "length": 2, "width": 20, "height": 20, "operation": "join", "targets": ["Duct"]}))
+            .unwrap();
+        s.execute("solid.box", &json!({"corner": [-3, 2, 2], "length": 4, "width": 8, "height": 8, "operation": "cut", "targets": ["Duct"]}))
+            .unwrap();
+        for (y, z) in [(-3, -3), (-3, 14), (14, -3), (14, 14)] {
+            s.execute("solid.box", &json!({"corner": [-3, y, z], "length": 4, "width": 1, "height": 1, "operation": "cut", "targets": ["Duct"]}))
+                .unwrap();
+        }
+        let set = s
+            .execute(
+                "sim.flow.new",
+                &json!({"body": "Duct", "inlets": [{"face": [-2, 0, 6], "speed": 0.05}], "outlets": [{"face": [24, 1, 6]}], "cell": 1, "pad": 4}),
+            )
+            .unwrap();
+        assert_eq!(set["inlets"][0]["cells"], 64, "{set}");
+    }
+
+    /// A duct that comes in as a mesh (an STL has a face per triangle): picking its rim takes the
+    /// whole flat rim, so the openings are the same as the modelled duct's.
+    #[test]
+    fn a_mesh_ducts_rim_is_picked_whole() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-sim-mesh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("duct.stl");
+        let mut s = Session::default();
+        duct(&mut s);
+        s.execute("file.export", &json!({"path": stl.to_string_lossy()})).unwrap();
+        let mut m = Session::default();
+        let opened = m.execute("doc.open", &json!({"path": stl.to_string_lossy()})).unwrap();
+        let body = opened["bodies"][0].as_str().or_else(|| opened["bodies"][0]["name"].as_str()).unwrap().to_string();
+        let set = m
+            .execute(
+                "sim.flow.new",
+                &json!({"body": body, "inlets": [{"face": [0, 1, 6], "speed": 0.05}], "outlets": [{"face": [24, 1, 6]}], "cell": 1, "pad": 4}),
+            )
+            .unwrap();
+        assert_eq!(set["inlets"][0]["cells"], 64, "{set}");
+        assert_eq!(set["outlets"][0]["cells"], 64, "{set}");
+        // A section across it partway along takes the bore there, and closes the duct behind an inlet.
+        let sec = m
+            .execute(
+                "sim.flow.new",
+                &json!({"body": body, "name": "Sections", "inlets": [{"section": {"point": [6, 6, 6], "normal": [1, 0, 0]}, "speed": 0.05}], "outlets": [{"section": {"point": [18, 6, 6], "normal": [1, 0, 0]}}], "cell": 1, "pad": 4}),
+            )
+            .unwrap();
+        assert_eq!(sec["inlets"][0]["cells"], 64, "{sec}");
+        assert_eq!(sec["outlets"][0]["cells"], 64, "{sec}");
+        let listed = m.execute("sim.flow.list", &json!({})).unwrap();
+        assert_eq!(listed["studies"][1]["inlets"][0]["section"]["normal"], json!([1.0, 0.0, 0.0]), "{listed}");
+        let outside =
+            m.execute("sim.flow.new", &json!({"body": body, "inlets": [{"section": {"point": [6, 1, 1], "normal": [1, 0, 0]}, "speed": 1}]}));
+        assert!(outside.unwrap_err().to_string().contains("not inside the duct"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Goal Seek on a duct whose bore is a design parameter: the sweep runs every value on a

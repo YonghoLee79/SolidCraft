@@ -265,6 +265,9 @@ pub enum Warning {
     /// The air's viscosity on this grid is so low the lattice relies on its turbulence model to
     /// stay stable (relaxation time just over ½).
     LowViscosity { tau: f64 },
+    /// The flow went unstable at the usual time step (jets faster than the openings let the
+    /// setup foresee), so it ran with steps `pace` times shorter.
+    ShortSteps { pace: f64 },
 }
 
 pub struct Prepared {
@@ -471,6 +474,15 @@ fn wall_damping(grid: &Grid, speed: f64, diameter: f64, viscosity: f64) -> Vec<u
 
 /// The lattice for `setup` around `bodies` (closed triangle meshes, mm).
 pub fn prepare(bodies: &[&Mesh], setup: &FlowSetup) -> Result<Prepared> {
+    prepare_paced(bodies, setup, 1.0)
+}
+
+/// [`prepare`] with a time step `pace` times shorter than usual (1 or more): for a flow whose jets
+/// run faster than the openings let `prepare` foresee (exits that aren't named as outlets).
+pub fn prepare_paced(bodies: &[&Mesh], setup: &FlowSetup, pace: f64) -> Result<Prepared> {
+    if !(pace.is_finite() && (1.0..=64.0).contains(&pace)) {
+        return Err(SimError::InvalidSpacing);
+    }
     if bodies.is_empty() {
         return Err(SimError::EmptyMesh);
     }
@@ -590,7 +602,7 @@ pub fn prepare(bodies: &[&Mesh], setup: &FlowSetup) -> Result<Prepared> {
     if outlet_area > 0.0 {
         fastest = fastest.max(1.5 * inflow / outlet_area);
     }
-    let dt = LATTICE_SPEED * units_dx / fastest;
+    let dt = LATTICE_SPEED * units_dx / (fastest * pace);
     let units = Units { dx: units_dx, dt, density: setup.air.density };
     let tau = 0.5 + 3.0 * setup.air.viscosity * dt / (units_dx * units_dx);
     if tau < 0.51 {

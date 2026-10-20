@@ -67,6 +67,9 @@ pub struct OpeningSpec {
     /// A point on the face, mm.
     pub point: Vec3,
     pub region: Option<Region>,
+    /// A section across the duct instead of a face: the plane through `point` with this normal
+    /// (the way the air goes), cutting the body; the opening is the passage there around `point`.
+    pub section: Option<Vec3>,
     /// Inlets only.
     pub source: Option<sim::Source>,
 }
@@ -183,10 +186,142 @@ fn loops(edges: Vec<&Vec<Vec3>>, tol: f64) -> Vec<Vec<Vec3>> {
     out
 }
 
+/// The flat piece of a mesh body's surface (an STL comes in as one face of loose triangles) around
+/// the triangle nearest `point`: every triangle joined to it across shared edges in the same plane,
+/// so a mesh's flat rim or fan mouth is picked whole. Its triangles and its outline's edges.
+fn mesh_flat_piece(mesh: &Mesh, face: u32, point: Vec3, size: f64) -> Option<(Vec<[Vec3; 3]>, Vec<Vec<Vec3>>)> {
+    let tris: Vec<(usize, [Vec3; 3])> = mesh
+        .triangles
+        .iter()
+        .zip(&mesh.tri_face)
+        .enumerate()
+        .filter(|(_, (_, f))| **f == face)
+        .filter_map(|(i, (t, _))| Some((i, mesh.tri(t)?)))
+        .collect();
+    let seed = tris
+        .iter()
+        .map(|(i, [a, b, c])| (*i, solidcraft_geom::compare::closest_on_triangle(point, *a, *b, *c).dist(point)))
+        .fold(None, |best: Option<(usize, f64)>, x| if best.is_none_or(|b| x.1 < b.1) { Some(x) } else { best })?
+        .0;
+    let tri = |i: usize| mesh.triangles.get(i).and_then(|t| mesh.tri(t));
+    let [a, b, c] = tri(seed)?;
+    let n = (b - a).cross(c - a).normalized()?;
+    // Triangles by shared edge: vertices welded at a ten-thousandth of the part's size.
+    let q = 1e-4 * size;
+    let key = |v: Vec3| [(v.x / q).round() as i64, (v.y / q).round() as i64, (v.z / q).round() as i64];
+    let edge = |u: Vec3, v: Vec3| {
+        let (x, y) = (key(u), key(v));
+        if x <= y { (x, y) } else { (y, x) }
+    };
+    let mut by_edge: std::collections::HashMap<([i64; 3], [i64; 3]), Vec<usize>> = std::collections::HashMap::new();
+    for (i, [a, b, c]) in &tris {
+        for (u, v) in [(*a, *b), (*b, *c), (*c, *a)] {
+            by_edge.entry(edge(u, v)).or_default().push(*i);
+        }
+    }
+    let tol = 1e-3 * size + 1e-4;
+    let mut inside = std::collections::HashSet::from([seed]);
+    let mut stack = vec![seed];
+    while let Some(i) = stack.pop() {
+        let Some([a, b, c]) = tri(i) else { continue };
+        for (u, v) in [(a, b), (b, c), (c, a)] {
+            for j in by_edge.get(&edge(u, v)).into_iter().flatten() {
+                if inside.contains(j) {
+                    continue;
+                }
+                let Some([x, y, z]) = tri(*j) else { continue };
+                let flat = (y - x).cross(z - x).normalized().is_some_and(|m| m.dot(n) > 0.9986);
+                if flat && (x - a).dot(n).abs() <= tol {
+                    inside.insert(*j);
+                    stack.push(*j);
+                }
+            }
+        }
+    }
+    let piece: Vec<[Vec3; 3]> = inside.iter().filter_map(|i| tri(*i)).collect();
+    // The outline: edges with exactly one triangle of the piece on them.
+    let mut count: std::collections::HashMap<([i64; 3], [i64; 3]), (usize, Vec3, Vec3)> = std::collections::HashMap::new();
+    for [a, b, c] in &piece {
+        for (u, v) in [(*a, *b), (*b, *c), (*c, *a)] {
+            count.entry(edge(u, v)).or_insert((0, u, v)).0 += 1;
+        }
+    }
+    let outline = count.into_values().filter(|(k, _, _)| *k == 1).map(|(_, u, v)| vec![u, v]).collect();
+    Some((piece, outline))
+}
+
+/// The passage's cross-section where the plane through `point` with normal `n` cuts `mesh`: the
+/// smallest loop of the cut around `point` (the duct's inner wall there), less any loops inside it
+/// (a hub, a strut), as triangles.
+fn section_piece(mesh: &Mesh, point: Vec3, n: Vec3, size: f64) -> std::result::Result<Vec<[Vec3; 3]>, String> {
+    let d = |p: Vec3| (p - point).dot(n);
+    let mut segments: Vec<Vec<Vec3>> = Vec::new();
+    for t in &mesh.triangles {
+        let Some(v) = mesh.tri(t) else { continue };
+        let mut cut = Vec::new();
+        for i in 0..3 {
+            let (a, b) = (v[i], v[(i + 1) % 3]);
+            let (da, db) = (d(a), d(b));
+            if (da >= 0.0) != (db >= 0.0) {
+                cut.push(a + (b - a) * (da / (da - db)));
+            }
+        }
+        if let [a, b] = cut[..]
+            && a.dist(b) > 1e-9 * size
+        {
+            segments.push(vec![a, b]);
+        }
+        if segments.len() > 2_000_000 {
+            return Err("the section cuts too many triangles".into());
+        }
+    }
+    let rings = loops(segments.iter().collect(), 1e-6 * size + 1e-9);
+    let u = n.any_perp();
+    let v = n.cross(u);
+    let flat2 = |p: Vec3| Vec2::new((p - point).dot(u), (p - point).dot(v));
+    let lift = |q: Vec2| point + u * q.x + v * q.y;
+    let mut flat: Vec<solidcraft_geom::Loop2> = rings
+        .iter()
+        .map(|r| {
+            let l = solidcraft_geom::Loop2::polygon(&r.iter().map(|p| flat2(*p)).collect::<Vec<_>>());
+            if l.signed_area() < 0.0 { l.reversed() } else { l }
+        })
+        .collect();
+    flat.sort_by(|a, b| a.signed_area().total_cmp(&b.signed_area()));
+    let here = Vec2::new(0.0, 0.0);
+    // In the air inside a duct an even number of the cut's loops hold the point (the duct's
+    // outside and inside walls); in the wall an odd number, outside the duct none.
+    let around = flat.iter().filter(|l| l.contains(here)).count();
+    let Some(oi) = flat.iter().position(|l| l.contains(here)).filter(|_| around >= 2 && around % 2 == 0) else {
+        return Err("the section's point is not inside the duct there".into());
+    };
+    let outer = flat.swap_remove(oi);
+    // Islands: loops inside the passage that don't hold the point.
+    let holes: Vec<solidcraft_geom::Loop2> = flat
+        .into_iter()
+        .filter(|l| l.signed_area() < outer.signed_area() && !l.contains(here) && l.polyline(1e-3).first().is_some_and(|p| outer.contains(*p)))
+        .map(|l| l.reversed())
+        .collect();
+    let r = solidcraft_geom::Region2 { outer, holes };
+    Ok(r.triangulate(1e-3 * size).into_iter().map(|t| t.map(lift)).collect())
+}
+
 /// The patch an opening covers: its triangles, the normal its air goes along, and whether the cells
 /// behind it are to be closed (an inlet at a duct's open end).
 pub fn patch(st: &ModelState, o: &OpeningSpec, inlet: bool) -> std::result::Result<(sim::Patch, bool), String> {
+    if let Some(normal) = o.section {
+        let mesh = st.body(&o.body).ok_or_else(|| format!("no body `{}`", o.body))?.mesh();
+        let size = mesh.bounds().max.dist(mesh.bounds().min).max(1.0);
+        let n = normal.normalized().ok_or_else(|| format!("the section of `{}` needs a normal", o.name))?;
+        let triangles = section_piece(&mesh, o.point, n, size).map_err(|e| format!("`{}`: {e}", o.name))?;
+        if triangles.is_empty() {
+            return Err(format!("the opening `{}` covers nothing", o.name));
+        }
+        // An inlet's section closes the duct behind it, where the fan sits.
+        return Ok((sim::Patch { triangles, normal: n }, inlet));
+    }
     let (mesh, face) = face_of(st, &o.body, o.point)?;
+    let size = mesh.bounds().max.dist(mesh.bounds().min).max(1.0);
     let mut tris = Vec::new();
     let mut normal = Vec3::ZERO;
     for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
@@ -197,14 +332,27 @@ pub fn patch(st: &ModelState, o: &OpeningSpec, inlet: bool) -> std::result::Resu
         normal += (b - a).cross(c - a);
         tris.push([a, b, c]);
     }
-    let n = normal.normalized().ok_or_else(|| format!("the face `{}` picked is empty", o.name))?;
     // Flat: every triangle faces within about 3° of the mean.
-    let flat = tris.iter().all(|[a, b, c]| (*b - *a).cross(*c - *a).normalized().is_none_or(|t| t.dot(n) > 0.9986));
-    if !flat {
-        return Err(format!("the opening `{}` must be a flat face", o.name));
-    }
-    let size = mesh.bounds().max.dist(mesh.bounds().min).max(1.0);
-    let edges: Vec<&Vec<Vec3>> = mesh.edges.iter().zip(&mesh.edge_faces).filter(|(_, fs)| fs.contains(&face)).map(|(e, _)| e).collect();
+    let flat = |tris: &[[Vec3; 3]], n: Vec3| tris.iter().all(|[a, b, c]| (*b - *a).cross(*c - *a).normalized().is_none_or(|t| t.dot(n) > 0.9986));
+    let mut edges: Vec<Vec<Vec3>> = mesh.edges.iter().zip(&mesh.edge_faces).filter(|(_, fs)| fs.contains(&face)).map(|(e, _)| e.clone()).collect();
+    let n = match normal.normalized() {
+        Some(n) if flat(&tris, n) => n,
+        // A mesh body's one face of loose triangles: the flat piece of it where the point is.
+        _ if edges.is_empty() => {
+            let (piece, outline) = mesh_flat_piece(&mesh, face, o.point, size).ok_or_else(|| format!("the face `{}` picked is empty", o.name))?;
+            let n = piece
+                .iter()
+                .fold(Vec3::ZERO, |n, [a, b, c]| n + (*b - *a).cross(*c - *a))
+                .normalized()
+                .ok_or_else(|| format!("the face `{}` picked is empty", o.name))?;
+            tris = piece;
+            edges = outline;
+            n
+        }
+        Some(_) => return Err(format!("the opening `{}` must be a flat face", o.name)),
+        None => return Err(format!("the face `{}` picked is empty", o.name)),
+    };
+    let edges: Vec<&Vec<Vec3>> = edges.iter().collect();
     let rings = loops(edges, 1e-6 * size + 1e-6);
     let region = o.region.unwrap_or(if rings.len() >= 2 { Region::Hole } else { Region::Face });
     let origin = tris.first().map_or(Vec3::ZERO, |t| t[0]);
@@ -227,11 +375,14 @@ pub fn patch(st: &ModelState, o: &OpeningSpec, inlet: bool) -> std::result::Resu
             if rings.len() < 2 {
                 return Err(format!("the face picked for `{}` has no hole in it; pick the rim around the opening", o.name));
             }
-            // The outer loop is the largest; every other loop is a hole.
+            // The outer loop is the largest; every other loop is a hole, but for holes under a
+            // tenth of the largest one (a fan flange's screw holes, which go through to the
+            // outside, not into the duct).
             let outer = rings.iter().enumerate().map(|(i, l)| (i, area(l).abs())).fold((0, 0.0), |best, x| if x.1 > best.1 { x } else { best }).0;
+            let biggest = rings.iter().enumerate().filter(|(i, _)| *i != outer).map(|(_, l)| area(l).abs()).fold(0.0, f64::max);
             let mut out = Vec::new();
             for (i, ring) in rings.iter().enumerate() {
-                if i == outer {
+                if i == outer || area(ring).abs() < 0.1 * biggest {
                     continue;
                 }
                 let pts: Vec<Vec2> = ring.iter().map(|p| flat2(*p)).collect();
@@ -332,6 +483,7 @@ pub fn launch(
     let (setup, meshes) = setup(st, spec, max_cells)?;
     let refs: Vec<&Mesh> = meshes.iter().map(|m| m.as_ref()).collect();
     let mut prepared = sim::prepare(&refs, &setup).map_err(|e| e.to_string())?;
+    drop(refs);
     let warmed = warm.map(|w| prepared.warm_from(&w.fields)).unwrap_or(0) > 0;
     // Measure about sixteen times per crossing of the box, at least every 50 steps.
     let longest = prepared.grid.dims.iter().copied().max().unwrap_or(1) as f64;
@@ -339,7 +491,7 @@ pub fn launch(
     let limits = sim::Limits { max_steps, check_every, tolerance, soft_start: !warmed };
     let names = (spec.inlets.iter().map(|o| o.name.clone()).collect(), spec.outlets.iter().map(|o| o.name.clone()).collect());
     let cells = prepared.grid.len();
-    Ok((start(prepared, backend, limits, names, wait), cells))
+    Ok((start(prepared, backend, limits, names, wait, Some(Remake { meshes, setup })), cells))
 }
 
 /// Run `prepared` to the end on `backend`, reporting into `progress`.
@@ -350,7 +502,7 @@ fn run_to_end(
     progress: &Mutex<Progress>,
     cancel: &AtomicBool,
     names: (Vec<String>, Vec<String>),
-) -> std::result::Result<Arc<FlowResult>, String> {
+) -> std::result::Result<Arc<FlowResult>, Failed> {
     let clock = web_time::Instant::now();
     let seeds: Vec<Vec<Vec3>> = prepared
         .inlets
@@ -366,7 +518,7 @@ fn run_to_end(
         })
         .collect();
     let warnings = prepared.warnings.clone();
-    let mut run = sim::Run::new(prepared, backend, limits).map_err(|e| e.to_string())?;
+    let mut run = sim::Run::new(prepared, backend, limits).map_err(|e| Failed::Other(e.to_string()))?;
     if let Ok(mut p) = progress.lock() {
         p.backend = run.backend.clone();
         p.max_steps = limits.max_steps;
@@ -380,8 +532,11 @@ fn run_to_end(
             }
             !cancel.load(Ordering::Relaxed)
         })
-        .map_err(|e| e.to_string())?;
-    let average = run.average().ok_or("the run measured nothing")?;
+        .map_err(|e| match e {
+            sim::SimError::Unstable { .. } => Failed::Unstable(e.to_string()),
+            e => Failed::Other(e.to_string()),
+        })?;
+    let average = run.average().ok_or_else(|| Failed::Other("the run measured nothing".into()))?;
     Ok(Arc::new(FlowResult {
         fields: run.fields(),
         average,
@@ -401,14 +556,55 @@ fn run_to_end(
 }
 
 /// Start `prepared` on a thread of its own (or here, where no thread can start or `wait`).
-pub fn start(prepared: sim::Prepared, backend: FlowBackend, limits: sim::Limits, names: (Vec<String>, Vec<String>), wait: bool) -> Job {
+/// What a run needs to set its lattice up again, with a shorter time step, when it goes unstable.
+#[derive(Clone)]
+pub struct Remake {
+    pub meshes: Vec<Arc<Mesh>>,
+    pub setup: sim::FlowSetup,
+}
+
+/// Why a run stopped short.
+enum Failed {
+    Unstable(String),
+    Other(String),
+}
+
+/// Most a rerun shortens the time step: up to three reruns, at 2, 4 and 8 times shorter.
+const MAX_PACE: f64 = 8.0;
+
+pub fn start(
+    prepared: sim::Prepared,
+    backend: FlowBackend,
+    limits: sim::Limits,
+    names: (Vec<String>, Vec<String>),
+    wait: bool,
+    remake: Option<Remake>,
+) -> Job {
     let progress = Arc::new(Mutex::new(Progress::default()));
     let cancel = Arc::new(AtomicBool::new(false));
     let job = Job { progress: progress.clone(), cancel: cancel.clone() };
     let work = move |prepared: sim::Prepared| {
+        let attempt = || {
+            let (mut prepared, mut limits, mut pace) = (prepared, limits, 1.0);
+            loop {
+                match run_to_end(prepared, backend.as_ref(), limits, &progress, &cancel, names.clone()) {
+                    Ok(r) => return Ok(r),
+                    Err(Failed::Other(e)) => return Err(e),
+                    // Unstable: set up again with steps twice as short, from rest.
+                    Err(Failed::Unstable(e)) => {
+                        let Some(again) = remake.as_ref().filter(|_| pace < MAX_PACE && !cancel.load(Ordering::Relaxed)) else { return Err(e) };
+                        pace *= 2.0;
+                        let refs: Vec<&Mesh> = again.meshes.iter().map(|m| m.as_ref()).collect();
+                        let Ok(mut p) = sim::prepare_paced(&refs, &again.setup, pace) else { return Err(e) };
+                        p.warnings.push(sim::Warning::ShortSteps { pace });
+                        limits.soft_start = true;
+                        prepared = p;
+                    }
+                }
+            }
+        };
         let done =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_to_end(prepared, backend.as_ref(), limits, &progress, &cancel, names)))
-                .unwrap_or_else(|_| Err("internal error in the flow solver".into()));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(attempt)).unwrap_or_else(|_| Err("internal error in the flow solver".into()));
         if let Ok(mut p) = progress.lock() {
             p.done = Some(done);
         }
@@ -482,6 +678,9 @@ pub fn warning_text(w: &sim::Warning) -> String {
         sim::Warning::LowViscosity { tau } => {
             format!("relaxation time {tau:.5}: the air's real viscosity is resolved by the turbulence model (expected at these speeds)")
         }
+        sim::Warning::ShortSteps { pace } => format!(
+            "the flow went unstable at the usual time step (jets faster than the named openings let it foresee), so it ran with steps {pace:.0}x shorter; naming the exits as outlets avoids the rerun"
+        ),
     }
 }
 
@@ -536,7 +735,11 @@ pub fn sidecar_path(design: &str) -> std::path::PathBuf {
 }
 
 fn source_json(o: &OpeningSpec) -> Value {
-    let mut v = json!({"name": o.name, "body": o.body, "face": [o.point.x, o.point.y, o.point.z]});
+    let p = [o.point.x, o.point.y, o.point.z];
+    let mut v = match o.section {
+        Some(n) => json!({"name": o.name, "body": o.body, "section": {"point": p, "normal": [n.x, n.y, n.z]}}),
+        None => json!({"name": o.name, "body": o.body, "face": p}),
+    };
     if let Some(r) = o.region {
         v["region"] = json!(if r == Region::Hole { "hole" } else { "face" });
     }
