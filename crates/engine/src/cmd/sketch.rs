@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 use solidcraft_doc::{FeatureKind, PlaneRef, expr::Kind};
 use solidcraft_geom::{Plane, Vec2, Vec3};
-use solidcraft_sketch::{Analysis, Budget, ConstraintKind, CurveKind, Hold, Sketch, SolveReport, solve, solve_with};
+use solidcraft_sketch::{Analysis, Budget, ConstraintKind, CurveKind, Hold, PointExprs, Sketch, SolveReport, solve, solve_with};
 
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, bool_, expr, num, req_vec2, str_, string_list, vec2, vec3};
@@ -37,7 +37,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("line")
         .key("L")
         .enabled(in_sketch)
-        .params(concat!("points: [[x,y] | \"l1.end\" | {at, ref}…], closed?: bool, construction?: bool, ids?: [..], infer?: bool (add horizontal/vertical)", connect_doc!(), created_doc!())),
+        .params(concat!("points: [[x,y] | \"l1.end\" | {at, ref}…] (x and y each a number or an expression over the design's parameters, \"W / 2\": such a point is fixed where it comes to and follows the parameters; likewise wherever a point argument also takes a point id), closed?: bool, construction?: bool, ids?: [..], infer?: bool (add horizontal/vertical)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.draw.dimensioned", "Draw Dimensioned Sketch Geometry", draw_dimensioned).icon("dimension")
         .enabled(in_sketch)
         .params(concat!("command: sketch creation command, params: object, dimensions: object of role to numeric or expression value; creates geometry and all driving dimensions atomically in one undo step", created_doc!())),
@@ -109,7 +109,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("slot_overall")
         .enabled(in_sketch)
         .params(concat!("p0, p1: overall ends, width", connect_doc!(), created_doc!())),
-    CommandSpec::new("sketch.point", "Point", draw_point).at("SKETCH", "CREATE").icon("point").enabled(in_sketch).params(concat!("point: [x,y], id?", connect_doc!(), created_doc!())),
+    CommandSpec::new("sketch.point", "Point", draw_point).at("SKETCH", "CREATE").icon("point").enabled(in_sketch).params(concat!("point: [x,y] (each a number or an expression over the design's parameters: the point is then fixed where it comes to and follows them), id?", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.dimension", "Sketch Dimension", dimension).at("SKETCH", "CREATE").icon("dimension").key("D").enabled(in_sketch).params(
         "entities: [refs], type?: auto|distance|horizontal|vertical|length|radius|diameter|angle, value?: number or expression (default: current; a bare number is in the design's units, e.g. 2 means 2 in in an inch design; give a unit such as \"50 mm\" to override); text_at?: [x, y]. Two points or a line off the axes: with auto, text_at across from them is the distance between them, above or below them horizontal, beside them vertical. Two lines: the angle between them (acute, or 180° − it when the value is nearer that) unless text_at picks a sector. A dimension the sketch already determines is refused (naming what determines it); if_redundant?: \"driven\" places it as a driven (reference) dimension instead. scale_sketch?: bool (the dimension tool sends true): when this is the sketch's first length dimension and nothing in the sketch fixes a size (no other driving length dimension, nothing fixed or projected), the whole sketch scales about its origin to the value instead of distorting. Returns measured in unit (mm or deg), and scaled: the factor when the sketch was scaled",
     ),
@@ -434,9 +434,15 @@ impl PArg {
     }
 }
 
-pub(super) fn parg(sk: &Sketch, v: &Value, cmd: &str) -> Result<PArg> {
+pub(super) fn parg(sk: &mut Sketch, doc: &solidcraft_doc::Document, v: &Value, cmd: &str) -> Result<PArg> {
     if let Some(p) = vec2(v) {
         return Ok(PArg::At(p));
+    }
+    if let Some((at, exprs)) = expr_point(doc, v, cmd)? {
+        return Ok(match exprs {
+            Some(exprs) => PArg::Ref(add_placed_point(sk, at, exprs, None)?, at),
+            None => PArg::At(at),
+        });
     }
     let r = match v {
         Value::String(r) => Some(r.as_str()),
@@ -453,8 +459,34 @@ pub(super) fn parg(sk: &Sketch, v: &Value, cmd: &str) -> Result<PArg> {
     Err(bad(cmd, "a point must be [x, y], a point id like \"l1.end\", or {at, ref}"))
 }
 
-pub(super) fn req_parg(sk: &Sketch, p: &Value, k: &str, cmd: &str) -> Result<PArg> {
-    parg(sk, p.get(k).ok_or_else(|| bad(cmd, format!("missing `{k}`")))?, cmd)
+pub(super) fn req_parg(sk: &mut Sketch, doc: &solidcraft_doc::Document, p: &Value, k: &str, cmd: &str) -> Result<PArg> {
+    parg(sk, doc, p.get(k).ok_or_else(|| bad(cmd, format!("missing `{k}`")))?, cmd)
+}
+
+const POINT_MUST: &str = "a point's coordinates must be numbers or expressions over the design's parameters";
+
+/// A point given as `[x, y]` with a coordinate typed as text: where it is now and, when a
+/// coordinate names a parameter, the expressions that place it (none: a plain point).
+pub(super) fn expr_point(doc: &solidcraft_doc::Document, v: &Value, cmd: &str) -> Result<Option<(Vec2, Option<PointExprs>)>> {
+    let Some([x, y]) = v.as_array().map(Vec::as_slice) else { return Ok(None) };
+    if !x.is_string() && !y.is_string() {
+        return Ok(None);
+    }
+    let (px, ex) = super::sketch_create::text_number(doc, x, cmd, "point x", POINT_MUST, false)?;
+    let (py, ey) = super::sketch_create::text_number(doc, y, cmd, "point y", POINT_MUST, false)?;
+    let exprs = (ex.is_some() || ey.is_some()).then_some(PointExprs { x: ex, y: ey });
+    Ok(Some((Vec2::new(px, py), exprs)))
+}
+
+/// A new point placed by parameters: fixed where its expressions come to, and moved there
+/// again whenever the parameters change.
+pub(super) fn add_placed_point(sk: &mut Sketch, at: Vec2, exprs: PointExprs, id: Option<&str>) -> Result<usize> {
+    let i = sk.add_point(at, id)?;
+    if let Some(q) = sk.points.get_mut(i) {
+        q.fixed = true;
+        q.exprs = Some(Box::new(exprs));
+    }
+    Ok(i)
 }
 
 pub(super) fn curve_ref(sk: &Sketch, v: Option<&Value>, cmd: &str, what: &str) -> Result<usize> {
@@ -764,8 +796,8 @@ fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
     let closed = bool_(p, "closed").unwrap_or(false);
     let infer = bool_(p, "infer").unwrap_or(false);
     let ids = string_list(p, "ids");
-    let ((curves, cons), info) = draw(s, p, cmd, |sk, _| {
-        let args: Vec<PArg> = list.iter().map(|v| parg(sk, v, cmd)).collect::<Result<_>>()?;
+    let ((curves, cons), info) = draw(s, p, cmd, |sk, doc| {
+        let args: Vec<PArg> = list.iter().map(|v| parg(sk, doc, v, cmd)).collect::<Result<_>>()?;
         let n = args.len();
         let segs = if closed { n } else { n - 1 };
         let mut pts: Vec<Option<usize>> = args.iter().map(PArg::idx).collect();
@@ -1097,8 +1129,8 @@ fn circle_center(s: &mut Session, p: &Value) -> Result<Value> {
     let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let r = radius_arg(p, cmd)?;
     let id = str_(p, "id").map(str::to_string);
-    let (out, info) = draw(s, p, cmd, |sk, _| {
-        let c = req_parg(sk, p, "center", cmd)?;
+    let (out, info) = draw(s, p, cmd, |sk, doc| {
+        let c = req_parg(sk, doc, p, "center", cmd)?;
         let ci = sk.add_circle(c.pos(), r, c.idx(), id.as_deref())?;
         mark_construction(sk, &[ci], p);
         Ok((ids_of(sk, &[ci]), Vec::new()))
@@ -1149,8 +1181,8 @@ fn arc_three(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.arc.three_point";
     let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let id = str_(p, "id").map(str::to_string);
-    let (out, info) = draw(s, p, cmd, |sk, _| {
-        let (a, b) = (req_parg(sk, p, "start", cmd)?, req_parg(sk, p, "end", cmd)?);
+    let (out, info) = draw(s, p, cmd, |sk, doc| {
+        let (a, b) = (req_parg(sk, doc, p, "start", cmd)?, req_parg(sk, doc, p, "end", cmd)?);
         let t = req_vec2(cmd, p, "through")?;
         let (o, _) = circumcircle(a.pos(), t, b.pos()).ok_or_else(|| bad(cmd, "the points are collinear"))?;
         // Counter-clockwise from start to end must pass the through point; otherwise swap.
@@ -1172,9 +1204,9 @@ fn arc_center(s: &mut Session, p: &Value) -> Result<Value> {
     let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let id = str_(p, "id").map(str::to_string);
     let sweep = num(p, "sweep");
-    let (out, info) = draw(s, p, cmd, |sk, _| {
-        let c = req_parg(sk, p, "center", cmd)?;
-        let a = req_parg(sk, p, "start", cmd)?;
+    let (out, info) = draw(s, p, cmd, |sk, doc| {
+        let c = req_parg(sk, doc, p, "center", cmd)?;
+        let a = req_parg(sk, doc, p, "start", cmd)?;
         if let Some(sw) = sweep {
             // Start point and signed sweep (degrees); clockwise arcs keep `<id>.start` at the start.
             if !(sw.abs() > 1e-9 && sw.abs() < 360.0) {
@@ -1201,7 +1233,7 @@ fn arc_center(s: &mut Session, p: &Value) -> Result<Value> {
             };
             return Ok((ids_of(sk, &[ci]), Vec::new()));
         }
-        let b = req_parg(sk, p, "end", cmd)?;
+        let b = req_parg(sk, doc, p, "end", cmd)?;
         let ci = sk.add_arc(c.pos(), a.pos(), b.pos(), [c.idx(), a.idx(), b.idx()], id.as_deref())?;
         Ok((ids_of(sk, &[ci]), Vec::new()))
     })?;
@@ -1327,10 +1359,13 @@ fn slot_overall(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn draw_point(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.point";
-    let at = req_vec2(cmd, p, "point")?;
     let id = str_(p, "id").map(str::to_string);
-    let ((pid, cons), info) = edit(s, p, cmd, false, |sk, _| {
-        let i = sk.add_point(at, id.as_deref())?;
+    let ((pid, cons), info) = edit(s, p, cmd, false, |sk, doc| {
+        let i = match expr_point(doc, p.get("point").unwrap_or(&Value::Null), cmd)? {
+            Some((at, Some(exprs))) => add_placed_point(sk, at, exprs, id.as_deref())?,
+            Some((at, None)) => sk.add_point(at, id.as_deref())?,
+            None => sk.add_point(req_vec2(cmd, p, "point")?, id.as_deref())?,
+        };
         let cons = connect_points(sk, i, p)?;
         Ok((sk.points.get(i).map(|q| q.id.clone()).unwrap_or_default(), cons))
     })?;
@@ -2547,6 +2582,9 @@ mod ids_tests;
 #[cfg(test)]
 #[path = "sketch_infinite_tests.rs"]
 mod infinite_tests;
+#[cfg(test)]
+#[path = "sketch_point_expr_tests.rs"]
+mod point_expr_tests;
 #[cfg(test)]
 #[path = "sketch_redundant_tests.rs"]
 mod redundant_tests;
