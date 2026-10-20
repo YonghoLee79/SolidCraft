@@ -1210,7 +1210,7 @@ fn extrude_cut_into_a_face_beside_rounds() {
 /// whole body would take them too: the cut takes only what lies over the face, at height z from
 /// x = 0 to the slanted face at x = x0 + z.
 #[test]
-fn extrude_cut_into_the_top_face_of_a_rounded_block_takes_only_what_lies_over_it() {
+fn extrude_cut_into_a_rounded_block_top() {
     let (h, r, x0, d) = (8.485281374238571_f64, 3.8_f64, 11.514718625761429_f64, 2.0_f64);
     let before = volume(&replay(include_str!("../../../examples/regressions/extrude_face_rounded_by_fillets.json")), "Body1");
     let cut = rounded_block_and(
