@@ -771,7 +771,8 @@ impl Dialog {
                         .body(body)
                         .map(|b| {
                             let m = b.mesh();
-                            m.tangent_chain(*index, 2f64.to_radians())
+                            // Not over an earlier round's end, where the fillet stops.
+                            b.fillet_tangent_chain(*index)
                                 .into_iter()
                                 .filter_map(|i| m.edges.get(i).map(|e| Sel::Edge { body: body.clone(), index: i, point: polyline_mid(e) }))
                                 .collect::<Vec<_>>()
@@ -1049,8 +1050,9 @@ impl Dialog {
             && let Some(b) = s.world_state().body(body)
         {
             let m = b.mesh();
-            picked = m
-                .tangent_chain(*index, 2f64.to_radians())
+            // Not over an earlier round's end, where the fillet stops.
+            picked = b
+                .fillet_tangent_chain(*index)
                 .into_iter()
                 .filter_map(|i| m.edges.get(i).map(|e| Sel::Edge { body: body.clone(), index: i, point: polyline_mid(e) }))
                 .collect();
