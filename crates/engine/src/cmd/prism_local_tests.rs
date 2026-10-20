@@ -92,3 +92,38 @@ fn a_ring_cut_round_a_counterbored_hole_in_a_chamfered_disc() {
         assert!((taken - want).abs() < want * 1e-3, "chamfer {chamfer}: {taken} taken, want {want}");
     }
 }
+
+/// #3454: a keyhole cut from the back of a plate with rounded corners and a rounded top rim. The
+/// head slot's round end lies on the entry hole's wall. The column round it is cut above the
+/// keyhole, across the plate's rounded corners: that cut's edges there must be read as the arcs
+/// they are, or the column is not taken as a prism.
+#[test]
+fn a_keyhole_slot_on_its_entry_hole_in_a_plate_with_a_rounded_rim() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane":"XY"}));
+    run(&mut s, "sketch.rectangle.rounded", json!({"p0":[0,0],"p1":[60,30],"radius":4}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance":5}));
+    let k = 4.0 * (1.0 - std::f64::consts::FRAC_1_SQRT_2);
+    run(
+        &mut s,
+        "solid.fillet",
+        json!({"radius":1,"edges":[[30,0,5],[30,30,5],[0,15,5],[60,15,5],[k,k,5],[60.0-k,k,5],[k,30.0-k,5],[60.0-k,30.0-k,5]]}),
+    );
+    // The entry hole and the neck, from the back.
+    run(&mut s, "sketch.create", json!({"plane":"XY"}));
+    run(&mut s, "sketch.circle.center", json!({"center":[30,10],"diameter":8}));
+    run(&mut s, "sketch.slot.center_to_center", json!({"p0":[30,10],"p1":[30,20],"width":3.2}));
+    run(&mut s, "sketch.finish", json!({}));
+    cut(&mut s, json!({"distance":3.3,"operation":"cut","profiles":"all"}));
+    // The head's slot, as wide as the entry, above the neck.
+    run(&mut s, "sketch.create", json!({"plane":"XY","offset":1.5}));
+    run(&mut s, "sketch.slot.center_to_center", json!({"p0":[30,10],"p1":[30,20],"width":8}));
+    run(&mut s, "sketch.finish", json!({}));
+    let taken = cut(&mut s, json!({"distance":1.8,"operation":"cut","profiles":"all"}));
+    // The slot less what the entry and neck took at its level: the neck's part outside the
+    // entry (its strip less the circle's segment across it) and its round end.
+    let neck = 3.2 * 10.0 - (1.6 * (16.0f64 - 1.6 * 1.6).sqrt() + 16.0 * (0.4f64).asin()) + PI * 1.6 * 1.6 / 2.0;
+    let want = 1.8 * (8.0 * 10.0 - neck);
+    assert!((taken - want).abs() < want * 1e-3, "{taken} taken, want {want}");
+}

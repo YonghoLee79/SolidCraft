@@ -485,19 +485,47 @@ pub(crate) fn fit(pts: &[mt::Point3], scale: f64) -> Result<mt::Curve> {
     Ok(mt::Curve::BSplineCurve(bsp))
 }
 
+thread_local! {
+    /// Set while [`with_wall_arcs`] runs: a plane square to a cylinder's axis splits it on an
+    /// exact arc as well.
+    static WALL_ARCS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `f` with a plane square to a cylinder's axis splitting the cylinder on an exact arc, not a
+/// fitted curve: for a piece the 2D route is to read as a prism (a column cut across a plate's
+/// rounded corners, #3454). Only there: the booleans that later meet such a piece's walls (a
+/// bore joined over a hole) are made for the fitted curve.
+pub(crate) fn with_wall_arcs<T>(f: impl FnOnce() -> T) -> T {
+    /// Puts the flag back however `f` ends, a caught panic included.
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            WALL_ARCS.with(|c| c.set(self.0));
+        }
+    }
+    let _reset = Reset(WALL_ARCS.with(|c| c.replace(true)));
+    f()
+}
+
 /// The curve of a split line: an exact circular arc when a cylinder meets a plane square to its
-/// axis (a sketch arc splitting a planar face), else [`fit`].
+/// axis (a sketch arc splitting a planar face; under [`with_wall_arcs`], a plane splitting the
+/// cylinder too), else [`fit`].
 fn fit_on(g: &Field, face: &mt::Face, pts: &[mt::Point3], scale: f64) -> Result<mt::Curve> {
-    if let (Field::Cylinder { axis, .. }, mt::Surface::Plane(pl)) = (g, face.surface())
+    let square = match (g, face.surface()) {
+        (Field::Cylinder { axis, .. }, mt::Surface::Plane(pl)) => pl.normal().cross(crate::body::v3(axis.vec())).magnitude() < 1e-9,
+        (Field::Plane { n, .. }, s) if WALL_ARCS.with(std::cell::Cell::get) => match surface_field(&s) {
+            Field::Cylinder { axis, .. } => n.normalized().is_some_and(|n| n.cross(axis.vec()).len() < 1e-9),
+            _ => false,
+        },
+        _ => false,
+    };
+    if square
         && let (Some(a), Some(b), Some(m)) = (pts.first(), pts.last(), pts.get(pts.len() / 2))
         && a.distance(*b) > scale * 1e-9
     {
-        let n = pl.normal();
-        if n.cross(crate::body::v3(axis.vec())).magnitude() < 1e-9 {
-            let (va, vb) = (mt::Vertex::new(*a), mt::Vertex::new(*b));
-            let e = guard("split arc", || Ok(mt::builder::circle_arc(&va, &vb, *m)))?;
-            return Ok(e.curve());
-        }
+        let (va, vb) = (mt::Vertex::new(*a), mt::Vertex::new(*b));
+        let e = guard("split arc", || Ok(mt::builder::circle_arc(&va, &vb, *m)))?;
+        return Ok(e.curve());
     }
     fit(pts, scale)
 }

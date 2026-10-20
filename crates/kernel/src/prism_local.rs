@@ -84,6 +84,8 @@ pub(crate) fn local_prism_boolean(a: &Body, b: &Body, op: BoolOp) -> Option<Resu
         // The sides already cut (axis, positive side): each is cut once.
         let mut cut: Vec<(usize, bool)> = Vec::new();
         let mut box_cuts = 0;
+        // Where each cut was made (axis, place along it).
+        let mut planes: Vec<(usize, f64)> = Vec::new();
         for _ in 0..MAX_CUTS {
             let survey = survey(&middle.0, d, tol, mesh_tol, axes).ok_or_else(|| fail("the middle piece"))?;
             let off = survey.faces();
@@ -99,7 +101,7 @@ pub(crate) fn local_prism_boolean(a: &Body, b: &Body, op: BoolOp) -> Option<Resu
             // plane whose section through the piece doesn't close is passed over). The cut's
             // half boxes, if it takes them, are operands `slot` and `slot + 1`.
             let slot = 2 * cut.len();
-            let (away, kept) = places
+            let (away, kept, at) = places
                 .iter()
                 .enumerate()
                 .find_map(|(i, x)| {
@@ -110,11 +112,12 @@ pub(crate) fn local_prism_boolean(a: &Body, b: &Body, op: BoolOp) -> Option<Resu
                     let verify = survey.pieces.iter().any(|(_, e)| e[k].0 < *x && e[k].1 > *x);
                     let r = split(&middle, &plane, axis, *x, keep_positive, slot, with_boxes, verify)?;
                     box_cuts += usize::from(r.2);
-                    Some((r.0, r.1))
+                    Some((r.0, r.1, *x))
                 })
                 .ok_or_else(|| fail("a cut beside the tool"))?;
             outside.extend(away);
             middle = kept;
+            planes.push((k, at));
         }
         if !survey(&middle.0, d, tol, mesh_tol, axes).is_some_and(|s| s.pieces.is_empty()) {
             return Err(fail("other faces are left round the tool"));
@@ -123,9 +126,34 @@ pub(crate) fn local_prism_boolean(a: &Body, b: &Body, op: BoolOp) -> Option<Resu
             Some(r) => r?,
             None => return Err(fail("the column is not a prism along the tool")),
         };
-        crate::polybool::reassembled(a, b, op, &middle, r, outside, OPERANDS, &fail)
+        let glued = crate::polybool::reassembled(a, b, op, &middle, r, outside, OPERANDS, &fail)?;
+        // The pieces close up along every cut. A face left in a cut's plane that `a` had no face
+        // in is a seam the glue missed (a circle the column's section divides at other points
+        // than the piece beside it, #3454), inside the result rather than a face of it.
+        let seam_tol = size * 1e-6 + 1e-9;
+        if let Some(body) = &glued
+            && planes.iter().any(|(k, x)| faces_in(body, axes[*k], *x, seam_tol) > faces_in(a, axes[*k], *x, seam_tol))
+        {
+            return Err(fail("the pieces did not close up along a cut"));
+        }
+        Ok(glued)
     };
     Some(run())
+}
+
+/// How many of `body`'s planar faces lie in the plane at `x` along `axis`: every vertex of their
+/// boundaries within `tol` of it.
+fn faces_in(body: &Body, axis: Vec3, x: f64, tol: f64) -> usize {
+    body.solid
+        .face_iter()
+        .filter(|f| matches!(f.surface(), mt::Surface::Plane(_)))
+        .filter(|f| {
+            f.absolute_boundaries().iter().flat_map(|w| w.vertex_iter()).all(|v| {
+                let p = v.point();
+                (Vec3::new(p.x, p.y, p.z).dot(axis) - x).abs() <= tol
+            })
+        })
+        .count()
 }
 
 /// `piece` split by `plane` (at `x` along `axis`, square to it): the parts away from the tool
@@ -146,7 +174,7 @@ fn split(
     verify: bool,
 ) -> Option<(Vec<Traced>, Traced, bool)> {
     if !verify {
-        let (away, kept) = crate::polybool::split_beside(piece, plane, axis, x, keep_positive)?;
+        let (away, kept) = crate::splitface::with_wall_arcs(|| crate::polybool::split_beside(piece, plane, axis, x, keep_positive))?;
         return Some((away, kept, false));
     }
     let whole = crate::measure(&piece.0).ok()?.volume;
@@ -154,7 +182,7 @@ fn split(
         let sum: Option<f64> = away.iter().chain([kept]).map(|(p, _)| crate::measure(p).ok().map(|m| m.volume)).sum();
         sum.is_some_and(|sum| (sum - whole).abs() <= whole.abs() * 5e-5 + 1e-9)
     };
-    if let Some((away, kept)) = crate::polybool::split_beside(piece, plane, axis, x, keep_positive)
+    if let Some((away, kept)) = crate::splitface::with_wall_arcs(|| crate::polybool::split_beside(piece, plane, axis, x, keep_positive))
         && adds_up(&away, &kept)
     {
         return Some((away, kept, false));
