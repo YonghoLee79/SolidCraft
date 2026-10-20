@@ -2118,3 +2118,58 @@ fn convert_mesh_asks_for_the_body_and_converts_the_selected_one() {
     let state = h.app.session.model.state();
     assert!(!state.body("Mesh").unwrap().body.is_mesh(), "rebuilt as faces");
 }
+
+/// #3745: hovering a large body never waits for its pick index. A long modelled thread's mesh
+/// has a quarter of a million triangles and its index took a third of a second to make, on the
+/// first hover, in the frame. Now the index is made on a worker and the first hovers scan the
+/// mesh: the first hover takes a small part of what making the index takes, and still finds
+/// the face under the pointer.
+#[test]
+fn hovering_a_large_body_does_not_wait_for_its_pick_index() {
+    // A closed ball of 300 000 triangles, inserted as a mesh body.
+    let (rings, segments) = (500usize, 300usize);
+    let at = |i: usize, j: usize| {
+        let (theta, phi) = (std::f64::consts::PI * i as f64 / rings as f64, std::f64::consts::TAU * j as f64 / segments as f64);
+        [20.0 * theta.sin() * phi.cos(), 20.0 * theta.sin() * phi.sin(), 20.0 * theta.cos()]
+    };
+    let mut stl = vec![0u8; 80];
+    let mut tris: Vec<[[f64; 3]; 3]> = Vec::new();
+    for i in 0..rings {
+        for j in 0..segments {
+            let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+            if i > 0 {
+                tris.push([a, b, d]);
+            }
+            if i + 1 < rings {
+                tris.push([b, c, d]);
+            }
+        }
+    }
+    stl.extend((tris.len() as u32).to_le_bytes());
+    for t in &tris {
+        stl.extend([0u8; 12]);
+        for p in t {
+            for c in p {
+                stl.extend((*c as f32).to_le_bytes());
+            }
+        }
+        stl.extend([0u8; 2]);
+    }
+    let mut h = crate::scenario::Harness::new();
+    let path = h.dir.join("ball.stl");
+    std::fs::write(&path, stl).unwrap();
+    h.app.run("file.insert_mesh", json!({"path": path.to_string_lossy()})).unwrap();
+    let mesh = h.app.session.world_state().bodies[0].mesh();
+    assert!(mesh.triangles.len() > 250_000, "{}", mesh.triangles.len());
+    let t = std::time::Instant::now();
+    let _ = solidcraft_engine::geom::MeshIndex::new(&mesh);
+    let index_ms = t.elapsed().as_secs_f64() * 1000.0;
+    h.app.fit_view();
+    h.frames(3);
+    let at = h.at(&json!({"world": [0.0, -20.0, 0.0]})).unwrap();
+    let t = std::time::Instant::now();
+    h.step(&json!({"move": at})).unwrap();
+    let hover_ms = t.elapsed().as_secs_f64() * 1000.0;
+    assert!(matches!(h.app.viewport.hover, Some(crate::viewport::Hit::Face { .. })), "{:?}", h.app.viewport.hover);
+    assert!(hover_ms < index_ms / 3.0, "the first hover took {hover_ms:.1} ms; making the index takes {index_ms:.1} ms");
+}

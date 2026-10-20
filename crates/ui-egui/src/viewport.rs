@@ -468,7 +468,9 @@ fn shown_mesh(
     (app.viewport.gpu.is_some_and(|g| g.tess) && opaque())
         .then(|| drawn_plan(app, b, true))
         .flatten()
-        .and_then(|_| b.plan_mesh())
+        // A large body's plan mesh is made on a worker: until then its faces are lit on the
+        // mesh drawn here (#3745).
+        .and_then(|_| b.plan_mesh_soon())
         .unwrap_or_else(|| drawn_mesh(app, b))
 }
 
@@ -1343,7 +1345,7 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
             }
         }
         let m = b.mesh();
-        if let Some((t, ti)) = crate::pick_index::raycast(&app.viewport.pick_index.of(&m), &m, o, d) {
+        if let Some((t, ti)) = crate::pick_index::raycast(app.viewport.pick_index.of(&m).as_deref(), &m, o, d) {
             let fi = m.tri_face.get(ti).copied().unwrap_or(0) as usize;
             let hit = Hit::Face { body: b.name.clone(), index: fi, point: o + d * t };
             if bestf.as_ref().is_none_or(|(bt, _)| t < *bt) {
@@ -1381,7 +1383,7 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
         // them, so ties go the same way.
         let near = match &seen {
             Some(seen) => seen.segments(i, &m),
-            None => crate::pick_index::segments_near(&app.viewport.pick_index.of(&m), &m, o, d, reach),
+            None => crate::pick_index::segments_near(app.viewport.pick_index.of(&m).as_deref(), &m, o, d, reach),
         };
         let mut last_edge = None;
         for (ei, si) in near {

@@ -163,6 +163,40 @@ impl ModelBody {
             .clone()
     }
 
+    /// [`ModelBody::plan_mesh`] if it is made already; otherwise it is made on a worker thread
+    /// (once, however often this is asked) and `None` comes back meanwhile, so a caller drawing a
+    /// frame (a face highlighted under the pointer) is not held up by a large body's plan
+    /// (#3745): the plan mesh of a long modelled thread takes most of a second. The browser
+    /// build has no threads: there it is made now.
+    pub fn plan_mesh_soon(&self) -> Option<Arc<Mesh>> {
+        let q = crate::display_quality::current();
+        let cell = self.plan_mesh.get(q.index())?;
+        if let Some(mesh) = cell.get() {
+            return mesh.clone();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            static WARMING: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+            let key = Arc::as_ptr(&self.plan_mesh) as usize + q.index();
+            let Ok(mut warming) = WARMING.lock() else { return None };
+            if warming.contains(&key) {
+                return None;
+            }
+            let body = self.clone();
+            let started = std::thread::Builder::new().name("plan-mesh".into()).spawn(move || {
+                let _ = body.plan_mesh_at(q);
+                if let Ok(mut warming) = WARMING.lock() {
+                    warming.retain(|k| *k != key);
+                }
+            });
+            if started.is_ok() {
+                warming.push(key);
+                return None;
+            }
+        }
+        self.plan_mesh_at(q)
+    }
+
     /// The display plan and its mesh `k` steps finer than `q` (view-dependent refinement, #1320;
     /// see [`crate::display_quality::refinement_for`]). Step 0 is the cached plan at `q`; finer
     /// steps are made on each call and kept by the viewport, which evicts them when it runs over

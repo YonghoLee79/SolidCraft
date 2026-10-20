@@ -834,6 +834,14 @@ impl SolveApp {
         workspace::sync_context(self);
     }
 
+    /// Start the last tool or dialog started again (Repeat in the menus, Shift+R; #3045).
+    /// `false` when none was started yet.
+    pub fn repeat_last(&mut self) -> bool {
+        let Some((id, _)) = self.last_command.clone() else { return false };
+        self.start(&id);
+        true
+    }
+
     /// Start a command the way a toolbar click does: interactive tools and dialogs for commands
     /// that have them, otherwise run it with defaults.
     pub fn start(&mut self, id: &str) {
