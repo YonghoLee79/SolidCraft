@@ -1,6 +1,7 @@
 //! Pre-selection fills every input of a command, each item going to the input that takes its
 //! type, whether the command starts from a shortcut, the toolbar or a menu.
 
+use crate::test_support::app_with_script as app_with;
 use serde_json::json;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::geom::Vec3;
@@ -51,8 +52,8 @@ fn confirming_coplanar_body_faces_uses_one_atomic_extrusion() {
     assert!((volume - 11_968.0).abs() < 1e-5, "{volume}");
 }
 
+use crate::SolveApp;
 use crate::dialogs::{Dialog, Kind, apply_commands};
-use crate::{Services, SolveApp};
 
 #[test]
 fn feature_mirror_and_patterns_reopen_as_feature_replays_even_for_body_creators() {
@@ -471,12 +472,6 @@ fn cylinder_emboss_edit_retains_second_source_and_author_paths_and_all_profiles(
     assert_eq!(after.kind, before.kind);
     assert_eq!(after.face_names, before.face_names);
     assert_eq!(h.app.session.active_component, 0);
-}
-
-fn app_with(script: serde_json::Value) -> SolveApp {
-    let mut s = Session::default();
-    s.run_script(&script).unwrap();
-    SolveApp::new(s, Services::default())
 }
 
 #[test]
@@ -1322,9 +1317,13 @@ fn thread_choices_can_start_without_a_face_and_recover_from_invalid_text() {
     h.step(&json!({"text":"Munknown"})).unwrap();
     h.frames(2);
     assert!(matches!(&h.app.dialog.as_ref().unwrap().kind, Kind::Thread { designation, .. } if designation == "Munknown"));
-    for handle in ["dialog:Size", "dialog:Size:8 mm"] {
-        h.step(&json!({"click":{"handle":handle}})).unwrap();
-    }
+    h.step(&json!({"click":{"handle":"dialog:Size"}})).unwrap();
+    // Plex's taller rows put 8 mm below the first page of this long popup. Scroll the
+    // visible list before clicking its choice, as a person would, rather than a clipped handle.
+    let first = crate::scenario::handle_at("dialog:Size:1.6 mm").unwrap();
+    h.call("ui.scroll", json!({"x":first.x,"y":first.y,"delta":-60}));
+    h.frames(12);
+    h.step(&json!({"click":{"handle":"dialog:Size:8 mm"}})).unwrap();
     assert!(matches!(&h.app.dialog.as_ref().unwrap().kind, Kind::Thread { designation, .. } if designation == "M8x1.25"));
     assert!(apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).is_err(), "a face is still required");
 }
@@ -1421,7 +1420,7 @@ fn boundary_fill_finds_the_cells_and_fills_the_ticked_ones() {
     d.inputs[0].items = vec![Sel::Body { name: "Body1".into() }, Sel::Body { name: "Body2".into() }];
     app.dialog = Some(d);
     // The dialog finds the cells on its next frame.
-    let ctx = egui::Context::default();
+    let ctx = crate::fonts::test_context();
     ctx.run_ui(Default::default(), |ui| crate::dialogs::show(&mut app, ui.ctx())).textures_delta.clear();
     let mut d = app.dialog.take().unwrap();
     let Kind::BoundaryFill { cells, .. } = &mut d.kind else { panic!() };

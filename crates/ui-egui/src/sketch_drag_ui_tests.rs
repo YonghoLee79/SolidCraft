@@ -6,6 +6,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::geom::Vec2;
 
 use crate::scenario::Harness;
+use crate::test_support::play;
 
 #[test]
 fn text_move_drag_is_one_editable_unit_and_escape_restores_the_gesture() {
@@ -83,13 +84,6 @@ fn press_and_move(h: &mut Harness, path: &[egui::Pos2]) {
 fn release(h: &mut Harness, at: egui::Pos2) {
     h.app.synthetic.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
     play(h);
-}
-
-fn play(h: &mut Harness) {
-    while !h.app.synthetic.is_empty() {
-        h.frame();
-    }
-    h.frames(2);
 }
 
 /// Points from `a` to `b` in `n` equal moves (without `a`).
@@ -205,9 +199,15 @@ fn a_dragged_line_that_stops_short_stays_under_the_cursor_when_it_can_follow_aga
         run(&mut h, "sketch.dimension", json!({"entities": [l], "value": 10}));
     }
     run(&mut h, "sketch.constraint.horizontal_vertical", json!({"line": "l3"}));
-    let grab = screen(&mut h, x + 5.0, y);
-    let far = screen(&mut h, x + 11.0, y);
-    let back = screen(&mut h, x + 7.0, y);
+    // Dimension text uses the bundled font's actual bounds. Grab an exposed interior point
+    // of the curve so this tests a curve drag rather than dragging an overlapping value label.
+    let grab_offset = [5.0, 6.0, 4.0, 7.0, 3.0]
+        .into_iter()
+        .find(|offset| crate::dim_view::hit_text(screen(&mut h, x + offset, y)).is_none())
+        .expect("an exposed interior point of the line");
+    let grab = screen(&mut h, x + grab_offset, y);
+    let far = screen(&mut h, x + grab_offset + 6.0, y);
+    let back = screen(&mut h, x + grab_offset + 2.0, y);
     let mut path = vec![grab];
     path.extend(steps(grab, far, 8));
     path.extend(steps(far, back, 4));

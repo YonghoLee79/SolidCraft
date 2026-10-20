@@ -220,7 +220,7 @@ mod tests {
 
     impl Win {
         fn new(width: f32) -> Self {
-            let ctx = egui::Context::default();
+            let ctx = crate::fonts::test_context();
             let mut app = SolveApp::new(Session::default(), Default::default());
             app.custom_titlebar = true;
             Self { ctx, app, width, time: 0.0, maximized: false, full: false }

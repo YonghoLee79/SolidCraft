@@ -2,6 +2,7 @@
 //! picture of the design rendered from it. Shown on launch without a file and from the house
 //! button or the first document tab; selecting a design returns to its view.
 
+use crate::fonts::RichTextExt as _;
 use std::collections::HashMap;
 
 use egui::{Color32, CornerRadius, RichText, Sense, Stroke, vec2};
@@ -454,9 +455,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(36, 24))).show(ui, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("SolidCraft").size(26.0).strong().color(t.text));
+                ui.label(RichText::new("SolidCraft").size(crate::theme::Tokens::get().font_display).semibold().color(t.text));
                 ui.add_space(t.space_12);
-                ui.label(RichText::new(crate::i18n::tr_label("Start")).size(16.0).color(t.text_dim));
+                ui.label(RichText::new(crate::i18n::tr_label("Start")).size(crate::theme::Tokens::get().font_intro).color(t.text_dim));
             });
             ui.add_space(t.space_16);
             ui.horizontal(|ui| {
@@ -464,7 +465,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     // The label sets the width: a translation longer than the English one widens
                     // the button instead of running past its edge.
                     let ink_text = if primary { t.on_accent } else { t.text };
-                    let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(15.0), ink_text);
+                    let galley = ui.painter().layout_no_wrap(
+                        label.to_owned(),
+                        egui::FontId::proportional(crate::theme::Tokens::get().font_subtitle),
+                        ink_text,
+                    );
                     let width = (56.0 + galley.size().x + 20.0).max(170.0);
                     let (r, resp) = ui.allocate_exact_size(vec2(width, 64.0), Sense::click());
                     let fill = if primary {
@@ -552,12 +557,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                         .on_hover_text(p.as_str());
                     crate::scenario::publish_handle(&format!("home:recent:{i}"), response.rect.center());
                     response.context_menu(|ui| {
-                        if ui.button(crate::i18n::tr_label("Remove from list")).clicked() {
+                        if crate::context_menu::button(ui, crate::i18n::tr_label("Remove from list"), "delete").clicked() {
                             app.home.recent.retain(|x| x != p);
                             app.home.opened_at.remove(p);
                             ui.close();
                         }
-                        if !cfg!(target_arch = "wasm32") && ui.button(crate::i18n::tr_label("Show in folder")).clicked() {
+                        if !cfg!(target_arch = "wasm32")
+                            && crate::context_menu::button(ui, crate::i18n::tr_label("Show in folder"), "folder").clicked()
+                        {
                             if let Some(show) = &app.services.show_in_folder {
                                 show(p);
                             }
@@ -596,7 +603,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
 
 fn section(ui: &mut egui::Ui, title: &str) {
     let t = Tokens::get();
-    ui.label(RichText::new(title).size(15.0).strong().color(t.text));
+    ui.label(RichText::new(title).size(crate::theme::Tokens::get().font_subtitle).semibold().color(t.text));
     ui.add_space(t.space_8);
 }
 

@@ -481,7 +481,7 @@ pub fn show(app: &mut SolveApp, ui: &egui::Ui, painter: &egui::Painter, proj: &P
     let tk = Tokens::get();
     let is_sel = |id: &str| app.session.selection.iter().any(|s| matches!(s, Sel::SketchConstraint { id: x } if x == id));
     let hover = ui.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(proj.rect)).and_then(hit);
-    let font = FontId::proportional(12.0);
+    let font = FontId::monospace(crate::theme::Tokens::get().font_body);
     let centres = chain_centres(sk);
     let draft_sketch = draft.as_ref().and_then(|(_, d)| d.preview.sketch(d.sketch));
     let draft_centres = draft_sketch.map(|solved| chain_centres(&solved.sketch));
@@ -696,48 +696,50 @@ fn edit_box(app: &mut SolveApp, ctx: &egui::Context) {
         anchor.y = anchor.y.clamp(rect.top(), (rect.bottom() - 80.0).max(rect.top()));
     }
     crate::frame::area(egui::Id::new("sc_dim_edit_area")).fixed_pos(anchor).order(egui::Order::Foreground).show(ctx, |ui| {
-        egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(3, 1)).show(ui, |ui| {
-            ui.set_max_width(popup_width);
-            ui.label(egui::RichText::new(format!("Dimension: {}", e.param)).strong())
-                .on_hover_text("Click another driving dimension to insert its name");
-            let r = ui.add(egui::TextEdit::singleline(&mut e.expr).id(id).desired_width(popup_width));
-            crate::theme::TabAccent::number_focus(ui, &r);
-            if r.has_focus() {
-                e.selection = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range());
-            }
-            let completed = crate::params_dialog::complete(ui, &r, &mut e.expr);
-            if completed {
-                e.selection = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range());
-            }
-            if let Some(live) = e.live.as_mut() {
-                live.typed |= r.changed() || completed;
-            }
-            if let Some(error) = e.draft.as_ref().and_then(|d| d.error.as_ref()) {
-                ui.add(egui::Label::new(egui::RichText::new(error).color(Tokens::get().error)).wrap());
-            }
-            if e.fresh == FRESH {
-                // The whole value is selected, so typing replaces it.
-                let n = e.expr.chars().count();
-                let mut s = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
-                s.cursor.set_char_range(Some(egui::text_selection::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
-                e.selection = s.cursor.char_range();
-                s.store(ui.ctx(), id);
-            }
-            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if r.lost_focus() && enter {
-                done = Some(true);
-            } else if e.fresh > 0 {
-                if !r.has_focus() {
-                    r.request_focus();
+        egui::Frame::popup(ui.style()).fill(Tokens::get().dialog_body).inner_margin(Tokens::get().space_4).show(ui, |ui| {
+            crate::ui_kit::scope(ui, |ui| {
+                ui.set_max_width(popup_width);
+                crate::ui_kit::text(ui, &crate::i18n::format("dialog.dimension_name", &[("name", &e.param)]), crate::ui_kit::Text::Inline)
+                    .on_hover_text(crate::i18n::tr("dialog.dimension_insert_hint"));
+                let r = crate::ui_kit::cell_editor(ui, id, &mut e.expr, "", false);
+                crate::theme::TabAccent::number_focus(ui, &r);
+                if r.has_focus() {
+                    e.selection = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range());
                 }
-            } else if r.lost_focus() {
-                done = Some(false);
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                done = Some(false);
-                // Esc cancels the whole dimension, picks included.
-                escaped = true;
-            }
+                let completed = crate::params_dialog::complete(ui, &r, &mut e.expr);
+                if completed {
+                    e.selection = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range());
+                }
+                if let Some(live) = e.live.as_mut() {
+                    live.typed |= r.changed() || completed;
+                }
+                if let Some(error) = e.draft.as_ref().and_then(|d| d.error.as_ref()) {
+                    crate::ui_kit::text(ui, error, crate::ui_kit::Text::Report("dimension_error", true));
+                }
+                if e.fresh == FRESH {
+                    // The whole value is selected, so typing replaces it.
+                    let n = e.expr.chars().count();
+                    let mut s = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                    s.cursor.set_char_range(Some(egui::text_selection::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+                    e.selection = s.cursor.char_range();
+                    s.store(ui.ctx(), id);
+                }
+                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if r.lost_focus() && enter {
+                    done = Some(true);
+                } else if e.fresh > 0 {
+                    if !r.has_focus() {
+                        r.request_focus();
+                    }
+                } else if r.lost_focus() {
+                    done = Some(false);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                    // Esc cancels the whole dimension, picks included.
+                    escaped = true;
+                }
+            });
         });
     });
     e.fresh = e.fresh.saturating_sub(1);

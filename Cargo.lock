@@ -4379,6 +4379,7 @@ dependencies = [
  "solidcraft-engine",
  "solidcraft-gpu",
  "solidcraft-space-mouse",
+ "syn 2.0.119",
  "tiny-skia",
  "toml",
  "ttf-parser",

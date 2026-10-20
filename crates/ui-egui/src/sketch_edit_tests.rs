@@ -1,14 +1,8 @@
 //! Regression tests: editing a sketch from the Browser or timeline can always be left again.
 
-use crate::{Services, SolveApp};
-use solidcraft_engine::Session;
+use crate::SolveApp;
+use crate::test_support::sample_app;
 use solidcraft_engine::doc::FeatureKind;
-
-fn sample_app() -> SolveApp {
-    let mut s = Session::default();
-    s.run_script(&solidcraft_engine::sample::script()).unwrap();
-    SolveApp::new(s, Services::default())
-}
 
 fn first_sketch(app: &SolveApp) -> u64 {
     app.session.doc.features.iter().find(|f| matches!(f.kind, FeatureKind::Sketch { .. })).map(|f| f.id).unwrap()

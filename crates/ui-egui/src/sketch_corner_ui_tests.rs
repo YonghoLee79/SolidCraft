@@ -495,6 +495,9 @@ fn fully_constrained_center_rectangle_corners_can_be_picked_and_filleted() {
     h.frames(2);
     h.step(&json!({"start":"sketch.fillet"})).unwrap();
     h.frames(2);
+    // Fit after opening the dialog so all four corners clear the shell and both panels.
+    h.app.fit_view();
+    h.settle();
     for corner in [[-20, -15, 0], [20, -15, 0], [20, 15, 0], [-20, 15, 0]] {
         h.step(&json!({"click":{"world":corner}})).unwrap();
         h.frames(2);

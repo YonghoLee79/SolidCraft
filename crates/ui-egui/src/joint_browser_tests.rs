@@ -8,19 +8,14 @@ use serde_json::json;
 
 use crate::context_menu::{self, Target};
 use crate::scenario::Harness;
+use crate::test_support::click;
 
 /// Components A (grounded) and B joined by a revolute "Hinge", and C held by a rigid "Glue".
 fn harness() -> Harness {
     let mut h = Harness::new();
     h.app.home.open = false;
     h.app.ui.show_browser = true;
-    for (name, x) in [("A", 0), ("B", 30), ("C", 60)] {
-        h.app.run("component.activate", json!({"component": "root"})).unwrap();
-        h.app.run("component.create", json!({ "name": name })).unwrap();
-        h.app.run("solid.box", json!({"length": 20, "width": 20, "height": 10, "corner": [x, 0, 0]})).unwrap();
-    }
-    h.app.run("component.activate", json!({"component": "root"})).unwrap();
-    h.app.run("occurrence.ground", json!({"occurrence": "A:1", "grounded": true})).unwrap();
+    crate::test_support::grounded_boxes(&[("A", 0), ("B", 30), ("C", 60)], |id, p| h.app.run(id, p).unwrap());
     h.app
         .run("joint.create", json!({"type": "revolute", "name": "Hinge", "a": {"occurrence": "A:1", "face": [10, 10, 10]}, "b": {"occurrence": "B:1", "face": [40, 10, 0]}}))
         .unwrap();
@@ -33,12 +28,6 @@ fn harness() -> Harness {
 
 fn id(h: &Harness, name: &str) -> u64 {
     h.app.session.doc.assembly.joints.iter().find(|j| j.name == name).unwrap().id
-}
-
-fn click(h: &mut Harness, handle: &str) {
-    assert!(crate::scenario::handle_at(handle).is_some(), "{handle} is not drawn: {:?}", crate::scenario::handles(""));
-    h.step(&json!({"click": {"handle": handle}})).unwrap();
-    h.frames(3);
 }
 
 fn drawn(h: &Harness) -> Vec<(u64, bool)> {

@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use solidcraft_engine::{CommandSpec, command_specs};
 
-use crate::SolveApp;
 use crate::context_menu::Item;
+use crate::{SolveApp, ui_kit};
 
 /// The only workspace so far.
 pub const WORKSPACE: &str = "DESIGN";
@@ -213,22 +213,22 @@ pub fn command_items(app: &SolveApp, id: &str) -> Vec<Item> {
     let fav = app.sbox.pinned.iter().any(|p| p == id);
     let mut v = Vec::new();
     v.push(if on {
-        Item::action("ui.toolbarRemove", "Remove from Toolbar", "").with(json!({ "command": id }))
+        Item::action("ui.toolbarRemove", "Remove from Toolbar", "close").with(json!({ "command": id }))
     } else {
-        Item::action("ui.toolbarPin", "Pin to Toolbar", "").with(json!({ "command": id }))
+        Item::action("ui.toolbarPin", "Pin to Toolbar", "plus").with(json!({ "command": id }))
     });
-    v.push(Item::action("ui.shortcutPin", if fav { "Unpin from Shortcuts" } else { "Pin to Shortcuts" }, "").with(json!({ "command": id })));
+    v.push(Item::action("ui.shortcutPin", if fav { "Unpin from Shortcuts" } else { "Pin to Shortcuts" }, "star").with(json!({ "command": id })));
     v.push(Item::sep());
-    v.push(Item::action("ui.toolbarCustomize", "Customize Toolbar…", ""));
-    v.push(Item::action("ui.toolbarReset", "Reset Toolbar", "").with(json!({ "tab": tab })));
+    v.push(Item::action("ui.toolbarCustomize", "Customize Toolbar…", "settings"));
+    v.push(Item::action("ui.toolbarReset", "Reset Toolbar", "restore").with(json!({ "tab": tab })));
     v
 }
 
 /// The toolbar's own menu (right-click on its empty space).
 pub fn toolbar_items(app: &SolveApp) -> Vec<Item> {
     vec![
-        Item::action("ui.toolbarCustomize", "Customize Toolbar…", ""),
-        Item::action("ui.toolbarReset", "Reset Toolbar", "").with(json!({ "tab": app.ui.tab })),
+        Item::action("ui.toolbarCustomize", "Customize Toolbar…", "settings"),
+        Item::action("ui.toolbarReset", "Reset Toolbar", "restore").with(json!({ "tab": app.ui.tab })),
     ]
 }
 
@@ -278,48 +278,46 @@ pub fn window(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.toolbar_custom.customizing {
         return;
     }
-    let t = crate::theme::Tokens::get();
     let tab = app.ui.tab.clone();
-    let mut open = true;
     let mut changes: Vec<(&'static str, bool)> = Vec::new();
     let mut reset_tab = false;
-    crate::frame::window(ctx, crate::i18n::tr_label("Customize Toolbar"), crate::frame::Width::Normal)
-        .id(egui::Id::new("sc_toolbar_customize"))
-        .open(&mut open)
-        .default_height(520.0)
-        .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} tab. Tick a command to give it a toolbar button. You can also drag a row of a panel's drop-down onto the toolbar, drag a button off the toolbar to remove it, or use the pin on a drop-down row.",
-                    app.tr_label(&tab)
-                ))
-                .color(t.text_dim),
-            );
-            ui.separator();
-            egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                for (panel, cmds, n) in panel_lists(&tab) {
-                    if cmds.is_empty() {
-                        continue;
-                    }
-                    ui.label(egui::RichText::new(app.tr_label(panel)).strong().size(11.0));
-                    let shown = buttons(app, &tab, panel, &cmds, n);
-                    for c in &cmds {
-                        let mut on = shown.iter().any(|b| b.id == c.id) || pinned_on(app, &tab, c.id).is_some();
-                        let r = ui.checkbox(&mut on, app.tr_label(c.label));
-                        crate::scenario::publish_handle(&format!("customize:{}", c.id), r.rect.left_center() + egui::vec2(8.0, 0.0));
-                        if r.changed() {
-                            changes.push((c.id, on));
+    let t = crate::theme::Tokens::get();
+    // This long card grows as sections open. A top-left pivot keeps its controls at their
+    // published positions instead of shifting them after egui measures the taller content.
+    let origin =
+        egui::pos2((ctx.content_rect().center().x - t.form_card_width).max(ctx.content_rect().left()), ctx.content_rect().top() + t.space_24 * 2.0);
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_toolbar_customize"), "settings", crate::i18n::tr_label("Customize Toolbar"))
+        .placed(egui::Align2::LEFT_TOP, origin)
+        .cards(2.0)
+        .actions("", "Close", None)
+        .show(ctx, true, |ui| {
+            ui_kit::text(ui, &crate::i18n::format("toolbar.customize_note", &[("tab", app.tr_label(&tab))]), ui_kit::Text::Note("customize"));
+            egui::ScrollArea::vertical()
+                .max_height(
+                    (ctx.content_rect().height() - crate::theme::Tokens::get().control_height * 8.0)
+                        .min(crate::theme::Tokens::get().control_height * 20.0),
+                )
+                .show(ui, |ui| {
+                    for (panel, cmds, n) in panel_lists(&tab) {
+                        if cmds.is_empty() {
+                            continue;
                         }
+                        ui_kit::section(ui, panel, app.tr_label(panel), true, |ui| {
+                            let shown = buttons(app, &tab, panel, &cmds, n);
+                            for c in &cmds {
+                                let mut on = shown.iter().any(|b| b.id == c.id) || pinned_on(app, &tab, c.id).is_some();
+                                let r = ui_kit::checkbox(ui, app.tr_label(c.label), &mut on);
+                                crate::scenario::publish_handle(&format!("customize:{}", c.id), r.rect.center());
+                                if r.changed() {
+                                    changes.push((c.id, on));
+                                }
+                            }
+                        });
                     }
-                    ui.add_space(4.0);
-                }
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button(crate::i18n::tr_label("Reset Toolbar")).clicked() {
-                    reset_tab = true;
-                }
-            });
+                });
+            let reset = ui_kit::button(ui, crate::i18n::tr_label("Reset Toolbar"), ui_kit::Button::Normal);
+            crate::scenario::publish_target("customize:reset", reset.rect);
+            reset_tab |= reset.clicked();
         });
     for (id, on) in changes {
         if on {
@@ -333,7 +331,7 @@ pub fn window(app: &mut SolveApp, ctx: &egui::Context) {
     if reset_tab {
         reset(app, &tab);
     }
-    app.toolbar_custom.customizing = open;
+    app.toolbar_custom.customizing = !closed && action != ui_kit::Action::Cancel;
 }
 
 #[cfg(test)]

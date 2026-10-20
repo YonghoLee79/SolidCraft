@@ -195,6 +195,9 @@ fn shift_picks_midpoint_in_either_order_and_persists_ordinary_constraints() {
             h.app.run("sketch.line", json!({"points":[[10,10],[30,20]],"infer":false,"connect":false})).unwrap();
             h.app.run("sketch.circle.center", json!({"center":target,"radius":3})).unwrap();
             h.call("ui.view", json!({"view":"top"}));
+            // Keep both picks in the clear viewport beside the floating cards.
+            h.app.fit_view();
+            h.frames(3);
             h.step(&json!({"start":"sketch.constraint.horizontal_vertical"})).unwrap();
             let before = h.app.session.doc.to_json();
             let undo = h.app.session.undo.len();
@@ -277,6 +280,9 @@ fn shift_can_align_two_midpoints_and_reveal_one_from_anywhere_on_the_line() {
         h.app.run("sketch.line", json!({"points":points,"infer":false,"connect":false})).unwrap();
     }
     h.call("ui.view", json!({"view":"top"}));
+    // Keep both picks in the clear viewport beside the floating cards.
+    h.app.fit_view();
+    h.frames(3);
     h.step(&json!({"start":"sketch.constraint.horizontal_vertical"})).unwrap();
     h.step(&json!({"move":{"sketch":[13,11.5]},"shift":true})).unwrap();
     let hover = h.app.tool.as_ref().unwrap().hover.as_ref().unwrap();
@@ -324,6 +330,9 @@ fn conflicting_midpoint_pick_keeps_pending_preview_without_creating_geometry() {
     h.app.run("sketch.circle.center", json!({"center":[24,50],"radius":3})).unwrap();
     h.app.run("sketch.constraint.fix", json!({"entities":["l1","c1"]})).unwrap();
     h.call("ui.view", json!({"view":"top"}));
+    // Keep both picks in the clear viewport beside the floating cards.
+    h.app.fit_view();
+    h.frames(3);
     h.step(&json!({"start":"sketch.constraint.horizontal_vertical"})).unwrap();
     let before = h.app.session.doc.to_json();
     let undo = h.app.session.undo.len();

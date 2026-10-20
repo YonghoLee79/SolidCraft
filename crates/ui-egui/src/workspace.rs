@@ -664,7 +664,7 @@ mod tests {
         h.step(&json!({"key":"Enter"})).unwrap();
         assert_eq!(h.app.ui.tab, "MANAGE");
         h.step(&json!({"key":"Escape"})).unwrap();
-        crate::palette::submit(&mut h.app, "parameters.change");
+        h.app.start("parameters.change");
         assert_eq!(h.app.ui.tab, "MANAGE");
         h.frames(2);
         for tab in TABS {
@@ -685,12 +685,13 @@ mod tests {
         assert!(h.app.dialog.is_none());
         assert!(h.widget("User Parameters").is_some());
         assert!(h.widget("Model Parameters").is_some());
-        // Exercise the editor's Add button, not a script-only parameter command.
+        // Exercise the inline draft row through the public add prompt and Enter.
+        h.step(&json!({"click":{"handle":"dialog:table:user:add"}})).unwrap();
         let parameters = h.app.params.as_mut().unwrap();
         parameters.new_name = "width".into();
         parameters.new_expr = "25 mm".into();
         h.frames(3);
-        h.step(&json!({"widget":"Add"})).unwrap();
+        h.step(&json!({"key":"Enter"})).unwrap();
         let values = h.app.session.execute("parameters.list", &json!({})).unwrap();
         assert!(values["parameters"].as_array().unwrap().iter().any(|p| p["name"] == "width" && p["value"] == 25.0));
         h.step(&json!({"click":{"handle":"params:close"}})).unwrap();
@@ -702,7 +703,7 @@ mod tests {
             Some(crate::dialogs::Kind::Motion(crate::dialogs_motion::Mo::Configurations { .. }))
         ));
         assert!(h.widget("Add Column").is_some());
-        assert!(h.widget("Add Row").is_some());
+        assert!(h.widget("Add configuration").is_some());
     }
 
     /// Shared assembly, sheet and plastic commands remain reachable in their ribbon sections.
