@@ -292,16 +292,13 @@ fn under_surface(
     within: Option<&solidcraft_geom::Aabb3>,
     ignored: &dyn Fn(Vec3, u32) -> bool,
 ) -> bool {
-    m.triangles.iter().enumerate().filter_map(|(i, t)| Some((m.tri(t)?, m.tri_face.get(i).copied().unwrap_or(u32::MAX)))).any(
-        |(Triangle([p, q, r]), face)| {
-            let Some(n) = (q - p).cross(r - p).normalized() else { return false };
-            let c = (p + q + r) * (1.0 / 3.0) - n * depth;
-            let near =
-                within.is_none_or(|b| c.x >= b.min.x && c.x <= b.max.x && c.y >= b.min.y && c.y <= b.max.y && c.z >= b.min.z && c.z <= b.max.z);
-            // A wall thinner than `depth` puts the point outside its own body: no evidence.
-            near && other.contains(c) == inside && own.contains(c) && !ignored(c, face)
-        },
-    )
+    m.triangles.iter().enumerate().filter_map(|(i, t)| Some((m.tri(t)?, m.tri_face.get(i).copied().unwrap_or(u32::MAX)))).any(|(tri, face)| {
+        let Some(n) = tri.normal() else { return false };
+        let c = tri.centroid() - n * depth;
+        let near = within.is_none_or(|b| c.x >= b.min.x && c.x <= b.max.x && c.y >= b.min.y && c.y <= b.max.y && c.z >= b.min.z && c.z <= b.max.z);
+        // A wall thinner than `depth` puts the point outside its own body: no evidence.
+        near && other.contains(c) == inside && own.contains(c) && !ignored(c, face)
+    })
 }
 
 /// Whether the bodies' facetings show that the samples' answer (see [`trivial`]) is wrong:
@@ -1873,8 +1870,8 @@ fn sliver_faces(b: &Body, size: f64) -> usize {
     // Per face: its area, and how many of its triangles use each mesh edge (its boundary once).
     let mut area: HashMap<u32, f64> = HashMap::new();
     let mut sides: HashMap<(u32, (i64, i64, i64), (i64, i64, i64)), (u32, f64)> = HashMap::new();
-    for (Triangle([a, b, c]), f) in m.face_tris() {
-        *area.entry(f).or_default() += (b - a).cross(c - a).len() * 0.5;
+    for (tri @ Triangle([a, b, c]), f) in m.face_tris() {
+        *area.entry(f).or_default() += tri.area();
         for (p, r) in [(a, b), (b, c), (c, a)] {
             let (kp, kr) = (key(p), key(r));
             let k = if kp <= kr { (f, kp, kr) } else { (f, kr, kp) };

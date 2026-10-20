@@ -5,7 +5,7 @@ use crate::fonts::RichTextExt as _;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 use serde_json::json;
 use solidcraft_engine::Sel;
-use solidcraft_engine::geom::{Triangle, Vec2, Vec3};
+use solidcraft_engine::geom::{Vec2, Vec3};
 use solidcraft_engine::render::{Camera, Mat4, Rgb};
 use solidcraft_engine::sketch::CurveKind;
 use solidcraft_engine::view::{GridPlane, colors, grid_plane, grid_step, sketch_lines_with_sampler};
@@ -1541,7 +1541,7 @@ fn feature_geometry(app: &SolveApp, id: u64) -> Vec<Sel> {
                 if *f as usize != index {
                     return None;
                 }
-                m.tri(t).map(|Triangle([a, b, c])| (a + b + c) / 3.0)
+                m.tri(t).map(|tri| tri.centroid())
             }) {
                 out.push(Sel::Face { body: b.name.clone(), index, point });
             }
@@ -3170,8 +3170,7 @@ pub(crate) fn grouped_selection(s: &solidcraft_engine::Session, sel: &Sel) -> Ve
                             if *f as usize != i {
                                 return None;
                             }
-                            let Triangle([a, b, c]) = m.tri(t)?;
-                            Some(Sel::Face { body: body.clone(), index: i, point: (a + b + c) / 3.0 })
+                            Some(Sel::Face { body: body.clone(), index: i, point: m.tri(t)?.centroid() })
                         })
                     })
                     .collect();
@@ -3298,13 +3297,8 @@ fn box_select(app: &mut SolveApp, proj: &Proj, bx: BoxSel, add: bool) {
                     for e in m.face_edges(u32::try_from(f).unwrap_or(u32::MAX)) {
                         pts.extend(m.edges.get(e).into_iter().flatten().copied());
                     }
-                    let point = m
-                        .triangles
-                        .iter()
-                        .zip(&m.tri_face)
-                        .find(|(_, tf)| **tf as usize == f)
-                        .and_then(|(t, _)| m.tri(t))
-                        .map(|Triangle([a, bb, c])| (a + bb + c) / 3.0);
+                    let point =
+                        m.triangles.iter().zip(&m.tri_face).find(|(_, tf)| **tf as usize == f).and_then(|(t, _)| m.tri(t)).map(|tri| tri.centroid());
                     let takes = bx.takes(&to2(&pts))
                         && (bx.crossing
                             || m.surface_patch(f).iter().all(|&face| {
@@ -5620,8 +5614,7 @@ mod tests {
         for &f in faces {
             let index = f as usize;
             let t = m.triangles.iter().zip(&m.tri_face).find(|(_, tf)| **tf == f).unwrap().0;
-            let Triangle([a, c, d]) = m.tri(t).unwrap();
-            let point = (a + c + d) / 3.0;
+            let point = m.tri(t).unwrap().centroid();
             app.viewport.hover = Some(Hit::Face { body: b.name.clone(), index, point });
             assert_eq!(build_highlight(&app).merged().tris.len(), triangle_count * 3 * crate::gpu::TRI_SIZE);
             let item = hit_sel(app.viewport.hover.as_ref().unwrap()).unwrap();

@@ -682,9 +682,9 @@ pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
 /// near-linear however many faces there are (a modeled thread has thousands).
 fn new_faces(m: &Mesh, nf: usize, old: &Mesh) -> Vec<bool> {
     let mut cents: Vec<Vec<Vec3>> = vec![Vec::new(); nf];
-    for (Triangle([a, b, c]), f) in m.face_tris() {
+    for (tri, f) in m.face_tris() {
         if let Some(face) = cents.get_mut(f as usize) {
-            face.push((a + b + c) / 3.0);
+            face.push(tri.centroid());
         }
     }
     let index = SurfaceIndex::new(old);

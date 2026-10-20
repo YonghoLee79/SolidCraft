@@ -292,17 +292,16 @@ fn behind(b: &Body, mesh: &Mesh, f: usize) -> Option<(usize, f64)> {
     let Some(FaceSurface::Plane { normal: n, point: o }) = face_surface(b, f) else { return None };
     // The face most of it looks through to, from points in its largest triangles: a few of them
     // may look at the floor of a label engraved in the other skin.
-    let area = |t: &[Vec3; 3]| (t[1] - t[0]).cross(t[2] - t[0]).len();
     let mut tris: Vec<Triangle> = mesh.face_tris_of(f).collect();
-    tris.sort_by(|x, y| area(y).total_cmp(&area(x)));
+    tris.sort_by(|x, y| y.area().total_cmp(&x.area()));
     let mut seen: Vec<(usize, f64)> = Vec::new();
     for tri in tris.iter().take(8) {
-        let middle = (tri[0] + tri[1] + tri[2]) * (1.0 / 3.0);
+        let middle = tri.centroid();
         for from in std::iter::once(middle).chain(tri.iter().map(|v| (middle + *v) * 0.5)) {
             let Some(g) = mesh.raycast(from, n * -1.0).and_then(|(_, hit)| mesh.tri_face.get(hit)).map(|g| *g as usize) else { continue };
             match seen.iter_mut().find(|(h, _)| *h == g) {
-                Some(entry) => entry.1 += area(tri),
-                None => seen.push((g, area(tri))),
+                Some(entry) => entry.1 += tri.area(),
+                None => seen.push((g, tri.area())),
             }
         }
     }

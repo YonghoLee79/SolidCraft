@@ -115,9 +115,9 @@ const SAMPLES: usize = 9;
 /// Unit normals of each face's triangles.
 fn normals(m: &Mesh, nf: usize) -> Vec<Vec<Vec3>> {
     let mut per: Vec<Vec<Vec3>> = vec![Vec::new(); nf];
-    for (Triangle([a, b, c]), f) in m.face_tris() {
+    for (tri, f) in m.face_tris() {
         if let Some(v) = per.get_mut(f as usize)
-            && let Some(n) = (b - a).cross(c - a).normalized()
+            && let Some(n) = tri.normal()
         {
             v.push(n);
         }
@@ -128,9 +128,9 @@ fn normals(m: &Mesh, nf: usize) -> Vec<Vec<Vec3>> {
 /// Triangle centroids spread over each face: face → points.
 fn samples(m: &Mesh, nf: usize) -> Vec<Vec<Vec3>> {
     let mut per: Vec<Vec<Vec3>> = vec![Vec::new(); nf];
-    for (Triangle([a, b, c]), f) in m.face_tris() {
+    for (tri, f) in m.face_tris() {
         if let Some(v) = per.get_mut(f as usize) {
-            v.push((a + b + c) * (1.0 / 3.0));
+            v.push(tri.centroid());
         }
     }
     per.into_iter()
@@ -756,11 +756,11 @@ fn roomiest(m: &Mesh, only: Option<usize>) -> Vec<Option<(f64, Vec3)>> {
         if only.is_some_and(|i| i != f) {
             continue;
         }
-        let Some(Triangle([a, b, c])) = m.tri(t) else { continue };
+        let Some(tri @ Triangle([a, b, c])) = m.tri(t) else { continue };
         // The incentre weighs each corner by the side opposite it; the inradius is area / half the perimeter.
         let (la, lb, lc) = (b.dist(c), c.dist(a), a.dist(b));
         let perimeter = la + lb + lc;
-        let radius = (b - a).cross(c - a).len() / perimeter;
+        let radius = tri.normal_vector().len() / perimeter;
         let centre = (a * la + b * lb + c * lc) / perimeter;
         if let Some(slot) = best.get_mut(f)
             && radius.is_finite()

@@ -995,7 +995,7 @@ pub(crate) fn faces_touch(a: &Body, b: &Body) -> bool {
     let depth = (size * 1e-4).max(1e-6);
     mb.triangles.iter().zip(&mb.tri_face).take(100_000).any(|(t, fi)| {
         let Some((_, n)) = faces.iter().find(|(i, _)| *i == *fi as usize) else { return false };
-        mb.tri(t).is_some_and(|Triangle([p, q, r])| inside.contains((p + q + r) / 3.0 + *n * depth))
+        mb.tri(t).is_some_and(|tri| inside.contains(tri.centroid() + *n * depth))
     })
 }
 

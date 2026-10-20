@@ -32,8 +32,8 @@ fn face_at(body: &Body, at: Vec3) -> Result<(usize, Vec3)> {
         .iter()
         .zip(&mesh.tri_face)
         .filter_map(|(t, f)| {
-            let Triangle([a, b, c]) = mesh.tri(t)?;
-            let n = (b - a).cross(c - a).normalized()?;
+            let tri @ Triangle([a, b, c]) = mesh.tri(t)?;
+            let n = tri.normal()?;
             let q = at - n * (at - a).dot(n);
             let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-9);
             inside.then_some(((at - a).dot(n).abs(), *f as usize))

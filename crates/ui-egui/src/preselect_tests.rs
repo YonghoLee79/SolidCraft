@@ -4,7 +4,7 @@
 use crate::test_support::app_with_script as app_with;
 use serde_json::json;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
-use solidcraft_engine::geom::{Triangle, Vec3};
+use solidcraft_engine::geom::Vec3;
 use solidcraft_engine::{Sel, Session};
 
 #[test]
@@ -802,8 +802,8 @@ fn a_hole_is_patterned_as_a_feature() {
     let m = st.bodies[0].mesh();
     let face_at = |p: Vec3| {
         let t = m.triangles.iter().position(|t| m.tri(t).unwrap().closest_point(p).dist(p) < 0.05).unwrap();
-        let Triangle([a, b, c]) = m.tri(&m.triangles[t]).unwrap();
-        crate::viewport::Hit::Face { body: "Body1".into(), index: m.tri_face[t] as usize, point: (a + b + c) * (1.0 / 3.0) }
+        let tri = m.tri(&m.triangles[t]).unwrap();
+        crate::viewport::Hit::Face { body: "Body1".into(), index: m.tri_face[t] as usize, point: tri.centroid() }
     };
     let mut d = start(&mut app, vec![], "solid.pattern.circular");
     d.inputs[0].accept = crate::selection::FEATURES;
@@ -1025,7 +1025,7 @@ fn thread_face(app: &SolveApp, body: &str) -> Sel {
             if *face as usize != index {
                 return None;
             }
-            mesh.tri(triangle).map(|Triangle([a, b, c])| (a + b + c) / 3.0)
+            mesh.tri(triangle).map(|tri| tri.centroid())
         })
         .unwrap();
     Sel::Face { body: body.into(), index, point }

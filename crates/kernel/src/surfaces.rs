@@ -597,8 +597,8 @@ pub fn remove_faces(body: &Body, faces: &[usize]) -> Result<Body> {
 pub(crate) fn nearest_face(body: &Body, p: Vec3) -> Result<usize> {
     let m = body.tessellate(body.size() * 2e-3)?;
     let mut best: Option<(f64, u32)> = None;
-    for (Triangle([a, b, c]), f) in m.face_tris() {
-        let d = ((a + b + c) / 3.0).dist(p).min(a.dist(p)).min(b.dist(p)).min(c.dist(p));
+    for (tri @ Triangle([a, b, c]), f) in m.face_tris() {
+        let d = tri.centroid().dist(p).min(a.dist(p)).min(b.dist(p)).min(c.dist(p));
         if best.is_none_or(|(x, _)| d < x) {
             best = Some((d, f));
         }

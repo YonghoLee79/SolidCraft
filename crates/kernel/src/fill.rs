@@ -352,7 +352,6 @@ pub(crate) fn face_tolerance(body: &Body) -> f64 {
 #[cfg(test)]
 mod tests {
     use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface};
-    use solidcraft_geom::Triangle;
     use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
     use truck_modeling as mt;
 
@@ -443,15 +442,11 @@ mod tests {
         assert!(!m.triangles.is_empty());
         assert!(m.normals.iter().all(|n| n.is_finite() && n.len() > 0.5), "a mesh normal is not finite");
         let tri = |t: &[u32; 3]| m.tri(t).unwrap();
-        let total = m.triangles.iter().map(|t| {
-            let Triangle([a, b, c]) = tri(t);
-            (b - a).cross(c - a)
-        });
+        let total = m.triangles.iter().map(|t| tri(t).normal_vector());
         let total = total.fold(Vec3::ZERO, |s, v| s + v);
         let n = total.normalized().unwrap();
         for t in &m.triangles {
-            let Triangle([a, b, c]) = tri(t);
-            let v = (b - a).cross(c - a);
+            let v = tri(t).normal_vector();
             if v.len() > 1e-12 {
                 assert!(v.dot(n) > 0.0, "a folded triangle");
             }

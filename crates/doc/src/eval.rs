@@ -2462,8 +2462,8 @@ fn extend_for_coplanar(sur: &Surroundings, plane: &Plane, r: &Region2, lo: f64, 
         .map(|(_, m, _)| m)
         .flat_map(|m| {
             m.triangles.iter().filter_map(|t| {
-                let Triangle([a, b, c]) = m.tri(t)?;
-                let normal = (b - a).cross(c - a).normalized()?;
+                let tri @ Triangle([a, ..]) = m.tri(t)?;
+                let normal = tri.normal()?;
                 (normal.dot(n).abs() > 1.0 - 1e-9).then(|| (a - plane.origin).dot(n))
             })
         })
@@ -2525,8 +2525,8 @@ fn trim_embedded_join_ends(sur: &Surroundings, plane: &Plane, r: &Region2, lo: f
         .iter()
         .flat_map(|(_, mesh, _)| {
             mesh.triangles.iter().filter_map(|t| {
-                let Triangle([a, b, c]) = mesh.tri(t)?;
-                let normal = (b - a).cross(c - a).normalized()?;
+                let tri @ Triangle([a, ..]) = mesh.tri(t)?;
+                let normal = tri.normal()?;
                 (normal.dot(n).abs() > 1.0 - 1e-9).then(|| (a - plane.origin).dot(n))
             })
         })
@@ -2588,9 +2588,8 @@ fn face_level_at(st: &ModelState, plane: &Plane, h: f64, targets: &[String]) -> 
         let m = b.mesh();
         let tol = (b.body.size() * 1e-7).max(1e-9);
         m.triangles.iter().any(|t| {
-            m.tri(t).is_some_and(|Triangle([a, b, c])| {
-                (b - a).cross(c - a).normalized().is_some_and(|normal| normal.dot(n).abs() > 1.0 - 1e-9)
-                    && ((a - plane.origin).dot(n) - h).abs() < tol
+            m.tri(t).is_some_and(|tri @ Triangle([a, ..])| {
+                tri.normal().is_some_and(|normal| normal.dot(n).abs() > 1.0 - 1e-9) && ((a - plane.origin).dot(n) - h).abs() < tol
             })
         })
     })
@@ -2650,9 +2649,9 @@ fn faces_through(st: &ModelState, p: Vec3, reach: f64) -> Vec<(f64, Vec3, Option
         let m = b.mesh();
         // The nearest facet of each face of this body.
         let mut near: BTreeMap<u32, (f64, Vec3)> = BTreeMap::new();
-        for (Triangle([a, bb, c]), f) in m.face_tris() {
-            let d = Triangle([a, bb, c]).closest_point(p).dist(p);
-            let Some(n) = (bb - a).cross(c - a).normalized() else { continue };
+        for (tri, f) in m.face_tris() {
+            let d = tri.closest_point(p).dist(p);
+            let Some(n) = tri.normal() else { continue };
             if d <= reach && near.get(&f).is_none_or(|(x, _)| d < *x) {
                 near.insert(f, (d, n));
             }
@@ -4854,8 +4853,8 @@ fn face_samples(b: &ModelBody) -> Vec<Vec3> {
         if out.len() <= f {
             out.resize(f + 1, None);
         }
-        if let (Some(slot @ None), Some(Triangle([a, bb, c]))) = (out.get_mut(f), m.tri(t)) {
-            *slot = Some((a + bb + c) * (1.0 / 3.0));
+        if let (Some(slot @ None), Some(tri)) = (out.get_mut(f), m.tri(t)) {
+            *slot = Some(tri.centroid());
         }
     }
     out.into_iter().flatten().collect()

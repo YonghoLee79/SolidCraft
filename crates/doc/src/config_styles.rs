@@ -327,8 +327,8 @@ impl Document {
             if indices.binary_search(&(*face as usize)).is_err() {
                 continue;
             }
-            let Some(Triangle([a, b, c])) = mesh.tri(triangle) else { continue };
-            let Some(normal) = (b - a).cross(c - a).normalized() else { continue };
+            let Some(tri @ Triangle([a, b, c])) = mesh.tri(triangle) else { continue };
+            let Some(normal) = tri.normal() else { continue };
             if let Some((point, base)) = plane {
                 let magnitude = [point.x, point.y, point.z, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z]
                     .iter()

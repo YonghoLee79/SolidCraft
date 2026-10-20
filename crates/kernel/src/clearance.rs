@@ -39,8 +39,8 @@ impl Convex {
     /// negative). `None` for a triangle without area or an empty interval.
     fn swept(tri: Triangle, along: Vec3, margin: f64, lo: f64, hi: f64) -> Option<Convex> {
         let Triangle([a, b, c]) = tri;
-        let centre = (a + b + c) / 3.0;
-        if hi <= lo || !(margin + lo + hi).is_finite() || (b - a).cross(c - a).dot(along).abs() < 1e-300 {
+        let centre = tri.centroid();
+        if hi <= lo || !(margin + lo + hi).is_finite() || tri.normal_vector().dot(along).abs() < 1e-300 {
             return None;
         }
         let mut sides = Vec::with_capacity(5);

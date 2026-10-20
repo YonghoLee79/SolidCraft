@@ -229,9 +229,9 @@ impl FaceHit {
             if *f as usize != self.face {
                 continue;
             }
-            let Some(Triangle([a, bb, c])) = m.tri(t) else { continue };
+            let Some(tri @ Triangle([a, bb, c])) = m.tri(t) else { continue };
             // A hair's width around each triangle, so a place on the seam of two is on the face.
-            let centre = (a + bb + c) * (1.0 / 3.0);
+            let centre = tri.centroid();
             let grow = |v: Vec3| v + (v - centre).normalized().unwrap_or(Vec3::ZERO) * slack;
             if let Some(hit) = naming::ray_hit(p, d, grow(a), grow(bb), grow(c))
                 && best.is_none_or(|old| hit.abs() < old.abs())

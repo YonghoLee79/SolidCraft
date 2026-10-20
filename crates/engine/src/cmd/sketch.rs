@@ -649,8 +649,8 @@ pub(super) fn plane_ref(s: &Session, p: &Value, cmd: &str) -> Result<PlaneRef> {
 /// Does triangle set of face `fi` contain point `p` (within `tol` of the face plane)?
 pub(super) fn face_contains(m: &solidcraft_geom::Mesh, fi: usize, p: Vec3, tol: f64) -> bool {
     m.triangles.iter().zip(&m.tri_face).filter(|(_, f)| **f as usize == fi).any(|(t, _)| {
-        let Some(Triangle([a, b, c])) = m.tri(t) else { return false };
-        let n = (b - a).cross(c - a);
+        let Some(tri @ Triangle([a, b, c])) = m.tri(t) else { return false };
+        let n = tri.normal_vector();
         let Some(nn) = n.normalized() else { return false };
         if (p - a).dot(nn).abs() > tol {
             return false;

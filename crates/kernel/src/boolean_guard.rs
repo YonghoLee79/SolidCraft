@@ -103,8 +103,8 @@ impl<'a> Near<'a> {
 /// `reach`), if there is one.
 fn stray_point(from: &Mesh, onto: &Near, region: &Aabb3) -> Option<Vec3> {
     let step = from.triangles.len().div_ceil(MAX_SAMPLES).max(1);
-    from.triangles.iter().step_by(step).filter_map(|t| from.tri(t)).find_map(|Triangle([a, b, c])| {
-        let p = (a + b + c) / 3.0;
+    from.triangles.iter().step_by(step).filter_map(|t| from.tri(t)).find_map(|tri| {
+        let p = tri.centroid();
         let outside =
             p.x < region.min.x || p.y < region.min.y || p.z < region.min.z || p.x > region.max.x || p.y > region.max.y || p.z > region.max.z;
         (outside && !onto.close(p)).then_some(p)

@@ -355,8 +355,8 @@ pub fn stl_binary(meshes: &[Mesh], name: &str) -> Vec<u8> {
     out.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
     for m in meshes {
         for t in &m.triangles {
-            let Some(Triangle([a, b, c])) = m.tri(t) else { continue };
-            let nrm = (b - a).cross(c - a).normalized().unwrap_or_default();
+            let Some(tri @ Triangle([a, b, c])) = m.tri(t) else { continue };
+            let nrm = tri.normal().unwrap_or_default();
             for v in [nrm, a, b, c] {
                 for x in v.to_f32() {
                     out.extend_from_slice(&x.to_le_bytes());
@@ -374,10 +374,10 @@ pub fn stl_ascii(meshes: &[Mesh], name: &str) -> String {
     let mut s = format!("solid {name}\n");
     for m in meshes {
         for t in &m.triangles {
-            let Some(Triangle([a, b, c])) = m.tri(t) else { continue };
-            let n = (b - a).cross(c - a).normalized().unwrap_or_default();
+            let Some(tri) = m.tri(t) else { continue };
+            let n = tri.normal().unwrap_or_default();
             s += &format!("  facet normal {:e} {:e} {:e}\n    outer loop\n", n.x, n.y, n.z);
-            for v in [a, b, c] {
+            for v in tri {
                 s += &format!("      vertex {:e} {:e} {:e}\n", v.x, v.y, v.z);
             }
             s += "    endloop\n  endfacet\n";

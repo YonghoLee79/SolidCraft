@@ -211,8 +211,8 @@ fn deepest(a: &solidcraft_geom::Mesh, b: &solidcraft_geom::Mesh, tol: f64) -> f6
     let bx = b.bounds();
     let mut pts: Vec<Vec3> = a.positions.clone();
     let mut edges: Vec<(Vec3, Vec3)> = Vec::new();
-    for Triangle([p, q, r]) in tris(a) {
-        pts.extend([(p + q) * 0.5, (q + r) * 0.5, (r + p) * 0.5, (p + q + r) * (1.0 / 3.0)]);
+    for tri @ Triangle([p, q, r]) in tris(a) {
+        pts.extend([(p + q) * 0.5, (q + r) * 0.5, (r + p) * 0.5, tri.centroid()]);
         edges.extend([(p, q), (q, r), (r, p)]);
     }
     let mut best = 0.0f64;

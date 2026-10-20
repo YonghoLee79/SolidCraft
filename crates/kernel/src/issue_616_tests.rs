@@ -43,8 +43,8 @@ fn tri_dist(p: Vec3, Triangle([a, b, c]): Triangle) -> f64 {
 /// A point of `from`'s surface outside `region` that is not on `onto`'s surface.
 fn moved_outside(from: &Mesh, onto: &Mesh, region: &Aabb3, tol: f64) -> Option<Vec3> {
     let tris: Vec<Triangle> = onto.triangles.iter().filter_map(|t| onto.tri(t)).collect();
-    from.triangles.iter().filter_map(|t| from.tri(t)).find_map(|Triangle([a, b, c])| {
-        let p = (a + b + c) / 3.0;
+    from.triangles.iter().filter_map(|t| from.tri(t)).find_map(|tri| {
+        let p = tri.centroid();
         let inside = p.x > region.min.x && p.y > region.min.y && p.z > region.min.z && p.x < region.max.x && p.y < region.max.y && p.z < region.max.z;
         (!inside && !tris.iter().any(|t| tri_dist(p, *t) < tol)).then_some(p)
     })

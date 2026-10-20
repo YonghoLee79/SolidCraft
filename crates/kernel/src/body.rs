@@ -1576,8 +1576,8 @@ impl Body {
         let m = self.tessellate(tol)?;
         let nf = self.face_count();
         let mut acc: Vec<(f64, Vec3, Vec3, bool)> = vec![(0.0, Vec3::ZERO, Vec3::ZERO, true); nf];
-        for (Triangle([a, b, c]), f) in m.face_tris() {
-            let cr = (b - a).cross(c - a);
+        for (tri @ Triangle([a, b, c]), f) in m.face_tris() {
+            let cr = tri.normal_vector();
             let ar = cr.len() * 0.5;
             if let Some(slot) = acc.get_mut(f as usize) {
                 slot.0 += ar;
@@ -1781,10 +1781,10 @@ impl Body {
                             t.get(k).and_then(|x| u32::try_from(x.pos).ok()).ok_or_else(|| KernelError::Failed("lumps: invalid mesh index".into()))
                         };
                         let indices = [idx(0)?, idx(1)?, idx(2)?];
-                        let Triangle([a, b, c]) = m.tri(&indices).ok_or_else(|| KernelError::Failed("lumps: invalid mesh triangle".into()))?;
+                        let tri = m.tri(&indices).ok_or_else(|| KernelError::Failed("lumps: invalid mesh triangle".into()))?;
                         // STEP sphere poles can produce zero-area duplicate triangles.
                         // They have no boundary area or volume and are not ray crossings.
-                        if (b - a).cross(c - a) == Vec3::ZERO {
+                        if tri.normal_vector() == Vec3::ZERO {
                             continue;
                         }
                         m.triangles.push(indices);

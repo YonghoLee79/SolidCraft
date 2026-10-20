@@ -1541,8 +1541,8 @@ fn plate_recesses(body: &Body, mesh: &Mesh, plane: &Plane, at: Vec3, n: Vec3, (l
     let level = |p: Vec3| (p - at).dot(n);
     let mut faces: BTreeMap<u32, Option<LevelFace>> = BTreeMap::new();
     for (tri, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-        let Some(Triangle([a, b, c])) = mesh.tri(tri) else { continue };
-        let cr = (b - a).cross(c - a);
+        let Some(t @ Triangle([a, b, c])) = mesh.tri(tri) else { continue };
+        let cr = t.normal_vector();
         let len = cr.len();
         if !(len > 1e-12) {
             continue;
@@ -1556,7 +1556,7 @@ fn plate_recesses(body: &Body, mesh: &Mesh, plane: &Plane, at: Vec3, n: Vec3, (l
                     face.hi = face.hi.max(level(p));
                 }
                 face.area += len / 2.0;
-                face.tris.push(((a + b + c) / 3.0, len / 2.0));
+                face.tris.push((t.centroid(), len / 2.0));
             }
             _ => *entry = None,
         }

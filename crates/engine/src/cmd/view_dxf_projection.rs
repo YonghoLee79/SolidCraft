@@ -237,9 +237,9 @@ fn edges(mesh: &Mesh, cam: &Camera, eps: f64) -> Vec<(Vec3, Vec3)> {
     }
     let mut adjacent: BTreeMap<_, (Vec3, Vec3, bool, bool, usize)> = BTreeMap::new();
     for indices in &mesh.triangles {
-        let Some(Triangle([a, b, c])) = mesh.tri(indices) else { continue };
-        let n = (b - a).cross(c - a);
-        let toward = if cam.fov > 0.0 { cam.eye() - (a + b + c) / 3.0 } else { cam.basis().2 };
+        let Some(tri @ Triangle([a, b, c])) = mesh.tri(indices) else { continue };
+        let n = tri.normal_vector();
+        let toward = if cam.fov > 0.0 { cam.eye() - tri.centroid() } else { cam.basis().2 };
         let front = n.dot(toward) > 0.0;
         for (a, b) in [(a, b), (b, c), (c, a)] {
             let (ka, kb) = (key(a, eps), key(b, eps));

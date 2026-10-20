@@ -25,10 +25,10 @@ pub struct BodyMeasure {
 /// Per-face sums: area, 6 × signed volume and 24 × first moments (divergence theorem, origin 0).
 fn face_sums(m: &Mesh, nf: usize) -> Vec<(f64, f64, Vec3)> {
     let mut out = vec![(0.0, 0.0, Vec3::ZERO); nf];
-    for (Triangle([a, b, c]), f) in m.face_tris() {
+    for (tri @ Triangle([a, b, c]), f) in m.face_tris() {
         let Some(slot) = out.get_mut(f as usize) else { continue };
         let d = a.dot(b.cross(c));
-        slot.0 += (b - a).cross(c - a).len() * 0.5;
+        slot.0 += tri.area();
         slot.1 += d;
         slot.2 += (a + b + c) * d;
     }

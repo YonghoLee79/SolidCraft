@@ -7,6 +7,28 @@ use crate::Vec3;
 pub struct Triangle(pub [Vec3; 3]);
 
 impl Triangle {
+    /// `(b − a) × (c − a)`: along the side the corners turn counter-clockwise around, twice the
+    /// triangle's area long.
+    pub fn normal_vector(&self) -> Vec3 {
+        let [a, b, c] = self.0;
+        (b - a).cross(c - a)
+    }
+
+    /// The unit normal ([`Triangle::normal_vector`] made unit); `None` without area.
+    pub fn normal(&self) -> Option<Vec3> {
+        self.normal_vector().normalized()
+    }
+
+    pub fn area(&self) -> f64 {
+        self.normal_vector().len() * 0.5
+    }
+
+    /// The mean of the corners.
+    pub fn centroid(&self) -> Vec3 {
+        let [a, b, c] = self.0;
+        (a + b + c) / 3.0
+    }
+
     /// The point of the triangle nearest `p` (Ericson, Real-Time Collision Detection, 5.1.5). A
     /// zero-length edge (a cone's tip repeats its apex vertex) has no interior to project onto,
     /// so its region is skipped rather than dividing 0 by 0: the point then comes from the edges
@@ -75,6 +97,17 @@ fn closest(p: Vec3, [a, b, c]: [Vec3; 3]) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_triangle_knows_its_normal_area_and_centroid() {
+        let t = Triangle([Vec3::new(0., 0., 1.), Vec3::new(4., 0., 1.), Vec3::new(0., 3., 1.)]);
+        assert_eq!(t.normal_vector(), Vec3::new(0., 0., 12.));
+        assert_eq!(t.normal(), Some(Vec3::Z));
+        assert_eq!(t.area(), 6.0);
+        assert_eq!(t.centroid(), Vec3::new(4. / 3., 1., 1.));
+        let flat = Triangle([Vec3::ZERO, Vec3::X, Vec3::X * 2.0]);
+        assert_eq!((flat.normal(), flat.area()), (None, 0.0));
+    }
 
     #[test]
     fn the_nearest_point_is_inside_on_an_edge_or_at_a_corner() {

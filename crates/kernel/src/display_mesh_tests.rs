@@ -382,8 +382,8 @@ fn a_cylinder_wall_split_along_its_seam_meshes_round() {
             if !outer.get(*f as usize).copied().unwrap_or(false) {
                 continue;
             }
-            let Triangle([a, b, c]) = m.tri(t).unwrap();
-            let centre = (a + b + c) * (1.0 / 3.0);
+            let tri = m.tri(t).unwrap();
+            let centre = tri.centroid();
             let r = Vec2::new(centre.x, centre.y).len();
             assert!(r > 50.0 - 10.0 * tol.max(0.05), "tolerance {tol}: an outer wall triangle passes {r:.2} mm from the axis");
         }

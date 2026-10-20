@@ -353,8 +353,8 @@ fn flush(x: &Body, y: &Body, same: f64, depth: f64) -> Vec<usize> {
                 .zip(&mx.tri_face)
                 .filter(|(_, f)| **f as usize == i)
                 .filter_map(|(t, _)| mx.tri(t))
-                .filter(|Triangle([a, b, c])| (*b - *a).cross(*c - *a).len() > 0.0)
-                .map(|Triangle([a, b, c])| (a + b + c) / 3.0)
+                .filter(|t| t.area() > 0.0)
+                .map(|t| t.centroid())
                 .collect();
             let stride = centres.len().div_ceil(SAMPLES).max(1);
             !centres.is_empty() && centres.iter().step_by(stride).all(|c| my.contains(*c + n * depth) && !my.contains(*c - n * depth))

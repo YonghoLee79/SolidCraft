@@ -30,12 +30,7 @@ pub(super) fn face_normal_in(s: &Session, p: Vec3, body: Option<&str>) -> Option
     if d > tol * 10.0 {
         return None;
     }
-    m.triangles
-        .iter()
-        .zip(&m.tri_face)
-        .filter(|(_, tf)| **tf == f)
-        .filter_map(|(t, _)| m.tri(t))
-        .find_map(|Triangle([a, b, c])| (b - a).cross(c - a).normalized())
+    m.triangles.iter().zip(&m.tri_face).filter(|(_, tf)| **tf == f).filter_map(|(t, _)| m.tri(t)).find_map(|tri| tri.normal())
 }
 
 /// Is the body face at `p` planar (`None`: no face there)?
@@ -45,14 +40,8 @@ pub(super) fn face_is_planar(s: &Session, p: Vec3) -> Option<bool> {
     if d > tol * 10.0 {
         return None;
     }
-    let ns: Vec<Vec3> = m
-        .triangles
-        .iter()
-        .zip(&m.tri_face)
-        .filter(|(_, tf)| **tf == f)
-        .filter_map(|(t, _)| m.tri(t))
-        .filter_map(|Triangle([a, b, c])| (b - a).cross(c - a).normalized())
-        .collect();
+    let ns: Vec<Vec3> =
+        m.triangles.iter().zip(&m.tri_face).filter(|(_, tf)| **tf == f).filter_map(|(t, _)| m.tri(t)).filter_map(|tri| tri.normal()).collect();
     let n0 = *ns.first()?;
     Some(ns.iter().all(|n| n.dot(n0) > 1.0 - 1e-6))
 }
@@ -169,8 +158,8 @@ pub(super) fn sketch_of_faces(s: &mut Session, points: &[Vec3], cmd: &str, face_
             .zip(&mesh.tri_face)
             .filter(|(_, face)| **face == index)
             .filter_map(|(triangle, _)| mesh.tri(triangle))
-            .max_by(|Triangle([a, b, c]), Triangle([x, y, z])| ((*b - *a).cross(*c - *a).len()).total_cmp(&((*y - *x).cross(*z - *x).len())))
-            .map(|Triangle([a, b, c])| (a + b + c) / 3.0)
+            .max_by(|x, y| x.normal_vector().len().total_cmp(&y.normal_vector().len()))
+            .map(|tri| tri.centroid())
             .ok_or_else(|| bad(cmd, "degenerate face"))?;
         picked.push((index as usize, inside));
     }

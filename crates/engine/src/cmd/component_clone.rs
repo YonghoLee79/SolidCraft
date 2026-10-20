@@ -15,8 +15,8 @@ fn mesh_distance(mesh: &solidcraft_geom::Mesh, point: solidcraft_geom::Vec3) -> 
     mesh.triangles
         .iter()
         .filter_map(|triangle| mesh.tri(triangle))
-        .map(|Triangle([a, b, c])| {
-            let normal = (b - a).cross(c - a);
+        .map(|tri @ Triangle([a, b, c])| {
+            let normal = tri.normal_vector();
             let squared = normal.dot(normal);
             let projected = if squared > 0. { point - normal * ((point - a).dot(normal) / squared) } else { point };
             if squared > 0. && [(a, b), (b, c), (c, a)].iter().all(|(start, end)| (*end - *start).cross(projected - *start).dot(normal) >= 0.) {

@@ -8,7 +8,7 @@
 use egui::{Color32, Pos2, Stroke, vec2};
 use solidcraft_engine::Sel;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
-use solidcraft_engine::geom::{Mesh, Triangle, Vec2, Vec3};
+use solidcraft_engine::geom::{Mesh, Vec2, Vec3};
 
 use crate::SolveApp;
 use crate::dialogs::{Dialog, Kind};
@@ -213,8 +213,8 @@ fn edge_sides(m: &Mesh, index: usize, p: Vec3) -> Option<Vec<(Vec3, Vec3)>> {
                 .zip(&m.tri_face)
                 .filter(|(_, tf)| *tf == f)
                 .filter_map(|(t, _)| m.tri(t))
-                .min_by(|a, b| ((a[0] + a[1] + a[2]) / 3.0).dist(p).total_cmp(&((b[0] + b[1] + b[2]) / 3.0).dist(p)))
-                .and_then(|Triangle([a, b, c])| Some(((b - a).cross(c - a).normalized()?, (a + b + c) / 3.0)))
+                .min_by(|a, b| a.centroid().dist(p).total_cmp(&b.centroid().dist(p)))
+                .and_then(|tri| Some((tri.normal()?, tri.centroid())))
         })
         .collect()
 }
