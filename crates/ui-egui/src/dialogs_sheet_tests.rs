@@ -676,7 +676,7 @@ fn flange_dialog_common_corners_keep_custom_values_and_edge_identity() {
     h.app.dialog.as_mut().unwrap().inputs[0].items.push(removed);
     h.frames(3);
     assert_eq!(settings(&h.app), vec![(2, Some(1)); 4], "new corners inherit the common choice");
-    h.call("ui.resize", json!({"width":1200,"height":1100}));
+    h.call("ui.resize", json!({"width":1200,"height":1800}));
     h.step(&json!({"click":{"handle":"dialog:Customize each corner"}})).unwrap();
     h.frames(12);
     for _ in 0..600 {

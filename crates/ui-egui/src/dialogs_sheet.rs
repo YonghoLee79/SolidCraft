@@ -656,33 +656,42 @@ fn flange_corner_rows(app: &SolveApp, ui: &mut egui::Ui, points: &[Vec3], corner
     let common = corners.first().map(|corner| corner.kind).filter(|kind| corners.iter().all(|corner| corner.kind == *kind));
     ui.label(crate::i18n::tr_label("Corner Type"));
     ui.vertical(|ui| {
-    let (picture_rect, _) = ui.allocate_exact_size(vec2(222.0, 76.0), egui::Sense::hover());
-    for (kind, label) in CORNER_LABELS.iter().enumerate() {
-        let button_rect = Rect::from_min_size(picture_rect.min + vec2(kind as f32 * 76.0, 0.0), vec2(70.0, 76.0));
-        let response = ui.put(button_rect, egui::Button::new("").selected(common == Some(kind))).on_hover_text(crate::i18n::tr_label(label));
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), crate::i18n::tr_label(label)));
-        let icon = ["sheet_corner_butt", "sheet_corner_partial", "sheet_corner_full"].get(kind).copied().unwrap_or("sheet_corner_butt");
-        let icon_rect = Rect::from_center_size(pos2(response.rect.center().x, response.rect.top() + 25.0), vec2(40.0, 40.0));
-        crate::icons::paint_icon(ui.painter(), icon_rect, icon, 1.0);
-        let title = crate::i18n::tr_label(label).replace(' ', "\n");
-        ui.painter().text(
-            pos2(response.rect.center().x, response.rect.top() + 60.0),
-            Align2::CENTER_CENTER,
-            title,
-            FontId::proportional(11.0),
-            ui.visuals().text_color(),
-        );
-        crate::scenario::publish_handle(&format!("dialog:All Corners:{label}"), response.rect.center());
-        if response.clicked() {
-            for corner in corners.iter_mut() {
-                corner.kind = kind;
+        let (picture_rect, _) = ui.allocate_exact_size(vec2(222.0, 76.0), egui::Sense::hover());
+        for (kind, label) in CORNER_LABELS.iter().enumerate() {
+            let button_rect = Rect::from_min_size(picture_rect.min + vec2(kind as f32 * 76.0, 0.0), vec2(70.0, 76.0));
+            let response = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(button_rect), |ui| {
+                    ui.spacing_mut().interact_size = button_rect.size();
+                    if common == Some(kind) {
+                        ui.visuals_mut().widgets.inactive.weak_bg_fill = Tokens::get().selected_bg;
+                    }
+                    crate::ui_kit::button(ui, "", crate::ui_kit::Button::Normal)
+                })
+                .inner
+                .on_hover_text(crate::i18n::tr_label(label));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), crate::i18n::tr_label(label)));
+            let icon = ["sheet_corner_butt", "sheet_corner_partial", "sheet_corner_full"].get(kind).copied().unwrap_or("sheet_corner_butt");
+            let icon_rect = Rect::from_center_size(pos2(response.rect.center().x, response.rect.top() + 25.0), vec2(40.0, 40.0));
+            crate::icons::paint_icon(ui.painter(), icon_rect, icon, 1.0);
+            let title = crate::i18n::tr_label(label).replace(' ', "\n");
+            ui.painter().text(
+                pos2(response.rect.center().x, response.rect.top() + 60.0),
+                Align2::CENTER_CENTER,
+                title,
+                FontId::proportional(Tokens::get().font_caption),
+                ui.visuals().text_color(),
+            );
+            crate::scenario::publish_handle(&format!("dialog:All Corners:{label}"), response.rect.center());
+            if response.clicked() {
+                for corner in corners.iter_mut() {
+                    corner.kind = kind;
+                }
+                if common == Some(0) && paired {
+                    set_covering_group(corners, points, &walls, 0);
+                }
             }
-            if common == Some(0) && paired {
-                set_covering_group(corners, points, &walls, 0);
-            }
+            hover_walls(ui, &response, points);
         }
-        hover_walls(ui, &response, points);
-    }
     });
     let mut gap = corners.first().map(|corner| corner.gap.clone()).unwrap_or_default();
     let mixed_gap = corners.iter().any(|corner| corner.gap != gap);
@@ -705,29 +714,35 @@ fn flange_corner_rows(app: &SolveApp, ui: &mut egui::Ui, points: &[Vec3], corner
             .filter(|group| corners.iter().all(|corner| covering_group(corner, points, &walls) == Some(*group)));
         let names = ["Front and rear walls", "Left and right walls"];
         form_row(ui, "Covering", |ui| {
-        let control = egui::ComboBox::from_id_salt("sm_common_covering")
-            .selected_text(crate::i18n::tr_label(group.and_then(|index| names.get(index).copied()).unwrap_or("Custom")))
-            .show_ui(ui, |ui| {
-                for (index, name) in names.iter().enumerate() {
-                    let response = ui.selectable_label(group == Some(index), crate::i18n::tr_label(name));
-                    crate::scenario::publish_handle(&format!("dialog:Covering:{name}"), response.rect.center());
-                    if response.clicked() {
-                        set_covering_group(corners, points, &walls, index);
+            let control = crate::ui_kit::dropdown_menu(
+                ui,
+                "sm_common_covering",
+                crate::i18n::tr_label(group.and_then(|index| names.get(index).copied()).unwrap_or("Custom")),
+                |ui| {
+                    for (index, name) in names.iter().enumerate() {
+                        let response = crate::ui_kit::list_picker(ui, name, crate::i18n::tr_label(name), group == Some(index));
+                        crate::scenario::publish_handle(&format!("dialog:Covering:{name}"), response.rect.center());
+                        if response.clicked() {
+                            set_covering_group(corners, points, &walls, index);
+                        }
+                        let selected: Vec<_> = points
+                            .iter()
+                            .zip(&walls)
+                            .filter_map(|(point, side)| side.filter(|side| usize::from(*side >= 2) == index).map(|_| *point))
+                            .collect();
+                        hover_walls(ui, &response, &selected);
                     }
-                    let selected: Vec<_> = points
-                        .iter()
-                        .zip(&walls)
-                        .filter_map(|(point, side)| side.filter(|side| usize::from(*side >= 2) == index).map(|_| *point))
-                        .collect();
-                    hover_walls(ui, &response, &selected);
-                }
-            });
-        crate::scenario::publish_handle("dialog:Covering", control.response.rect.center());
-        if let Some(group) = group {
-            let selected: Vec<_> =
-                points.iter().zip(&walls).filter_map(|(point, side)| side.filter(|side| usize::from(*side >= 2) == group).map(|_| *point)).collect();
-            hover_walls(ui, &control.response, &selected);
-        }
+                },
+            );
+            crate::scenario::publish_handle("dialog:Covering", control.rect.center());
+            if let Some(group) = group {
+                let selected: Vec<_> = points
+                    .iter()
+                    .zip(&walls)
+                    .filter_map(|(point, side)| side.filter(|side| usize::from(*side >= 2) == group).map(|_| *point))
+                    .collect();
+                hover_walls(ui, &control, &selected);
+            }
         });
     }
     if common.is_none() {
@@ -748,33 +763,42 @@ fn flange_corner_rows(app: &SolveApp, ui: &mut egui::Ui, points: &[Vec3], corner
             }
         }
     }
-    let section = egui::CollapsingHeader::new(crate::i18n::tr_label("Customize each corner")).default_open(false).show(ui, |ui| {
-            for corner in corners.iter_mut() {
-                let Some(first) = points.iter().position(|point| point.dist(corner.first) < 1e-6) else { continue };
-                let Some(second) = points.iter().position(|point| point.dist(corner.second) < 1e-6) else { continue };
-                let label = format!("{} / {}", wall_name(&walls, first), wall_name(&walls, second));
-                let control = choice_row(ui, &format!("Corner {label}"), &format!("sm_corner_type_{first}_{second}"), &mut corner.kind, &CORNER_LABELS);
-                hover_corner(ui, &control, corner, &[corner.first, corner.second]);
-                let control = ui.push_id(("sm_corner_gap", first, second), |ui| {
-                    form_row(ui, &format!("Corner Gap {label}"), |ui| {
-                        enter |= corner_gap_field(ui, &mut corner.gap, "from the rule");
-                    });
+    crate::ui_kit::section(ui, "sm_corner_overrides", "Customize each corner", false, |ui| {
+        for corner in corners.iter_mut() {
+            let Some(first) = points.iter().position(|point| point.dist(corner.first) < 1e-6) else { continue };
+            let Some(second) = points.iter().position(|point| point.dist(corner.second) < 1e-6) else { continue };
+            let label = format!("{} / {}", wall_name(&walls, first), wall_name(&walls, second));
+            let control = choice_row(ui, &format!("Corner {label}"), &format!("sm_corner_type_{first}_{second}"), &mut corner.kind, &CORNER_LABELS);
+            hover_corner(ui, &control, corner, &[corner.first, corner.second]);
+            let control = ui.push_id(("sm_corner_gap", first, second), |ui| {
+                form_row(ui, &format!("Corner Gap {label}"), |ui| {
+                    enter |= corner_gap_field(ui, &mut corner.gap, "from the rule");
                 });
-                hover_corner(ui, &control.response, corner, &[corner.first, corner.second]);
-                if corner.kind > 0 {
-                    let names = [wall_name(&walls, first), wall_name(&walls, second)];
-                    let mut covering = usize::from(corner.cover_second);
-                    let control = choice_row(ui, &format!("Covering {label}"), &format!("sm_corner_cover_{first}_{second}"), &mut covering, &[names[0].as_str(), names[1].as_str()]);
-                    hover_corner(ui, &control, corner, &[if covering == 1 { corner.second } else { corner.first }]);
-                    corner.cover_second = covering == 1;
-                }
-                if corner.kind == 1 {
-                    let control = ui.push_id(("sm_corner_overlap", first, second), |ui| enter |= expr_row(ui, &format!("Overlap {label}"), &mut corner.overlap));
-                    hover_corner(ui, &control.response, corner, &[corner.first, corner.second]);
-                }
+            });
+            hover_corner(ui, &control.response, corner, &[corner.first, corner.second]);
+            if corner.kind > 0 {
+                let names = [wall_name(&walls, first), wall_name(&walls, second)];
+                let mut covering = usize::from(corner.cover_second);
+                let control = choice_row(
+                    ui,
+                    &format!("Covering {label}"),
+                    &format!("sm_corner_cover_{first}_{second}"),
+                    &mut covering,
+                    &[names[0].as_str(), names[1].as_str()],
+                );
+                hover_corner(ui, &control, corner, &[if covering == 1 { corner.second } else { corner.first }]);
+                corner.cover_second = covering == 1;
             }
+            if corner.kind == 1 {
+                let control =
+                    ui.push_id(("sm_corner_overlap", first, second), |ui| enter |= expr_row(ui, &format!("Overlap {label}"), &mut corner.overlap));
+                hover_corner(ui, &control.response, corner, &[corner.first, corner.second]);
+            }
+        }
     });
-    crate::scenario::publish_handle("dialog:Customize each corner", section.header_response.rect.center());
+    if let Some(rect) = crate::scenario::rect_of("dialog:section:Customize each corner") {
+        crate::scenario::publish_handle("dialog:Customize each corner", rect.center());
+    }
     enter
 }
 

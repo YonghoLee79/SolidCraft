@@ -555,7 +555,8 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
     }
     let mut show_box = true;
     if flange && let Some(panel) = app.viewport.dialog_rect {
-        let label_width = painter.layout_no_wrap(crate::i18n::tr_label(label).to_owned(), egui::FontId::proportional(11.5), t.text_dim).size().x;
+        let label_width =
+            painter.layout_no_wrap(crate::i18n::tr_label(label).to_owned(), egui::FontId::proportional(t.font_label), t.text_dim).size().x;
         let width = label_width + ui.spacing().item_spacing.x + 88.0;
         if panel.intersects(egui::Rect::from_min_size(box_at, vec2(width, 40.0))) {
             let left = panel.left() - width - 8.0;
