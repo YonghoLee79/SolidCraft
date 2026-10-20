@@ -1495,6 +1495,25 @@ fn an_edge_flange_on_a_flange_runs_along_what_a_flat_cut_left_of_its_far_edge() 
 }
 
 #[test]
+fn an_edge_flange_is_refused_on_the_bend_line_of_a_flange() {
+    // The flange's bend runs between the plate's edge (y = 5) and the panel's edge (y = 2.5,
+    // z = 5). Either is a bend line, not a free edge: a flange there left a second flange with a
+    // gap and a sheet of two shells.
+    let mut s = Session::default();
+    plate_with_flange(&mut s);
+    let before = volume(&mut s);
+    for pick in [[50.0, 5.0, 2.5], [50.0, 5.0, 0.0], [50.0, 2.5, 5.0], [50.0, 0.0, 5.0]] {
+        let e = s.execute("sheet.flange", &json!({"edges": [pick], "height": 10}));
+        assert!(e.as_ref().is_err_and(|e| e.to_string().contains("bend line")), "{pick:?}: {e:?}");
+        assert!(rel(volume(&mut s), before) < 1e-9, "{pick:?} changed the sheet");
+    }
+    // A free edge still takes one, and the sheet stays in one piece.
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 60, 2.5]], "height": 10}));
+    assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
+    assert!(volume(&mut s) > before);
+}
+
+#[test]
 fn a_flange_bent_inside_keeps_the_base_sketchs_arcs_in_the_flat_pattern_and_the_dxf() {
     // A 200 x 100 plate with its corners rounded 8, drawn as arcs, and a 40 high flange on its
     // bottom edge (2 mm, R 1, K 0.5: setback 3 inside, half of it in the middle; BA π, panel

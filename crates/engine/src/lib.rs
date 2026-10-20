@@ -149,6 +149,14 @@ pub enum Sel {
     },
 }
 
+/// A body rename between two designs (see `Session::body_renames`).
+struct BodyRename {
+    before: std::sync::Weak<Document>,
+    after: std::sync::Weak<Document>,
+    old: String,
+    new: String,
+}
+
 /// One undo step.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -246,6 +254,9 @@ pub struct Session {
     /// Pairs `inspect.clearance` measured, by the bodies' geometry where they stood (shared with
     /// scratch copies): a body that did not change or move is not measured again.
     clearance_cache: std::sync::Arc<std::sync::Mutex<cmd::clearance::PairCache>>,
+    /// Recent body renames: the design before and after each, and the names, so undo and redo
+    /// follow them without evaluating either.
+    body_renames: Vec<BodyRename>,
     /// Features copied with `timeline.copy` (pasted by `timeline.paste`).
     pub clipboard: Vec<solidcraft_doc::Feature>,
     /// Sketch geometry copied with `sketch.copy` (pasted by `sketch.paste`).
@@ -359,12 +370,25 @@ impl Default for Session {
 }
 
 impl Session {
-    pub fn new(mut doc: Document) -> Self {
+    pub fn new(doc: Document) -> Self {
+        Self::opened(doc, None)
+    }
+
+    /// A session on `doc` whose evaluation is the model its file kept (`saved`), when that is
+    /// `doc`'s evaluation ([`Model::adopt`]); otherwise the timeline is evaluated.
+    /// `SOLIDCRAFT_NO_MODEL_CACHE` set always evaluates.
+    pub fn opened(mut doc: Document, saved: Option<&solidcraft_doc::SavedModel>) -> Self {
         // The session keeps what is hidden (not an undo step); the design file carries it.
         let visibility = std::mem::take(&mut doc.visibility);
         let doc = Arc::new(doc);
-        let mut model = Model::new();
-        model.evaluate(&doc);
+        let adopted = saved
+            .filter(|_| solidcraft_geom::env::var_os("NO_MODEL_CACHE").is_none())
+            .and_then(|saved| Model::adopt(&doc, saved).map_err(|e| log::info!("the saved model is not used: {e}")).ok());
+        let model = adopted.unwrap_or_else(|| {
+            let mut model = Model::new();
+            model.evaluate(&doc);
+            model
+        });
         Session {
             saved: doc.clone(),
             doc,
@@ -386,6 +410,7 @@ impl Session {
             occurrence_visibility_cache: Default::default(),
             removed_later_cache: Default::default(),
             clearance_cache: Default::default(),
+            body_renames: Vec::new(),
             clipboard: Vec::new(),
             sketch_clipboard: None,
             section: None,
@@ -607,6 +632,54 @@ impl Session {
         }
     }
 
+    /// [`Session::refresh`] after the design changed from `previous`; a change that only renamed
+    /// a body or a feature (or undid or redid such a rename) renames it in the model instead,
+    /// which keeps every result and mesh (#3044).
+    fn refresh_from(&mut self, previous: &Arc<Document>) {
+        if let Some((old, new)) = self.body_rename(previous)
+            && self.model.rename_body(&self.doc, &old, &new)
+        {
+            self.revision += 1;
+            if !self.doc.assembly.joints.is_empty() {
+                cmd::joints::resolve(self);
+            }
+            return;
+        }
+        // A feature's name labels it and builds nothing.
+        if let Some(id) = self.doc.feature_rename_from(previous)
+            && self.model.rename_feature(&self.doc, id)
+        {
+            self.revision += 1;
+            return;
+        }
+        self.refresh();
+    }
+
+    /// The body rename that turned `previous` into the design (old name, new name), if that is
+    /// the whole change: one this session made (either way round), else one the designs show.
+    fn body_rename(&mut self, previous: &Arc<Document>) -> Option<(String, String)> {
+        let holds = |w: &std::sync::Weak<Document>, d: &Arc<Document>| w.upgrade().is_some_and(|x| Arc::ptr_eq(&x, d));
+        self.body_renames.retain(|r| r.before.strong_count() > 0 && r.after.strong_count() > 0);
+        for r in &self.body_renames {
+            if holds(&r.before, previous) && holds(&r.after, &self.doc) {
+                return Some((r.old.clone(), r.new.clone()));
+            }
+            if holds(&r.after, previous) && holds(&r.before, &self.doc) {
+                return Some((r.new.clone(), r.old.clone()));
+            }
+        }
+        let model = &self.model;
+        let made = |id: u64| -> Vec<String> {
+            model.result(id).map(|r| r.state.bodies.iter().filter(|b| b.feature == id).map(|b| b.name.clone()).collect()).unwrap_or_default()
+        };
+        let (old, new) = self.doc.body_rename_from(previous, made)?;
+        self.body_renames.push(BodyRename { before: Arc::downgrade(previous), after: Arc::downgrade(&self.doc), old: old.clone(), new: new.clone() });
+        if self.body_renames.len() > MAX_UNDO {
+            self.body_renames.remove(0);
+        }
+        Some((old, new))
+    }
+
     /// Only persistent render intent, or only part properties, changed. Never evaluate or clear
     /// a stale model here.
     fn render_only_change(&self, before: &Snapshot) -> bool {
@@ -753,7 +826,7 @@ impl Session {
                     match live_edit {
                         Some(edit) => self.refresh_live(edit),
                         None if render_only => self.refresh_render(&previous_doc),
-                        None => self.refresh(),
+                        None => self.refresh_from(&previous_doc),
                     }
                 }
                 Ok(v)
@@ -861,6 +934,7 @@ impl Session {
             occurrence_visibility_cache: Default::default(),
             removed_later_cache: Default::default(),
             clearance_cache: self.clearance_cache.clone(),
+            body_renames: Vec::new(),
             clipboard: self.clipboard.clone(),
             sketch_clipboard: self.sketch_clipboard.clone(),
             section: None,

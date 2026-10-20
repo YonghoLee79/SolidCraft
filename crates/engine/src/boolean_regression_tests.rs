@@ -34,6 +34,34 @@ fn check_partial_face_contact_pattern() {
     println!("#674 volume {volume:.6} / {expected_volume:.6} mm³; area {area:.6} / {expected_area:.6} mm²; {shells} shells");
 }
 
+/// A cylinder intersected with a disc carrying a tooth whose corners stand 0.27 mm out of it
+/// (radius 16.92 for 16.65): the general boolean can't intersect them, and the sampled answer
+/// (the disc is inside the cylinder) used to be kept with a warning, corners and all. The
+/// intersection must trim them or fail and leave the body as it was (#3244).
+#[test]
+fn intersection_never_keeps_material_outside_the_trimming_cylinder() {
+    let mut s = Session::default();
+    let (a, b) = ([-0.1706475844770042, 7.63270030627277], [0.1706475844770042, 7.63270030627277]);
+    for (command, params) in [
+        ("solid.cylinder", json!({"radius": 16.65, "height": 5, "body_name": "Base"})),
+        ("sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [-1, 0, 0], "y_dir": [0, 0, 1]}})),
+        ("sketch.line", json!({"points": [a, [-3, 4.99], [3, 4.99], b]})),
+        ("sketch.arc.three_point", json!({"start": b, "through": [0, 7.7], "end": a})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"distance": 1.6875953835063608, "start_offset": 14.962404616493638, "operation": "join", "targets": ["Base"]})),
+    ] {
+        s.execute(command, &params).unwrap();
+    }
+    let before = volume(&s, "Base");
+    let r = s.execute("solid.cylinder", &json!({"radius": 16.65, "height": 14.59, "operation": "intersect", "targets": ["Base"]}));
+    let state = s.model.state();
+    let reach = state.body("Base").unwrap().body.tessellate(1e-3).unwrap().positions.iter().map(|p| p.x.hypot(p.y)).fold(0.0, f64::max);
+    match r {
+        Ok(_) => assert!(reach < 16.65 + 1e-2, "kept material out to radius {reach}"),
+        Err(e) => assert!((volume(&s, "Base") - before).abs() < 1e-9 && reach > 16.9, "{e}"),
+    }
+}
+
 fn replay(script: &str) -> Session {
     let mut s = Session::default();
     let script: Value = serde_json::from_str(script).unwrap();
@@ -1090,4 +1118,35 @@ fn cut_beside_a_sealed_void_keeps_the_body() {
     let want = PI * r * r * 62.5 - sphere - (wedge(r) - wedge(10.0));
     println!("rotated box beside a void: {got:.6} mm³, expected {want:.6}");
     assert!((got - want).abs() < 1e-5 * want, "{got} vs {want}");
+}
+
+/// The reference mesh of loft bodies joined into a bike frame covers each face once: within 1%
+/// of the area of a mesh at a tenth of the tolerance. The trimmed loft sides were meshed with a
+/// flat sheet through the down tube (Delaunay in raw parameters on a strip stretched twentyfold:
+/// two and a half times the area), and the seat tube's side with slivers across it (a boundary
+/// polyline hooking back past its vertex dropped a trimming curve's constraints).
+#[test]
+fn joined_loft_frames_reference_mesh_covers_each_face_once() {
+    for (script, name) in [
+        (include_str!("../../../examples/regressions/loft_join_bracket_hull_triangle.json"), "DT2"),
+        (include_str!("../../../examples/regressions/front_triangle_hull_triangle.json"), "FrontTriangle"),
+    ] {
+        let s = replay(script);
+        let state = s.model.state();
+        let body = &state.body(name).unwrap().body;
+        let per_face = |m: &solidcraft_geom::Mesh| {
+            let mut a = vec![0.0; body.face_count()];
+            for (t, f) in m.triangles.iter().zip(&m.tri_face) {
+                let [p0, p1, p2] = t.map(|i| m.positions[i as usize]);
+                a[*f as usize] += (p1 - p0).cross(p2 - p0).len() / 2.0;
+            }
+            a
+        };
+        let size = body.size();
+        let mesh = per_face(&body.reference_display_mesh_angular(size * 3e-4, 12f64.to_radians()).unwrap());
+        let fine = per_face(&body.reference_display_mesh_angular(size * 3e-5, 3f64.to_radians()).unwrap());
+        for (fi, (m, f)) in mesh.iter().zip(&fine).enumerate() {
+            assert!((m - f).abs() <= 0.01 * f.max(1.0), "{name} face {fi}: mesh {m:.0} mm², finer mesh {f:.0} mm²");
+        }
+    }
 }
