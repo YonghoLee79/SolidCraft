@@ -1,5 +1,5 @@
 use crate::{FaceSource, extrude, transform_matrix};
-use solidcraft_geom::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Plane, Region2, Seg2, Transform, Vec2, Vec3};
 
 fn assert_exact_planes(body: &crate::Body) {
     let mesh = body.tessellate(0.001).unwrap();
@@ -93,7 +93,7 @@ fn construction_planes_follow_reflected_and_sheared_affine_images() {
         [[0., 2., 0., 0.], [-1., 0., 0., 0.], [0., 0., 3., 0.], [25., 30., 40., 1.]],
         [[-1., 0., 0., 0.], [0.4, 2., 0., 0.], [0., 0.3, 1., 0.], [8., 9., 10., 1.]],
     ] {
-        let placed = transform_matrix(&body, m).unwrap();
+        let placed = transform_matrix(&body, Transform(m)).unwrap();
         for (original, transformed) in body.face_sources().unwrap().iter().zip(placed.face_sources().unwrap()) {
             let (
                 Some(FaceSource::Box { producer: a, axis: aa, high: ah, plane: ap }),
@@ -185,7 +185,7 @@ fn reflected_hole_walls_and_low_caps_keep_exact_outward_planes() {
     let outer = Loop2::polygon(&[Vec2::new(-10., -10.), Vec2::new(10., -10.), Vec2::new(10., 10.), Vec2::new(-10., 10.)]);
     let hole = Loop2::polygon(&[Vec2::new(-3., -2.), Vec2::new(3., -2.), Vec2::new(3., 2.), Vec2::new(-3., 2.)]);
     let body = extrude(&Plane::XY, &[Region2 { outer, holes: vec![hole] }], -4., 7.).unwrap().remove(0);
-    let reflected = transform_matrix(&body, [[-1., 0., 0., 0.], [0., 2., 0., 0.], [0.2, 0., 1., 0.], [30., 40., 50., 1.]]).unwrap();
+    let reflected = transform_matrix(&body, Transform([[-1., 0., 0., 0.], [0., 2., 0., 0.], [0.2, 0., 1., 0.], [30., 40., 50., 1.]])).unwrap();
     assert_exact_planes(&reflected);
     assert_eq!(
         reflected.face_sources().unwrap().iter().filter(|source| matches!(source, Some(FaceSource::ExtrudeSide { plane: Some(_), .. }))).count(),
@@ -269,7 +269,7 @@ fn constructed_side_identity_survives_affine_placement_without_recognition() {
     let region = Region2 { outer: Loop2::circle(Vec2::default(), 10.), holes: vec![] };
     let bodies = extrude(&Plane::named("XY").unwrap(), &[region], 0., 7.).unwrap();
     let source = &bodies[0];
-    let placed = transform_matrix(source, [[0., 1., 0., 0.], [-1., 0., 0., 0.], [0., 0., 1., 0.], [25., 30., 40., 1.]]).unwrap();
+    let placed = transform_matrix(source, Transform([[0., 1., 0., 0.], [-1., 0., 0., 0.], [0., 0., 1., 0.], [25., 30., 40., 1.]])).unwrap();
     for (original, placed) in source.face_sources().unwrap().iter().zip(placed.face_sources().unwrap()) {
         match (original, placed) {
             (Some(FaceSource::ExtrudeSide { segment: a, .. }), Some(FaceSource::ExtrudeSide { segment: b, .. })) => assert_eq!(a, b),

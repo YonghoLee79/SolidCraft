@@ -3,7 +3,7 @@
 //! edges become lines, circular edges circles or arcs, anything else a chain of lines.
 
 use serde_json::{Value, json};
-use solidcraft_doc::{EmbossFace, apply_point, mat_inverse, mat_mul};
+use solidcraft_doc::EmbossFace;
 use solidcraft_geom::{Mesh, Vec2, Vec3};
 
 use crate::params::{bad, vec3};
@@ -190,18 +190,18 @@ pub(super) fn sketch_of_faces(s: &mut Session, points: &[Vec3], cmd: &str, face_
         doc.first_path(component)
     };
     let placement = EmbossFace::component_frame(&doc, component, &path)?;
-    let placement = doc.model_body_offset(source).map(|offset| mat_mul(&placement, offset)).unwrap_or(placement);
+    let placement = doc.model_body_offset(source).map(|offset| placement * offset).unwrap_or(placement);
     let author_path = s.active_occurrence_path.clone().unwrap_or_else(|| doc.first_path(s.active_component));
     let author = EmbossFace::component_frame(&doc, s.active_component, &author_path)?;
-    let inverse = mat_inverse(&author).ok_or_else(|| bad(cmd, "invalid face profile author frame"))?;
-    let into_author = mat_mul(&inverse, &placement);
+    let inverse = author.inverse().ok_or_else(|| bad(cmd, "invalid face profile author frame"))?;
+    let into_author = inverse * placement;
     drop(doc);
     let indices: Vec<_> = picked.iter().skip(1).map(|(index, _)| *index).collect();
     super::sketch_project::project_internal_faces(s, id, &body, &indices)?;
     s.refresh();
     let plane = s.model.state().sketch(id).map(|sketch| sketch.plane).ok_or_else(|| bad(cmd, "face profile sketch disappeared"))?;
     let mut selected = vec![first_inside];
-    selected.extend(picked.iter().skip(1).map(|(_, point)| plane.to_local(apply_point(&into_author, *point))));
+    selected.extend(picked.iter().skip(1).map(|(_, point)| plane.to_local(into_author.point(*point))));
     Ok((id, selected, body))
 }
 
@@ -258,13 +258,13 @@ pub(super) fn sketch_of_face(s: &mut Session, point: Vec3, cmd: &str, face_body:
         doc.first_path(component)
     };
     let placement = EmbossFace::component_frame(&doc, component, &path)?;
-    let placement = doc.model_body_offset(picked).map(|offset| mat_mul(&placement, offset)).unwrap_or(placement);
-    let world_inside = apply_point(&placement, inside);
+    let placement = doc.model_body_offset(picked).map(|offset| placement * offset).unwrap_or(placement);
+    let world_inside = placement.point(inside);
     let world_body = doc.world_body_name(&state, &body, component, &path);
     let author_path = s.active_occurrence_path.clone().unwrap_or_else(|| doc.first_path(s.active_component));
     let author = EmbossFace::component_frame(&doc, s.active_component, &author_path)?;
-    let author_inverse = mat_inverse(&author).ok_or_else(|| bad(cmd, "invalid face profile author frame"))?;
-    let author_inside = apply_point(&author_inverse, world_inside);
+    let author_inverse = author.inverse().ok_or_else(|| bad(cmd, "invalid face profile author frame"))?;
+    let author_inside = author_inverse.point(world_inside);
     drop(doc);
     let r = super::sketch::create_face_profile(
         s,

@@ -114,7 +114,8 @@ impl TessPlan {
     /// translation in `m[3]`): the same parameters and triangles on the moved surfaces, so a
     /// part placed many times is planned once. Only for proper rigid motions (a reflection
     /// would turn the triangles inside out; the caller checks).
-    pub fn transformed(&self, m: &[[f64; 4]; 4]) -> TessPlan {
+    pub fn transformed(&self, m: &crate::Transform) -> TessPlan {
+        let m = &m.0;
         let vector = |v: Vec3| {
             Vec3::new(
                 m[0][0] * v.x + m[1][0] * v.y + m[2][0] * v.z,
@@ -382,7 +383,7 @@ mod tests {
     fn a_transformed_plan_evaluates_to_the_moved_points() {
         let (c, s) = (0.6f64.cos(), 0.6f64.sin());
         // Turned about z by 0.6 rad, then moved: by columns.
-        let m = [[c, s, 0.0, 0.0], [-s, c, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [5.0, -2.0, 7.0, 1.0]];
+        let m = crate::Transform([[c, s, 0.0, 0.0], [-s, c, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [5.0, -2.0, 7.0, 1.0]]);
         let apply = |p: Vec3| Vec3::new(c * p.x - s * p.y + 5.0, s * p.x + c * p.y - 2.0, p.z + 7.0);
         let w = std::f64::consts::FRAC_1_SQRT_2;
         let nurbs = EvalSurface::Nurbs {

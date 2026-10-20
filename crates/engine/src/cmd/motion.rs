@@ -3,10 +3,9 @@
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
-use solidcraft_doc::Mat;
 use solidcraft_doc::joints::{self, JointKind};
 use solidcraft_doc::motion::{ContactSet, ExplodedView, MotionStudy, StudyKey};
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Transform, Vec3};
 use solidcraft_kernel::Body;
 
 use super::CommandSpec;
@@ -136,7 +135,7 @@ fn placed(s: &Session) -> Vec<(Vec<u64>, Body)> {
             // Moving a body into another component preserves its world placement using an
             // offset from its authoring frame. Contact and explode centres must use that
             // same offset as display and physical properties.
-            let frame = s.doc.model_body_offset(b).map(|offset| solidcraft_doc::mat_mul(&m, offset)).unwrap_or(m);
+            let frame = s.doc.model_body_offset(b).map(|offset| m * offset).unwrap_or(m);
             if let Ok(t) = solidcraft_kernel::transform_matrix(&b.body, frame) {
                 out.push((path.clone(), t));
             }
@@ -649,17 +648,17 @@ fn keyed(m: &MotionStudy) -> BTreeSet<(u64, usize)> {
 }
 
 /// Where each occurrence is: (name, world transform).
-pub(super) fn positions(s: &Session) -> Vec<(String, Mat)> {
+pub(super) fn positions(s: &Session) -> Vec<(String, Transform)> {
     s.doc.occurrences.iter().map(|o| (o.name.clone(), joints::occurrence_world(&s.doc, o.id))).collect()
 }
 
 /// The occurrences placed differently `after` than `before` ([`positions`] of one design, so in
 /// the same order even where two share a name).
-pub(super) fn moved<'a>(before: &'a [(String, Mat)], after: &'a [(String, Mat)]) -> impl Iterator<Item = &'a (String, Mat)> {
-    after.iter().zip(before).filter(|((_, a), (_, b))| a.iter().flatten().zip(b.iter().flatten()).any(|(x, y)| (x - y).abs() > 1e-9)).map(|(a, _)| a)
+pub(super) fn moved<'a>(before: &'a [(String, Transform)], after: &'a [(String, Transform)]) -> impl Iterator<Item = &'a (String, Transform)> {
+    after.iter().zip(before).filter(|((_, a), (_, b))| a.entries().zip(b.entries()).any(|(x, y)| (x - y).abs() > 1e-9)).map(|(a, _)| a)
 }
 
-fn pose_json(m: &Mat) -> Value {
+fn pose_json(m: &Transform) -> Value {
     json!({"origin": [m[3][0], m[3][1], m[3][2]], "x": [m[0][0], m[0][1], m[0][2]], "y": [m[1][0], m[1][1], m[1][2]], "z": [m[2][0], m[2][1], m[2][2]]})
 }
 
@@ -672,9 +671,9 @@ fn play(s: &mut Session, p: &Value) -> Result<Value> {
     let before = positions(s);
     let (mut out, sol) = drive_with_contact(s, &want, &keyed(&m))?;
     let after = positions(s);
-    let moved: Vec<&(String, Mat)> = moved(&before, &after).collect();
+    let moved: Vec<&(String, Transform)> = moved(&before, &after).collect();
     out["moved"] = json!(!moved.is_empty());
-    let shown: Vec<&(String, Mat)> = if bool_(p, "quiet").unwrap_or(false) { moved } else { after.iter().collect() };
+    let shown: Vec<&(String, Transform)> = if bool_(p, "quiet").unwrap_or(false) { moved } else { after.iter().collect() };
     out["positions"] = shown.iter().map(|(n, t)| json!({"occurrence": n, "pose": pose_json(t)})).collect();
     let joints: BTreeSet<u64> = m.keys.iter().map(|k| k.joint).collect();
     out["unmoved"] = joints
@@ -776,15 +775,13 @@ fn traced_point(s: &Session, p: &Value, cmd: &str) -> Result<(Vec<u64>, Vec3)> {
     let at = p.get("point").and_then(vec3).filter(|v| v.len() < 1e7).ok_or_else(|| bad(cmd, "`point` must be [x, y, z], a world point"))?;
     let mut t = s.scratch();
     t.pending_moves.clear();
-    let local = solidcraft_doc::mat_inverse(&path_world(&t, &path, cmd)?)
-        .map(|m| solidcraft_doc::apply_point(&m, at))
-        .ok_or_else(|| bad(cmd, "the occurrence's placement is not invertible"))?;
+    let local = path_world(&t, &path, cmd)?.inverse().map(|m| m.point(at)).ok_or_else(|| bad(cmd, "the occurrence's placement is not invertible"))?;
     Ok((path, local))
 }
 
 /// The world placement of an occurrence path (empty: the root).
-fn path_world(t: &Session, path: &[u64], cmd: &str) -> Result<Mat> {
-    if path.is_empty() { Ok(solidcraft_doc::IDENTITY) } else { t.occurrence_placement(path).map(|o| o.world).map_err(|e| bad(cmd, e.to_string())) }
+fn path_world(t: &Session, path: &[u64], cmd: &str) -> Result<Transform> {
+    if path.is_empty() { Ok(Transform::IDENTITY) } else { t.occurrence_placement(path).map(|o| o.world).map_err(|e| bad(cmd, e.to_string())) }
 }
 
 /// Where a point of an occurrence goes as a study plays or a joint is driven: its world
@@ -805,7 +802,7 @@ fn sample_trace(s: &Session, p: &Value, cmd: &str) -> Result<(Vec<Vec3>, Value)>
     for k in 0..n {
         let want = plan(&t, k, n);
         let (r, _) = drive_with_contact(&mut t, &want, &given)?;
-        points.push(solidcraft_doc::apply_point(&world(&t)?, local));
+        points.push(world(&t)?.point(local));
         if r["stopped_by_loop"].is_object() || r["stopped_by_contact"].is_object() {
             stop = (json!(k), r["stopped_by_loop"].clone(), r["stopped_by_contact"].clone());
             break;
@@ -1022,7 +1019,7 @@ fn explode_show(s: &mut Session, p: &Value) -> Result<Value> {
     for (o, t) in &v.moves {
         let Some(occ) = s.doc.occurrences.iter().find(|x| x.id == *o) else { continue };
         let mut m = occ.transform;
-        if let Some(r) = m.get_mut(3) {
+        if let Some(r) = m.0.get_mut(3) {
             r[0] += t.x;
             r[1] += t.y;
             r[2] += t.z;
@@ -1046,7 +1043,7 @@ fn explode_delete(s: &mut Session, p: &Value) -> Result<Value> {
 /// World position of a point of an occurrence (tests).
 #[cfg(test)]
 pub fn world_point(s: &Session, occurrence: u64, p: Vec3) -> Vec3 {
-    solidcraft_doc::apply_point(&joints::occurrence_world(&s.doc, occurrence), p)
+    joints::occurrence_world(&s.doc, occurrence).point(p)
 }
 
 #[cfg(test)]

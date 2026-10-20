@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use solidcraft_geom::{Aabb3, Mesh, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Aabb3, Mesh, Seg2, Transform, Vec2, Vec3};
 
 use crate::history_names::Names;
 use crate::lineage::Lineage;
@@ -30,7 +30,7 @@ pub struct NamingOrigin {
     pub before: Arc<ModelState>,
     pub depth: usize,
     /// Instance transforms of a pattern or mirror (its copies are named after their sources).
-    pub mats: Vec<crate::Mat>,
+    pub mats: Vec<Transform>,
     /// The sheet metal bodies after a sheet feature (their folds place moved faces).
     pub sheets: Vec<crate::sheet::SheetBody>,
 }
@@ -357,7 +357,7 @@ fn geometric_from(b: &ModelBody, o: &NamingOrigin, nf: usize, names_of: fn(&Mode
             .collect();
         let mut best: Option<(usize, usize, Vec<Option<String>>)> = None;
         for (k, mat) in o.mats.iter().enumerate() {
-            let Some(inv) = crate::mat_inverse(mat) else { continue };
+            let Some(inv) = mat.inverse() else { continue };
             let got: Vec<Option<String>> = pts.iter().map(|ps| vote(ps, &all, tol, Some(&inv))).collect();
             let n = got.iter().filter(|x| x.is_some()).count();
             if n > found && best.as_ref().is_none_or(|(bn, _, _)| n > *bn) {
@@ -461,11 +461,11 @@ pub(crate) fn ray_hit(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f64
 
 /// The input face most of a face's sample points lie on (mapped by `map` first), if it holds
 /// at least half of them.
-fn vote(ps: &[Vec3], inputs: &[(&ModelBody, FaceIndex, Arc<Vec<String>>)], tol: f64, map: Option<&crate::Mat>) -> Option<String> {
+fn vote(ps: &[Vec3], inputs: &[(&ModelBody, FaceIndex, Arc<Vec<String>>)], tol: f64, map: Option<&Transform>) -> Option<String> {
     let mut votes: Vec<(String, usize)> = Vec::new();
     for p in ps {
         let p = match map {
-            Some(m) => crate::apply_point(m, *p),
+            Some(m) => m.point(*p),
             None => *p,
         };
         for (_, idx, nm) in inputs {

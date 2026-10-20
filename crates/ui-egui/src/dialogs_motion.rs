@@ -4,12 +4,12 @@
 //! computed on a scratch copy of the design and put back when the dialog closes.
 
 use crate::ui_kit::{choice_row, expr_row, text_row};
+use solidcraft_engine::geom::Transform;
 use std::collections::BTreeMap;
 
 use egui::{Pos2, RichText, Sense, Stroke, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::Session;
-use solidcraft_engine::doc::Mat;
 use solidcraft_engine::doc::joints::JointKind;
 
 use crate::SolveApp;
@@ -57,7 +57,7 @@ pub enum Mo {
         speed: usize,
         /// The step the shown pose is for (and its revision).
         shown: Option<(u64, u64)>,
-        saved: Option<BTreeMap<u64, Mat>>,
+        saved: Option<BTreeMap<u64, Transform>>,
         error: Option<String>,
         /// The chart and the collision check by the timeline.
         analysis: Box<plot::Analysis>,
@@ -66,7 +66,7 @@ pub enum Mo {
         name: String,
         scale: f64,
         shown: Option<(u64, u64)>,
-        saved: Option<BTreeMap<u64, Mat>>,
+        saved: Option<BTreeMap<u64, Transform>>,
         error: Option<String>,
     },
     Configurations {
@@ -346,7 +346,7 @@ pub fn cell_value(column: &str, text: &str) -> Value {
 // ---- display ----
 
 /// Show `moves` as pending occurrence moves (display only), keeping what was there before.
-fn display(app: &mut SolveApp, saved: &mut Option<BTreeMap<u64, Mat>>, moves: BTreeMap<u64, Mat>) {
+fn display(app: &mut SolveApp, saved: &mut Option<BTreeMap<u64, Transform>>, moves: BTreeMap<u64, Transform>) {
     if saved.is_none() {
         *saved = Some(app.session.pending_moves.clone());
     }
@@ -354,7 +354,7 @@ fn display(app: &mut SolveApp, saved: &mut Option<BTreeMap<u64, Mat>>, moves: BT
     app.session.revision += 1;
 }
 
-fn restore(app: &mut SolveApp, saved: &mut Option<BTreeMap<u64, Mat>>) {
+fn restore(app: &mut SolveApp, saved: &mut Option<BTreeMap<u64, Transform>>) {
     if let Some(m) = saved.take() {
         app.session.pending_moves = m;
         app.session.revision += 1;
@@ -373,7 +373,7 @@ pub fn closed(app: &mut SolveApp, d: &mut Dialog, applied: bool) {
 }
 
 /// The occurrence placements of `after` that differ from `before` (as pending moves).
-fn moved(before: &Session, after: &Session) -> BTreeMap<u64, Mat> {
+fn moved(before: &Session, after: &Session) -> BTreeMap<u64, Transform> {
     let mut out = before.pending_moves.clone();
     for o in &after.doc.occurrences {
         let was = before.doc.occurrences.iter().find(|b| b.id == o.id).map(|b| b.transform);
@@ -385,7 +385,7 @@ fn moved(before: &Session, after: &Session) -> BTreeMap<u64, Mat> {
 }
 
 /// The study's pose at `step`, computed on a scratch copy.
-fn study_pose(app: &SolveApp, params: &Value, step: u32) -> Result<BTreeMap<u64, Mat>, String> {
+fn study_pose(app: &SolveApp, params: &Value, step: u32) -> Result<BTreeMap<u64, Transform>, String> {
     let mut sc = app.session.scratch();
     let id = scratch_study(&mut sc, params)?;
     sc.execute("motion.play", &json!({"study": id, "step": step})).map_err(|e| e.to_string())?;
@@ -427,7 +427,7 @@ pub fn scratch_study(sc: &mut Session, params: &Value) -> Result<Value, String> 
 }
 
 /// The explosion at `scale`, computed on a scratch copy.
-fn explode_pose(app: &SolveApp, scale: f64) -> Result<BTreeMap<u64, Mat>, String> {
+fn explode_pose(app: &SolveApp, scale: f64) -> Result<BTreeMap<u64, Transform>, String> {
     let mut sc = app.session.scratch();
     sc.execute("explode.create", &json!({"name": "__preview", "scale": scale})).map_err(|e| e.to_string())?;
     sc.execute("explode.show", &json!({ "view": "__preview" })).map_err(|e| e.to_string())?;
@@ -808,11 +808,11 @@ mod tests {
     #[test]
     fn shown_poses_are_put_back() {
         let mut app = SolveApp::new(Session::default(), crate::Services::default());
-        app.session.pending_moves.insert(9, solidcraft_engine::doc::IDENTITY);
+        app.session.pending_moves.insert(9, Transform::IDENTITY);
         let before = app.session.pending_moves.clone();
-        let mut m = solidcraft_engine::doc::IDENTITY;
+        let mut m = Transform::IDENTITY;
         m[3] = [5.0, 0.0, 0.0, 1.0];
-        let shown: BTreeMap<u64, Mat> = [(3, m)].into_iter().collect();
+        let shown: BTreeMap<u64, Transform> = [(3, m)].into_iter().collect();
         for (kind, applied, kept) in [("study", true, false), ("explode", false, false), ("explode", true, true)] {
             let mut saved = None;
             display(&mut app, &mut saved, shown.clone());

@@ -13,7 +13,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::doc::joints::JointKind;
-use solidcraft_engine::geom::{Aabb3, Mesh, Vec3};
+use solidcraft_engine::geom::{Aabb3, Mesh, Transform, Vec3};
 
 use crate::SolveApp;
 use crate::dialogs::{Dialog, Kind, combo, field, form_row};
@@ -1410,12 +1410,12 @@ mod tests;
 
 thread_local! {
     /// Named joint origins in the world, for the design state they were found in.
-    static ORIGINS: std::cell::RefCell<Option<(String, Vec<(String, solidcraft_engine::doc::Mat)>)>> = const { std::cell::RefCell::new(None) };
+    static ORIGINS: std::cell::RefCell<Option<(String, Vec<(String, Transform)>)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Named joint origins in the world: on their occurrence's component, so they move with it
 /// (joint drives, free moves not captured yet, Capture Position).
-pub fn origins_world(s: &Session) -> Vec<(String, solidcraft_engine::doc::Mat)> {
+pub fn origins_world(s: &Session) -> Vec<(String, Transform)> {
     if s.doc.assembly.origins.is_empty() {
         return Vec::new();
     }
@@ -1445,10 +1445,10 @@ pub fn origins(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     let t = Tokens::get();
     let len = app.cam.half_height() * 2.0 * 0.04;
     for (_, m) in origins_world(&app.session) {
-        let at = solidcraft_engine::doc::apply_point(&m, Vec3::ZERO);
+        let at = m.point(Vec3::ZERO);
         let Some(c) = proj.to_screen(at) else { continue };
         for (axis, col) in [(Vec3::X, t.axis_x), (Vec3::Y, t.axis_y), (Vec3::Z, t.axis_z)] {
-            if let Some(tip) = proj.to_screen(at + solidcraft_engine::doc::apply_vector(&m, axis) * len) {
+            if let Some(tip) = proj.to_screen(at + m.vector(axis) * len) {
                 painter.line_segment([c, tip], Stroke::new(2.0, col));
             }
         }
@@ -1458,12 +1458,12 @@ pub fn origins(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
 
 thread_local! {
     /// Joint frames in the world (joint id → A's frame), for the design state they were found in.
-    static JOINT_FRAMES: std::cell::RefCell<Option<(String, Vec<(u64, solidcraft_engine::doc::Mat)>)>> = const { std::cell::RefCell::new(None) };
+    static JOINT_FRAMES: std::cell::RefCell<Option<(String, Vec<(u64, Transform)>)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Each joint's frame in the world (where its glyph sits): the frame of its first origin, on
 /// its occurrence as placed (including moves not captured yet).
-pub fn joint_frames_world(s: &Session) -> Vec<(u64, solidcraft_engine::doc::Mat)> {
+pub fn joint_frames_world(s: &Session) -> Vec<(u64, Transform)> {
     if s.doc.assembly.joints.is_empty() {
         return Vec::new();
     }
@@ -1515,7 +1515,7 @@ pub fn joint_glyphs(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     let t = Tokens::get();
     let frames = joint_frames_world(&app.session);
     let len = app.cam.half_height() * 2.0 * 0.05;
-    let at = |m: &solidcraft_engine::doc::Mat, x: f64, y: f64, z: f64| solidcraft_engine::doc::apply_point(m, Vec3::new(x, y, z));
+    let at = |m: &Transform, x: f64, y: f64, z: f64| m.point(Vec3::new(x, y, z));
     for (id, picked) in drawn {
         let Some(j) = app.session.doc.assembly.joints.iter().find(|j| j.id == id) else { continue };
         let Some((_, m)) = frames.iter().find(|(f, _)| *f == id) else { continue };

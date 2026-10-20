@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use solidcraft_doc::Document;
 use solidcraft_doc::joints;
 use solidcraft_doc::motion::MotionStudy;
-use solidcraft_doc::{Document, Mat, apply_point, mat_mul};
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Transform, Vec3};
 
 use super::contact_sweep::{ContactGeometry, Member};
 use super::{drive_with_contact, joint_id, keyed, occurrences, path_world, study_index, traced_point, values_at};
@@ -190,7 +190,7 @@ pub(super) fn plot(s: &mut Session, p: &Value) -> Result<Value> {
             out.push(now.get(id).and_then(|q| q.get(*i)).copied().unwrap_or(0.0));
         }
         if let Some((occ, local)) = &point {
-            path.push(apply_point(&path_world(t, occ, cmd)?, *local));
+            path.push(path_world(t, occ, cmd)?.point(*local));
         }
         Ok(true)
     })?;
@@ -261,7 +261,7 @@ struct Collision {
 fn shared_volume(s: &Session, doc: &Document, a: u64, b: u64, booleans: &mut usize) -> Option<f64> {
     let st = s.model.state();
     // The bodies under each (and not under the other), with their world frames and boxes.
-    let mut sides: [Vec<(Mat, Aabb3, &solidcraft_doc::ModelBody)>; 2] = Default::default();
+    let mut sides: [Vec<(Transform, Aabb3, &solidcraft_doc::ModelBody)>; 2] = Default::default();
     for (comp, path, m) in doc.placements() {
         // A body belongs to the innermost of the two on its path, as contact sets pair them.
         let side = match path.iter().rev().find(|o| **o == a || **o == b) {
@@ -270,13 +270,13 @@ fn shared_volume(s: &Session, doc: &Document, a: u64, b: u64, booleans: &mut usi
             None => continue,
         };
         for body in st.bodies.iter().filter(|x| doc.model_body_component(x) == comp && !x.body.is_mesh()) {
-            let frame = doc.model_body_offset(body).map(|o| mat_mul(&m, o)).unwrap_or(m);
+            let frame = doc.model_body_offset(body).map(|o| m * o).unwrap_or(m);
             let local = body.mesh().bounds();
             let mut world = Aabb3::EMPTY;
             for c in 0..8 {
                 let pick = |bit: usize, lo: f64, hi: f64| if c & bit == 0 { lo } else { hi };
                 let corner = Vec3::new(pick(1, local.min.x, local.max.x), pick(2, local.min.y, local.max.y), pick(4, local.min.z, local.max.z));
-                world.add(apply_point(&frame, corner));
+                world.add(frame.point(corner));
             }
             sides.get_mut(side)?.push((frame, world, body));
         }

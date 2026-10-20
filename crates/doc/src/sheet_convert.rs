@@ -54,7 +54,7 @@ use solidcraft_geom::{Loop2, Mesh, Plane, Region2, Ring, Seg2, UnitVec3, Vec2, V
 use solidcraft_kernel::{Body, FaceSurface, face_surface};
 
 use super::{FlatWork, ReliefOverride, RuleValues, SheetBody, SheetFlange, base_flange, polys_cross, signed_area, snap};
-use crate::{DocError, ModelBody, Result, apply_point, mat_inverse};
+use crate::{DocError, ModelBody, Result};
 
 const MAX_BENDS: usize = 1000;
 
@@ -837,11 +837,11 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
     while let Some(&(pf, fl)) = queue.get(next) {
         next += 1;
         let Some(panel) = panels.get(&pf) else { continue };
-        let inv = mat_inverse(&sh.world(fl)).ok_or_else(|| DocError::Invalid("sheet panel frame".into()))?;
+        let inv = sh.world(fl).inverse().ok_or_else(|| DocError::Invalid("sheet panel frame".into()))?;
         let n = panel.face.pts.len();
         let (mut pts, mut by) = (Vec::with_capacity(n), Vec::with_capacity(n));
         for (i, p) in panel.face.pts.iter().enumerate() {
-            let q = apply_point(&inv, *p);
+            let q = inv.point(*p);
             if !(q.z.abs() <= tol) {
                 return err(format!("the face at {} does not lie where its bend puts it ({:.6} mm off)", at(*p), q.z));
             }
@@ -856,7 +856,7 @@ pub fn convert_body(mb: &ModelBody, rule: &str, rv: &RuleValues, face: Vec3, ben
         }
         let mut across = panel.face.across.clone();
         let flat = |p: Vec3| {
-            let q = apply_point(&inv, p);
+            let q = inv.point(p);
             Vec2::new(q.x, q.y)
         };
         let mut round: Vec<Option<(Vec2, Vec2)>> = panel.face.round.iter().map(|r| r.map(|(c, m)| (flat(c), flat(m)))).collect();

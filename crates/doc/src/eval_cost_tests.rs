@@ -7,7 +7,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use solidcraft_geom::{Plane, Vec2, Vec3};
+use solidcraft_geom::{Plane, Transform, Vec2, Vec3};
 use solidcraft_kernel as kernel;
 use solidcraft_sketch::Sketch;
 
@@ -50,7 +50,7 @@ fn placed_imports(parts: usize) -> Document {
         let step: Arc<str> = kernel::step_export(&[&a, &b], "test").unwrap().into();
         let comp = doc.add_component(Some(&format!("Part {i}")), 0).unwrap();
         let o = doc.occurrences.iter_mut().find(|o| o.component == comp).unwrap();
-        o.transform = rigid(Vec3::new(0.0, 0.0, 5.0 * i as f64), Vec3::ZERO, Vec3::Z, 0.05 * i as f64);
+        o.transform = Transform::rigid(Vec3::new(0.0, 0.0, 5.0 * i as f64), Vec3::ZERO, Vec3::Z, 0.05 * i as f64);
         let kind = FeatureKind::Import { file: format!("part{i}.step"), step, components: Vec::new(), skip: Vec::new() };
         let id = doc.add_feature(kind, Some(&format!("Part {i}"))).unwrap();
         doc.feature_mut(id).unwrap().component = comp;

@@ -8,10 +8,10 @@
 //! corner x and y run along the two edges, away from the corner into the face, in the order that
 //! makes the frame right-handed.
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 
 use super::{Snap, component_bodies, frame};
-use crate::{DocError, Document, Mat, ModelBody, ModelState, Result};
+use crate::{DocError, Document, ModelBody, ModelState, Result};
 
 /// Points that close are one corner (as a share of the body's size, at least 1 µm).
 fn tol(b: &ModelBody) -> f64 {
@@ -99,7 +99,7 @@ fn meeting(e: &[Vec3], f: &[Vec3], tol: f64) -> Option<Vec3> {
 }
 
 /// The frame of an edge snap in its component's coordinates.
-pub(super) fn edge_frame(doc: &Document, st: &ModelState, comp: u64, snap: &Snap) -> Result<Mat> {
+pub(super) fn edge_frame(doc: &Document, st: &ModelState, comp: u64, snap: &Snap) -> Result<Transform> {
     let Snap::Edge { pick, edge, face, corner } = snap else { return Err(DocError::Invalid("not an edge origin".into())) };
     let bad = || DocError::Invalid("joint origin: degenerate frame".into());
     let gone = |what: &str| DocError::Invalid(format!("joint origin: {what} no longer exists (edit the joint to pick again)"));

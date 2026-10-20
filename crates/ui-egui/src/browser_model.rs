@@ -3,17 +3,18 @@
 //! quadratic on every frame. Keep the document and evaluated state alive with the index so
 //! neither a new document nor a later allocation can accidentally reuse its answers.
 
+use solidcraft_engine::geom::Transform;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use solidcraft_engine::Session;
-use solidcraft_engine::doc::{Document, FeatureKind, Mat, ModelState};
+use solidcraft_engine::doc::{Document, FeatureKind, ModelState};
 use solidcraft_engine::occurrences::OccurrencePlacement;
 
 pub(super) struct Model {
     doc: Arc<Document>,
     state: Arc<ModelState>,
-    pending_moves: BTreeMap<u64, Mat>,
+    pending_moves: BTreeMap<u64, Transform>,
     pub bodies: HashMap<u64, Vec<usize>>,
     pub sketches: HashMap<u64, Vec<usize>>,
     pub planes: HashMap<u64, Vec<usize>>,

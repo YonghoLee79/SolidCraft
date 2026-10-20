@@ -433,7 +433,12 @@ fn suppressed_external_entry_does_not_supply_clone_baseline() {
     let skipped = s
         .doc_mut()
         .add_feature(
-            solidcraft_doc::FeatureKind::BodyTransfer { bodies: vec!["Foreign".into()], from: 0, to: part, transform: solidcraft_doc::IDENTITY },
+            solidcraft_doc::FeatureKind::BodyTransfer {
+                bodies: vec!["Foreign".into()],
+                from: 0,
+                to: part,
+                transform: solidcraft_geom::Transform::IDENTITY,
+            },
             None,
         )
         .unwrap();
@@ -454,7 +459,7 @@ fn transferred_frozen_face_paint_ignores_consumed_legacy_offset() {
     run(&mut s, "appearance.assign", json!({"body":"Foreign","faces":[[1,1,2]],"color":"#00ff00"}));
     s.doc_mut().body_offsets.insert(
         "Foreign".into(),
-        solidcraft_doc::rigid(solidcraft_geom::Vec3::new(7.0, 0.0, 0.0), solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::Z, 0.0),
+        solidcraft_geom::Transform::rigid(solidcraft_geom::Vec3::new(7.0, 0.0, 0.0), solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::Z, 0.0),
     );
     s.refresh();
     let part = component(&mut s, "Part");

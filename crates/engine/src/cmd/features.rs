@@ -471,8 +471,8 @@ fn add_feature_in(s: &mut Session, p: &Value, kind: FeatureKind, world: bool) ->
             let state = s.model.state();
             let body = state.body(&face.body).ok_or_else(|| EngineError::Other("selected cylinder body no longer exists".into()))?;
             let frame = face.body_frame(&s.doc, body).map_err(|e| EngineError::Other(e.to_string()))?;
-            let inverse = solidcraft_doc::mat_inverse(&frame).ok_or_else(|| EngineError::Other("invalid cylinder placement".into()))?;
-            let at = solidcraft_doc::apply_point(&solidcraft_doc::mat_mul(&inverse, &s.active_component_frame()), face.at.0);
+            let inverse = frame.inverse().ok_or_else(|| EngineError::Other("invalid cylinder placement".into()))?;
+            let at = (inverse * s.active_component_frame()).point(face.at.0);
             let mut scoped = solidcraft_doc::ModelState::default();
             scoped.bodies.push(body.clone());
             let names = solidcraft_doc::naming::face_names_at(&scoped, &[at]);
@@ -1314,7 +1314,7 @@ fn finish_pattern(s: &mut Session, p: &Value, features: Vec<String>, pattern: so
         let id = s.doc.find_component(c).filter(|id| *id != 0).ok_or_else(|| bad(cmd, format!("no component `{c}`")))?;
         let src = s.doc.occurrence_of(id).cloned().ok_or_else(|| bad(cmd, format!("component `{c}` has no occurrence")))?;
         for m in &mats {
-            made.push(s.doc_mut().add_occurrence(id, src.parent, solidcraft_doc::mat_mul(m, &src.transform))?);
+            made.push(s.doc_mut().add_occurrence(id, src.parent, m * src.transform)?);
         }
     }
     Ok(json!({"occurrences": made}))

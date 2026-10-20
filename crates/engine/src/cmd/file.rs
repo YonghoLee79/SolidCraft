@@ -8,6 +8,7 @@ pub(crate) mod import;
 
 use serde_json::{Value, json};
 use solidcraft_doc::Document;
+use solidcraft_geom::Transform;
 use solidcraft_io::Format;
 
 use super::CommandSpec;
@@ -103,8 +104,8 @@ fn read_step(path: &str, names: solidcraft_io::StepNames) -> Result<solidcraft_i
 }
 
 /// A quarter turn about X through the origin: a file's Y up becomes Z up.
-fn quarter_turn_x() -> solidcraft_doc::Mat {
-    solidcraft_doc::rigid(solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::X, std::f64::consts::FRAC_PI_2)
+fn quarter_turn_x() -> Transform {
+    Transform::rigid(solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::X, std::f64::consts::FRAC_PI_2)
 }
 
 /// Add an Import feature for a STEP file to the session's design, in a new component named
@@ -183,7 +184,7 @@ fn add_mesh(s: &mut Session, path: &str, name: Option<&str>, y_up: Option<bool>)
 fn turn_up(s: &mut Session, placed: &import::Placed) -> Result<Option<u64>> {
     let occ = placed.occurrence.ok_or_else(|| EngineError::Other("the import has no placement to turn".into()))?;
     if let Some(o) = s.doc_mut().occurrences.iter_mut().find(|o| o.id == occ) {
-        o.transform = solidcraft_doc::mat_mul(&quarter_turn_x(), &o.transform);
+        o.transform = quarter_turn_x() * o.transform;
     }
     s.refresh();
     Ok(Some(occ))
@@ -226,7 +227,7 @@ fn insert_step(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(m) = placement {
         let occ = out["occurrence"].as_u64().ok_or_else(|| EngineError::Other("the import has no placement to move".into()))?;
         if let Some(o) = s.doc_mut().occurrences.iter_mut().find(|o| o.id == occ) {
-            o.transform = solidcraft_doc::mat_mul(&m, &o.transform);
+            o.transform = m * o.transform;
             out["transform"] = json!(o.transform);
         }
         s.refresh();

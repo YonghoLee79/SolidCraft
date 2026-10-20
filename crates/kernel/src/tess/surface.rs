@@ -150,7 +150,7 @@ mod tests {
         let Ok(cyl) = crate::cylinder(Vec3::ZERO, Vec3::Z, 2.0, 5.0) else { panic!("cylinder") };
         // Column-major: x → 3 − x, z → z + 1.
         let mirror = [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [3.0, 0.0, 1.0, 1.0]];
-        let Ok(m) = crate::transform_matrix(&cyl, mirror) else { panic!("transform") };
+        let Ok(m) = crate::transform_matrix(&cyl, solidcraft_geom::Transform(mirror)) else { panic!("transform") };
         assert!(assert_matches_truck(&solid(m)).iter().sum::<usize>() > 0);
     }
 }

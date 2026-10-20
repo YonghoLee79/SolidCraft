@@ -498,7 +498,7 @@ fn check_body_offset(auto: bool) {
     std::sync::Arc::make_mut(&mut s.doc).body_components.insert("Sleeve".into(), holder);
     std::sync::Arc::make_mut(&mut s.doc)
         .body_offsets
-        .insert("Sleeve".into(), [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., -50., 0., 1.]]);
+        .insert("Sleeve".into(), solidcraft_geom::Transform([[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., -50., 0., 1.]]));
     s.refresh();
     assert!(s.doc.body_offsets.contains_key("Sleeve"));
     let offset = s.doc.body_offsets["Sleeve"];

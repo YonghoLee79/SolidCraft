@@ -6,8 +6,8 @@ use crate::selection::SelectionExt as _;
 use crate::ui_kit::{choice_row, expr_row};
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
-use solidcraft_engine::doc::{Expr, Mat, RailFit, SweepOrientation, SweepRail};
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::doc::{Expr, RailFit, SweepOrientation, SweepRail};
+use solidcraft_engine::geom::{Transform, Vec3};
 
 use crate::SolveApp;
 use crate::selection::{AXES, CURVES, EDGES, SelInput};
@@ -51,7 +51,7 @@ impl SweepOpts {
         twist: &Option<Expr>,
         scale: &Option<Expr>,
         rail_fit: RailFit,
-        frame: &Mat,
+        frame: &Transform,
     ) -> (SweepOpts, Option<Sel>) {
         let mut o = SweepOpts {
             twist: twist.as_ref().map_or_else(|| NO_TWIST.into(), |t| t.to_string()),
@@ -65,7 +65,7 @@ impl SweepOpts {
             SweepOrientation::Parallel => o.orientation = 1,
             SweepOrientation::Direction(d) => {
                 o.orientation = DIRECTION;
-                let world = solidcraft_engine::doc::apply_vector(frame, d.0);
+                let world = frame.vector(d.0);
                 match world.normalized().and_then(world_axis) {
                     Some(name) => pick = Some(Sel::Axis { name: name.into() }),
                     None => o.direction = Some(world),

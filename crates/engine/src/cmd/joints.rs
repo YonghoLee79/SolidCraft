@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::joints::cam::{self, Cam, CamProfile, Follower};
 use solidcraft_doc::joints::{self, Coupling, Joint, JointExprs, JointKind, JointOrigin, MotionLink, NamedOrigin, Size, Snap, XRef};
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Transform, Vec3};
 
 use super::CommandSpec;
 use crate::params::{bad, bool_, num, str_, vec3};
@@ -298,9 +298,9 @@ pub(crate) fn occurrence_at(s: &Session, p: Vec3) -> Option<u64> {
         let comp = s.doc.model_body_component(b);
         let occs: Vec<u64> = if comp == 0 { vec![0] } else { s.doc.occurrences.iter().filter(|o| o.component == comp).map(|o| o.id).collect() };
         for occ in occs {
-            let t = if occ == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, occ) };
-            let inv = solidcraft_doc::mat_inverse(&t)?;
-            let q = solidcraft_doc::apply_point(&inv, p);
+            let t = if occ == 0 { Transform::IDENTITY } else { joints::occurrence_world(&s.doc, occ) };
+            let inv = t.inverse()?;
+            let q = inv.point(p);
             let bb = b.mesh().bounds();
             let c = Vec3::new(q.x.clamp(bb.min.x, bb.max.x), q.y.clamp(bb.min.y, bb.max.y), q.z.clamp(bb.min.z, bb.max.z));
             let d = c.dist(q);
@@ -340,10 +340,10 @@ fn origin_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointOrigin
         None => occurrence_at(s, world).ok_or_else(|| bad(cmd, "no body there"))?,
     };
     // World → the component's own coordinates.
-    let t = if occurrence == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, occurrence) };
-    let inv = solidcraft_doc::mat_inverse(&t).ok_or_else(|| bad(cmd, "occurrence transform"))?;
-    let local = |p: Vec3| solidcraft_doc::apply_point(&inv, p);
-    let local_dir = |d: Vec3| solidcraft_doc::apply_vector(&inv, d);
+    let t = if occurrence == 0 { Transform::IDENTITY } else { joints::occurrence_world(&s.doc, occurrence) };
+    let inv = t.inverse().ok_or_else(|| bad(cmd, "occurrence transform"))?;
+    let local = |p: Vec3| inv.point(p);
+    let local_dir = |d: Vec3| inv.vector(d);
     let component = component_of(s, occurrence);
     let st = s.model.state();
     let snap = match what {
@@ -418,8 +418,8 @@ fn origin_by_name(s: &Session, v: &Value, what: &str, name: &str, cmd: &str) -> 
     if component_of(s, occurrence) != component {
         return Err(bad(cmd, format!("face `{name}` is not on that occurrence's component")));
     }
-    let t = if occurrence == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, occurrence) };
-    let inv = solidcraft_doc::mat_inverse(&t).ok_or_else(|| bad(cmd, "occurrence transform"))?;
+    let t = if occurrence == 0 { Transform::IDENTITY } else { joints::occurrence_world(&s.doc, occurrence) };
+    let inv = t.inverse().ok_or_else(|| bad(cmd, "occurrence transform"))?;
     let x = x_param(s, v, component, &inv, cmd)?;
     let face = Some(name.to_string());
     let snap = if what == "face" { Snap::FaceCenter { pick, face, x } } else { Snap::CircleCenter { pick, face, end: None, x } };
@@ -450,7 +450,7 @@ fn settle(s: &Session, mut o: JointOrigin, v: &Value, cmd: &str) -> Result<Joint
 
 /// A joint origin's x reference (its turn about z): `x: [x, y, z]` (a direction, world), `x:
 /// "<face name>"`, or `x: {face: [x, y, z]}` (the face of the origin's component there, world).
-fn x_param(s: &Session, v: &Value, component: u64, inv: &solidcraft_doc::Mat, cmd: &str) -> Result<Option<XRef>> {
+fn x_param(s: &Session, v: &Value, component: u64, inv: &Transform, cmd: &str) -> Result<Option<XRef>> {
     let st = s.model.state();
     let named = |name: &str| -> Result<Option<XRef>> {
         joints::named_face_spot(&s.doc, &st, None, name).map_err(|why| bad(cmd, format!("`x`: {why}")))?;
@@ -463,7 +463,7 @@ fn x_param(s: &Session, v: &Value, component: u64, inv: &solidcraft_doc::Mat, cm
         Some(o @ Value::Object(_)) => match o.get("face") {
             Some(Value::String(name)) if !name.is_empty() && name.len() <= 512 => named(name),
             Some(p) => {
-                let pick = vec3(p).map(|p| solidcraft_doc::apply_point(inv, p)).ok_or_else(wrong)?;
+                let pick = vec3(p).map(|p| inv.point(p)).ok_or_else(wrong)?;
                 let face = joints::face_name_at(&s.doc, &st, component, pick, false).ok_or_else(|| bad(cmd, "`x`: no named face there"))?;
                 Ok(Some(XRef::Face { face, pick: Some(pick) }))
             }
@@ -471,7 +471,7 @@ fn x_param(s: &Session, v: &Value, component: u64, inv: &solidcraft_doc::Mat, cm
         },
         Some(d) => {
             let d = vec3(d).filter(|d| d.is_finite() && d.len() > 1e-9).ok_or_else(wrong)?;
-            Ok(Some(XRef::Dir(solidcraft_doc::apply_vector(inv, d))))
+            Ok(Some(XRef::Dir(inv.vector(d))))
         }
     }
 }
@@ -807,10 +807,10 @@ fn reach(s: &mut Session, p: &Value) -> Result<Value> {
     let occ = occurrence_id(s, p.get("occurrence"), cmd)?;
     let given = |k: &str| p.get(k).and_then(vec3).filter(|v| v.is_finite() && v.len() < 1e9);
     let to = given("point").ok_or_else(|| bad(cmd, "`point` must be [x, y, z]"))?;
-    let world = if occ == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, occ) };
-    let inv = solidcraft_doc::mat_inverse(&world).ok_or_else(|| bad(cmd, "occurrence transform"))?;
+    let world = if occ == 0 { Transform::IDENTITY } else { joints::occurrence_world(&s.doc, occ) };
+    let inv = world.inverse().ok_or_else(|| bad(cmd, "occurrence transform"))?;
     let at = match p.get("at") {
-        Some(_) => solidcraft_doc::apply_point(&inv, given("at").ok_or_else(|| bad(cmd, "`at` must be [x, y, z]"))?),
+        Some(_) => inv.point(given("at").ok_or_else(|| bad(cmd, "`at` must be [x, y, z]"))?),
         None => body_centre(s, occ),
     };
     let unit = |k: &str| -> Result<Option<Vec3>> {
@@ -823,7 +823,7 @@ fn reach(s: &mut Session, p: &Value) -> Result<Value> {
     if axis.is_some() && z.is_none() {
         return Err(bad(cmd, "`axis` goes with `z`, the way it points"));
     }
-    let axis = z.map(|z| (axis.map(|a| solidcraft_doc::apply_vector(&inv, a)).and_then(Vec3::normalized).unwrap_or(Vec3::Z), z));
+    let axis = z.map(|z| (axis.map(|a| inv.vector(a)).and_then(Vec3::normalized).unwrap_or(Vec3::Z), z));
     let only = match p.get("joints") {
         None => None,
         Some(Value::Array(a)) if a.len() <= MAX_REACH_JOINTS => Some(a.iter().map(|v| joint_id(s, Some(v), cmd)).collect::<Result<BTreeSet<u64>>>()?),
@@ -850,7 +850,7 @@ fn reach(s: &mut Session, p: &Value) -> Result<Value> {
     // Loops closed again from there, and where it ended up.
     let sol = resolve(s);
     let t = joints::occurrence_world(&s.doc, occ);
-    let got = solidcraft_doc::apply_point(&t, at);
+    let got = t.point(at);
     let mut out = sol_json(&sol, p);
     out["occurrence"] = json!(occurrence_name(s, occ));
     out["point"] = json!([got.x, got.y, got.z]);
@@ -858,7 +858,7 @@ fn reach(s: &mut Session, p: &Value) -> Result<Value> {
     let mut there = got.dist(to) <= joints::REACH_TOL;
     if let Some((a, z)) = axis {
         // From the sine too: the cosine alone loses small angles to rounding.
-        let v = solidcraft_doc::apply_vector(&t, a);
+        let v = t.vector(a);
         let deg = v.cross(z).len().atan2(v.dot(z)).to_degrees();
         out["error_deg"] = json!(deg);
         there &= deg <= joints::REACH_TOL;
@@ -1095,9 +1095,9 @@ fn cam_profile(s: &Session, p: &Value, cmd: &str) -> Result<CamProfile> {
         Some(o) => occurrence_id(s, Some(o), cmd)?,
         None => world.first().and_then(|w| occurrence_at(s, *w)).ok_or_else(|| bad(cmd, "no body there"))?,
     };
-    let t = if occurrence == 0 { solidcraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, occurrence) };
-    let inv = solidcraft_doc::mat_inverse(&t).ok_or_else(|| bad(cmd, "occurrence transform"))?;
-    let picks: Vec<Vec3> = world.iter().map(|w| solidcraft_doc::apply_point(&inv, *w)).collect();
+    let t = if occurrence == 0 { Transform::IDENTITY } else { joints::occurrence_world(&s.doc, occurrence) };
+    let inv = t.inverse().ok_or_else(|| bad(cmd, "occurrence transform"))?;
+    let picks: Vec<Vec3> = world.iter().map(|w| inv.point(*w)).collect();
     let comp = s.doc.occurrences.iter().find(|o| o.id == occurrence).map(|o| o.component).unwrap_or(0);
     let st = s.model.state();
     let bodies: Vec<&solidcraft_doc::ModelBody> = st.bodies.iter().filter(|b| s.doc.model_body_component(b) == comp).collect();

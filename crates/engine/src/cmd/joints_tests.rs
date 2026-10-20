@@ -1,7 +1,7 @@
 use std::f64::consts::FRAC_PI_2;
 
 use serde_json::{Value, json};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 
 use crate::Session;
 
@@ -18,7 +18,7 @@ pub(super) fn occ(s: &Session, component: &str) -> u64 {
 }
 
 pub(super) fn place(s: &Session, component: &str, p: Vec3) -> Vec3 {
-    solidcraft_doc::apply_point(&solidcraft_doc::joints::occurrence_world(&s.doc, occ(s, component)), p)
+    solidcraft_doc::joints::occurrence_world(&s.doc, occ(s, component)).point(p)
 }
 
 fn near(a: Vec3, b: Vec3) -> bool {
@@ -89,9 +89,9 @@ fn revolute_hinge_turns_about_the_knuckle() {
     assert_eq!(dof, 1, "{l}");
     // Drive 90°: B turns about the knuckle axis (through (0, 33, 4), along the frame's z = −X).
     run(&mut s, "joint.drive", json!({"joint": "Hinge", "value": 90}));
-    let want = solidcraft_doc::rigid(Vec3::ZERO, Vec3::new(0.0, 33.0, 4.0), Vec3::new(-1.0, 0.0, 0.0), FRAC_PI_2);
+    let want = Transform::rigid(Vec3::ZERO, Vec3::new(0.0, 33.0, 4.0), Vec3::new(-1.0, 0.0, 0.0), FRAC_PI_2);
     let p = Vec3::new(20.0, 0.0, 0.0);
-    assert!(near(place(&s, "LeafB", p), solidcraft_doc::apply_point(&want, p)), "{:?}", place(&s, "LeafB", p));
+    assert!(near(place(&s, "LeafB", p), want.point(p)), "{:?}", place(&s, "LeafB", p));
     assert!(near(place(&s, "LeafB", p), Vec3::new(20.0, 29.0, 37.0)));
     // LeafA did not move; the knuckle axis is fixed.
     assert!(near(place(&s, "LeafA", p), p));

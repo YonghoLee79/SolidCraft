@@ -3,7 +3,7 @@
 use std::sync::{Arc, OnceLock};
 
 use solidcraft_geom::tess::TessPlan;
-use solidcraft_geom::{Mesh, Vec3};
+use solidcraft_geom::{Mesh, Transform, Vec3};
 use solidcraft_kernel::{self as kernel, Body};
 
 use super::ModelBody;
@@ -16,14 +16,14 @@ pub(super) struct PlacedMesh {
     /// each placement draws them moved, so a part is planned once however often it is placed.
     plans: Arc<[OnceLock<Option<Arc<TessPlan>>>; 4]>,
     plan_meshes: Arc<[OnceLock<Option<Arc<Mesh>>>; 4]>,
-    transform: crate::Mat,
+    transform: Transform,
     pub(super) tolerance: f64,
 }
 
 impl PlacedMesh {
     /// Share the original definition, never a chain of previously placed meshes. A source's
     /// OnceLock lives with its immutable geometry, so edits get a new source automatically.
-    pub(super) fn new(source: &ModelBody, transform: &crate::Mat) -> Option<Self> {
+    pub(super) fn new(source: &ModelBody, transform: &Transform) -> Option<Self> {
         if !proper_rigid(transform) {
             return None;
         }
@@ -33,7 +33,7 @@ impl PlacedMesh {
                 mesh: original.mesh.clone(),
                 plans: original.plans.clone(),
                 plan_meshes: original.plan_meshes.clone(),
-                transform: crate::mat_mul(transform, &original.transform),
+                transform: transform * original.transform,
                 tolerance: original.tolerance,
             },
             None => Self {
@@ -72,9 +72,9 @@ impl PlacedMesh {
     /// `source` (in the definition's place) moved by this placement.
     fn moved(&self, source: &Mesh) -> Mesh {
         Mesh {
-            positions: source.positions.iter().map(|p| crate::apply_point(&self.transform, *p)).collect(),
-            normals: source.normals.iter().map(|n| crate::apply_vector(&self.transform, *n)).collect(),
-            edges: source.edges.iter().map(|edge| edge.iter().map(|p| crate::apply_point(&self.transform, *p)).collect()).collect(),
+            positions: source.positions.iter().map(|p| self.transform.point(*p)).collect(),
+            normals: source.normals.iter().map(|n| self.transform.vector(*n)).collect(),
+            edges: source.edges.iter().map(|edge| edge.iter().map(|p| self.transform.point(*p)).collect()).collect(),
             triangles: source.triangles.clone(),
             tri_face: source.tri_face.clone(),
             edge_faces: source.edge_faces.clone(),
@@ -108,8 +108,8 @@ pub(super) fn reference_mesh(body: &Body, mesh: &OnceLock<Arc<Mesh>>, tolerance:
 
 /// Only proper rotations and translations preserve triangle winding, normal lengths and the
 /// reference chord tolerance. Scale, shear, reflection and malformed matrices use the mesher.
-fn proper_rigid(m: &crate::Mat) -> bool {
-    if m.iter().flatten().any(|v| !v.is_finite()) || m[0][3] != 0. || m[1][3] != 0. || m[2][3] != 0. || m[3][3] != 1. {
+fn proper_rigid(m: &Transform) -> bool {
+    if !m.is_finite() || m[0][3] != 0. || m[1][3] != 0. || m[2][3] != 0. || m[3][3] != 1. {
         return false;
     }
     let [x, y, z] = [Vec3::new(m[0][0], m[0][1], m[0][2]), Vec3::new(m[1][0], m[1][1], m[1][2]), Vec3::new(m[2][0], m[2][1], m[2][2])];
@@ -126,8 +126,8 @@ mod tests {
     #[test]
     fn placed_mesh_is_lazy_and_composes_from_one_immutable_source() {
         let source = ModelBody::new("Part".into(), kernel::box_solid(Vec3::ZERO, Vec3::new(2., 3., 4.)).unwrap(), 1);
-        let a = crate::rigid(Vec3::new(10., 20., 30.), Vec3::ZERO, Vec3::Z, 0.7);
-        let b = crate::rigid(Vec3::new(3., -5., 2.), Vec3::ZERO, Vec3::X, 0.4);
+        let a = Transform::rigid(Vec3::new(10., 20., 30.), Vec3::ZERO, Vec3::Z, 0.7);
+        let b = Transform::rigid(Vec3::new(3., -5., 2.), Vec3::ZERO, Vec3::X, 0.4);
         let mut first = ModelBody::new("First".into(), kernel::transform_matrix(&source.body, a).unwrap(), 1);
         first.mesh_placement = Some(Arc::new(PlacedMesh::new(&source, &a).unwrap()));
         let mut nested = ModelBody::new("Nested".into(), kernel::transform_matrix(&first.body, b).unwrap(), 1);
@@ -140,9 +140,9 @@ mod tests {
         assert!(source.cached_mesh().is_some(), "the canonical source is warmed on demand");
         assert!(first.cached_mesh().is_none(), "composition does not retain or evaluate intermediate poses");
         let local = source.mesh();
-        let matrix = crate::mat_mul(&b, &a);
+        let matrix = b * a;
         for (p, q) in local.positions.iter().zip(&mesh.positions) {
-            assert!(crate::apply_point(&matrix, *p).dist(*q) < 1e-8);
+            assert!(matrix.point(*p).dist(*q) < 1e-8);
         }
         let (other, work) = kernel::profile::capture(|| first.mesh());
         assert_eq!(work.tessellate_ms, 0.);
@@ -164,8 +164,8 @@ mod tests {
             kernel::sphere(Vec3::new(0., 1., 2.), 3.).unwrap(),
         ] {
             let source = ModelBody::new("Part".into(), body, 1);
-            let a = crate::rigid(Vec3::new(10., 20., 30.), Vec3::ZERO, Vec3::Z, 0.7);
-            let b = crate::rigid(Vec3::new(-4., 5., 1.), Vec3::new(1., 1., 0.), Vec3::X, 1.1);
+            let a = Transform::rigid(Vec3::new(10., 20., 30.), Vec3::ZERO, Vec3::Z, 0.7);
+            let b = Transform::rigid(Vec3::new(-4., 5., 1.), Vec3::new(1., 1., 0.), Vec3::X, 1.1);
             let placed: Vec<ModelBody> = [a, b]
                 .iter()
                 .map(|m| {
@@ -184,10 +184,10 @@ mod tests {
                 let moved = plan.evaluate();
                 assert_eq!(moved.triangles, local.triangles);
                 for (p, q) in local.positions.iter().zip(&moved.positions) {
-                    assert!(crate::apply_point(m, *p).dist(*q) < 1e-9, "{p:?} -> {q:?}");
+                    assert!(m.point(*p).dist(*q) < 1e-9, "{p:?} -> {q:?}");
                 }
                 for (n, k) in local.normals.iter().zip(&moved.normals) {
-                    assert!(crate::apply_vector(m, *n).dist(*k) < 1e-9);
+                    assert!(m.vector(*n).dist(*k) < 1e-9);
                 }
             }
             for (m, p) in [a, b].iter().zip(&placed) {
@@ -195,7 +195,7 @@ mod tests {
                 let base = source.plan_mesh_at(q).unwrap();
                 assert_eq!(mesh.triangles, base.triangles);
                 for (x, y) in base.positions.iter().zip(&mesh.positions) {
-                    assert!(crate::apply_point(m, *x).dist(*y) < 1e-9);
+                    assert!(m.point(*x).dist(*y) < 1e-9);
                 }
             }
         }
@@ -224,8 +224,8 @@ mod tests {
         let component = doc.add_component(Some("Part"), 0).unwrap();
         doc.body_components.insert("Pin".into(), component);
         let first = doc.occurrences[0].id;
-        doc.occurrences[0].transform = crate::rigid(Vec3::new(10., 0., 0.), Vec3::ZERO, Vec3::Y, 0.3);
-        doc.add_occurrence(component, 0, crate::rigid(Vec3::new(0., 20., 0.), Vec3::ZERO, Vec3::X, 0.6)).unwrap();
+        doc.occurrences[0].transform = Transform::rigid(Vec3::new(10., 0., 0.), Vec3::ZERO, Vec3::Y, 0.3);
+        doc.add_occurrence(component, 0, Transform::rigid(Vec3::new(0., 20., 0.), Vec3::ZERO, Vec3::X, 0.6)).unwrap();
         let mut state = crate::ModelState::default();
         state.bodies.push(ModelBody::new("Pin".into(), kernel::cylinder(Vec3::ZERO, Vec3::Z, 2., 8.).unwrap(), 1));
         let mut cache = super::super::PlacedBodies::default();
@@ -235,7 +235,7 @@ mod tests {
         assert!(state.bodies[0].cached_mesh().is_some());
         let (_, work) = kernel::profile::capture(|| before.bodies[1].mesh());
         assert_eq!(work.tessellate_ms, 0., "the second instance shares the first one's triangulation");
-        doc.occurrences.iter_mut().find(|o| o.id == first).unwrap().transform = crate::rigid(Vec3::new(30., 0., 0.), Vec3::ZERO, Vec3::Y, 0.9);
+        doc.occurrences.iter_mut().find(|o| o.id == first).unwrap().transform = Transform::rigid(Vec3::new(30., 0., 0.), Vec3::ZERO, Vec3::Y, 0.9);
         let moved = super::super::world_state_reusing(&doc, &state, &mut cache);
         let (_, work) = kernel::profile::capture(|| moved.bodies[0].mesh());
         assert_eq!(work.tessellate_ms, 0., "a new pose shares the same definition");
@@ -250,14 +250,14 @@ mod tests {
     #[test]
     fn only_proper_rigid_affine_matrices_reuse_reference_meshes() {
         let source = ModelBody::new("Part".into(), kernel::box_solid(Vec3::ZERO, Vec3::new(2., 3., 4.)).unwrap(), 1);
-        assert!(PlacedMesh::new(&source, &crate::IDENTITY).is_some());
+        assert!(PlacedMesh::new(&source, &Transform::IDENTITY).is_some());
         for (col, row, value) in [(0, 0, -1.), (0, 0, 2.), (0, 1, 0.5), (0, 3, 0.1), (3, 3, 2.), (3, 0, f64::NAN), (3, 2, f64::INFINITY)] {
-            let mut matrix = crate::IDENTITY;
+            let mut matrix = Transform::IDENTITY;
             matrix[col][row] = value;
             assert!(PlacedMesh::new(&source, &matrix).is_none(), "{matrix:?}");
         }
         // A positive unit determinant alone is insufficient: this scale changes normals and tolerance.
-        let mut scale = crate::IDENTITY;
+        let mut scale = Transform::IDENTITY;
         scale[0][0] = 2.;
         scale[1][1] = 0.5;
         assert!(PlacedMesh::new(&source, &scale).is_none());

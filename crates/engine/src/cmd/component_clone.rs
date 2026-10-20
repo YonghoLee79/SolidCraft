@@ -1,11 +1,12 @@
 //! Independent copies of a component definition graph, assembled and evaluated atomically.
 use solidcraft_doc::BodyName;
+use solidcraft_geom::Transform;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::params::bad;
 use crate::{Result, Sel, Session};
 use serde_json::{Value, json};
-use solidcraft_doc::{Document, Feature, FeatureKind, Mat, Occurrence};
+use solidcraft_doc::{Document, Feature, FeatureKind, Occurrence};
 
 const CMD: &str = "component.paste_new";
 const MAX_WORK: usize = 10_000;
@@ -192,7 +193,7 @@ pub(super) fn paste(
     s: &mut Session,
     component: u64,
     source_occurrence: Option<Occurrence>,
-    transform: Mat,
+    transform: Transform,
     parent: u64,
     params: &Value,
 ) -> Result<Value> {
@@ -327,7 +328,7 @@ pub(super) fn paste(
         if body.body.is_mesh() {
             return Err(bad(CMD, "Paste New of a reassigned mesh body is not supported yet"));
         }
-        let offset = source.model_body_offset(body).copied().unwrap_or(solidcraft_doc::IDENTITY);
+        let offset = source.model_body_offset(body).copied().unwrap_or(Transform::IDENTITY);
         // An external transfer establishes the local baseline in this graph.
         // Freeze AFTER that boundary, then replay it as an identity ownership event.
         let entry = feats.iter().find(|f| {
@@ -426,7 +427,7 @@ pub(super) fn paste(
                 *from = *mapped;
             } else {
                 *from = *to;
-                *transform = solidcraft_doc::IDENTITY;
+                *transform = Transform::IDENTITY;
             }
         }
         if let FeatureKind::Emboss { face: Some(face), .. } = &mut f.kind
@@ -508,7 +509,7 @@ pub(super) fn paste(
                         .ok_or_else(|| bad(CMD, "source frozen face appearance lost its identity"))?;
                 }
                 let source_body = state.body(&face.body).ok_or_else(|| bad(CMD, "source frozen face appearance lost its body"))?;
-                face.point = solidcraft_doc::apply_point(source.model_body_offset(source_body).unwrap_or(&solidcraft_doc::IDENTITY), face.point);
+                face.point = source.model_body_offset(source_body).unwrap_or(&Transform::IDENTITY).point(face.point);
                 face.name = None;
             } else if let Some(name) = &mut face.name {
                 *name = solidcraft_doc::remap_topology(name, &features, &bodies);
@@ -675,8 +676,8 @@ pub(super) fn paste(
     for body in state.bodies.iter().filter(|b| selected.contains(&source.model_body_component(b))) {
         let new = bodies.get(&body.name).ok_or_else(|| bad(CMD, format!("body {} has no clone identity", body.name)))?;
         let cloned = copied_bodies.get(new.as_str()).ok_or_else(|| bad(CMD, format!("copy did not reproduce body {}", body.name)))?;
-        let a = solidcraft_kernel::transform_matrix(&body.body, *source.model_body_offset(body).unwrap_or(&solidcraft_doc::IDENTITY))?;
-        let b = solidcraft_kernel::transform_matrix(&cloned.body, *scratch.doc.model_body_offset(cloned).unwrap_or(&solidcraft_doc::IDENTITY))?;
+        let a = solidcraft_kernel::transform_matrix(&body.body, *source.model_body_offset(body).unwrap_or(&Transform::IDENTITY))?;
+        let b = solidcraft_kernel::transform_matrix(&cloned.body, *scratch.doc.model_body_offset(cloned).unwrap_or(&Transform::IDENTITY))?;
         let ma = solidcraft_kernel::measure(&a)?;
         let mb = solidcraft_kernel::measure(&b)?;
         let tolerance = 1e-5 * (1.0 + (ma.bbox.max - ma.bbox.min).len()) + 64.0 * f64::EPSILON * (ma.bbox.min.len() + ma.bbox.max.len());

@@ -739,10 +739,10 @@ fn constructs(s: &Session) -> Vec<(u64, String, solidcraft_doc::construct::Const
         .filter_map(|c| {
             let f = s.doc.feature(c.feature).filter(|f| !f.suppressed)?;
             let m = s.doc.component_transform(f.component);
-            if solidcraft_doc::is_identity(&m) {
+            if m.is_identity() {
                 return Some((c.feature, c.name.clone(), c.geom.clone()));
             }
-            let (pt, v) = (|p: Vec3| solidcraft_doc::apply_point(&m, p), |d: Vec3| solidcraft_doc::apply_vector(&m, d));
+            let (pt, v) = (|p: Vec3| m.point(p), |d: Vec3| m.vector(d));
             let g = match &c.geom {
                 ConstructGeom::Plane(p) => ConstructGeom::Plane(Plane::new(pt(p.origin), v(p.x), v(p.y)).unwrap_or(*p)),
                 ConstructGeom::Axis { origin, dir } => ConstructGeom::Axis { origin: pt(*origin), dir: v(*dir) },

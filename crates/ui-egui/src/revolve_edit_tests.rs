@@ -116,7 +116,7 @@ fn second_active_occurrence_noop_preserves_definition_axis_target_and_instances(
     h.app.run("component.activate", json!({"component":owner["component"],"occurrence":second,"path":[second]})).unwrap();
     let original = serde_json::to_value(&h.app.session.doc.find_feature("Turn").unwrap().kind).unwrap();
     let frame = h.app.session.active_component_frame();
-    let expected_origin = solidcraft_engine::doc::apply_point(&frame, solidcraft_engine::geom::Vec3::ZERO);
+    let expected_origin = frame.point(solidcraft_engine::geom::Vec3::ZERO);
     let before: Vec<_> = h.app.session.world_state().bodies.iter().map(|b| (b.name.clone(), b.mesh().bounds())).collect();
     open(&mut h);
     let (origin, _) = crate::canvas::revolve_axis(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();

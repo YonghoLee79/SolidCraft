@@ -8,8 +8,8 @@
 
 use serde_json::json;
 use solidcraft_doc::BodyName;
-use solidcraft_doc::{Document, FeatureKind, Operation, mat_inverse, point_expr, rigid};
-use solidcraft_geom::Vec3;
+use solidcraft_doc::{Document, FeatureKind, Operation, point_expr};
+use solidcraft_geom::{Transform, Vec3};
 
 use crate::Session;
 
@@ -17,10 +17,10 @@ use crate::Session;
 fn generated_assembly(parts: usize) -> Document {
     let mut doc = Document::new("generated assembly");
     let groups = parts.div_ceil(4).max(1);
-    let comps: Vec<(u64, solidcraft_doc::Mat)> = (0..groups)
+    let comps: Vec<(u64, Transform)> = (0..groups)
         .map(|g| {
             let id = doc.add_component(Some(&format!("Module {g}")), 0).unwrap();
-            let m = rigid(Vec3::new(5.0 * g as f64, -3.0, 2.0), Vec3::ZERO, Vec3::Z, 0.1 * g as f64);
+            let m = Transform::rigid(Vec3::new(5.0 * g as f64, -3.0, 2.0), Vec3::ZERO, Vec3::Z, 0.1 * g as f64);
             doc.occurrences.iter_mut().find(|o| o.component == id).unwrap().transform = m;
             (id, m)
         })
@@ -48,7 +48,7 @@ fn generated_assembly(parts: usize) -> Document {
     for (part, feature) in made {
         let (to, m) = comps[part / 4 % groups];
         for b in state.bodies.iter().filter(|b| b.feature == feature) {
-            let kind = FeatureKind::BodyTransfer { bodies: vec![BodyName::from(&b.name)], from: 0, to, transform: mat_inverse(&m).unwrap() };
+            let kind = FeatureKind::BodyTransfer { bodies: vec![BodyName::from(&b.name)], from: 0, to, transform: m.inverse().unwrap() };
             doc.add_feature(kind, None).unwrap();
         }
     }

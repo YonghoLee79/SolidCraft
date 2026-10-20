@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use serde_json::{Value, json};
+use solidcraft_doc::FeatureKind;
 use solidcraft_doc::joints::{Joint, JointKind, JointOrigin, Snap};
 use solidcraft_doc::kernel::{StepImport, StepNode};
-use solidcraft_doc::{FeatureKind, IDENTITY, Mat};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 
 use crate::{EngineError, Result, Session};
 
@@ -31,7 +31,7 @@ struct Slot {
 struct Place {
     slot: usize,
     parent: Option<usize>,
-    transform: Mat,
+    transform: Transform,
 }
 
 /// How a STEP file's tree becomes components.
@@ -41,13 +41,13 @@ struct Plan {
     places: Vec<Place>,
     /// Body index → the slot it goes to, and the transform from that slot's frame to the import
     /// component's (where the Import feature builds it).
-    bodies: Vec<(usize, usize, Mat)>,
+    bodies: Vec<(usize, usize, Transform)>,
     /// Bodies not built: later instances.
     skip: Vec<u64>,
 }
 
 /// A placement STEP assemblies can carry over as an occurrence: finite, rigid, not mirrored.
-fn rigid(m: &Mat) -> bool {
+fn rigid(m: &Transform) -> bool {
     crate::cmd::component::valid_position(m)
 }
 
@@ -88,7 +88,7 @@ impl Plan {
             return None;
         }
         let slots = plan.slots.iter().take(made).map(|n| Slot { name: n.clone() }).collect();
-        let bodies = plan.bodies.iter().enumerate().filter_map(|(b, slot)| slot.map(|s| (b, s, IDENTITY))).collect();
+        let bodies = plan.bodies.iter().enumerate().filter_map(|(b, slot)| slot.map(|s| (b, s, Transform::IDENTITY))).collect();
         Some(Plan { slots, places, bodies, skip: Vec::new() })
     }
 
@@ -101,19 +101,27 @@ impl Plan {
         };
         let mut seen: HashMap<u64, usize> = HashMap::new();
         for n in nodes {
-            plan.walk(imp, n, None, &IDENTITY, &mut seen, 0);
+            plan.walk(imp, n, None, &Transform::IDENTITY, &mut seen, 0);
         }
         plan.skip.sort_unstable();
         plan.skip.dedup();
         plan
     }
 
-    fn walk(&mut self, imp: &StepImport, node: &StepNode, parent: Option<usize>, parent_world: &Mat, seen: &mut HashMap<u64, usize>, depth: usize) {
+    fn walk(
+        &mut self,
+        imp: &StepImport,
+        node: &StepNode,
+        parent: Option<usize>,
+        parent_world: &Transform,
+        seen: &mut HashMap<u64, usize>,
+        depth: usize,
+    ) {
         if !has_bodies(node, 0) {
             return;
         }
-        let world = solidcraft_doc::mat_mul(parent_world, &node.transform);
-        let inverse = solidcraft_doc::mat_inverse(&world);
+        let world = parent_world * Transform(node.transform);
+        let inverse = world.inverse();
         // Too deep, too many, or placed in a way an occurrence can't be: the bodies stay where
         // the parent is (they are built in place, so nothing moves).
         let (Some(inverse), true, true, true) = (inverse, depth < MAX_DEPTH, self.slots.len() < MAX_COMPONENTS, subtree_rigid(node, depth)) else {
@@ -124,14 +132,14 @@ impl Plan {
         if let Some(&slot) = seen.get(&key) {
             // Another placement of a part already made: an occurrence of its component, and the
             // file's copy of its bodies is not built.
-            self.places.push(Place { slot, parent, transform: node.transform });
+            self.places.push(Place { slot, parent, transform: Transform(node.transform) });
             collect_bodies(node, &mut self.skip, 0);
             return;
         }
         let slot = self.slots.len();
         self.slots.push(Slot { name: node.name.trim().to_string() });
         seen.insert(key, slot);
-        self.places.push(Place { slot, parent, transform: node.transform });
+        self.places.push(Place { slot, parent, transform: Transform(node.transform) });
         for b in &node.bodies {
             self.bodies.push((*b, slot, inverse));
         }
@@ -141,9 +149,9 @@ impl Plan {
     }
 
     /// Every body below `node` goes to `parent`.
-    fn flatten(&mut self, node: &StepNode, parent: Option<usize>, parent_world: &Mat) {
+    fn flatten(&mut self, node: &StepNode, parent: Option<usize>, parent_world: &Transform) {
         let Some(parent) = parent else { return };
-        let Some(inverse) = solidcraft_doc::mat_inverse(parent_world) else { return };
+        let Some(inverse) = parent_world.inverse() else { return };
         let mut all = Vec::new();
         collect_bodies(node, &mut all, 0);
         self.bodies.extend(all.into_iter().map(|b| (b as usize, parent, inverse)));
@@ -155,7 +163,7 @@ fn has_bodies(node: &StepNode, depth: usize) -> bool {
 }
 
 fn subtree_rigid(node: &StepNode, depth: usize) -> bool {
-    rigid(&node.transform) && (depth >= 64 || node.children.iter().all(|c| subtree_rigid(c, depth + 1)))
+    rigid(&Transform(node.transform)) && (depth >= 64 || node.children.iter().all(|c| subtree_rigid(c, depth + 1)))
 }
 
 fn collect_bodies(node: &StepNode, out: &mut Vec<u64>, depth: usize) {
@@ -251,7 +259,7 @@ pub(crate) fn add_in_component(
     // The components, each made at its first placement; the others are further occurrences.
     let mut comps: Vec<u64> = Vec::with_capacity(plan.slots.len());
     let mut first_occ: Vec<Option<u64>> = Vec::with_capacity(plan.slots.len());
-    let mut joints: Vec<(u64, u64, Mat)> = Vec::new();
+    let mut joints: Vec<(u64, u64, Transform)> = Vec::new();
     for place in &plan.places {
         let parent_comp = place.parent.and_then(|p| comps.get(p).copied()).unwrap_or(top);
         let parent_occ = match place.parent {
@@ -291,7 +299,8 @@ pub(crate) fn add_in_component(
         f.component = top;
         f.body_names = body_names;
     }
-    let moves: Vec<(usize, u64, Mat)> = plan.bodies.iter().filter_map(|(b, slot, offset)| comps.get(*slot).map(|c| (*b, *c, *offset))).collect();
+    let moves: Vec<(usize, u64, Transform)> =
+        plan.bodies.iter().filter_map(|(b, slot, offset)| comps.get(*slot).map(|c| (*b, *c, *offset))).collect();
     put_bodies(s, &names, &moves);
     let joint_ids = add_rigid_joints(s, &joints)?;
     s.active_sketch = None;
@@ -320,7 +329,7 @@ pub(crate) fn add_in_component(
 }
 
 /// Record that body `names[b]` lives in component `c`, placed by `offset`.
-fn put_bodies(s: &mut Session, names: &[Option<String>], moves: &[(usize, u64, Mat)]) {
+fn put_bodies(s: &mut Session, names: &[Option<String>], moves: &[(usize, u64, Transform)]) {
     if moves.is_empty() {
         return;
     }
@@ -328,7 +337,7 @@ fn put_bodies(s: &mut Session, names: &[Option<String>], moves: &[(usize, u64, M
     for (b, comp, offset) in moves {
         let Some(Some(name)) = names.get(*b) else { continue };
         d.body_components.insert(name.clone(), *comp);
-        if !solidcraft_doc::is_identity(offset) {
+        if !offset.is_identity() {
             d.body_offsets.insert(name.clone(), *offset);
         }
     }
@@ -336,7 +345,7 @@ fn put_bodies(s: &mut Session, names: &[Option<String>], moves: &[(usize, u64, M
 
 /// Rigid joints holding each placement where it is in its parent (`(a, b, transform of b in
 /// a)`), shown in the browser's joints but not drawn in the view. Returns their ids.
-fn add_rigid_joints(s: &mut Session, pairs: &[(u64, u64, Mat)]) -> Result<Vec<u64>> {
+fn add_rigid_joints(s: &mut Session, pairs: &[(u64, u64, Transform)]) -> Result<Vec<u64>> {
     if pairs.is_empty() {
         return Ok(Vec::new());
     }
@@ -346,8 +355,8 @@ fn add_rigid_joints(s: &mut Session, pairs: &[(u64, u64, Mat)]) -> Result<Vec<u6
     }
     let mut id = s.doc.assembly.joints.iter().map(|j| j.id).max().unwrap_or(0);
     let mut ids = Vec::with_capacity(pairs.len());
-    let point = |m: &Mat, p: Vec3| solidcraft_doc::apply_point(m, p);
-    let vector = |m: &Mat, v: Vec3| solidcraft_doc::apply_vector(m, v);
+    let point = |m: &Transform, p: Vec3| m.point(p);
+    let vector = |m: &Transform, v: Vec3| m.vector(v);
     let made: Vec<Joint> = pairs
         .iter()
         .map(|(a, b, m)| {

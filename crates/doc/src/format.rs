@@ -235,6 +235,8 @@
 
 use serde_json::Value;
 
+use solidcraft_geom::Transform;
+
 use crate::{DocError, Document, Result};
 
 /// The format this build writes: the last folded one, or the next while changes are pending.
@@ -821,8 +823,8 @@ fn validate_body_transfers(value: &Value) -> Result<()> {
         if matrix.len() != 4 {
             return Err(invalid());
         }
-        let mut placement = [[0.0; 4]; 4];
-        for (out, column) in placement.iter_mut().zip(matrix) {
+        let mut placement = Transform([[0.0; 4]; 4]);
+        for (out, column) in placement.0.iter_mut().zip(matrix) {
             let column = column.as_array().ok_or_else(invalid)?;
             if column.len() != 4 {
                 return Err(invalid());
@@ -1064,23 +1066,9 @@ fn check_numbers(v: &Value, depth: usize) -> Result<()> {
 }
 
 /// A placement: rotation (orthonormal, not mirrored) and a translation in range.
-fn rigid(m: &crate::Mat) -> bool {
-    let row = |i: usize| m.get(i).copied().unwrap_or_default();
-    let (x, y, z, t) = (row(0), row(1), row(2), row(3));
-    let dot = |a: [f64; 4], b: [f64; 4]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let unit = |a: [f64; 4]| (dot(a, a) - 1.0).abs() < 1e-6;
-    let det = x[0] * (y[1] * z[2] - y[2] * z[1]) - x[1] * (y[0] * z[2] - y[2] * z[0]) + x[2] * (y[0] * z[1] - y[1] * z[0]);
-    m.iter().flatten().all(|v| v.is_finite())
-        && unit(x)
-        && unit(y)
-        && unit(z)
-        && dot(x, y).abs() < 1e-6
-        && dot(y, z).abs() < 1e-6
-        && dot(x, z).abs() < 1e-6
-        && det > 0.0
-        && [x[3], y[3], z[3]].iter().all(|v| v.abs() < 1e-9)
-        && (t[3] - 1.0).abs() < 1e-9
-        && t[..3].iter().all(|v| v.abs() <= MAX_REAL)
+fn rigid(m: &Transform) -> bool {
+    let t = m.translation_part();
+    m.is_rigid(1e-6) && [t.x, t.y, t.z].iter().all(|v| v.abs() <= MAX_REAL)
 }
 
 /// Feature input names and component occurrences, which format 1 files may predate.
@@ -1089,7 +1077,7 @@ fn normalise(d: &mut Document) -> Result<()> {
     let missing: Vec<(u64, u64)> =
         d.components.iter().filter(|c| !d.occurrences.iter().any(|o| o.component == c.id)).map(|c| (c.id, c.parent)).collect();
     for (c, p) in missing {
-        d.add_occurrence(c, p, crate::IDENTITY)?;
+        d.add_occurrence(c, p, Transform::IDENTITY)?;
     }
     Ok(())
 }
@@ -1388,7 +1376,7 @@ mod tests {
             file["features"] = serde_json::json!([{"type":"sketch","sketch":{"wires":[changed]}}]);
             assert!(validate_wires(&file, FORMAT).is_err());
         }
-        let transfer = serde_json::json!({"type":"body_transfer","component":1,"bodies":["Body1"],"from":0,"to":1,"transform":crate::IDENTITY});
+        let transfer = serde_json::json!({"type":"body_transfer","component":1,"bodies":["Body1"],"from":0,"to":1,"transform":Transform::IDENTITY});
         for damaged in [
             serde_json::json!({"bodies":["Body1","Body1"]}),
             serde_json::json!({"from":-1}),
@@ -1409,7 +1397,8 @@ mod tests {
     #[test]
     fn recorded_transfer_roundtrips_and_unknown_component_is_refused() {
         let mut doc = Document::new("recorded ownership boundary");
-        doc.add_feature(crate::FeatureKind::BodyTransfer { bodies: vec!["Body1".into()], from: 0, to: 0, transform: crate::IDENTITY }, None).unwrap();
+        doc.add_feature(crate::FeatureKind::BodyTransfer { bodies: vec!["Body1".into()], from: 0, to: 0, transform: Transform::IDENTITY }, None)
+            .unwrap();
         assert_eq!(read(&doc.to_json()).unwrap(), doc);
         let mut json: Value = serde_json::from_str(&doc.to_json()).unwrap();
         assert_eq!(json["features"][0]["type"], "body_transfer");
@@ -2004,7 +1993,7 @@ mod tests {
         let mut d = Document::new("ids");
         let a = d.add_component(None, 0).unwrap();
         d.add_component(None, 0).unwrap();
-        d.add_occurrence(a, 0, crate::IDENTITY).unwrap();
+        d.add_occurrence(a, 0, Transform::IDENTITY).unwrap();
         d
     }
 

@@ -420,7 +420,7 @@ fn joint_origins_follow_their_component() {
     let at = |app: &SolveApp| {
         let v = origins_world(&app.session);
         let (_, m) = v.iter().find(|(n, _)| n == "Top of B").unwrap();
-        solidcraft_engine::doc::apply_point(m, Vec3::ZERO)
+        m.point(Vec3::ZERO)
     };
     assert!(at(&app).dist(Vec3::new(40.0, 10.0, 10.0)) < 1e-6, "{:?}", at(&app));
     let b = occ(&app, "B");
@@ -630,9 +630,6 @@ fn motion_trace_keeps_the_picked_point_path() {
     // The preview is drawn moved with the coupler: it starts at the point picked where it shows.
     let start = app.session.scratch().execute("motion.trace", &p).unwrap()["points"][0].clone();
     let (_, _, seen, put) = trace::placement(&app.session, &d.inputs).unwrap();
-    let drawn = {
-        use solidcraft_engine::doc::{apply_point, mat_inverse};
-        apply_point(&seen, apply_point(&mat_inverse(&put).unwrap(), at(&json!({"point": start}))))
-    };
+    let drawn = { seen.point(put.inverse().unwrap().point(at(&json!({"point": start})))) };
     assert!(drawn.dist(shown) < 1e-6, "{drawn:?} wants {shown:?}");
 }

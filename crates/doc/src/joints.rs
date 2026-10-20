@@ -17,11 +17,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Aabb3, Vec3};
+use solidcraft_geom::{Aabb3, Transform, Vec3};
 
 use solidcraft_sketch::linalg;
 
-use crate::{DocError, Document, IDENTITY, Mat, ModelState, Result, apply_point, apply_vector, mat_inverse, mat_mul};
+use crate::{DocError, Document, ModelState, Result};
 
 /// Joints the solver (and the URDF export) reads at most.
 pub const MAX_JOINTS: usize = 10_000;
@@ -632,74 +632,74 @@ impl Assembly {
 }
 
 /// A frame: origin and orthonormal axes, as a transform (local → parent).
-fn frame(o: Vec3, z: Vec3, x: Option<Vec3>) -> Option<Mat> {
+fn frame(o: Vec3, z: Vec3, x: Option<Vec3>) -> Option<Transform> {
     let z = z.normalized()?;
     let x = x.and_then(|x| (x - z * x.dot(z)).normalized()).unwrap_or_else(|| z.any_perp());
     let y = z.cross(x).normalized()?;
-    Some([[x.x, x.y, x.z, 0.0], [y.x, y.y, y.z, 0.0], [z.x, z.y, z.z, 0.0], [o.x, o.y, o.z, 1.0]])
+    Some(Transform([[x.x, x.y, x.z, 0.0], [y.x, y.y, y.z, 0.0], [z.x, z.y, z.z, 0.0], [o.x, o.y, o.z, 1.0]]))
 }
 
-fn rot_z(a: f64) -> Mat {
+fn rot_z(a: f64) -> Transform {
     let (s, c) = a.sin_cos();
-    [[c, s, 0.0, 0.0], [-s, c, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    Transform([[c, s, 0.0, 0.0], [-s, c, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
 }
-fn rot_x(a: f64) -> Mat {
+fn rot_x(a: f64) -> Transform {
     let (s, c) = a.sin_cos();
-    [[1.0, 0.0, 0.0, 0.0], [0.0, c, s, 0.0], [0.0, -s, c, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    Transform([[1.0, 0.0, 0.0, 0.0], [0.0, c, s, 0.0], [0.0, -s, c, 0.0], [0.0, 0.0, 0.0, 1.0]])
 }
-fn rot_y(a: f64) -> Mat {
+fn rot_y(a: f64) -> Transform {
     let (s, c) = a.sin_cos();
-    [[c, 0.0, -s, 0.0], [0.0, 1.0, 0.0, 0.0], [s, 0.0, c, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    Transform([[c, 0.0, -s, 0.0], [0.0, 1.0, 0.0, 0.0], [s, 0.0, c, 0.0], [0.0, 0.0, 0.0, 1.0]])
 }
-fn shift(x: f64, y: f64, z: f64) -> Mat {
-    let mut m = IDENTITY;
+fn shift(x: f64, y: f64, z: f64) -> Transform {
+    let mut m = Transform::IDENTITY;
     m[3] = [x, y, z, 1.0];
     m
 }
 
 /// The joint's motion in A's frame for its values.
-pub fn motion(kind: JointKind, q: &[f64]) -> Mat {
+pub fn motion(kind: JointKind, q: &[f64]) -> Transform {
     let v = |i: usize| q.get(i).copied().unwrap_or(0.0);
     match kind {
-        JointKind::Rigid => IDENTITY,
+        JointKind::Rigid => Transform::IDENTITY,
         JointKind::Revolute => rot_z(v(0)),
         JointKind::Slider => shift(0.0, 0.0, v(0)),
-        JointKind::Cylindrical => mat_mul(&rot_z(v(0)), &shift(0.0, 0.0, v(1))),
-        JointKind::PinSlot => mat_mul(&shift(v(1), 0.0, 0.0), &rot_z(v(0))),
-        JointKind::Planar => mat_mul(&shift(v(0), v(1), 0.0), &rot_z(v(2))),
-        JointKind::Ball => mat_mul(&mat_mul(&rot_z(v(0)), &rot_y(v(1))), &rot_z(v(2))),
-        JointKind::Parallel => mat_mul(&shift(v(0), v(1), v(2)), &rot_z(v(3))),
-        JointKind::Perpendicular | JointKind::Angle => mat_mul(&shift(v(0), v(1), v(2)), &rot_z(v(3))),
+        JointKind::Cylindrical => rot_z(v(0)) * shift(0.0, 0.0, v(1)),
+        JointKind::PinSlot => shift(v(1), 0.0, 0.0) * rot_z(v(0)),
+        JointKind::Planar => shift(v(0), v(1), 0.0) * rot_z(v(2)),
+        JointKind::Ball => rot_z(v(0)) * rot_y(v(1)) * rot_z(v(2)),
+        JointKind::Parallel => shift(v(0), v(1), v(2)) * rot_z(v(3)),
+        JointKind::Perpendicular | JointKind::Angle => shift(v(0), v(1), v(2)) * rot_z(v(3)),
         // Their turn is about B's origin, after the offset (`tail`).
         JointKind::PointOnPlane => shift(v(0), v(1), 0.0),
         JointKind::PointOnLine => shift(0.0, 0.0, v(0)),
-        JointKind::LineOnPlane => mat_mul(&shift(v(0), v(1), 0.0), &rot_z(v(2))),
+        JointKind::LineOnPlane => shift(v(0), v(1), 0.0) * rot_z(v(2)),
     }
 }
 
-fn turn_zyx(yaw: f64, pitch: f64, roll: f64) -> Mat {
-    mat_mul(&mat_mul(&rot_z(yaw), &rot_y(pitch)), &rot_x(roll))
+fn turn_zyx(yaw: f64, pitch: f64, roll: f64) -> Transform {
+    rot_z(yaw) * rot_y(pitch) * rot_x(roll)
 }
 
 /// What follows the mate (`flip_of`) in a joint's link: for a relation that tilts B's z, the tilt
 /// and B's turn about its own z (`spin`); for a point relation, B's turn about its origin (yaw,
 /// pitch and roll about z, y and x: free of gimbal lock at the start, all 0); nothing for the
 /// other joints.
-fn tail(j: &Joint, q: &[f64]) -> Mat {
+fn tail(j: &Joint, q: &[f64]) -> Transform {
     let v = |i: usize| q.get(i).copied().unwrap_or(0.0);
     match j.kind {
-        JointKind::Perpendicular => mat_mul(&rot_x(std::f64::consts::FRAC_PI_2), &rot_z(v(4))),
-        JointKind::Angle => mat_mul(&rot_x(j.angle), &rot_z(v(4))),
-        JointKind::LineOnPlane => mat_mul(&rot_y(std::f64::consts::FRAC_PI_2), &rot_z(v(3))),
+        JointKind::Perpendicular => rot_x(std::f64::consts::FRAC_PI_2) * rot_z(v(4)),
+        JointKind::Angle => rot_x(j.angle) * rot_z(v(4)),
+        JointKind::LineOnPlane => rot_y(std::f64::consts::FRAC_PI_2) * rot_z(v(3)),
         JointKind::PointOnPlane => turn_zyx(v(2), v(3), v(4)),
         JointKind::PointOnLine => turn_zyx(v(1), v(2), v(3)),
-        _ => IDENTITY,
+        _ => Transform::IDENTITY,
     }
 }
 
 /// B's joint frame in A's for the joint's values: `M(q) · Flip · tail`.
-fn link_of(j: &Joint, q: &[f64]) -> Mat {
-    mat_mul(&mat_mul(&motion(j.kind, q), &flip_of(j)), &tail(j, q))
+fn link_of(j: &Joint, q: &[f64]) -> Transform {
+    motion(j.kind, q) * flip_of(j) * tail(j, q)
 }
 
 /// Bodies of a component in the model (its own frame).
@@ -735,7 +735,7 @@ fn nearest_plane(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -
         for f in b.body.faces(tol)? {
             let Some(n) = f.plane_normal else { continue };
             let (c, n) = match offset {
-                Some(m) => (apply_point(m, f.centroid), apply_vector(m, n)),
+                Some(m) => (m.point(f.centroid), m.vector(n)),
                 None => (f.centroid, n),
             };
             let d = (pick - c).dot(n).abs() + 1e-3 * (pick - c).len();
@@ -748,7 +748,7 @@ fn nearest_plane(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -
 }
 
 /// Resolve a joint origin to a frame in its component's coordinates.
-pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Result<Mat> {
+pub fn resolve_origin(doc: &Document, st: &ModelState, o: &JointOrigin) -> Result<Transform> {
     let bad = || DocError::Invalid("joint origin: degenerate frame".into());
     match &o.snap {
         Snap::Frame { origin, z, x } => frame(*origin, *z, *x).ok_or_else(bad),
@@ -791,7 +791,7 @@ fn round_of(doc: &Document, st: &ModelState, o: &JointOrigin) -> Result<face::Ro
     let cyl = component_bodies(doc, st, comp)
         .into_iter()
         .filter_map(|b| match doc.model_body_offset(b) {
-            Some(m) => solidcraft_kernel::cylinder_face_at(&b.body, apply_point(&mat_inverse(m)?, pick)).map(|c| face::placed(m, c)),
+            Some(m) => solidcraft_kernel::cylinder_face_at(&b.body, m.inverse()?.point(pick)).map(|c| face::placed(m, c)),
             None => solidcraft_kernel::cylinder_face_at(&b.body, pick),
         })
         .min_by(|a, b| {
@@ -813,12 +813,12 @@ fn circle_at(doc: &Document, st: &ModelState, o: &JointOrigin) -> Result<solidcr
 }
 
 /// World transform of an occurrence (through its parents).
-pub fn occurrence_world(doc: &Document, occ: u64) -> Mat {
-    let mut m = IDENTITY;
+pub fn occurrence_world(doc: &Document, occ: u64) -> Transform {
+    let mut m = Transform::IDENTITY;
     let mut cur = doc.occurrences.iter().find(|o| o.id == occ);
     for _ in 0..1000 {
         let Some(o) = cur else { break };
-        m = mat_mul(&o.transform, &m);
+        m = o.transform * m;
         if o.parent == 0 {
             break;
         }
@@ -841,7 +841,7 @@ pub fn clamp(j: &Joint, q: &mut [f64]) {
 pub struct Solution {
     /// New world transforms of occurrences the joints place.
     #[serde(skip)]
-    pub world: BTreeMap<u64, Mat>,
+    pub world: BTreeMap<u64, Transform>,
     /// New values of the joints that moved to close loops (joint id → values).
     #[serde(skip)]
     pub values: BTreeMap<u64, Vec<f64>>,
@@ -862,7 +862,7 @@ pub struct Solution {
 type Values = BTreeMap<u64, Vec<f64>>;
 
 /// How far two placements differ: (translation mm, rotation rad).
-fn mismatch(a: &Mat, b: &Mat) -> (f64, f64) {
+fn mismatch(a: &Transform, b: &Transform) -> (f64, f64) {
     let t = Vec3::new(a[3][0] - b[3][0], a[3][1] - b[3][1], a[3][2] - b[3][2]).len();
     // The turn between them from both its cosine and its sine: the cosine alone loses small
     // angles to rounding.
@@ -935,22 +935,22 @@ pub fn joint_values(asm: &Assembly) -> BTreeMap<u64, Vec<f64>> {
 
 /// The turn and offset from A's joint frame to B's: mated (B's z against A's, as faces meet)
 /// unless flipped.
-fn flip_of(j: &Joint) -> Mat {
+fn flip_of(j: &Joint) -> Transform {
     // An angle relation's `angle` is its tilt (`tail`); a perpendicular one has none.
     let turn = if matches!(j.kind, JointKind::Angle | JointKind::Perpendicular) { 0.0 } else { j.angle };
     let mut m = rot_z(turn);
     m[3][2] = j.offset;
-    if !j.flip { mat_mul(&m, &[[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]) } else { m }
+    if !j.flip { m * Transform([[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]) } else { m }
 }
 
 /// B's world transform from A's (or A's from B's, going the other way) for the joint's values.
-fn through(j: &Joint, (fa, fb): &(Mat, Mat), q: &[f64], from_a: bool, t: &Mat) -> Option<Mat> {
-    let link = mat_mul(&link_of(j, q), &mat_inverse(fb)?);
+fn through(j: &Joint, (fa, fb): &(Transform, Transform), q: &[f64], from_a: bool, t: &Transform) -> Option<Transform> {
+    let link = link_of(j, q) * fb.inverse()?;
     if from_a {
-        Some(mat_mul(&mat_mul(t, fa), &link))
+        Some(t * fa * link)
     } else {
         // T_A = T_B · link⁻¹ · F_a⁻¹
-        Some(mat_mul(&mat_mul(t, &mat_inverse(&link)?), &mat_inverse(fa)?))
+        Some(t * link.inverse()? * fa.inverse()?)
     }
 }
 
@@ -958,8 +958,8 @@ fn through(j: &Joint, (fa, fb): &(Mat, Mat), q: &[f64], from_a: bool, t: &Mat) -
 struct Tree<'a> {
     joints: BTreeMap<u64, &'a Joint>,
     /// Joint frames in component coordinates (A's, B's).
-    frames: BTreeMap<u64, (Mat, Mat)>,
-    fixed: BTreeMap<u64, Mat>,
+    frames: BTreeMap<u64, (Transform, Transform)>,
+    fixed: BTreeMap<u64, Transform>,
     /// Placed occurrence → (the occurrence it is placed from, the joint, from the joint's A side).
     parent: BTreeMap<u64, (u64, u64, bool)>,
     /// Placed occurrences in placement order.
@@ -967,13 +967,13 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    fn step(&self, joint: u64, from_a: bool, t: &Mat, vals: &Values) -> Option<Mat> {
+    fn step(&self, joint: u64, from_a: bool, t: &Transform, vals: &Values) -> Option<Transform> {
         let q = vals.get(&joint).map(Vec::as_slice).unwrap_or(&[]);
         through(self.joints.get(&joint)?, self.frames.get(&joint)?, q, from_a, t)
     }
 
     /// Where every placed occurrence is for these values.
-    fn place(&self, vals: &Values) -> BTreeMap<u64, Mat> {
+    fn place(&self, vals: &Values) -> BTreeMap<u64, Transform> {
         let mut placed = self.fixed.clone();
         for occ in &self.order {
             let Some(&(from, joint, from_a)) = self.parent.get(occ) else { continue };
@@ -998,7 +998,7 @@ impl Tree<'_> {
     }
 
     /// One occurrence's world placement for these values.
-    fn world(&self, occ: u64, vals: &Values) -> Option<Mat> {
+    fn world(&self, occ: u64, vals: &Values) -> Option<Transform> {
         let (root, up) = self.path(occ);
         let mut t = *self.fixed.get(&root)?;
         for (joint, from_a) in up.iter().rev() {
@@ -1213,7 +1213,7 @@ fn loop_scale(tree: &Tree, around: &BTreeSet<u64>, vals: &Values) -> f64 {
         .iter()
         .filter_map(|id| {
             let (j, (fa, _)) = (tree.joints.get(id)?, tree.frames.get(id)?);
-            Some(apply_point(&mat_mul(&tree.world(j.a.occurrence, vals)?, fa), Vec3::ZERO))
+            Some((tree.world(j.a.occurrence, vals)? * fa).point(Vec3::ZERO))
         })
         .collect();
     if joints.is_empty() { 1.0 } else { joints.diagonal().clamp(1.0, 1e6) }
@@ -1227,8 +1227,8 @@ fn closure_gaps(tree: &Tree, closing: &[u64], vals: &Values, scale: f64, out: &m
         let tb = tree.world(j.b.occurrence, vals)?;
         let want = tree.step(*id, true, &tree.world(j.a.occurrence, vals)?, vals)?;
         for p in [Vec3::ZERO, Vec3::X * scale, Vec3::Y * scale] {
-            let at = apply_point(fb, p);
-            let d = apply_point(&want, at) - apply_point(&tb, at);
+            let at = fb.point(p);
+            let d = want.point(at) - tb.point(at);
             out.extend([d.x, d.y, d.z]);
         }
     }
@@ -1436,7 +1436,7 @@ fn loop_dof(tree: &Tree, closing: &[u64], asm: &Assembly, vals: &Values, dof: &m
                 closure_gaps(tree, &closers, &work, scale, &mut out)?;
                 let t = tree.world(*occ, &work)?;
                 for p in [Vec3::ZERO, Vec3::X * scale, Vec3::Y * scale] {
-                    let q = apply_point(&t, p);
+                    let q = t.point(p);
                     out.extend([q.x, q.y, q.z]);
                 }
                 out.iter().all(|v| v.is_finite()).then_some(out)
@@ -1706,7 +1706,7 @@ pub fn solve_holding(doc: &Document, st: &ModelState, held: &Held) -> Solution {
         let (Some(ta), Some(tb)) = (placed.get(&j.a.occurrence), placed.get(&j.b.occurrence)) else { continue };
         let (Some(want), Some((_, fb))) = (tree.step(*id, true, ta, &vals), tree.frames.get(id)) else { continue };
         // Measured at the joint, where the loop solver closes it.
-        let (dt, da) = mismatch(&mat_mul(&want, fb), &mat_mul(tb, fb));
+        let (dt, da) = mismatch(&(want * fb), &(tb * fb));
         if dt > CONFLICT_MM || da > CONFLICT_RAD {
             sol.conflicts.push((
                 j.id,
@@ -1736,7 +1736,7 @@ pub fn solve_holding(doc: &Document, st: &ModelState, held: &Held) -> Solution {
 /// freedom along the tree.
 struct Built<'a> {
     tree: Tree<'a>,
-    placed: BTreeMap<u64, Mat>,
+    placed: BTreeMap<u64, Transform>,
     closing: Vec<u64>,
     dof: BTreeMap<u64, usize>,
 }
@@ -1749,9 +1749,9 @@ fn build<'a>(doc: &'a Document, st: &ModelState, vals: &Values, sol: &mut Soluti
     let joints: Vec<&Joint> = asm.joints.iter().filter(|j| !j.suppressed).take(MAX_JOINTS).collect();
     // Joint frames in component coordinates (errors leave the joint out). An origin several joints
     // share (a panel face every part sits on) is found once.
-    let mut frames: BTreeMap<u64, (Mat, Mat)> = BTreeMap::new();
-    let mut found: BTreeMap<(u64, String), std::result::Result<Mat, String>> = BTreeMap::new();
-    let mut resolve = |o: &JointOrigin| -> Result<Mat> {
+    let mut frames: BTreeMap<u64, (Transform, Transform)> = BTreeMap::new();
+    let mut found: BTreeMap<(u64, String), std::result::Result<Transform, String>> = BTreeMap::new();
+    let mut resolve = |o: &JointOrigin| -> Result<Transform> {
         let Ok(comp) = component_of(doc, o.occurrence) else { return resolve_origin(doc, st, o) };
         found
             .entry((comp, format!("{:?}", o.snap)))
@@ -1776,9 +1776,9 @@ fn build<'a>(doc: &'a Document, st: &ModelState, vals: &Values, sol: &mut Soluti
         }
     }
     // Fixed: the root, grounded occurrences; with neither involved, the first joint's A side.
-    let mut placed: BTreeMap<u64, Mat> = BTreeMap::new();
+    let mut placed: BTreeMap<u64, Transform> = BTreeMap::new();
     let mut dof: BTreeMap<u64, usize> = BTreeMap::new();
-    placed.insert(0, IDENTITY);
+    placed.insert(0, Transform::IDENTITY);
     dof.insert(0, 0);
     for o in doc.occurrences.iter().filter(|o| o.grounded) {
         placed.insert(o.id, occurrence_world(doc, o.id));
@@ -1875,8 +1875,8 @@ impl Document {
         let parents: BTreeMap<u64, u64> = self.occurrences.iter().map(|o| (o.id, o.parent)).collect();
         for (occ, world) in &sol.world {
             let parent = parents.get(occ).copied().unwrap_or(0);
-            let pw = if parent == 0 { IDENTITY } else { self.component_transform(parent) };
-            let Some(local) = mat_inverse(&pw).map(|inv| mat_mul(&inv, world)) else { continue };
+            let pw = if parent == 0 { Transform::IDENTITY } else { self.component_transform(parent) };
+            let Some(local) = pw.inverse().map(|inv| inv * world) else { continue };
             if let Some(o) = self.occurrences.iter_mut().find(|o| o.id == *occ) {
                 let (dt, da) = mismatch(&o.transform, &local);
                 if dt > 1e-9 || da > 1e-10 {
@@ -1889,20 +1889,20 @@ impl Document {
     }
 
     /// A frame for an as-built joint: the world frame `w` seen from an occurrence.
-    pub fn frame_in_occurrence(&self, occ: u64, w: &Mat) -> Option<Snap> {
-        let t = if occ == 0 { IDENTITY } else { occurrence_world(self, occ) };
-        let local = mat_mul(&mat_inverse(&t)?, w);
-        let o = apply_point(&local, Vec3::ZERO);
-        let z = apply_vector(&local, Vec3::Z);
-        let x = apply_vector(&local, Vec3::X);
+    pub fn frame_in_occurrence(&self, occ: u64, w: &Transform) -> Option<Snap> {
+        let t = if occ == 0 { Transform::IDENTITY } else { occurrence_world(self, occ) };
+        let local = t.inverse()? * w;
+        let o = local.point(Vec3::ZERO);
+        let z = local.vector(Vec3::Z);
+        let x = local.vector(Vec3::X);
         Some(Snap::Frame { origin: o, z, x: Some(x) })
     }
 
     /// A joint origin's frame in the world (for as-built joints and display).
-    pub fn origin_world(&self, st: &ModelState, o: &JointOrigin) -> Result<Mat> {
+    pub fn origin_world(&self, st: &ModelState, o: &JointOrigin) -> Result<Transform> {
         let f = resolve_origin(self, st, o)?;
-        let t = if o.occurrence == 0 { IDENTITY } else { occurrence_world(self, o.occurrence) };
-        Ok(mat_mul(&t, &f))
+        let t = if o.occurrence == 0 { Transform::IDENTITY } else { occurrence_world(self, o.occurrence) };
+        Ok(t * f)
     }
 }
 
@@ -1945,7 +1945,7 @@ pub fn least_turn_angle(doc: &Document, st: &ModelState, j: &Joint) -> f64 {
 }
 
 /// The frame matrix for an explicit origin / z / x (public for commands).
-pub fn frame_of(o: Vec3, z: Vec3, x: Option<Vec3>) -> Option<Mat> {
+pub fn frame_of(o: Vec3, z: Vec3, x: Option<Vec3>) -> Option<Transform> {
     frame(o, z, x)
 }
 
@@ -1953,7 +1953,7 @@ pub fn frame_of(o: Vec3, z: Vec3, x: Option<Vec3>) -> Option<Mat> {
 mod tests {
     use super::*;
 
-    fn close(a: &Mat, b: &Mat) -> bool {
+    fn close(a: &Transform, b: &Transform) -> bool {
         let (t, r) = mismatch(a, b);
         t < 1e-9 && r < 1e-9
     }
@@ -2079,14 +2079,14 @@ mod tests {
         assert_eq!(JointKind::Ball.dofs().len(), 3);
         assert!(JointKind::parse("Pin Slot").is_some() && JointKind::parse("nope").is_none());
         let f = frame(Vec3::new(1.0, 2.0, 3.0), Vec3::Z, None).unwrap();
-        assert!(close(&mat_mul(&f, &mat_inverse(&f).unwrap()), &IDENTITY));
+        assert!(close(&(f * f.inverse().unwrap()), &Transform::IDENTITY));
     }
 
     #[test]
     fn mismatch_resolves_tiny_turns() {
-        let (_, a) = mismatch(&rot_z(1e-9), &IDENTITY);
+        let (_, a) = mismatch(&rot_z(1e-9), &Transform::IDENTITY);
         assert!((a - 1e-9).abs() < 1e-15, "{a}");
-        let (_, a) = mismatch(&rot_z(3.0), &IDENTITY);
+        let (_, a) = mismatch(&rot_z(3.0), &Transform::IDENTITY);
         assert!((a - 3.0).abs() < 1e-12, "{a}");
     }
 }

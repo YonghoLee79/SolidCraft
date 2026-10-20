@@ -15,10 +15,10 @@
 use std::f64::consts::TAU;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Aabb2, Aabb3, Ring, Vec2, Vec3};
+use solidcraft_geom::{Aabb2, Aabb3, Ring, Transform, Vec2, Vec3};
 
 use super::{JointKind, JointOrigin, MotionLink, Size, component_bodies, component_of, flip_of, occurrence_world, size_of};
-use crate::{DocError, Document, IDENTITY, Mat, ModelState, Result, apply_point, apply_vector, mat_inverse, mat_mul};
+use crate::{DocError, Document, ModelState, Result};
 
 /// Samples of a cam's table over one turn of the cam (one per degree).
 pub const CAM_SAMPLES: usize = 360;
@@ -272,7 +272,7 @@ struct Setup {
     flat: bool,
     size: f64,
     /// C in the world, and the occurrence the follower's joint moves.
-    frame: Mat,
+    frame: Transform,
     moving: u64,
 }
 
@@ -280,14 +280,20 @@ fn joint(doc: &Document, id: u64) -> Result<&super::Joint> {
     doc.assembly.joints.iter().find(|j| j.id == id).ok_or_else(|| DocError::Unknown(format!("joint {id}")))
 }
 
-fn world(doc: &Document, occ: u64) -> Mat {
-    if occ == 0 { IDENTITY } else { occurrence_world(doc, occ) }
+fn world(doc: &Document, occ: u64) -> Transform {
+    if occ == 0 { Transform::IDENTITY } else { occurrence_world(doc, occ) }
 }
 
 /// The profile's points in its component's coordinates, the occurrence placing them, and the
 /// profile's size. `fa`, `fb`: the cam joint's frames (picked edges continue along the edges in
 /// the plane square to the cam's axis).
-fn profile_points(doc: &Document, st: &ModelState, p: &CamProfile, cam: &super::Joint, (fa, fb): (&Mat, &Mat)) -> Result<(Vec<Vec3>, u64, f64)> {
+fn profile_points(
+    doc: &Document,
+    st: &ModelState,
+    p: &CamProfile,
+    cam: &super::Joint,
+    (fa, fb): (&Transform, &Transform),
+) -> Result<(Vec<Vec3>, u64, f64)> {
     let bad = |m: &str| DocError::Invalid(format!("cam: {m}"));
     match p {
         CamProfile::Sketch { sketch, curves } => {
@@ -528,16 +534,16 @@ fn setup(doc: &Document, st: &ModelState, l: &MotionLink, c: &Cam) -> Result<Set
     if pts.len() < 3 || pts.len() > MAX_PROFILE_POINTS || !size.is_finite() || size <= 0.0 {
         return Err(bad(&format!("the profile must have 3 to {MAX_PROFILE_POINTS} points")));
     }
-    let inv = |m: &Mat| mat_inverse(m).ok_or_else(|| bad("degenerate frame"));
+    let inv = |m: &Transform| m.inverse().ok_or_else(|| bad("degenerate frame"));
     // The cam's fixed frame C (world) and the profile at value 0 in it, as `through` places the
     // joint's sides.
     let on_b = occ == cam.b.occurrence;
     let (frame, local, fixed) = if on_b {
-        (mat_mul(&world(doc, cam.a.occurrence), &fa), mat_mul(&flip_of(cam), &inv(&fb)?), cam.a.occurrence)
+        (world(doc, cam.a.occurrence) * fa, flip_of(cam) * inv(&fb)?, cam.a.occurrence)
     } else {
-        (mat_mul(&mat_mul(&world(doc, cam.b.occurrence), &fb), &inv(&flip_of(cam))?), inv(&fa)?, cam.b.occurrence)
+        (world(doc, cam.b.occurrence) * fb * inv(&flip_of(cam))?, inv(&fa)?, cam.b.occurrence)
     };
-    let v: Vec<Vec3> = pts.iter().map(|p| apply_point(&local, *p)).collect();
+    let v: Vec<Vec3> = pts.iter().map(|p| local.point(*p)).collect();
     let mean = v.iter().map(|p| p.z).sum::<f64>() / v.len() as f64;
     if v.iter().any(|p| (p.z - mean).abs() > 1e-6 * size + 1e-9) {
         return Err(bad("the profile must lie in a plane square to the cam's axis"));
@@ -552,13 +558,9 @@ fn setup(doc: &Document, st: &ModelState, l: &MotionLink, c: &Cam) -> Result<Set
     let c_inv = inv(&frame)?;
     let moves_b = follower_is_b(doc, cam, fol, (fixed, occ))?;
     let (ga, gb) = (super::resolve_origin(doc, st, &fol.a)?, super::resolve_origin(doc, st, &fol.b)?);
-    let guide = if moves_b {
-        mat_mul(&world(doc, fol.a.occurrence), &ga)
-    } else {
-        mat_mul(&mat_mul(&world(doc, fol.b.occurrence), &gb), &inv(&flip_of(fol))?)
-    };
-    let to_c = mat_mul(&c_inv, &guide);
-    let (g, d) = (apply_point(&to_c, Vec3::ZERO), apply_vector(&to_c, Vec3::Z));
+    let guide = if moves_b { world(doc, fol.a.occurrence) * ga } else { world(doc, fol.b.occurrence) * gb * inv(&flip_of(fol))? };
+    let to_c = c_inv * guide;
+    let (g, d) = (to_c.point(Vec3::ZERO), to_c.vector(Vec3::Z));
     let (moving, sign_f) = if moves_b { (fol.b.occurrence, 1.0) } else { (fol.a.occurrence, -1.0) };
     let (radius, flat) = match &c.follower {
         Follower::Knife => (0.0, false),
@@ -577,14 +579,14 @@ fn setup(doc: &Document, st: &ModelState, l: &MotionLink, c: &Cam) -> Result<Set
     // square to the profile's plane.
     let roller = matches!(c.follower, Follower::Roller { .. });
     for o in [c.tip.as_ref(), face].into_iter().flatten().filter(|o| roller && matches!(o.snap, super::Snap::CircleCenter { .. })) {
-        let at = mat_mul(&c_inv, &doc.origin_world(st, o)?);
+        let at = c_inv * doc.origin_world(st, o)?;
         if Vec3::new(at[2][0], at[2][1], 0.0).len() > 1e-6 {
             return Err(bad("the roller's axis must be parallel to the cam's"));
         }
     }
     let tip = match c.tip.as_ref().or(face) {
         Some(o) => {
-            let t = apply_point(&mat_mul(&c_inv, &doc.origin_world(st, o)?), Vec3::ZERO);
+            let t = (c_inv * doc.origin_world(st, o)?).point(Vec3::ZERO);
             Some(Vec2::new(t.x, t.y))
         }
         None => None,
@@ -772,8 +774,8 @@ pub fn default_reverse(doc: &Document, st: &ModelState, l: &MotionLink, c: &Cam)
     if bb.min.x > bb.max.x {
         return Ok(false);
     }
-    let inv = mat_inverse(&s.frame).ok_or_else(|| DocError::Invalid("cam: degenerate frame".into()))?;
-    let centre = apply_point(&mat_mul(&inv, &world(doc, s.moving)), bb.center());
+    let inv = s.frame.inverse().ok_or_else(|| DocError::Invalid("cam: degenerate frame".into()))?;
+    let centre = (inv * world(doc, s.moving)).point(bb.center());
     // The cam's axis is C's z: the follower is on the −dir side of it.
     Ok(Vec2::new(centre.x, centre.y).dot(s.dir) < 0.0)
 }
@@ -941,7 +943,14 @@ mod tests {
             suppressed: false,
             exprs: Default::default(),
         };
-        let occ = |id: u64, grounded: bool| crate::Occurrence { id, component: id, parent: 0, name: format!("O{id}"), transform: IDENTITY, grounded };
+        let occ = |id: u64, grounded: bool| crate::Occurrence {
+            id,
+            component: id,
+            parent: 0,
+            name: format!("O{id}"),
+            transform: Transform::IDENTITY,
+            grounded,
+        };
         // 1 frame (grounded), 2 cam, 3-6 a rigid chain to the guide 7, 8 the piston, 9 crank, 10 rod.
         let mut doc = Document { occurrences: (1..=10).map(|id| occ(id, id == 1)).collect(), ..Document::default() };
         let (r, v, s) = (JointKind::Rigid, JointKind::Revolute, JointKind::Slider);

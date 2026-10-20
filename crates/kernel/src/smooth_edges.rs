@@ -292,7 +292,9 @@ mod tests {
         }
         let faces = |m: &Mesh| m.tri_face.iter().copied().collect::<std::collections::BTreeSet<u32>>();
         assert_eq!(faces(&mesh), faces(&raw));
-        let moved = crate::transform_matrix(&body, [[1., 0., 0., 0.], [0., 0., 1., 0.], [0., -1., 0., 0.], [30., 20., 10., 1.]]).unwrap();
+        let moved =
+            crate::transform_matrix(&body, solidcraft_geom::Transform([[1., 0., 0., 0.], [0., 0., 1., 0.], [0., -1., 0., 0.], [30., 20., 10., 1.]]))
+                .unwrap();
         assert_eq!(moved.display_mesh(0.02).unwrap().smooth_edges.iter().filter(|f| **f).count(), 512);
     }
 

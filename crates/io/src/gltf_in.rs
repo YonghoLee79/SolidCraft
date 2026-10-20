@@ -22,9 +22,9 @@ use std::hash::{Hash, Hasher};
 
 use gltf::accessor::{DataType, Dimensions};
 use gltf::mesh::Mode;
+use solidcraft_doc::MeshData;
 use solidcraft_doc::appearance::Look;
-use solidcraft_doc::{Mat, MeshData, mat_mul};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 
 use crate::{IoError, MAX_3MF_BYTES, MeshFeature, Result};
 
@@ -57,7 +57,7 @@ pub fn is_gltf_path(path: &str) -> bool {
 pub struct PlanPlace {
     pub slot: usize,
     pub parent: Option<usize>,
-    pub transform: Mat,
+    pub transform: Transform,
 }
 
 /// How a glTF file's nodes become components below the import's own: `slots` are the
@@ -88,21 +88,21 @@ impl GltfImport {
         if self.plan.places.is_empty() {
             return;
         }
-        let mut world: Vec<Option<Mat>> = vec![None; self.plan.slots.len()];
+        let mut world: Vec<Option<Transform>> = vec![None; self.plan.slots.len()];
         for p in &self.plan.places {
             let parent = match p.parent {
-                None => Some(solidcraft_doc::IDENTITY),
+                None => Some(Transform::IDENTITY),
                 Some(q) => world.get(q).copied().flatten(),
             };
             if let (Some(parent), Some(slot @ None)) = (parent, world.get_mut(p.slot)) {
-                *slot = Some(mat_mul(&parent, &p.transform));
+                *slot = Some(parent * p.transform);
             }
         }
         if let solidcraft_doc::FeatureKind::MeshImport { meshes, .. } = &mut self.feature.kind {
             for (m, slot) in meshes.iter_mut().zip(&self.plan.bodies) {
                 let Some(frame) = slot.and_then(|s| world.get(s).copied().flatten()) else { continue };
                 for p in m.positions.as_chunks_mut::<3>().0 {
-                    let q = solidcraft_doc::apply_point(&frame, Vec3::new(p[0], p[1], p[2]));
+                    let q = frame.point(Vec3::new(p[0], p[1], p[2]));
                     *p = [q.x, q.y, q.z];
                 }
             }
@@ -153,7 +153,7 @@ pub fn read_gltf(bytes: &[u8], file: &str, load: Loader<'_>) -> Result<GltfImpor
     // components in it.
     let units = scale(MM);
     if let [root] = roots.as_slice() {
-        let m = reader.node(*root).map(|n| mat_mul(&units, &node_matrix(&n))).unwrap_or(units);
+        let m = reader.node(*root).map(|n| units * node_matrix(&n)).unwrap_or(units);
         reader.walk_flat(*root, None, &m, 0)?;
     } else {
         for r in &roots {
@@ -410,14 +410,14 @@ fn base64(s: &str) -> Option<Vec<u8>> {
 }
 
 /// Uniform scale.
-fn scale(s: f64) -> Mat {
-    [[s, 0.0, 0.0, 0.0], [0.0, s, 0.0, 0.0], [0.0, 0.0, s, 0.0], [0.0, 0.0, 0.0, 1.0]]
+fn scale(s: f64) -> Transform {
+    Transform([[s, 0.0, 0.0, 0.0], [0.0, s, 0.0, 0.0], [0.0, 0.0, s, 0.0], [0.0, 0.0, 0.0, 1.0]])
 }
 
 /// A node's transform (in the file's units).
-fn node_matrix(node: &gltf::Node<'_>) -> Mat {
+fn node_matrix(node: &gltf::Node<'_>) -> Transform {
     match node.transform() {
-        gltf::scene::Transform::Matrix { matrix } => matrix.map(|c| c.map(f64::from)),
+        gltf::scene::Transform::Matrix { matrix } => Transform(matrix.map(|c| c.map(f64::from))),
         gltf::scene::Transform::Decomposed { translation: t, rotation: r, scale: s } => {
             let [mut x, mut y, mut z, mut w] = r.map(f64::from);
             let n = (x * x + y * y + z * z + w * w).sqrt();
@@ -436,15 +436,15 @@ fn node_matrix(node: &gltf::Node<'_>) -> Mat {
                 let r = rot.get(c).copied().unwrap_or([0.0; 3]);
                 [r[0] * k, r[1] * k, r[2] * k, 0.0]
             };
-            [col(0, sx), col(1, sy), col(2, sz), [f64::from(t[0]), f64::from(t[1]), f64::from(t[2]), 1.0]]
+            Transform([col(0, sx), col(1, sy), col(2, sz), [f64::from(t[0]), f64::from(t[1]), f64::from(t[2]), 1.0]])
         }
     }
 }
 
 /// `m` as a rigid placement and what is left: `m = place · rest`, `rest` without translation.
 /// `None` when `m` is not finite or its translation is out of range.
-fn split_rigid(m: &Mat) -> Option<(Mat, Mat)> {
-    if !m.iter().flatten().all(|v| v.is_finite()) || m[3][..3].iter().any(|v| v.abs() > 1e9) {
+fn split_rigid(m: &Transform) -> Option<(Transform, Transform)> {
+    if !m.is_finite() || m[3][..3].iter().any(|v| v.abs() > 1e9) {
         return None;
     }
     let col = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
@@ -454,22 +454,22 @@ fn split_rigid(m: &Mat) -> Option<(Mat, Mat)> {
         Some((x, y, x.cross(y)))
     })();
     let (x, y, z) = frame.unwrap_or((Vec3::X, Vec3::Y, Vec3::Z));
-    let place = [[x.x, x.y, x.z, 0.0], [y.x, y.y, y.z, 0.0], [z.x, z.y, z.z, 0.0], [m[3][0], m[3][1], m[3][2], 1.0]];
+    let place = Transform([[x.x, x.y, x.z, 0.0], [y.x, y.y, y.z, 0.0], [z.x, z.y, z.z, 0.0], [m[3][0], m[3][1], m[3][2], 1.0]]);
     // The inverse of a rotation is its transpose; the translation goes with the placement.
-    let inverse_rotation = [[x.x, y.x, z.x, 0.0], [x.y, y.y, z.y, 0.0], [x.z, y.z, z.z, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    let inverse_rotation = Transform([[x.x, y.x, z.x, 0.0], [x.y, y.y, z.y, 0.0], [x.z, y.z, z.z, 0.0], [0.0, 0.0, 0.0, 1.0]]);
     let mut linear = *m;
     linear[3] = [0.0, 0.0, 0.0, 1.0];
-    Some((place, mat_mul(&inverse_rotation, &linear)))
+    Some((place, inverse_rotation * linear))
 }
 
-fn hash_mat(m: &Mat, h: &mut impl Hasher) {
-    for v in m.iter().flatten() {
+fn hash_mat(m: &Transform, h: &mut impl Hasher) {
+    for v in m.entries() {
         // Equal to within rounding is equal.
         ((v * 1e6).round() as i64).hash(h);
     }
 }
 
-fn det3(m: &Mat) -> f64 {
+fn det3(m: &Transform) -> f64 {
     let a = |r: usize, c: usize| m[c][r];
     a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) - a(0, 1) * (a(1, 0) * a(2, 2) - a(1, 2) * a(2, 0))
         + a(0, 2) * (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0))
@@ -537,12 +537,12 @@ impl<'d> Reader<'d, '_, '_> {
 
     /// Node `index` under component `parent` (`None`: the import's own), whose frame sees the
     /// node's parent through `outer` (the parent's leftover scale, with the units).
-    fn walk(&mut self, index: usize, parent: Option<usize>, outer: &Mat, depth: usize) -> Result<()> {
+    fn walk(&mut self, index: usize, parent: Option<usize>, outer: &Transform, depth: usize) -> Result<()> {
         if !self.subtree_has_mesh(index, 0) || !self.budget(depth) {
             return Ok(());
         }
         let Some(node) = self.node(index) else { return Ok(()) };
-        let local = mat_mul(outer, &node_matrix(&node));
+        let local = outer * node_matrix(&node);
         let split = split_rigid(&local);
         let Some((place, rest)) = split.filter(|_| depth < MAX_COMPONENT_DEPTH && self.plan.slots.len() < MAX_COMPONENTS) else {
             // No component of its own: built where its parent is.
@@ -585,7 +585,7 @@ impl<'d> Reader<'d, '_, '_> {
 
     /// Node `index` built in component `parent`, `local` being its whole placement there (scale
     /// and all): its meshes are baked with it.
-    fn walk_flat(&mut self, index: usize, parent: Option<usize>, local: &Mat, depth: usize) -> Result<()> {
+    fn walk_flat(&mut self, index: usize, parent: Option<usize>, local: &Transform, depth: usize) -> Result<()> {
         if !self.subtree_has_mesh(index, 0) || !self.budget(depth) {
             return Ok(());
         }
@@ -597,7 +597,7 @@ impl<'d> Reader<'d, '_, '_> {
                 self.walk(c, parent, local, depth + 1)?;
             } else {
                 let Some(child) = self.node(c) else { continue };
-                let m = mat_mul(local, &node_matrix(&child));
+                let m = local * node_matrix(&child);
                 self.walk_flat(c, parent, &m, depth + 1)?;
             }
         }
@@ -606,7 +606,7 @@ impl<'d> Reader<'d, '_, '_> {
 
     /// What makes two placements the same component: the node's mesh, how it is baked, and the
     /// same children placed the same way below it.
-    fn key(&mut self, index: usize, rest: &Mat, depth: usize) -> u64 {
+    fn key(&mut self, index: usize, rest: &Transform, depth: usize) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         let Some(node) = self.node(index) else { return 0 };
         node.mesh().map(|m| m.index()).hash(&mut h);
@@ -618,7 +618,7 @@ impl<'d> Reader<'d, '_, '_> {
                     continue;
                 }
                 let Some(child) = self.node(c) else { continue };
-                let local = mat_mul(rest, &node_matrix(&child));
+                let local = rest * node_matrix(&child);
                 match split_rigid(&local) {
                     Some((place, child_rest)) => {
                         hash_mat(&place, &mut h);
@@ -635,7 +635,7 @@ impl<'d> Reader<'d, '_, '_> {
     }
 
     /// Bodies of node `index`'s mesh, baked with `bake` (its frame in component `slot`).
-    fn node_meshes(&mut self, index: usize, slot: Option<usize>, bake: &Mat) -> Result<()> {
+    fn node_meshes(&mut self, index: usize, slot: Option<usize>, bake: &Transform) -> Result<()> {
         let Some(node) = self.node(index) else { return Ok(()) };
         let Some(mesh) = node.mesh() else { return Ok(()) };
         let base = mesh
@@ -644,7 +644,7 @@ impl<'d> Reader<'d, '_, '_> {
             .filter(|n| !n.is_empty())
             .or_else(|| node.name().map(clean_name).filter(|n| !n.is_empty()))
             .unwrap_or_else(|| self.stem.clone());
-        if !bake.iter().flatten().all(|v| v.is_finite()) || det3(bake).abs() < 1e-18 {
+        if !bake.is_finite() || det3(bake).abs() < 1e-18 {
             self.skipped.push(format!("mesh `{base}` (its node scales it to nothing)"));
             return Ok(());
         }
@@ -670,7 +670,7 @@ impl<'d> Reader<'d, '_, '_> {
             };
             let Some(group) = groups.get_mut(at) else { continue };
             let offset = u32::try_from(group.1.len()).map_err(|_| IoError::Invalid("glTF mesh too large".into()))?;
-            group.1.extend(tris.0.iter().map(|p| solidcraft_doc::apply_point(bake, *p)));
+            group.1.extend(tris.0.iter().map(|p| bake.point(*p)));
             group.2.extend(tris.1.iter().map(|t| {
                 let t = t.map(|i| i + offset);
                 if flip { [t[0], t[2], t[1]] } else { t }

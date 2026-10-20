@@ -15,7 +15,7 @@ use std::sync::Arc;
 use egui::{FontId, Pos2, Rect, Shape, Stroke, vec2};
 use serde_json::json;
 use solidcraft_engine::Sel;
-use solidcraft_engine::geom::Vec2;
+use solidcraft_engine::geom::{Transform, Vec2};
 use solidcraft_engine::sketch::{ConstraintKind, DimFrame, chain_centres, default_text, dim_frame, dim_layout_reaching, dim_reach};
 
 use crate::SolveApp;
@@ -72,7 +72,7 @@ struct DimensionDraft {
     sketch: u64,
     component: u64,
     path: Option<Vec<u64>>,
-    pending: std::collections::BTreeMap<u64, solidcraft_engine::doc::Mat>,
+    pending: std::collections::BTreeMap<u64, Transform>,
     entities: Vec<String>,
     /// Where the text goes (None: the dimension's default place).
     at: Option<Vec2>,
@@ -251,7 +251,7 @@ struct Placement {
     sketch: Option<u64>,
     component: u64,
     path: Option<Vec<u64>>,
-    pending: std::collections::BTreeMap<u64, solidcraft_engine::doc::Mat>,
+    pending: std::collections::BTreeMap<u64, Transform>,
     entities: Vec<String>,
     at: Vec2,
     draft: Option<(String, DimensionDraft)>,

@@ -1,5 +1,6 @@
 use crate::Session;
 use serde_json::{Value, json};
+use solidcraft_geom::Transform;
 
 fn run(s: &mut Session, cmd: &str, params: Value) -> Value {
     s.execute(cmd, &params).unwrap()
@@ -108,7 +109,7 @@ fn compact_exponentially_instanced_assembly_refuses_partial_totals() {
     for _ in 0..17 {
         let parent = s.active_component;
         let component = s.doc_mut().add_component(None, parent).unwrap();
-        last_occurrence = s.doc_mut().add_occurrence(component, parent, solidcraft_doc::IDENTITY).unwrap();
+        last_occurrence = s.doc_mut().add_occurrence(component, parent, Transform::IDENTITY).unwrap();
         s.active_component = component;
     }
     for command in ["component.properties", "occurrence.properties"] {

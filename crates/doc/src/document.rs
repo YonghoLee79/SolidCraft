@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Plane, Vec2, Vec3};
+use solidcraft_geom::{Plane, Transform, Vec2, Vec3};
 use solidcraft_kernel::Continuity;
 use solidcraft_sketch::Sketch;
 
@@ -384,7 +384,7 @@ pub struct EmbossFace {
 
 impl EmbossFace {
     /// The selected sketch placement, shared by evaluation and interactive guides.
-    pub fn sketch_frame(&self, doc: &Document, author: u64, sketch_owner: u64, body: &crate::ModelBody) -> Result<crate::Mat> {
+    pub fn sketch_frame(&self, doc: &Document, author: u64, sketch_owner: u64, body: &crate::ModelBody) -> Result<Transform> {
         let owner = doc.model_body_component(body);
         if sketch_owner == owner {
             return Self::component_frame(doc, owner, &self.path);
@@ -412,21 +412,21 @@ impl EmbossFace {
     }
 
     /// Resolve this exact placement without expanding every assembly instance.
-    pub fn body_frame(&self, doc: &Document, body: &crate::ModelBody) -> Result<crate::Mat> {
+    pub fn body_frame(&self, doc: &Document, body: &crate::ModelBody) -> Result<Transform> {
         let owner = doc.model_body_component(body);
         let mut frame = Self::component_frame(doc, owner, &self.path)?;
         if let Some(offset) = doc.model_body_offset(body) {
-            frame = crate::mat_mul(&frame, offset);
+            frame = frame * offset;
         }
         Ok(frame)
     }
 
     /// Resolve one saved component path without expanding other occurrences.
-    pub fn component_frame(doc: &Document, owner: u64, path: &[u64]) -> Result<crate::Mat> {
+    pub fn component_frame(doc: &Document, owner: u64, path: &[u64]) -> Result<Transform> {
         if path.len() > 64 || doc.occurrences.len() > 100_000 {
             return Err(DocError::Invalid("selected cylinder path exceeds work limits".into()));
         }
-        let mut frame = crate::IDENTITY;
+        let mut frame = Transform::IDENTITY;
         let mut component = 0;
         let mut seen = std::collections::BTreeSet::new();
         for id in path {
@@ -438,7 +438,7 @@ impl EmbossFace {
                 .iter()
                 .find(|o| o.id == *id && o.parent == component)
                 .ok_or_else(|| DocError::Invalid("selected cylinder placement no longer exists".into()))?;
-            frame = crate::mat_mul(&frame, &occurrence.transform);
+            frame = frame * occurrence.transform;
             component = occurrence.component;
         }
         if path.is_empty() {
@@ -529,7 +529,7 @@ pub enum FeatureKind {
         bodies: Vec<BodyName>,
         from: u64,
         to: u64,
-        transform: crate::Mat,
+        transform: Transform,
     },
     Sketch {
         plane: PlaneRef,
@@ -2442,7 +2442,7 @@ pub struct Document {
     /// Bodies moved into another component keep their place in the world: the transform from
     /// the new component's frame to the frame the body was made in (by body name).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub body_offsets: std::collections::BTreeMap<String, crate::Mat>,
+    pub body_offsets: std::collections::BTreeMap<String, Transform>,
     /// Browser groups (folders of bodies, sketches or construction planes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_groups: Vec<BrowserGroup>,
@@ -2879,7 +2879,7 @@ impl Document {
     }
 
     /// Recorded transfers already converted geometry into the new local frame.
-    pub fn model_body_offset(&self, body: &crate::ModelBody) -> Option<&crate::Mat> {
+    pub fn model_body_offset(&self, body: &crate::ModelBody) -> Option<&Transform> {
         if body.transferred { None } else { self.body_offsets.get(&body.name) }
     }
 
@@ -2904,7 +2904,7 @@ impl Document {
             }
         };
         self.components.push(Component { id, name, parent, ..Default::default() });
-        self.add_occurrence(id, parent, crate::IDENTITY)?;
+        self.add_occurrence(id, parent, Transform::IDENTITY)?;
         Ok(id)
     }
 

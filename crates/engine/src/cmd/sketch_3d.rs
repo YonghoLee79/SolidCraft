@@ -3,7 +3,7 @@
 //! drawn and snapped to, movable point by point, and usable as sweep and pipe paths.
 
 use serde_json::{Value, json};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 use solidcraft_sketch::WireSpace;
 
 use super::sketch::{edit, target_sketch};
@@ -44,7 +44,7 @@ fn needs_3d(sk: &solidcraft_sketch::Sketch, cmd: &str) -> Result<()> {
 
 /// World command inputs belong to the target sketch's owner, which may differ from the
 /// active component when a script supplies an explicit sketch.
-fn inverse_owner_frame(s: &Session, p: &Value, cmd: &str) -> Result<solidcraft_doc::Mat> {
+fn inverse_owner_frame(s: &Session, p: &Value, cmd: &str) -> Result<Transform> {
     let id = target_sketch(s, p, cmd)?;
     let owner = s.doc.feature(id).map(|f| f.component).ok_or_else(|| bad(cmd, "target sketch is missing"))?;
     if owner != 0 && owner != s.active_component {
@@ -75,13 +75,13 @@ fn inverse_owner_frame(s: &Session, p: &Value, cmd: &str) -> Result<solidcraft_d
         }
     }
     let frame = if owner == s.active_component { s.active_component_frame() } else { s.placed_document().component_transform(owner) };
-    solidcraft_doc::mat_inverse(&frame).ok_or_else(|| bad(cmd, "the sketch owner placement is not invertible"))
+    frame.inverse().ok_or_else(|| bad(cmd, "the sketch owner placement is not invertible"))
 }
 
 fn line3d(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.line3d";
     let inverse = inverse_owner_frame(s, p, cmd)?;
-    let pts: Vec<Vec3> = points(cmd, p, 2)?.into_iter().map(|at| solidcraft_doc::apply_point(&inverse, at)).collect();
+    let pts: Vec<Vec3> = points(cmd, p, 2)?.into_iter().map(|at| inverse.point(at)).collect();
     let (ids, info) = edit(s, p, cmd, false, |sk, _| {
         needs_3d(sk, cmd)?;
         pts.windows(2).map(|w| sk.add_drawn_wire_in(w, WireSpace::Component).map_err(Into::into)).collect::<Result<Vec<String>>>()
@@ -92,7 +92,7 @@ fn line3d(s: &mut Session, p: &Value) -> Result<Value> {
 fn spline3d(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.spline3d";
     let inverse = inverse_owner_frame(s, p, cmd)?;
-    let pts: Vec<Vec3> = points(cmd, p, 2)?.into_iter().map(|at| solidcraft_doc::apply_point(&inverse, at)).collect();
+    let pts: Vec<Vec3> = points(cmd, p, 2)?.into_iter().map(|at| inverse.point(at)).collect();
     let (id, info) = edit(s, p, cmd, false, |sk, _| {
         needs_3d(sk, cmd)?;
         Ok(sk.add_drawn_wire_in(&pts, WireSpace::Component)?)
@@ -103,7 +103,7 @@ fn spline3d(s: &mut Session, p: &Value) -> Result<Value> {
 fn point3d(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.point3d";
     let inverse = inverse_owner_frame(s, p, cmd)?;
-    let at = solidcraft_doc::apply_point(&inverse, req_vec3(cmd, p, "point")?);
+    let at = inverse.point(req_vec3(cmd, p, "point")?);
     let (id, info) = edit(s, p, cmd, false, |sk, _| {
         needs_3d(sk, cmd)?;
         Ok(sk.add_drawn_wire_in(&[at], WireSpace::Component)?)
@@ -136,12 +136,12 @@ fn move3d(s: &mut Session, p: &Value) -> Result<Value> {
         let to = match (to, by) {
             (Some(t), _) => {
                 if drawn.space == WireSpace::Component {
-                    solidcraft_doc::apply_point(&inverse, t)
+                    inverse.point(t)
                 } else {
                     t
                 }
             }
-            (None, Some(d)) => from + if drawn.space == WireSpace::Component { solidcraft_doc::apply_vector(&inverse, d) } else { d },
+            (None, Some(d)) => from + if drawn.space == WireSpace::Component { inverse.vector(d) } else { d },
             _ => return Err(bad(cmd, "give `to` or `by`")),
         };
         Ok(sk.move_drawn_point(&wire, index, to)?)

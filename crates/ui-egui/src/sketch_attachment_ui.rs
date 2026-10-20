@@ -4,7 +4,7 @@ use egui::RichText;
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::doc::face_anchor::plane_face_anchor;
-use solidcraft_engine::doc::{EmbossFace, FaceAttachmentStatus, FeatureKind, mat_inverse};
+use solidcraft_engine::doc::{EmbossFace, FaceAttachmentStatus, FeatureKind};
 use solidcraft_engine::geom::{Plane, Vec3};
 
 use crate::SolveApp;
@@ -61,7 +61,7 @@ impl Draft {
             return Err("Select an exact author placement before converting this plane".into());
         }
         let frame = EmbossFace::component_frame(&doc, owner, &path).map_err(|error| error.to_string())?;
-        mat_inverse(&frame).ok_or("Sketch author frame is invalid")?;
+        frame.inverse().ok_or("Sketch author frame is invalid")?;
         self.author_path = Some(path);
         // Public commands take world geometry. Session maps Custom planes into
         // this exact author placement once, including redefine's saved path.

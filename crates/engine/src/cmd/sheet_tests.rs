@@ -54,7 +54,7 @@ fn side_edge_flanges_across_a_bend_keep_their_relief_through_rebuild_and_reopen(
             let sheet = &s.model.state().sheets[0];
             let parent = &sheet.flanges[0];
             let point = parent.p + parent.d * parent.len + parent.n * (sheet.allowance(parent) + parent.leg * 0.5);
-            let side = solidcraft_doc::apply_point(&sheet.world(Some(0)), Vec3::new(point.x, point.y, sheet.t));
+            let side = sheet.world(Some(0)).point(Vec3::new(point.x, point.y, sheet.t));
             let mut edges = vec![json!([120, 45, 2]), json!([side.x, side.y, side.z])];
             if reverse {
                 edges.reverse();
@@ -276,7 +276,6 @@ fn intersect_preserves_both_material_regions_of_a_logical_ring_sheet() {
 
 #[test]
 fn machining_a_folded_parallel_panel_preserves_its_pocket_on_unfold() {
-    use solidcraft_doc::{apply_point, apply_vector};
     use solidcraft_geom::Vec3;
     let mut s = Session::default();
     base(&mut s, 100.0, 60.0);
@@ -285,9 +284,9 @@ fn machining_a_folded_parallel_panel_preserves_its_pocket_on_unfold() {
     let points = sh.panel(&sh.flanges[0]).outer.polyline(1e-3);
     let c = points.iter().copied().fold(solidcraft_geom::Vec2::ZERO, |sum, p| sum + p) / (points.len() as f64);
     let w = sh.world(Some(0));
-    let origin = apply_point(&w, Vec3::ZERO);
-    let x = apply_vector(&w, Vec3::X);
-    let y = apply_vector(&w, Vec3::Y);
+    let origin = w.point(Vec3::ZERO);
+    let x = w.vector(Vec3::X);
+    let y = w.vector(Vec3::Y);
     run(
         &mut s,
         "sketch.create",

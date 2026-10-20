@@ -1,6 +1,6 @@
 //! Fillets and chamfers where a curved wall runs out into a flat face in a knife edge (#851).
 use crate::*;
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 use std::f64::consts::PI;
 
 const R_WALL: f64 = 21.0;
@@ -125,7 +125,7 @@ fn knife_edge_blends_the_same_in_a_mirror() {
         m
     };
     for (axis, at) in [(0, Vec3::new(-TIP_X, 0.0, 5.0)), (1, Vec3::new(TIP_X, 0.0, 5.0)), (2, Vec3::new(TIP_X, 0.0, -5.0))] {
-        let mirrored = transform_matrix(&body, mirror(axis)).unwrap();
+        let mirrored = transform_matrix(&body, Transform(mirror(axis))).unwrap();
         let v = measure(&fillet(&mirrored, &[at], 2.0).unwrap()).unwrap().volume;
         assert!((v - reference).abs() < 1e-6, "mirror {axis}: volume {v}, expected {reference}");
     }
@@ -211,7 +211,7 @@ fn the_arc_top_edge_blends_the_same_in_a_mirror() {
     };
     let at = arc_top();
     for (axis, p) in [(0, Vec3::new(-at.x, at.y, at.z)), (1, Vec3::new(at.x, -at.y, at.z)), (2, Vec3::new(at.x, at.y, -at.z))] {
-        let mirrored = transform_matrix(&body, mirror(axis)).unwrap();
+        let mirrored = transform_matrix(&body, Transform(mirror(axis))).unwrap();
         let v = planned_volume(&fillet(&mirrored, &[p], 2.0).unwrap_or_else(|e| panic!("mirror {axis}: {e}")));
         assert!((v - reference).abs() < 1e-4 * reference, "mirror {axis}: volume {v}, expected {reference}");
     }
@@ -240,7 +240,7 @@ fn arc_top_blend_refuses_a_collapsed_wall() {
     for body in [part(), part_other_order(), part_cut_from_a_box()] {
         for z in [1.0, -1.0] {
             let matrix = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, z, 0.0], [0.0, 0.0, 0.0, 1.0]];
-            let body = transform_matrix(&body, matrix).unwrap();
+            let body = transform_matrix(&body, Transform(matrix)).unwrap();
             let at = arc_top();
             let pick = [Vec3::new(at.x, at.y, at.z * z)];
             for round in [true, false] {

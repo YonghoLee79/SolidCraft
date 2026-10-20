@@ -4,6 +4,7 @@
 //! and platform that computed it (docs/design-container.md).
 use super::*;
 use solidcraft_doc::{ModelState, SavedModel};
+use solidcraft_geom::Transform;
 
 const FORMAT: &str = "solidcraft-model-cache/2";
 const PRODUCER: &str = "solidcraft-truck-adapter/3";
@@ -22,8 +23,8 @@ fn build() -> String {
 }
 
 /// A 4 x 4 matrix as its 16 numbers, in storage order.
-fn matrix(t: &[[f64; 4]; 4]) -> Vec<f64> {
-    t.iter().flatten().copied().collect()
+fn matrix(t: &Transform) -> Vec<f64> {
+    t.entries().collect()
 }
 
 /// Encode a saved model. Identical bodies (the same part placed many times) are stored once; a
@@ -67,7 +68,7 @@ pub(super) fn encode_model(model: &SavedModel, document: &[u8]) -> Result<(Vec<u
     let mut table = Vec::with_capacity(model.bodies.len());
     for (b, i) in model.bodies.iter().zip(body_index) {
         table.push(match b.display_share() {
-            Some((share, t)) => json!([i, share_index.get(&share.id()).ok_or_else(|| invalid("display share"))?, matrix(&t)]),
+            Some((share, t)) => json!([i, share_index.get(&share.id()).ok_or_else(|| invalid("display share"))?, matrix(&Transform(t))]),
             None => json!([i]),
         });
     }
@@ -160,7 +161,7 @@ pub(super) fn read_geometry_with<R: Read + Seek>(reader: &mut PackageReader<R>, 
         if let Some(share) = entry.get(1) {
             let s = shares.get(count(Some(share))?).ok_or_else(|| invalid("cached share index"))?;
             let numbers: Vec<f64> = serde_json::from_value(entry.get(2).cloned().unwrap_or(Value::Null)).map_err(invalid)?;
-            b = b.with_display_share(s, matrix_of(&numbers)?);
+            b = b.with_display_share(s, matrix_of(&numbers)?.0);
         }
         bodies.push(b);
     }
@@ -169,7 +170,7 @@ pub(super) fn read_geometry_with<R: Read + Seek>(reader: &mut PackageReader<R>, 
 }
 
 /// A 4 x 4 matrix from its 16 numbers in storage order, finite.
-fn matrix_of(numbers: &[f64]) -> Result<[[f64; 4]; 4]> {
+fn matrix_of(numbers: &[f64]) -> Result<Transform> {
     if numbers.len() != 16 || numbers.iter().any(|x| !x.is_finite() || x.abs() > 1e12) {
         return Err(invalid("cached matrix"));
     }
@@ -177,7 +178,7 @@ fn matrix_of(numbers: &[f64]) -> Result<[[f64; 4]; 4]> {
     for (slot, x) in t.iter_mut().flatten().zip(numbers) {
         *slot = *x;
     }
-    Ok(t)
+    Ok(Transform(t))
 }
 
 pub(super) fn geometry_preview(document: &[u8], model: &SavedModel) -> Result<DesignPreview> {

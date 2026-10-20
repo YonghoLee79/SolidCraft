@@ -154,7 +154,7 @@ fn selected_second_placement_custom_axis_handle_and_preview_stay_in_its_frame() 
     let frame = h.app.session.active_component_frame();
     let world = |degrees: f64| {
         let a = degrees.to_radians();
-        let p = solidcraft_engine::doc::apply_point(&frame, solidcraft_engine::geom::Vec3::new(12.5 * a.cos(), 2.5, 12.5 * a.sin()));
+        let p = frame.point(solidcraft_engine::geom::Vec3::new(12.5 * a.cos(), 2.5, 12.5 * a.sin()));
         json!([p.x, p.y, p.z])
     };
     let axis = match &h.app.session.doc.find_feature("Turn").unwrap().kind {

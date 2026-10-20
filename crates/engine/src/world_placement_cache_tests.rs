@@ -50,8 +50,8 @@ fn world_placement_cache_preserves_pending_picks_materials_scratch_and_named_joi
     run(&mut session, "joint.origin", json!({"name":"Top joint","occurrence":second,"face":[pick.x,pick.y,pick.z]}));
     let joint = session.doc.assembly.origins[0].origin.clone();
     let local_frame = crate::doc::joints::resolve_origin(&session.doc, &session.model.state(), &joint).unwrap();
-    let before_joint = crate::doc::mat_mul(&crate::doc::joints::occurrence_world(&session.doc, second), &local_frame);
-    assert!(crate::doc::apply_point(&before_joint, Vec3::ZERO).dist(pick) < 1e-9);
+    let before_joint = crate::doc::joints::occurrence_world(&session.doc, second) * local_frame;
+    assert!(before_joint.point(Vec3::ZERO).dist(pick) < 1e-9);
     run(&mut session, "occurrence.move", json!({"occurrence":second,"translate":[5,0,0],"capture":true}));
     let moved = session.world_state();
     assert!(!Arc::ptr_eq(&world, &moved), "a changed transform must invalidate placed meshes");
@@ -59,8 +59,8 @@ fn world_placement_cache_preserves_pending_picks_materials_scratch_and_named_joi
     assert!(world.body(&name).unwrap().mesh().bounds().min.dist(bounds.min) < 1e-9, "prior snapshots must remain immutable");
     assert_eq!(crate::doc::naming::face_names(moved.body(&name).unwrap()), source_names);
     let local_frame = crate::doc::joints::resolve_origin(&session.doc, &session.model.state(), &joint).unwrap();
-    let after_joint = crate::doc::mat_mul(&crate::doc::joints::occurrence_world(&session.doc, second), &local_frame);
-    assert!(crate::doc::apply_point(&after_joint, Vec3::ZERO).dist(pick + Vec3::new(5., 0., 0.)) < 1e-9);
+    let after_joint = crate::doc::joints::occurrence_world(&session.doc, second) * local_frame;
+    assert!(after_joint.point(Vec3::ZERO).dist(pick + Vec3::new(5., 0., 0.)) < 1e-9);
     let reopened = Session::new(crate::doc::Document::from_json(&session.doc.to_json()).unwrap());
     assert!(reopened.world_state().body(&name).unwrap().mesh().bounds().min.dist(bounds.min + Vec3::new(5., 0., 0.)) < 1e-9);
     assert_eq!(reopened.model.results.iter().filter(|r| r.error.is_some()).count(), 0);
@@ -249,14 +249,14 @@ fn joint_drive_reuses_reference_tessellation_across_rigid_poses() {
         assert_eq!(mesh.smooth_edges, local.smooth_edges);
         assert_eq!(mesh.sharp_edges, local.sharp_edges);
         for (p, q) in local.positions.iter().zip(&mesh.positions) {
-            assert!(crate::doc::apply_point(&body.source_transform, *p).dist(*q) < 1e-8);
+            assert!(body.source_transform.point(*p).dist(*q) < 1e-8);
         }
         for (n, q) in local.normals.iter().zip(&mesh.normals) {
-            assert!(crate::doc::apply_vector(&body.source_transform, *n).dist(*q) < 1e-8);
+            assert!(body.source_transform.vector(*n).dist(*q) < 1e-8);
         }
         for (edge, placed) in local.edges.iter().zip(&mesh.edges) {
             for (p, q) in edge.iter().zip(placed) {
-                assert!(crate::doc::apply_point(&body.source_transform, *p).dist(*q) < 1e-8);
+                assert!(body.source_transform.point(*p).dist(*q) < 1e-8);
             }
         }
     }

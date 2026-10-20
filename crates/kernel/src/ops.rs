@@ -1,7 +1,7 @@
 //! Operations on bodies: booleans and rigid transforms.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 use truck_modeling as mt;
 
 use std::collections::HashMap;
@@ -2109,7 +2109,7 @@ pub(crate) fn rigid_placement(m: &[[f64; 4]; 4]) -> bool {
 }
 
 /// Affine transform by a column-major 4x4 matrix (rotations, translations, reflections).
-pub fn transform_matrix(body: &Body, m: [[f64; 4]; 4]) -> Result<Body> {
+pub fn transform_matrix(body: &Body, m: Transform) -> Result<Body> {
     transform_matrix_keeping(body, m, false)
 }
 
@@ -2118,11 +2118,12 @@ pub fn transform_matrix(body: &Body, m: [[f64; 4]; 4]) -> Result<Body> {
 /// every placed copy (#3044). A modelling operation keeps using [`transform_matrix`]: where a
 /// face wraps all the way round, the turn it finds depends on the copy's own coordinates, and
 /// booleans on the copy depend on that.
-pub fn place_matrix(body: &Body, m: [[f64; 4]; 4]) -> Result<Body> {
+pub fn place_matrix(body: &Body, m: Transform) -> Result<Body> {
     transform_matrix_keeping(body, m, body.phased)
 }
 
-fn transform_matrix_keeping(body: &Body, m: [[f64; 4]; 4], phased: bool) -> Result<Body> {
+fn transform_matrix_keeping(body: &Body, m: Transform, phased: bool) -> Result<Body> {
+    let Transform(m) = m;
     if m.iter().flatten().any(|x| !x.is_finite()) {
         return Err(KernelError::Invalid("non-finite transform".into()));
     }
@@ -2234,7 +2235,7 @@ fn affine_placement_keeps_body_and_face_paint_attached() {
     let body = crate::box_solid(Vec3::ZERO, Vec3::new(10.0, 20.0, 30.0)).unwrap().with_color(Some([0.2, 0.6, 0.8])).with_paint(Some(paint.clone()));
     let source_faces = body.faces(0.01).unwrap();
     let transform = [[0.0, 2.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.5, 0.0], [30.0, 40.0, 50.0, 1.0]];
-    let placed = transform_matrix(&body, transform).unwrap();
+    let placed = transform_matrix(&body, Transform(transform)).unwrap();
     assert_eq!(placed.color(), body.color());
     assert_eq!(placed.paint(), Some(&paint));
     let faces = placed.faces(0.01).unwrap();
@@ -2267,7 +2268,7 @@ pub fn transform(body: &Body, translate: Vec3, origin: Vec3, axis: Vec3, angle: 
         );
         let tr = origin - ro + translate;
         let m = [[r[0][0], r[0][1], r[0][2], 0.0], [r[1][0], r[1][1], r[1][2], 0.0], [r[2][0], r[2][1], r[2][2], 0.0], [tr.x, tr.y, tr.z, 1.0]];
-        transform_matrix(body, m)
+        transform_matrix(body, Transform(m))
     }
 }
 

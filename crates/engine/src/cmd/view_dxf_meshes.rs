@@ -6,8 +6,8 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use solidcraft_doc::{IDENTITY, Mat, ModelBody, mat_inverse, mat_mul};
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_doc::ModelBody;
+use solidcraft_geom::{Aabb3, Mesh, Transform, Vec3};
 use solidcraft_kernel::{KernelError, map_with_local_pools};
 
 use super::{CMD, progress::Stage};
@@ -23,7 +23,7 @@ const MAX_BODIES: usize = 100_000;
 
 pub(super) struct Placement {
     pub mesh: usize,
-    pub transform: Mat,
+    pub transform: Transform,
     pub visibility: Vec<bool>,
 }
 pub(super) struct Scene {
@@ -35,13 +35,13 @@ pub(super) struct Scene {
 
 struct Group {
     first: usize,
-    inverse: Mat,
+    inverse: Transform,
 }
 struct Item<'a> {
     body: &'a ModelBody,
     group: usize,
     keep: bool,
-    transform: Mat,
+    transform: Transform,
 }
 struct Prepared {
     mesh: Option<Arc<Mesh>>,
@@ -74,21 +74,6 @@ pub(super) fn buffer_bytes(m: &Mesh) -> usize {
         + m.edge_faces.iter().map(|e| e.capacity() * size_of::<u32>()).sum::<usize>()
 }
 
-fn rigid(m: &Mat) -> bool {
-    if m.iter().flatten().any(|v| !v.is_finite()) || m.iter().zip([0., 0., 0., 1.]).any(|(c, w)| (c[3] - w).abs() > 1e-10) {
-        return false;
-    }
-    let axes = [Vec3::new(m[0][0], m[0][1], m[0][2]), Vec3::new(m[1][0], m[1][1], m[1][2]), Vec3::new(m[2][0], m[2][1], m[2][2])];
-    let [x, y, z] = axes;
-    (x.len2() - 1.).abs() < 1e-9
-        && (y.len2() - 1.).abs() < 1e-9
-        && (z.len2() - 1.).abs() < 1e-9
-        && x.dot(y).abs() < 1e-9
-        && x.dot(z).abs() < 1e-9
-        && y.dot(z).abs() < 1e-9
-        && (x.cross(y).dot(z) - 1.).abs() < 1e-9
-}
-
 pub(super) fn prepare(s: &Session, tolerance: f64) -> Result<Scene> {
     let world = s.world_state();
     let state = s.model.state();
@@ -108,17 +93,17 @@ pub(super) fn prepare(s: &Session, tolerance: f64) -> Result<Scene> {
         let reused = unambiguous
             .then(|| by_definition.get(&key).copied())
             .flatten()
-            .and_then(|g: usize| groups.get(g).map(|group| (g, mat_mul(&body.source_transform, &group.inverse))))
-            .filter(|(_, m)| rigid(m));
+            .and_then(|g: usize| groups.get(g).map(|group| (g, body.source_transform * group.inverse)))
+            .filter(|(_, m)| m.is_rigid(1e-9));
         let (group, transform) = if let Some(reused) = reused {
             reused
         } else {
             let g = groups.len();
-            groups.push(Group { first: index, inverse: mat_inverse(&body.source_transform).unwrap_or(IDENTITY) });
-            if unambiguous && mat_inverse(&body.source_transform).is_some() {
+            groups.push(Group { first: index, inverse: body.source_transform.inverse().unwrap_or(Transform::IDENTITY) });
+            if unambiguous && body.source_transform.inverse().is_some() {
                 by_definition.entry(key).or_insert(g);
             }
-            (g, IDENTITY)
+            (g, Transform::IDENTITY)
         };
         let keep = groups.get(group).is_some_and(|g| g.first == index);
         items.push(Item { body, group, keep, transform });
@@ -177,13 +162,13 @@ pub(super) fn prepare(s: &Session, tolerance: f64) -> Result<Scene> {
     Ok(Scene { meshes, placements, triangles, bytes: bytes.load(Ordering::Relaxed) })
 }
 
-pub(super) fn transformed_bounds(mesh: &Mesh, m: &Mat) -> Aabb3 {
+pub(super) fn transformed_bounds(mesh: &Mesh, m: &Transform) -> Aabb3 {
     let b = mesh.bounds();
     let mut out = Aabb3::EMPTY;
     for x in [b.min.x, b.max.x] {
         for y in [b.min.y, b.max.y] {
             for z in [b.min.z, b.max.z] {
-                out.add(solidcraft_doc::apply_point(m, Vec3::new(x, y, z)));
+                out.add(m.point(Vec3::new(x, y, z)));
             }
         }
     }
@@ -195,13 +180,13 @@ mod tests {
     use super::*;
     #[test]
     fn only_proper_rigid_placements_share_geometry() {
-        assert!(rigid(&solidcraft_doc::rigid(Vec3::new(1., 2., 3.), Vec3::ZERO, Vec3::Z, 0.7)));
-        let mut m = IDENTITY;
+        assert!(Transform::rigid(Vec3::new(1., 2., 3.), Vec3::ZERO, Vec3::Z, 0.7).is_rigid(1e-9));
+        let mut m = Transform::IDENTITY;
         m[0][0] = -1.;
-        assert!(!rigid(&m));
+        assert!(!m.is_rigid(1e-9));
         m[0][0] = 2.;
-        assert!(!rigid(&m));
+        assert!(!m.is_rigid(1e-9));
         m[0][0] = f64::NAN;
-        assert!(!rigid(&m));
+        assert!(!m.is_rigid(1e-9));
     }
 }

@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use solidcraft_geom::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Plane, Region2, Seg2, Transform, Vec2, Vec3};
 
 use crate::*;
 
@@ -1432,7 +1432,8 @@ fn mesh_bodies_move_measure_and_refuse_solid_ops() {
     assert_eq!((m.faces, m.edges, m.vertices), (12, 18, 8));
     let moved = crate::transform(&b, Vec3::new(5.0, 0.0, 0.0), Vec3::ZERO, Vec3::Z, 0.7).unwrap();
     assert!((measure(&moved).unwrap().volume - 1000.0).abs() < 1e-9);
-    let mirrored = crate::transform_matrix(&b, [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]).unwrap();
+    let mirrored =
+        crate::transform_matrix(&b, Transform([[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]])).unwrap();
     assert!((measure(&mirrored).unwrap().volume - 1000.0).abs() < 1e-9);
     let solid = box_solid(Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0)).unwrap();
     assert!(fillet(&b, &[Vec3::new(5.0, 0.0, 0.0)], 1.0).unwrap_err().to_string().contains("mesh"));
@@ -1895,7 +1896,7 @@ fn overlapping_holes_and_mirror_joins() {
     let half = box_solid(Vec3::ZERO, Vec3::new(30.0, 40.0, 10.0)).unwrap();
     let half = fillet(&half, &[Vec3::new(30.0, 0.0, 5.0), Vec3::new(30.0, 40.0, 5.0)], 5.0).unwrap();
     let m = [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
-    let other = transform_matrix(&half, m).unwrap();
+    let other = transform_matrix(&half, Transform(m)).unwrap();
     let both = boolean(&half, &other, BoolOp::Union).unwrap().unwrap();
     let v = measure(&half).unwrap().volume;
     let mb = measure(&both).unwrap();
@@ -2993,18 +2994,18 @@ fn placing_a_body_does_not_turn_its_revolved_faces_again() {
     crate::body::REPHASED.with(|c| c.set(0));
     let mut placed = body.clone();
     for _ in 0..10 {
-        placed = crate::place_matrix(&placed, m).unwrap();
+        placed = crate::place_matrix(&placed, Transform(m)).unwrap();
     }
     assert_eq!(crate::body::REPHASED.with(|c| c.get()), 0, "no placement searched the revolved faces again");
     // A modelling move (a pattern's copy, a hole's tool) still turns them in its own frame.
-    let _ = crate::transform_matrix(&body, m).unwrap();
+    let _ = crate::transform_matrix(&body, Transform(m)).unwrap();
     assert_eq!(crate::body::REPHASED.with(|c| c.get()), 1);
     crate::body::REPHASED.with(|c| c.set(0));
     assert!(placed.phased);
     let unphased = Body { phased: false, ..body.clone() };
     let mut turned = unphased;
     for _ in 0..10 {
-        turned = crate::place_matrix(&turned, m).unwrap();
+        turned = crate::place_matrix(&turned, Transform(m)).unwrap();
     }
     assert!(crate::body::REPHASED.with(|c| c.get()) > 0, "a body not known to be turned still is");
     let (a, b) = (measure(&placed).unwrap(), measure(&turned).unwrap());

@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 use solidcraft_doc::joints::{Snap, XRef};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 
 use super::tests::{occ, place, run};
 use crate::Session;
@@ -170,7 +170,7 @@ fn a_face_centre_by_name_follows_its_face() {
     };
     for w in [300.0, 330.0, 510.0] {
         width(&mut s, w);
-        let m = frame(&s).unwrap_or(solidcraft_doc::IDENTITY);
+        let m = frame(&s).unwrap_or(Transform::IDENTITY);
         let (o, x, z) = (Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[0][0], m[0][1], m[0][2]), Vec3::new(m[2][0], m[2][1], m[2][2]));
         assert!(near(o, Vec3::new(w, 50.0, 0.5)) && near(z, Vec3::X) && near(x, Vec3::Y), "W = {w}: {o:?} {x:?} {z:?}");
     }
@@ -242,11 +242,11 @@ fn origins_on_a_body_placed_by_an_offset_agree_named_or_not() {
     let mut s = Session::default();
     run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 5, "corner": [0, 0, 0], "body_name": "Plate"}));
     run(&mut s, "solid.hole", json!({"position": [20, 20, 5], "diameter": 6}));
-    let offset = solidcraft_doc::rigid(Vec3::new(7.0, 0.0, 3.0), Vec3::ZERO, Vec3::X, std::f64::consts::FRAC_PI_2);
+    let offset = Transform::rigid(Vec3::new(7.0, 0.0, 3.0), Vec3::ZERO, Vec3::X, std::f64::consts::FRAC_PI_2);
     s.doc_mut().body_offsets.insert("Plate".into(), offset);
     s.refresh();
-    let at = |p: Vec3| solidcraft_doc::apply_point(&offset, p);
-    let up = solidcraft_doc::apply_vector(&offset, Vec3::Z);
+    let at = |p: Vec3| offset.point(p);
+    let up = offset.vector(Vec3::Z);
     let st = s.model.state();
     let (top_pick, wall_pick) = (at(Vec3::new(10.0, 10.0, 5.0)), at(Vec3::new(23.0, 20.0, 4.0)));
     let top = solidcraft_doc::joints::face_name_at(&s.doc, &st, 0, top_pick, false);

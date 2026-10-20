@@ -10,11 +10,11 @@
 //! together; the flat solid is the outline extruded through the thickness.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Aabb2, LINEAR_TOL, Loop2, Plane, Region2, Ring, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Aabb2, LINEAR_TOL, Loop2, Plane, Region2, Ring, Seg2, Transform, Vec2, Vec3};
 use solidcraft_kernel::{self as kernel, Body, EdgeSpec, FaceSpec, SurfSpec};
 
 use crate::expr::{self, Kind, Value};
-use crate::{DocError, Document, IDENTITY, Mat, Result, apply_point, apply_vector, mat_inverse, mat_mul};
+use crate::{DocError, Document, Result};
 
 #[path = "sheet_convert.rs"]
 mod convert;
@@ -650,12 +650,12 @@ pub struct BendInfo {
     pub end: Vec2,
 }
 
-fn rot_about(o: Vec3, k: Vec3, a: f64) -> Mat {
-    crate::rigid(Vec3::ZERO, o, k, a)
+fn rot_about(o: Vec3, k: Vec3, a: f64) -> Transform {
+    Transform::rigid(Vec3::ZERO, o, k, a)
 }
 
-fn translate(t: Vec3) -> Mat {
-    let mut m = IDENTITY;
+fn translate(t: Vec3) -> Transform {
+    let mut m = Transform::IDENTITY;
     m[3] = [t.x, t.y, t.z, 1.0];
     m
 }
@@ -664,8 +664,8 @@ fn v3(v: Vec2) -> Vec3 {
     Vec3::new(v.x, v.y, 0.0)
 }
 
-fn plane_of(m: &Mat, o: Vec3, x: Vec3, y: Vec3) -> Result<Plane> {
-    Plane::new(apply_point(m, o), apply_vector(m, x), apply_vector(m, y)).ok_or_else(|| DocError::Invalid("sheet: degenerate plane".into()))
+fn plane_of(m: &Transform, o: Vec3, x: Vec3, y: Vec3) -> Result<Plane> {
+    Plane::new(m.point(o), m.vector(x), m.vector(y)).ok_or_else(|| DocError::Invalid("sheet: degenerate plane".into()))
 }
 
 fn rect(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Region2 {
@@ -876,7 +876,7 @@ impl SheetBody {
     }
 
     /// Fold transform of flange `i`'s panel (flat 3D coordinates → folded, in the flat frame).
-    pub fn fold(&self, i: usize) -> Mat {
+    pub fn fold(&self, i: usize) -> Transform {
         let mut chain = Vec::new();
         let mut cur = Some(i);
         for _ in 0..1000 {
@@ -884,20 +884,20 @@ impl SheetBody {
             chain.push(c);
             cur = self.flanges.get(c).and_then(|f| f.parent);
         }
-        let mut m = IDENTITY;
+        let mut m = Transform::IDENTITY;
         for c in chain.into_iter().rev() {
             if let Some(f) = self.flanges.get(c) {
-                m = mat_mul(&m, &self.bend_motion(f));
+                m = m * self.bend_motion(f);
             }
         }
         m
     }
 
     /// The fold of one bend: drop the bend zone, then turn about the bend axis.
-    fn bend_motion(&self, f: &SheetFlange) -> Mat {
+    fn bend_motion(&self, f: &SheetFlange) -> Transform {
         let ba = self.allowance(f);
         let (axis_o, k, a) = self.bend_axis(f);
-        mat_mul(&rot_about(axis_o, k, a), &translate(v3(f.n) * -ba))
+        rot_about(axis_o, k, a) * translate(v3(f.n) * -ba)
     }
 
     /// Bend axis point, direction and signed turn (flat coordinates).
@@ -957,9 +957,9 @@ impl SheetBody {
         let ((u0, u1), (e0, e1)) = (self.zone_span(f), self.zone_ends(f));
         let (from, to) = if at_end { (u1, e1) } else { (u0, e0) };
         let u = from + (to - from) * phi / f.angle.abs().max(1e-12);
-        let parent = f.parent.map_or(IDENTITY, |i| self.fold(i));
+        let parent = f.parent.map_or(Transform::IDENTITY, |i| self.fold(i));
         let (axis_o, k, turn) = self.bend_axis(f);
-        apply_point(&mat_mul(&parent, &rot_about(axis_o, k, turn.signum() * phi)), v3(f.p + f.d * u) + Vec3::Z * z)
+        (parent * rot_about(axis_o, k, turn.signum() * phi)).point(v3(f.p + f.d * u) + Vec3::Z * z)
     }
 
     /// The part of a bend along its parent's edge: where a later flange trimmed that edge back
@@ -992,25 +992,25 @@ impl SheetBody {
         span
     }
 
-    fn frame_mat(&self) -> Mat {
+    fn frame_mat(&self) -> Transform {
         let fr = &self.frame;
         let n = fr.normal();
-        [[fr.x.x, fr.x.y, fr.x.z, 0.0], [fr.y.x, fr.y.y, fr.y.z, 0.0], [n.x, n.y, n.z, 0.0], [fr.origin.x, fr.origin.y, fr.origin.z, 1.0]]
+        Transform([[fr.x.x, fr.x.y, fr.x.z, 0.0], [fr.y.x, fr.y.y, fr.y.z, 0.0], [n.x, n.y, n.z, 0.0], [fr.origin.x, fr.origin.y, fr.origin.z, 1.0]])
     }
 
     /// Flat coordinates (x, y, z) → world, through the fold of flange `i` (None = base).
-    pub fn world(&self, i: Option<usize>) -> Mat {
+    pub fn world(&self, i: Option<usize>) -> Transform {
         let f = match i {
             Some(i) if !self.flat => self.fold(i),
-            _ => IDENTITY,
+            _ => Transform::IDENTITY,
         };
-        mat_mul(&self.frame_mat(), &f)
+        self.frame_mat() * f
     }
 
     /// Where a flat point of a piece lands (folded), at height `z` in the sheet.
     fn map3(&self, piece: Piece, q: Vec2, z: f64) -> Vec3 {
         match piece {
-            Piece::Panel(i) => apply_point(&self.world(i), v3(q) + Vec3::Z * z),
+            Piece::Panel(i) => self.world(i).point(v3(q) + Vec3::Z * z),
             Piece::Zone(i) => {
                 let Some(f) = self.flanges.get(i) else { return Vec3::ZERO };
                 let s = (q - f.p).dot(f.n);
@@ -1018,8 +1018,8 @@ impl SheetBody {
                 let neutral = (f.radius + self.k * self.t).max(1e-12);
                 let phi = (s / neutral).clamp(0.0, f.angle.abs());
                 let (axis_o, k, turn) = self.bend_axis(f);
-                let m = mat_mul(&self.world(f.parent), &rot_about(axis_o, k, turn.signum() * phi));
-                apply_point(&m, v3(q0) + Vec3::Z * z)
+                let m = self.world(f.parent) * rot_about(axis_o, k, turn.signum() * phi);
+                m.point(v3(q0) + Vec3::Z * z)
             }
         }
     }
@@ -1046,8 +1046,8 @@ impl SheetBody {
         let ds = (ez * -sn + ek * cs) * (1.0 / neutral);
         let dss = (ez * cs + ek * sn) * (-1.0 / (neutral * neutral));
         let dsss = ds * (-1.0 / (neutral * neutral));
-        let along_n = [ds, dss, dsss].map(|v| apply_vector(&w, v));
-        (apply_point(&w, local), along_n, apply_vector(&w, v3(f.d)))
+        let along_n = [ds, dss, dsss].map(|v| w.vector(v));
+        (w.point(local), along_n, w.vector(v3(f.d)))
     }
 
     /// A flat edge of flange `f`'s bend zone, folded at height `z`, at parameter `t`: the point
@@ -1339,8 +1339,8 @@ impl SheetBody {
                         SurfSpec::Revolved {
                             a: self.map3(c.piece, q(u0), z),
                             b: self.map3(c.piece, q(u1), z),
-                            axis_origin: apply_point(&wp, axis_o),
-                            axis: apply_vector(&wp, k),
+                            axis_origin: wp.point(axis_o),
+                            axis: wp.vector(k),
                             angle: turn.signum() * (s1 - s0) / neutral,
                         }
                     }
@@ -1573,13 +1573,13 @@ impl SheetBody {
                 ));
             };
             let w = self.world(if self.flat { None } else { pi });
-            if apply_vector(&w, Vec3::Z).dot(axis).abs() > 1e-6 {
+            if w.vector(Vec3::Z).dot(axis).abs() > 1e-6 {
                 return Err(DocError::Invalid(
                     "this hole crosses a sheet panel at an angle; drill it square to the panel, or along it into a rim".into(),
                 ));
             }
-            let inv = mat_inverse(&w).ok_or_else(|| DocError::Invalid("invalid sheet panel frame".into()))?;
-            let bore = SheetBore { panel: pi, base: apply_point(&inv, base), axis: apply_vector(&inv, axis), radius, height };
+            let inv = w.inverse().ok_or_else(|| DocError::Invalid("invalid sheet panel frame".into()))?;
+            let bore = SheetBore { panel: pi, base: inv.point(base), axis: inv.vector(axis), radius, height };
             if !found.contains(&bore) {
                 found.push(bore);
             }
@@ -1666,7 +1666,7 @@ impl SheetBody {
             .into_iter()
             .filter(|c| match c.piece {
                 Piece::Zone(_) => true,
-                Piece::Panel(pi) => apply_vector(&self.world(pi), Vec3::Z).cross(plane.normal()).len() > 1e-6,
+                Piece::Panel(pi) => self.world(pi).vector(Vec3::Z).cross(plane.normal()).len() > 1e-6,
             })
             .collect();
         cells.iter().map(|c| Ok(kernel::sew_touching(&self.faces(std::slice::from_ref(c), 0.0, self.t, &mut work)?)?)).collect()
@@ -2063,8 +2063,8 @@ impl SheetBody {
     pub(crate) fn point_before(&self, before: &SheetBody, p: Vec3) -> Option<Vec3> {
         const TOL: f64 = 1e-4;
         for (pi, r) in self.panels() {
-            let Some(inv) = mat_inverse(&self.world(pi)) else { continue };
-            let q = apply_point(&inv, p);
+            let Some(inv) = self.world(pi).inverse() else { continue };
+            let q = inv.point(p);
             if q.z < -TOL || q.z > self.t + TOL {
                 continue;
             }
@@ -2084,7 +2084,7 @@ impl SheetBody {
             if owner.is_some_and(|i| i >= before.flanges.len()) {
                 return None;
             }
-            return Some(apply_point(&before.world(owner), q));
+            return Some(before.world(owner).point(q));
         }
         None
     }
@@ -2095,8 +2095,8 @@ impl SheetBody {
         let mut best: Option<(Option<usize>, Vec2, Vec2, bool, f64)> = None;
         for (pi, r) in self.panels() {
             let w = self.world(pi);
-            let Some(inv) = mat_inverse(&w) else { continue };
-            let q = apply_point(&inv, p);
+            let Some(inv) = w.inverse() else { continue };
+            let q = inv.point(p);
             let pts = r.outer.ccw().polyline(1e-3);
             let m = pts.len();
             for i in 0..m {
@@ -2127,8 +2127,8 @@ impl SheetBody {
             return Some((0.0, a.dist(b)));
         }
         let left = clear_of(a + Vec2::new(-d.y, d.x) * EDGE_INSET, d, a.dist(b), cuts);
-        let at = mat_inverse(&self.world(panel)).map_or(0.0, |inv| {
-            let q = apply_point(&inv, pick);
+        let at = self.world(panel).inverse().map_or(0.0, |inv| {
+            let q = inv.point(pick);
             (Vec2::new(q.x, q.y) - a).dot(d)
         });
         let away = |s: &(f64, f64)| (s.0 - at).max(at - s.1).max(0.0);
@@ -2577,7 +2577,7 @@ impl SheetBody {
             match cut {
                 Ok(base) => self.base = base,
                 Err(why) => {
-                    let w = apply_point(&self.frame_mat(), v3(at(0.0, 0.0)));
+                    let w = self.frame_mat().point(v3(at(0.0, 0.0)));
                     notes.push(format!("no bend relief at ({:.3}, {:.3}, {:.3}): {why}", w.x, w.y, w.z));
                 }
             }
@@ -2673,7 +2673,7 @@ impl SheetBody {
         }
         // A point of flange `on`'s panel, in the part's coordinates, for a note.
         let at = |s: &SheetBody, on: usize, c: Vec2| {
-            let w = apply_point(&s.world(Some(on)), v3(c));
+            let w = s.world(Some(on)).point(v3(c));
             format!("({:.3}, {:.3}, {:.3})", w.x, w.y, w.z)
         };
         for (a, a_end, b, b_end, c) in self.base_pairs(&parents) {
@@ -2716,17 +2716,14 @@ impl SheetBody {
         // Inner faces (toward the bends' axes) and their normals, pointing from the outer face in.
         let inner = |f: &SheetFlange| if f.angle >= 0.0 { (self.t, 1.0) } else { (0.0, -1.0) };
         let ((za, sa), (zb, sb)) = (inner(&fa), inner(&fb));
-        let (na, nb) = (apply_vector(&wa, Vec3::Z) * sa, apply_vector(&wb, Vec3::Z) * sb);
+        let (na, nb) = (wa.vector(Vec3::Z) * sa, wb.vector(Vec3::Z) * sb);
         let Some(up) = (na + nb).normalized() else { return Err("the flanges face each other".into()) };
         let across = |v: Vec3| (v - up * v.dot(up)).normalized();
         let ea = if k.a_end { fa.d * -1.0 } else { fa.d };
         let eb = if k.b_end { fb.d * -1.0 } else { fb.d };
-        let (Some(ea3), Some(eb3), Some(ta), Some(tb)) = (
-            across(apply_vector(&wa, v3(ea))),
-            across(apply_vector(&wb, v3(eb))),
-            across(apply_vector(&wa, v3(fa.n))),
-            across(apply_vector(&wb, v3(fb.n))),
-        ) else {
+        let (Some(ea3), Some(eb3), Some(ta), Some(tb)) =
+            (across(wa.vector(v3(ea))), across(wb.vector(v3(eb))), across(wa.vector(v3(fa.n))), across(wb.vector(v3(fb.n))))
+        else {
             return Err("a flange stands square to the other one".into());
         };
         // They meet when both panels lie toward the other's bend (inward returns overlap) or both
@@ -2740,7 +2737,7 @@ impl SheetBody {
             return Err(format!("the flange gap {gap:.4} mm is below {MIN_CORNER_GAP} mm"));
         }
         // Where the inner start lines cross, seen along `up` (the midpoint if they run in line).
-        let start = |f: &SheetFlange, w: &Mat, c: Vec2, z: f64| apply_point(w, v3(c + f.n * self.allowance(f)) + Vec3::Z * z);
+        let start = |f: &SheetFlange, w: &Transform, c: Vec2, z: f64| w.point(v3(c + f.n * self.allowance(f)) + Vec3::Z * z);
         let (pa, pb) = (start(&fa, &wa, k.ca, za), start(&fb, &wb, k.cb, zb));
         let side = up.cross(ea3);
         let den = eb3.dot(side);
@@ -2750,7 +2747,7 @@ impl SheetBody {
             // Signed distance from the mitre plane, positive on this flange's side. It is affine in
             // (u, s, z): u from the bend's end along the bend, s from the bend's start across it.
             let dist = |p: Vec3| sign * (p - x).dot(m);
-            let at = |u: f64, s: f64, z: f64| dist(apply_point(w, v3(c + e * u + f.n * s) + Vec3::Z * z));
+            let at = |u: f64, s: f64, z: f64| dist(w.point(v3(c + e * u + f.n * s) + Vec3::Z * z));
             let c0 = at(0.0, 0.0, 0.0);
             let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
             if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|v| v.is_finite()) {
@@ -2840,14 +2837,14 @@ impl SheetBody {
         }
         let (z_in, sign) = if up { (self.t, 1.0) } else { (0.0, -1.0) };
         let (wb, w) = (self.fold(other), self.fold(i));
-        let (na, nb) = (apply_vector(&self.fold(own), Vec3::Z) * sign, apply_vector(&wb, Vec3::Z) * sign);
-        let pb = apply_point(&wb, v3(c) + Vec3::Z * z_in);
+        let (na, nb) = (self.fold(own).vector(Vec3::Z) * sign, wb.vector(Vec3::Z) * sign);
+        let pb = wb.point(v3(c) + Vec3::Z * z_in);
         let keep = (nb - na).len() * self.gap.max(0.0) / 2.0;
         // How far a point is clear: affine in (u, s, z), u from the bend's end along the bend, s
         // from the bend's start across it.
         let clear = |p: Vec3| nb.dot(p - pb) - keep;
         let e = if at_end { f.d * -1.0 } else { f.d };
-        let at = |u: f64, s: f64, z: f64| clear(apply_point(&w, v3(ci + e * u + f.n * s) + Vec3::Z * z));
+        let at = |u: f64, s: f64, z: f64| clear(w.point(v3(ci + e * u + f.n * s) + Vec3::Z * z));
         let c0 = at(0.0, 0.0, 0.0);
         let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
         if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|v| v.is_finite()) {
@@ -2908,9 +2905,9 @@ impl SheetBody {
     /// so `g` is a + b·cos φ + c·sin φ in the turn φ: its least is at an end of the arc or where
     /// that sinusoid bottoms out.
     fn arc_least(&self, f: &SheetFlange, q0: Vec2, z: f64, turns: (f64, f64), g: &dyn Fn(Vec3) -> f64) -> f64 {
-        let parent = f.parent.map_or(IDENTITY, |i| self.fold(i));
+        let parent = f.parent.map_or(Transform::IDENTITY, |i| self.fold(i));
         let (axis_o, k, turn) = self.bend_axis(f);
-        let at = |phi: f64| g(apply_point(&mat_mul(&parent, &rot_about(axis_o, k, turn.signum() * phi)), v3(q0) + Vec3::Z * z));
+        let at = |phi: f64| g((parent * rot_about(axis_o, k, turn.signum() * phi)).point(v3(q0) + Vec3::Z * z));
         let (v0, v90, v180) = (at(0.0), at(std::f64::consts::FRAC_PI_2), at(std::f64::consts::PI));
         let (a, b) = ((v0 + v180) / 2.0, (v0 - v180) / 2.0);
         let c = v90 - a;
@@ -2970,7 +2967,7 @@ impl SheetBody {
 
     /// A point of the flat frame, in the part's coordinates, for a note.
     fn shown(&self, c: Vec2) -> String {
-        let w = apply_point(&self.frame_mat(), v3(c));
+        let w = self.frame_mat().point(v3(c));
         format!("({:.3}, {:.3}, {:.3})", w.x, w.y, w.z)
     }
 
@@ -3038,10 +3035,10 @@ impl SheetBody {
         let (wa, wb) = (self.fold(k.a), self.fold(k.b));
         // The inner faces, with normals pointing from the outer face in.
         let (z_in, sign) = if self.flanges.get(k.a)?.angle >= 0.0 { (self.t, 1.0) } else { (0.0, -1.0) };
-        let na = apply_vector(&wa, Vec3::Z) * sign;
-        let nb = apply_vector(&wb, Vec3::Z) * sign;
-        let pa = apply_point(&wa, v3(k.c) + Vec3::Z * z_in);
-        let pb = apply_point(&wb, v3(k.c) + Vec3::Z * z_in);
+        let na = wa.vector(Vec3::Z) * sign;
+        let nb = wb.vector(Vec3::Z) * sign;
+        let pa = wa.point(v3(k.c) + Vec3::Z * z_in);
+        let pb = wb.point(v3(k.c) + Vec3::Z * z_in);
         let m = (nb - na).len();
         (m > 1e-6).then_some(move |p: Vec3| (nb.dot(p - pb) - na.dot(p - pa)) / m)
     }
@@ -3080,8 +3077,8 @@ impl SheetBody {
         // the bisecting plane. The distance is affine in (u, s, z), so the end is a line in the
         // flat: returns u_end at the panel's bend edge and how much further the panel runs on per
         // unit of height.
-        let end = |f: &SheetFlange, w: &Mat, e: Vec2, sign: f64| -> std::result::Result<(f64, f64), String> {
-            let at = |u: f64, s: f64, z: f64| sign * bisector(apply_point(w, v3(k.c + e * u + f.n * s) + Vec3::Z * z));
+        let end = |f: &SheetFlange, w: &Transform, e: Vec2, sign: f64| -> std::result::Result<(f64, f64), String> {
+            let at = |u: f64, s: f64, z: f64| sign * bisector(w.point(v3(k.c + e * u + f.n * s) + Vec3::Z * z));
             let c0 = at(0.0, 0.0, 0.0);
             let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
             if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|x| x.is_finite()) {
@@ -3386,8 +3383,8 @@ impl SheetBody {
         let on_face = |q: Vec3| q.z.abs() < 1e-4 || (q.z - self.t).abs() < 1e-4;
         let mut found = None;
         for (pi, r) in self.panels() {
-            let Some(inv) = mat_inverse(&self.world(pi)) else { continue };
-            let (fa, fb) = (apply_point(&inv, a), apply_point(&inv, b));
+            let Some(inv) = self.world(pi).inverse() else { continue };
+            let (fa, fb) = (inv.point(a), inv.point(b));
             if !(on_face(fa) && on_face(fb) && (fa.z - fb.z).abs() < 1e-4) {
                 continue;
             }
@@ -3418,7 +3415,7 @@ impl SheetBody {
                 (s0 + s1) < 0.0
             }
             (None, Some(p)) => {
-                let q = apply_point(&inv, p);
+                let q = inv.point(p);
                 let q2 = Vec2::new(q.x, q.y);
                 // A point in the panel's slab must be on material: inside the outline and
                 // outside every cut-out (a side face of either counts as material).
@@ -3492,7 +3489,7 @@ impl SheetBody {
             if let Some(&(c, _)) = corners.first() {
                 let on = corners.iter().fold(0.0_f64, |m, (_, s)| m.max(*s));
                 let back = corners.iter().fold(0.0_f64, |m, (_, s)| m.max(ba - *s));
-                let w = apply_point(&self.world(panel), Vec3::new(c.x, c.y, self.t));
+                let w = self.world(panel).point(Vec3::new(c.x, c.y, self.t));
                 return Err(DocError::Invalid(format!(
                     "the bend zone ({ba:.3} mm wide) reaches a corner of the sheet's outline at ({:.3}, {:.3}, {:.3}): \
                      move the fold line at least {on:.3} mm toward the side that folds or {back:.3} mm toward the side that stays",
@@ -3734,7 +3731,7 @@ impl SheetBody {
             let pts = r.outer.ccw().polyline(1e-3);
             let m = pts.len();
             let w = self.world(pi);
-            let local = mat_inverse(&w).map(|inv| apply_point(&inv, near));
+            let local = w.inverse().map(|inv| inv.point(near));
             for i in 0..m {
                 let (Some(&a), Some(&b)) = (pts.get(i), pts.get((i + 1) % m)) else { continue };
                 if a.dist(b) < 1e-9 {
@@ -3743,11 +3740,11 @@ impl SheetBody {
                 for (z, top) in [(0.0, false), (self.t, true)] {
                     if self.edge_name_of(pi, a, b, top).as_deref() == Some(name) {
                         let mid = (a + b) * 0.5;
-                        let q = apply_point(&w, Vec3::new(mid.x, mid.y, z));
+                        let q = w.point(Vec3::new(mid.x, mid.y, z));
                         if best.is_none_or(|(d, _)| q.dist(near) < d) {
                             let along = local.map(|p| (Vec2::new(p.x, p.y) - a).dot(b - a) / (b - a).len2()).filter(|t| t.is_finite());
                             let on = a + (b - a) * along.map_or(0.5, |t| t.clamp(1e-6, 1.0 - 1e-6));
-                            best = Some((q.dist(near), apply_point(&w, Vec3::new(on.x, on.y, z))));
+                            best = Some((q.dist(near), w.point(Vec3::new(on.x, on.y, z))));
                         }
                     }
                 }
@@ -3772,9 +3769,9 @@ impl SheetBody {
     /// The plane of a flat face of a panel (`top`: the face at the thickness, else the bottom
     /// one), facing out of the sheet. Its coordinates are the flat pattern's (the bottom
     /// face's mirrored in y), so a sketch on it measures as the flat pattern does.
-    fn panel_face_plane(&self, world: &Mat, top: bool) -> Option<Plane> {
-        let (x, y) = (apply_vector(world, Vec3::X), apply_vector(world, Vec3::Y));
-        Plane::new(apply_point(world, Vec3::new(0.0, 0.0, if top { self.t } else { 0.0 })), x, if top { y } else { y * -1.0 })
+    fn panel_face_plane(&self, world: &Transform, top: bool) -> Option<Plane> {
+        let (x, y) = (world.vector(Vec3::X), world.vector(Vec3::Y));
+        Plane::new(world.point(Vec3::new(0.0, 0.0, if top { self.t } else { 0.0 })), x, if top { y } else { y * -1.0 })
     }
 
     /// The flat face of the sheet that a point lies on (sheet coordinates, within `tol`, which
@@ -3787,8 +3784,8 @@ impl SheetBody {
         let panels = if self.flat { vec![(None, self.base.clone())] } else { self.panels() };
         for (pi, region) in panels {
             let world = self.world(pi);
-            let Some(inverse) = mat_inverse(&world) else { continue };
-            let q = apply_point(&inverse, p);
+            let Some(inverse) = world.inverse() else { continue };
+            let q = inverse.point(p);
             let top = (q.z - self.t).abs() < q.z.abs();
             if (if top { (q.z - self.t).abs() } else { q.z.abs() }) > tol {
                 continue;
@@ -3859,8 +3856,8 @@ impl SheetBody {
     fn rim_face_at(&self, p: Vec3, tol: f64) -> Option<(String, Plane)> {
         let mut best: Option<(f64, String)> = None;
         for (pi, a, b, name) in self.rims() {
-            let Some(inverse) = mat_inverse(&self.world(pi)) else { continue };
-            let q = apply_point(&inverse, p);
+            let Some(inverse) = self.world(pi).inverse() else { continue };
+            let q = inverse.point(p);
             if q.z < -tol || q.z > self.t + tol {
                 continue;
             }
@@ -3886,7 +3883,7 @@ impl SheetBody {
     /// A flange's bend in its parent's flat coordinates: the parent's placement, the bend axis
     /// (a point and unit direction along the flange's edge), and the turn's start direction
     /// (from the axis to the material) and the direction it turns toward.
-    fn bend_frame(&self, f: &SheetFlange) -> Option<(Mat, Vec3, Vec3, Vec3, Vec3)> {
+    fn bend_frame(&self, f: &SheetFlange) -> Option<(Transform, Vec3, Vec3, Vec3, Vec3)> {
         let (o, _, _) = self.bend_axis(f);
         let d = v3(f.d).normalized()?;
         let start = if f.angle >= 0.0 { Vec3::Z * -1.0 } else { Vec3::Z };
@@ -3903,8 +3900,8 @@ impl SheetBody {
         }
         for (i, f) in self.flanges.iter().enumerate() {
             let Some((world, o, d, start, toward)) = self.bend_frame(f) else { continue };
-            let Some(inverse) = mat_inverse(&world) else { continue };
-            let q = apply_point(&inverse, p) - o;
+            let Some(inverse) = world.inverse() else { continue };
+            let q = inverse.point(p) - o;
             let u = q.dot(d);
             let radial = q - d * u;
             let rho = radial.len();
@@ -3939,7 +3936,7 @@ impl SheetBody {
         let (u0, u1) = self.zone_span(f);
         let (u, out) = if end { (u1, d) } else { (u0, d * -1.0) };
         let origin = o + d * u;
-        Plane::new(apply_point(&world, origin), apply_vector(&world, Vec3::Z), apply_vector(&world, out.cross(Vec3::Z)))
+        Plane::new(world.point(origin), world.vector(Vec3::Z), world.vector(out.cross(Vec3::Z)))
     }
 
     /// The plane of the rim face named `rim` (`<edge>` of `rim.<edge>`) of panel `pi`: on the
@@ -3957,7 +3954,7 @@ impl SheetBody {
         let world = self.world(pi);
         let d = (b - a).normalized()?;
         let foot = a + d * (Vec2::default() - a).dot(d);
-        Plane::new(apply_point(&world, Vec3::new(foot.x, foot.y, 0.0)), apply_vector(&world, Vec3::new(d.x, d.y, 0.0)), apply_vector(&world, Vec3::Z))
+        Plane::new(world.point(Vec3::new(foot.x, foot.y, 0.0)), world.vector(Vec3::new(d.x, d.y, 0.0)), world.vector(Vec3::Z))
     }
 
     /// The plane of the flat face with this persistent name (see [`panel_face_at`](Self::panel_face_at)).
@@ -3989,9 +3986,9 @@ impl SheetBody {
     /// Map a region in a world plane to flat coordinates through a panel's placement.
     pub fn region_to_flat(&self, panel: Option<usize>, plane: &Plane, r: &Region2) -> Result<Region2> {
         region_complexity(std::slice::from_ref(r))?;
-        let inv = mat_inverse(&self.world(panel)).ok_or_else(|| DocError::Invalid("invalid sheet panel frame".into()))?;
+        let inv = self.world(panel).inverse().ok_or_else(|| DocError::Invalid("invalid sheet panel frame".into()))?;
         let map = |p: Vec2| {
-            let q = apply_point(&inv, plane.to_world(p));
+            let q = inv.point(plane.to_world(p));
             Vec2::new(q.x, q.y)
         };
         // A rigid map of the plane: lines and arcs stay lines and arcs (mirrored or not).
@@ -4023,7 +4020,7 @@ impl SheetBody {
             .into_iter()
             .filter(|(pi, _)| {
                 let w = self.world(*pi);
-                let n = apply_vector(&w, Vec3::Z);
+                let n = w.vector(Vec3::Z);
                 n.cross(plane.normal()).len() < 1e-6
             })
             .collect()
@@ -4037,7 +4034,7 @@ impl SheetBody {
                 let Piece::Panel(pi) = c.piece else {
                     return None;
                 };
-                if plane.is_some_and(|p| apply_vector(&self.world(pi), Vec3::Z).cross(p.normal()).len() > 1e-6) {
+                if plane.is_some_and(|p| self.world(pi).vector(Vec3::Z).cross(p.normal()).len() > 1e-6) {
                     return None;
                 }
                 Some((pi, Region2 { outer: Loop2 { segs: c.outer }, holes: c.holes.into_iter().map(|segs| Loop2 { segs }).collect() }))
@@ -5304,8 +5301,8 @@ mod tests {
             // Folded, the inner edges of the two ends (bottom flange 0, left flange 3) run parallel,
             // `gap` apart.
             let (fa, fb) = (s.fold(0), s.fold(3));
-            let pa = |x: f64, y: f64| apply_point(&fa, Vec3::new(x, y, t));
-            let pb = |x: f64, y: f64| apply_point(&fb, Vec3::new(x, y, t));
+            let pa = |x: f64, y: f64| fa.point(Vec3::new(x, y, t));
+            let pb = |x: f64, y: f64| fb.point(Vec3::new(x, y, t));
             let gap = parallel_gap(pa(x_end(s0), y0), pa(x_end(h), y1), pb(y0, x_end(s0)), pb(y1, x_end(h)));
             assert!(gap.is_some_and(|d| (d - g).abs() < 1e-9), "{deg}°: {gap:?}");
             // The flat pattern is one piece and the folded part holds the same material (K = 0.5).
@@ -5356,7 +5353,7 @@ mod tests {
                 (a, a + f.n * f.leg - f.d * (f.slope.0 * f.leg))
             };
             let w = s.fold(i);
-            (apply_point(&w, Vec3::new(q0.x, q0.y, 2.0)), apply_point(&w, Vec3::new(q1.x, q1.y, 2.0)))
+            (w.point(Vec3::new(q0.x, q0.y, 2.0)), w.point(Vec3::new(q1.x, q1.y, 2.0)))
         };
         for k in &corners {
             let ((a0, a1), (b0, b1)) = (edge(k.a, k.a_end), edge(k.b, k.b_end));
@@ -5400,7 +5397,7 @@ mod tests {
             (a, a + f.n * f.leg - f.d * (f.slope.0 * f.leg))
         };
         let (w, z) = (s.fold(i), if f.angle >= 0.0 { s.t } else { 0.0 });
-        (apply_point(&w, Vec3::new(q0.x, q0.y, z)), apply_point(&w, Vec3::new(q1.x, q1.y, z)))
+        (w.point(Vec3::new(q0.x, q0.y, z)), w.point(Vec3::new(q1.x, q1.y, z)))
     }
 
     /// At each of `corners` the two panel ends' inner edges run parallel, `gap` apart.
@@ -5888,7 +5885,7 @@ mod tests {
         let wall = s.add_flange(Vec3::new(60.0, 0.0, 2.0), 30.0, angle, 1.0, "inside", false).unwrap();
         let parent = s.flanges.get(wall).unwrap().clone();
         let flat = parent.p + parent.d * parent.len + parent.n * (s.allowance(&parent) + parent.leg * 0.5);
-        let pick = apply_point(&s.world(Some(wall)), Vec3::new(flat.x, flat.y, s.t));
+        let pick = s.world(Some(wall)).point(Vec3::new(flat.x, flat.y, s.t));
         let child = s.add_flange(pick, 20.0, angle, 1.0, "inside", false).unwrap();
         let flange = s.flanges.get(child).unwrap();
         assert_eq!(flange.parent, Some(wall));
@@ -5911,7 +5908,7 @@ mod tests {
                             let parent = s.flanges.get(wall).unwrap();
                             let flat =
                                 parent.p + parent.d * if right { parent.len } else { 0.0 } + parent.n * (s.allowance(parent) + parent.leg * 0.5);
-                            let side = apply_point(&s.world(Some(wall)), Vec3::new(flat.x, flat.y, s.t));
+                            let side = s.world(Some(wall)).point(Vec3::new(flat.x, flat.y, s.t));
                             let mut picks = [Vec3::new(if right { 120.0 } else { 0.0 }, 45.0, 2.0), side];
                             if reverse {
                                 picks.reverse();
@@ -5953,7 +5950,7 @@ mod tests {
             s.add_flanges(&[Vec3::new(110.0, -50.0, 0.0), Vec3::new(-110.0, -50.0, 0.0)], 50.0, angle, 5.0, "middle", false).unwrap();
             let parent = s.flanges.get(wall).unwrap();
             let point = parent.p + parent.d * if right { parent.len } else { 0.0 } + parent.n * (s.allowance(parent) + parent.leg * 0.5);
-            let side = apply_point(&s.world(Some(wall)), Vec3::new(point.x, point.y, 0.0));
+            let side = s.world(Some(wall)).point(Vec3::new(point.x, point.y, 0.0));
             let (_, notes) = s.add_flanges_noted(&[side], 40.0, angle, 5.0, position, false).unwrap();
             assert!(notes.is_empty(), "{notes:?}");
             let parent = s.flanges.get(wall).unwrap();
@@ -5977,7 +5974,7 @@ mod tests {
             let wall = s.add_flange(Vec3::new(60.0, 0.0, 2.0), 30.0, angle, 1.0, "inside", false).unwrap();
             let parent = s.flanges.get(wall).unwrap();
             let point = parent.p + parent.d * parent.len + parent.n * (s.allowance(parent) + parent.leg * 0.5);
-            let side = apply_point(&s.world(Some(wall)), Vec3::new(point.x, point.y, s.t));
+            let side = s.world(Some(wall)).point(Vec3::new(point.x, point.y, s.t));
             let edges = [Vec3::new(120.0, 45.0, 2.0), side].map(|pick| EdgeFlange { pick, height: 20.0, angle });
             let (_, notes) = s.add_flanges_each(&edges, 1.0, "inside", false, ReliefOverride { shape: Some(shape), size: Some(4.0) }).unwrap();
             assert!(notes.is_empty(), "{shape:?}: {notes:?}");
@@ -6391,7 +6388,7 @@ mod tests {
         let mut wall = plate_with_cuts(&[]);
         wall.add_flange(Vec3::new(100.0, 0.0, 2.0), 40.0, quarter, 1.0, "outside", false).unwrap();
         wall.holes.push(block(-10.0, 60.0, far - 5.0, far + 12.0));
-        let pick = apply_point(&wall.world(Some(0)), Vec3::new(150.0, far, 2.0));
+        let pick = wall.world(Some(0)).point(Vec3::new(150.0, far, 2.0));
         for (position, setback) in [("outside", 0.0), ("inside", 3.0)] {
             let mut s = wall.clone();
             let i = s.add_flange(pick, 15.0, quarter, 1.0, position, false).unwrap();
@@ -6704,7 +6701,7 @@ mod tests {
     /// out from the fold on its own (not through `map3`): the panel through the inverse of its fold,
     /// the bend from the radius and turn about the bend's axis.
     struct Material {
-        back: Mat,
+        back: Transform,
         panel: Vec<Vec2>,
         axis: (Vec3, Vec3),
         p: Vec2,
@@ -6722,7 +6719,7 @@ mod tests {
             assert!(f.parent.is_none() && f.angle > 0.0);
             let (o, k, _) = s.bend_axis(f);
             Material {
-                back: mat_inverse(&s.fold(i)).unwrap(),
+                back: s.fold(i).inverse().unwrap(),
                 panel: corners_of(&s.panel(f)),
                 axis: (o, k),
                 p: f.p,
@@ -6737,7 +6734,7 @@ mod tests {
 
         /// How deep (mm) `q` lies inside the flange's panel or bend; None when it is outside both.
         fn depth(&self, q: Vec3) -> Option<f64> {
-            let flat = apply_point(&self.back, q);
+            let flat = self.back.point(q);
             let m = self.panel.len();
             let sides = (0..m).map(|j| {
                 let (a, b) = (self.panel[j], self.panel[(j + 1) % m]);
@@ -6935,7 +6932,7 @@ mod tests {
         let (lo, hi) = s.far_edge(f);
         let q = f.p + f.n * (s.allowance(f) + f.leg) + f.d * ((lo + hi) / 2.0);
         let z = if (f.angle >= 0.0) == inner { s.t } else { 0.0 };
-        apply_point(&s.world(Some(i)), Vec3::new(q.x, q.y, z))
+        s.world(Some(i)).point(Vec3::new(q.x, q.y, z))
     }
 
     /// Returns `height` high at `deg` on the far edges of the flanges `on`, in one call, turning in
@@ -6953,7 +6950,7 @@ mod tests {
         if f.leg > 1e-9 {
             let w = s.fold(i);
             for q in corners_of(&s.panel(f)) {
-                v.extend([0.0, s.t].map(|z| apply_point(&w, Vec3::new(q.x, q.y, z))));
+                v.extend([0.0, s.t].map(|z| w.point(Vec3::new(q.x, q.y, z))));
             }
         }
         if bend {
@@ -7246,13 +7243,13 @@ mod tests {
         for (a, a_end, b, b_end) in TRAY_RETURNS {
             let (fa, fb) = (&s.flanges[a], &s.flanges[b]);
             let (wa, wb) = (s.fold(a), s.fold(b));
-            let up = (apply_vector(&wa, Vec3::Z) + apply_vector(&wb, Vec3::Z)).normalized().unwrap();
+            let up = (wa.vector(Vec3::Z) + wb.vector(Vec3::Z)).normalized().unwrap();
             let across = |v: Vec3| (v - up * v.dot(up)).normalized().unwrap();
-            let ea = across(apply_vector(&wa, v3(if a_end { fa.d * -1.0 } else { fa.d })));
-            let eb = across(apply_vector(&wb, v3(if b_end { fb.d * -1.0 } else { fb.d })));
+            let ea = across(wa.vector(v3(if a_end { fa.d * -1.0 } else { fa.d })));
+            let eb = across(wb.vector(v3(if b_end { fb.d * -1.0 } else { fb.d })));
             let m = (ea - eb).normalized().unwrap();
-            let pa = apply_point(&wa, v3(fa.p + fa.n * s.allowance(fa)) + Vec3::Z * t);
-            let pb = apply_point(&wb, v3(fb.p + fb.n * s.allowance(fb)) + Vec3::Z * t);
+            let pa = wa.point(v3(fa.p + fa.n * s.allowance(fa)) + Vec3::Z * t);
+            let pb = wb.point(v3(fb.p + fb.n * s.allowance(fb)) + Vec3::Z * t);
             let side = up.cross(ea);
             let o = pb + eb * ((pa - pb).dot(side) / eb.dot(side));
             // Near the corner each return keeps g/2 from that plane, its panel's nearest point at g/2.

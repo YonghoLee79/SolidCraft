@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use solidcraft_doc::apply_point;
 use solidcraft_geom::{Aabb3, Mesh, Vec3};
 use solidcraft_render::Camera;
 
@@ -171,11 +170,7 @@ impl<'a> View<'a> {
     fn triangle(&self, shared: &Shared, placed: &Placement, id: usize) -> Result<[Vec3; 3], &'static str> {
         let indices = shared.mesh.triangles.get(id).ok_or("invalid export triangle")?;
         let [a, b, c] = shared.mesh.tri(indices).ok_or("invalid export triangle")?;
-        Ok([
-            self.project(apply_point(&placed.transform, a))?,
-            self.project(apply_point(&placed.transform, b))?,
-            self.project(apply_point(&placed.transform, c))?,
-        ])
+        Ok([self.project(placed.transform.point(a))?, self.project(placed.transform.point(b))?, self.project(placed.transform.point(c))?])
     }
 }
 
@@ -212,7 +207,7 @@ impl Projected {
         }
         let mut result = Vec::new();
         let mut add = |a: Vec3, b: Vec3| -> Result<(), &'static str> {
-            let (a, b) = (view.project(apply_point(&placed.transform, a))?, view.project(apply_point(&placed.transform, b))?);
+            let (a, b) = (view.project(placed.transform.point(a))?, view.project(placed.transform.point(b))?);
             if xy(a).dist(xy(b)) > eps {
                 if !claim(segments, 1, MAX_SEGMENTS) {
                     return Err(TOO_COMPLEX);
@@ -516,6 +511,7 @@ pub(super) fn drawing(scene: &Scene, cam: &Camera) -> Result<Drawing, &'static s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solidcraft_geom::Transform;
     #[test]
     fn coverage_handles_disjoint_spans_and_early_complete_coverage() {
         let mut c = Coverage::default();
@@ -569,11 +565,11 @@ mod tests {
         let mut placements = Vec::new();
         let mut flat = Vec::new();
         for (offset, angle) in [(Vec3::ZERO, 0.), (Vec3::new(3., 2., 4.), 0.3), (Vec3::new(2., 1., -4.), -0.6)] {
-            let transform = solidcraft_doc::rigid(offset, Vec3::ZERO, Vec3::Z, angle);
+            let transform = Transform::rigid(offset, Vec3::ZERO, Vec3::Z, angle);
             placements.push(Placement { mesh: 0, transform, visibility: vec![true; mesh.edges.len()] });
             let mut placed = mesh.clone();
-            placed.positions = placed.positions.iter().map(|p| apply_point(&transform, *p)).collect();
-            placed.edges = placed.edges.iter().map(|e| e.iter().map(|p| apply_point(&transform, *p)).collect()).collect();
+            placed.positions = placed.positions.iter().map(|p| transform.point(*p)).collect();
+            placed.edges = placed.edges.iter().map(|e| e.iter().map(|p| transform.point(*p)).collect()).collect();
             flat.push(placed);
         }
         let scene = Scene { meshes: vec![Arc::new(mesh)], placements, triangles: 36, bytes: 0 };
@@ -612,7 +608,7 @@ mod tests {
         let placements = (0..60)
             .map(|i| Placement {
                 mesh: 0,
-                transform: solidcraft_doc::rigid(Vec3::new((i % 10) as f64 * 20., (i / 10) as f64 * 20., 0.), Vec3::ZERO, Vec3::Z, 0.),
+                transform: Transform::rigid(Vec3::new((i % 10) as f64 * 20., (i / 10) as f64 * 20., 0.), Vec3::ZERO, Vec3::Z, 0.),
                 visibility: vec![true; 4],
             })
             .collect();

@@ -168,7 +168,7 @@ fn undo_to(s: &mut Session, features: usize) {
 /// point on it), without `fixed`. Undo leaves the design as it was for the next face. Returns
 /// (design, body, face, issue it is known under, what went wrong or None).
 fn flat_face_attachments() -> Vec<(String, String, usize, Option<(u32, bool)>, Option<String>)> {
-    use solidcraft_engine::doc::{FaceAttachmentStatus, apply_point};
+    use solidcraft_engine::doc::FaceAttachmentStatus;
     let mut out = Vec::new();
     for p in corpus() {
         let name = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
@@ -195,9 +195,8 @@ fn flat_face_attachments() -> Vec<(String, String, usize, Option<(u32, bool)>, O
                     .max_by(|[a, b, c], [d, e, f]| (*b - *a).cross(*c - *a).len().total_cmp(&(*e - *d).cross(*f - *d).len()))
                     .map(|[a, b, c]| (a + b + c) * (1.0 / 3.0));
                 let Some(point) = point else { continue };
-                let point = apply_point(&frame, point);
-                let normal =
-                    body.body.planar_face(index).map(|plane| solidcraft_engine::doc::apply_vector(&frame, plane.normal())).unwrap_or_default();
+                let point = frame.point(point);
+                let normal = body.body.planar_face(index).map(|plane| frame.vector(plane.normal())).unwrap_or_default();
                 let key = ([normal.x, normal.y, normal.z], normal.dot(point));
                 picks.push((world.clone(), index, key, json!({"face": point, "body": world, "index": index, "path": path})));
             }

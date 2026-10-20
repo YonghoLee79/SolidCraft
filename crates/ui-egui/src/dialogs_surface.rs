@@ -7,8 +7,8 @@ use crate::ui_kit::{choice_row, expr_row, hint_row};
 use serde_json::{Map, Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
-use solidcraft_engine::doc::{AxisRef, Direction, FaceAt, FeatureKind, Mat, PlaneRef, Position, ProfileSel, RuledCorners, RuledMode};
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::doc::{AxisRef, Direction, FaceAt, FeatureKind, PlaneRef, Position, ProfileSel, RuledCorners, RuledMode};
+use solidcraft_engine::geom::{Transform, Vec3};
 
 use crate::SolveApp;
 use crate::dialogs::{Kind, OP_LABELS, OPS, combo, form_row, op_index};
@@ -799,7 +799,7 @@ fn tool_sel(app: &SolveApp, plane: &PlaneRef, tool: Option<&FaceAt>) -> Option<S
 
 /// The dialog for editing a surface feature.
 /// `frame` maps the feature's component frame to the world, for an axis stored as a line.
-pub fn for_feature(app: &SolveApp, kind: &FeatureKind, frame: &Mat) -> Option<(Kind, Vec<SelInput>, Map<String, Value>)> {
+pub fn for_feature(app: &SolveApp, kind: &FeatureKind, frame: &Transform) -> Option<(Kind, Vec<SelInput>, Map<String, Value>)> {
     let s = &app.session;
     let edge = |p: &solidcraft_engine::doc::Position| crate::dialogs::edge_sel(s, p.0);
     let (k, fill): (Surf, Vec<Vec<Sel>>) = match kind {
@@ -811,8 +811,8 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind, frame: &Mat) -> Option<(K
                 AxisRef::Line { origin, dir } => (
                     None,
                     Some(json!({
-                        "origin": pt(solidcraft_engine::doc::apply_point(frame, origin.0)),
-                        "dir": pt(solidcraft_engine::doc::apply_vector(frame, dir.0))
+                        "origin": pt(frame.point(origin.0)),
+                        "dir": pt(frame.vector(dir.0))
                     })),
                 ),
             };

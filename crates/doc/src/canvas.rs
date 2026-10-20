@@ -80,10 +80,10 @@ impl crate::Document {
     pub fn canvas_plane(&self, vals: &std::collections::BTreeMap<String, crate::expr::Value>, c: &Canvas) -> crate::Result<Plane> {
         let p = self.resolve_plane(vals, &c.plane, 0)?;
         let m = self.component_transform(c.component);
-        if crate::is_identity(&m) {
+        if m.is_identity() {
             return Ok(p);
         }
-        Ok(Plane::new(crate::apply_point(&m, p.origin), crate::apply_vector(&m, p.x), crate::apply_vector(&m, p.y)).unwrap_or(p))
+        Ok(Plane::new(m.point(p.origin), m.vector(p.x), m.vector(p.y)).unwrap_or(p))
     }
 }
 
