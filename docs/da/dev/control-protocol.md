@@ -176,3 +176,23 @@ De tekniske navne i kode og JSON er uændrede.
 | Signed Axes | Akser med fortegn |
 | Snap | Fastgør visningsretning |
 | Frame | Tegnet skærmbillede |
+
+<!-- docs-english-updates:start -->
+
+## Engelske ændringer, der mangler oversættelse
+
+> Nedenfor står nye og ændrede afsnit fra den engelske original. Arbejd dem ind i oversættelsen, kontrollér den aktuelle engelske side, og fjern derefter hele denne markerede sektion.
+
+The English original also removes or replaces text. Review the corresponding translated text.
+
+## Engine
+
+| Method | Params | Result |
+|---|---|---|
+| `engine.execute` | `command`: command id, `params`: JSON object | the command's result |
+| `engine.script` | `commands`: `[{command, params}, …]` | results, stops at the first error |
+| `engine.batch` | `commands`: `[{command, params}, …]` (at most 10 000), `rollback?`: bool (default true), `timings?`, `profile?`: bool (default false) | `{completed, results, undone}`, plus `failed: {index, command, error}` when a step fails, and with `timings` `timings: [{index, command, ms}]` (the failing step included) and `total_ms`; `profile` adds each step's `profile: {boolean_ms, tessellate_ms, other_ms}`. Runs the steps in one request, so within one frame, each as `engine.execute` runs it. The first failure stops the batch, and with `rollback` the design goes back to how it was before it (`undone`: the steps taken back). Refused before anything runs, with an error starting `engine.batch unavailable`, while the agent cursor is shown or when a step loads a file (`doc.open`, `file.insert_step`, `file.insert_mesh`). Send such steps one by one. Answered when done, for up to 3600 s |
+| `engine.commands` | — | every command: id, label, tab, panel, icon, shortcut, params doc, enabled |
+| `document.inspect` | `measure?`: bool | parameters, timeline (errors, timings), bodies, sketches, selection (assembly joints: `engine.execute` `joint.inspect {joint?}`, which reads only: each joint's two origins with the occurrence, the snap as saved, the feature, face, edge or sketch curve its names refer to, and whether it resolves or why not; kind, offset, angle, flip, values, limits, expressions and motion links) |
+
+<!-- docs-english-updates:end -->

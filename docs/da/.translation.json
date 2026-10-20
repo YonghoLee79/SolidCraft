@@ -13,16 +13,18 @@
       "revision": "d8eb65d26e36af74fc573c094f3106d0626fbcb6"
     },
     "dev/contributing.md": {
-      "source": "664ef234dccbd58b9d4c11cde83a8840ef7691e4052766b768cff7054f3b2d01",
+      "source": "6b19823b4b9a16d0737b65a78e460b03cc02b29614b6d110ce824d170e902186",
       "revision": "d8eb65d26e36af74fc573c094f3106d0626fbcb6"
     },
     "dev/control-protocol.md": {
       "source": "5a9394407d5b8f800515d9a262d206bdcd8553b9116bc9b558028c615c2a82fa",
-      "revision": "d8eb65d26e36af74fc573c094f3106d0626fbcb6"
+      "revision": "d8eb65d26e36af74fc573c094f3106d0626fbcb6",
+      "pending_copy": "ad4449e3bdcb3613d0f9d5db870dee00b43d180fc3315cc16708b39628759b1a"
     },
     "dev/features.md": {
       "source": "f91ac454b9774254d8bf913c55a2831cc4817a7ed2df47871fc81f9c97343dc8",
-      "revision": "d8eb65d26e36af74fc573c094f3106d0626fbcb6"
+      "revision": "d8eb65d26e36af74fc573c094f3106d0626fbcb6",
+      "pending_copy": "0b77d5cb5bfe7935d81fa5172b48307ff82f12102cadb0736699e882d4b33bd7"
     },
     "dev/kernel.md": {
       "source": "839dce894d731a112f40214c0c990babfb4717059833aebd045469316f07218a",
@@ -74,7 +76,8 @@
     },
     "guide/mcp.md": {
       "source": "a346b5c9843cb1b0c87976c4ad9c24281ac7ed625750a0b152a45074e11a485a",
-      "revision": "d8eb65d26e36af74fc573c094f3106d0626fbcb6"
+      "revision": "d8eb65d26e36af74fc573c094f3106d0626fbcb6",
+      "pending_copy": "156233c3176f32eb2c567d2baef673c46bedbc8a775ceec6111cf2011486a54e"
     },
     "guide/parameters.md": {
       "source": "dc338f990395cf6e1e808538416fb4a42c0d30e9c116d32e211965372adb41db",

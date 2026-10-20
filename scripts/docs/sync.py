@@ -9,6 +9,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from source import ENGLISH, english_page
+
 BEGIN = "<!-- docs-english-updates:start -->"
 END = "<!-- docs-english-updates:end -->"
 
@@ -100,10 +102,11 @@ def git(root, *args):
 def synchronize(root, review=None, revision=None):
     revision = revision or git(root, "rev-parse", "HEAD")
     languages = json.loads((root / "docs/languages.json").read_text(encoding="utf-8"))
-    sources = {p.relative_to(root / "docs/en").as_posix(): p
-               for p in (root / "docs/en").rglob("*.md")
+    sources = {p.relative_to(root / ENGLISH).as_posix(): p
+               for p in (root / ENGLISH).rglob("*.md")
                if p.name != "README.md" and "generated" not in p.parts
-               and p.relative_to(root / "docs/en").as_posix() != "reference/commands.md"}
+               and p.relative_to(root / ENGLISH).as_posix() != "reference/commands.md"}
+    expanded = {name: english_page(path, root) for name, path in sources.items()}
     snapshots_path = root / "docs/.translation-sources.json"
     snapshots = json.loads(snapshots_path.read_text(encoding="utf-8")) if snapshots_path.exists() else {}
     needed = set()
@@ -125,15 +128,15 @@ def synchronize(root, review=None, revision=None):
         unknown = False
         for name, source in sorted(sources.items()):
             target = folder / name
-            current = digest(source)
-            english = source.read_text(encoding="utf-8")
+            english, dependencies = expanded[name]
+            current = hashlib.sha256(english.encode()).hexdigest()
             snapshots[current] = english
             previous = pages.get(name)
             untouched = target.exists() and (digest(target) == current or
                         (previous and digest(target) == previous.get("copy")))
             if not target.exists() or untouched:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(source.read_bytes())
+                target.write_text(english, encoding="utf-8", newline="\n")
                 untouched = True
             if previous is None:
                 previous = {"source": current, "revision": state["revision"]}
@@ -149,7 +152,7 @@ def synchronize(root, review=None, revision=None):
                 baseline = snapshots.get(previous["source"])
                 if baseline is None:
                     try:
-                        baseline = git(root, "show", previous["revision"] + ":docs/en/" + name)
+                        baseline, _ = english_page(source, root, reader=lambda p: git(root, "show", previous["revision"] + ":" + p.relative_to(root).as_posix()))
                     except subprocess.CalledProcessError:
                         # On migration without an available baseline, present the entire
                         # current source for review rather than guessing what was added.
@@ -165,7 +168,7 @@ def synchronize(root, review=None, revision=None):
             if reason:
                 pending.append({"page": name, "reason": reason})
                 try:
-                    commits.update(git(root, "rev-list", previous["revision"] + "..HEAD", "--", "docs/en/" + name).split())
+                    commits.update(git(root, "rev-list", previous["revision"] + "..HEAD", "--", *sorted(dependencies)).split())
                 except subprocess.CalledProcessError:
                     unknown = True
         for name in sorted(set(pages) - set(sources)):

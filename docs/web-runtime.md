@@ -14,7 +14,7 @@ Related: [plugins.md](plugins.md) and [#1221](https://github.com/bherbruck/solid
 
 ## Problem
 
-The wasm app today ([`getting-started`](../docs/en/guide/getting-started.md)) keeps designs in
+The wasm app today ([`getting-started`](../docs/book/src/guide/getting-started.md)) keeps designs in
 the origin private file system (OPFS) behind virtual `/opfs/` paths, with optional File System
 Access import/export. That works for small and medium designs but hits three walls:
 

@@ -10,6 +10,8 @@ import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
 
+from source import ENGLISH, english_page
+
 INCLUDE = re.compile(r"\{\{#include\s+([^}]+)\}\}")
 
 
@@ -47,7 +49,7 @@ def command_reference(text, root, code):
     marker = "{{#command-reference}}"
     if marker not in text:
         return text
-    source = (root / "docs/en/reference/commands.md").read_text(encoding="utf-8")
+    source = (root / ENGLISH / "reference/commands.md").read_text(encoding="utf-8")
     english = json.loads((root / "assets/locales/en.json").read_text(encoding="utf-8"))
     localized = json.loads((root / "assets/locales" / (code + ".json")).read_text(encoding="utf-8"))
     labels = {value: localized[key] for key, value in english.items() if key in localized}
@@ -83,7 +85,7 @@ def command_reference(text, root, code):
 
 def prepare(root, language, languages):
     code = language["id"]
-    english = root / "docs/en"
+    english = root / ENGLISH
     translated = root / "docs" / code
     stage = root / "target/docs-i18n" / code
     # Check the final absolute path before deleting disposable build output.
@@ -99,17 +101,19 @@ def prepare(root, language, languages):
         relative = original.relative_to(english)
         if relative.as_posix() == "README.md":
             continue
+        english_text, _ = english_page(original, root)
         candidate = translated / relative
         source = candidate if code != "en" and candidate.is_file() and candidate.read_text(encoding="utf-8").strip() else original
         if code != "en" and source == candidate and tracked.get(relative.as_posix(), {}).get("copy"):
             copied = hashlib.sha256(candidate.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
             if copied == tracked[relative.as_posix()]["copy"]:
                 source = original
-        text = command_reference(source.read_text(encoding="utf-8"), root, code)
+        source_text = english_text if source == original else english_page(source, root)[0]
+        text = command_reference(source_text, root, code)
         text = include_paths(text, source, staged_source / relative)
-        fallback = code != "en" and (source == original or source.read_text(encoding="utf-8") == original.read_text(encoding="utf-8"))
+        fallback = code != "en" and (source == original or source_text == english_text)
         if relative.name == "SUMMARY.md":
-            text = summary_text(original.read_text(encoding="utf-8"), text, language.get("headings", {}))
+            text = summary_text(english_text, text, language.get("headings", {}))
         else:
             if code != "en":
                 # The web app is shared at /app/, not duplicated under each language.
@@ -127,13 +131,13 @@ def prepare(root, language, languages):
             chapters.append({"page": relative.as_posix(), "language": "en" if fallback else code, "fallback": fallback})
         (staged_source / relative).write_text(text, encoding="utf-8", newline="\n")
     config = (root / "docs/book/book.toml").read_text(encoding="utf-8")
-    config = config.replace('src = "../en"', 'src = "."')
+    config = config.replace('src = "src"', 'src = "."')
     any_translation = any(not chapter["fallback"] for chapter in chapters) if code != "en" else False
     config = config.replace('language = "en"', 'language = ' + json.dumps(code if any_translation else "en"))
     config = config.replace('site-url = "/"', 'site-url = ' + json.dumps("/" if code == "en" else "/" + code + "/"))
     # English keeps its edit button; a locale-wide URL would target missing fallback files.
     if code == "en":
-        config = config.replace("/edit/main/docs/book/{path}", "/edit/main/docs/en/{path}")
+        config = config.replace("/edit/main/docs/book/{path}", "/edit/main/docs/book/src/{path}")
     else:
         config = "\n".join(line for line in config.splitlines() if not line.startswith("edit-url-template")) + "\n"
     (stage / "book.toml").write_text(config, encoding="utf-8", newline="\n")

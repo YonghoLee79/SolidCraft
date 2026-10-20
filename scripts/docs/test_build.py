@@ -17,10 +17,10 @@ class LanguageBuildTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.write("docs/en/SUMMARY.md", "# Summary\n\n- [Start](guide/start.md)\n- [Other](guide/other.md)\n")
-        self.write("docs/en/guide/start.md", "# Start\n\nEnglish {count}\n")
-        self.write("docs/en/guide/other.md", "# Other\n\nCurrent English\n")
-        self.write("docs/book/book.toml", '[book]\nlanguage = "en"\nsrc = "../en"\n[output.html]\nsite-url = "/"\n')
+        self.write("docs/book/src/SUMMARY.md", "# Summary\n\n- [Start](guide/start.md)\n- [Other](guide/other.md)\n")
+        self.write("docs/book/src/guide/start.md", "# Start\n\nEnglish {count}\n")
+        self.write("docs/book/src/guide/other.md", "# Other\n\nCurrent English\n")
+        self.write("docs/book/book.toml", '[book]\nlanguage = "en"\nsrc = "src"\n[output.html]\nsite-url = "/"\n')
         self.write("docs/book/theme/head.hbs", "<!-- shared -->\n")
         self.languages = [{"id": "en", "name": "English"}, {"id": "da", "name": "Dansk"}, {"id": "fr", "name": "Français"}]
 
@@ -43,7 +43,7 @@ class LanguageBuildTests(unittest.TestCase):
 
     def test_english_edits_reach_untranslated_pages_without_copies(self):
         stage, _ = docs_build.prepare(self.root, self.languages[2], self.languages)
-        self.write("docs/en/guide/other.md", "# Other\n\nNew English\n")
+        self.write("docs/book/src/guide/other.md", "# Other\n\nNew English\n")
         stage, _ = docs_build.prepare(self.root, self.languages[2], self.languages)
         self.assertIn("New English", (stage / "guide/other.md").read_text(encoding="utf-8"))
         self.assertFalse((self.root / "docs/fr/guide/other.md").exists())
@@ -58,9 +58,9 @@ class LanguageBuildTests(unittest.TestCase):
         self.assertIn("[Dansk](da/introduction.html)", english_links)
 
     def test_shared_includes_keep_named_anchors(self):
-        original = self.root / "docs/en/dev/architecture.md"
+        original = self.root / "docs/book/src/dev/architecture.md"
         staged = self.root / "target/docs-i18n/da/dev/architecture.md"
-        result = docs_build.include_paths("{{#include ../../architecture.md:architecture}}", original, staged)
+        result = docs_build.include_paths("{{#include ../../../architecture.md:architecture}}", original, staged)
         target = result.removeprefix("{{#include ").removesuffix("}}")
         filename, anchor = target.split(":")
         self.assertEqual((staged.parent / filename).resolve(), (self.root / "docs/architecture.md").resolve())

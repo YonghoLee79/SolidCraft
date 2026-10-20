@@ -613,3 +613,147 @@ De originale kommando- og API-navne står uændret. Kolonnen **Dansk oversættel
 | Feature | Modelleringsfunktion |
 | Planned | Planlagt / endnu ikke implementeret |
 | Command Registry | Kommandoregister |
+
+<!-- docs-english-updates:start -->
+
+## Engelske ændringer, der mangler oversættelse
+
+> Nedenfor står nye og ændrede afsnit fra den engelske original. Arbejd dem ind i oversættelsen, kontrollér den aktuelle engelske side, og fjern derefter hele denne markerede sektion.
+
+The English original also removes or replaces text. Review the corresponding translated text.
+
+## Sketch
+
+| Command | Id | Toolbar |
+|---|---|---|
+| Center Point Arc | `sketch.arc.center_point` | SKETCH › CREATE |
+| Tangent Arc | `sketch.arc.tangent` | SKETCH › CREATE |
+| 3-Point Arc | `sketch.arc.three_point` | SKETCH › CREATE |
+| AutoConstrain | `sketch.auto_constrain` | SKETCH › CONSTRAINTS |
+| AutoConstrain from datum | `sketch.auto_constrain_from_datum` | SKETCH › CONSTRAINTS |
+| Auto-Project Edges on Reference | `sketch.auto_project` | – |
+| Blend Curve | `sketch.blend_curve` | SKETCH › MODIFY |
+| Break | `sketch.break` | SKETCH › MODIFY |
+| Break Link | `sketch.break_link` | – |
+| Centerline | `sketch.centerline` | SKETCH › CREATE |
+| Chain | `sketch.chain` | – |
+| Distance and Angle Chamfer | `sketch.chamfer.distance_angle` | SKETCH › MODIFY |
+| Equal Distance Chamfer | `sketch.chamfer.equal_distance` | SKETCH › MODIFY |
+| Two Distance Chamfer | `sketch.chamfer.two_distance` | SKETCH › MODIFY |
+| Center Diameter Circle (C) | `sketch.circle.center` | SKETCH › CREATE |
+| 3-Point Circle | `sketch.circle.three_point` | SKETCH › CREATE |
+| 3-Tangent Circle | `sketch.circle.three_tangent` | SKETCH › CREATE |
+| 2-Point Circle | `sketch.circle.two_point` | SKETCH › CREATE |
+| 2-Tangent Circle | `sketch.circle.two_tangent` | SKETCH › CREATE |
+| Conic Curve | `sketch.conic` | SKETCH › CREATE |
+| Sketch Constrainer | `sketch.constrainer` | SKETCH › CREATE |
+| Coincident | `sketch.constraint.coincident` | SKETCH › CONSTRAINTS |
+| Collinear | `sketch.constraint.collinear` | SKETCH › CONSTRAINTS |
+| Concentric | `sketch.constraint.concentric` | SKETCH › CONSTRAINTS |
+| Curvature | `sketch.constraint.curvature` | SKETCH › CONSTRAINTS |
+| Equal | `sketch.constraint.equal` | SKETCH › CONSTRAINTS |
+| Fix/UnFix | `sketch.constraint.fix` | SKETCH › CONSTRAINTS |
+| Horizontal/Vertical | `sketch.constraint.horizontal_vertical` | SKETCH › CONSTRAINTS |
+| MidPoint | `sketch.constraint.midpoint` | SKETCH › CONSTRAINTS |
+| Parallel | `sketch.constraint.parallel` | SKETCH › CONSTRAINTS |
+| Perpendicular | `sketch.constraint.perpendicular` | SKETCH › CONSTRAINTS |
+| Polygon | `sketch.constraint.polygon` | SKETCH › CONSTRAINTS |
+| Symmetry | `sketch.constraint.symmetry` | SKETCH › CONSTRAINTS |
+| Tangent | `sketch.constraint.tangent` | SKETCH › CONSTRAINTS |
+| Normal/Construction (X) | `sketch.construction` | SKETCH › CREATE |
+| Copy Sketch Entities | `sketch.copy` | – |
+| Create Sketch | `sketch.create` | SOLID › CREATE |
+| Cut Sketch Entities | `sketch.cut` | – |
+| Delete Sketch Entities | `sketch.delete` | – |
+| Sketch Dimension (D) | `sketch.dimension` | SKETCH › CREATE |
+| Move Dimension Text | `sketch.dimension_text` | – |
+| Drag Sketch Geometry | `sketch.drag` | – |
+| End Sketch Drag | `sketch.drag_end` | – |
+| Draw Dimensioned Sketch Geometry | `sketch.draw.dimensioned` | – |
+| Edit Sketch | `sketch.edit` | – |
+| Edit Text | `sketch.edit_text` | – |
+| Ellipse | `sketch.ellipse` | SKETCH › CREATE |
+| Save As DXF | `sketch.export_dxf` | – |
+| Extend | `sketch.extend` | SKETCH › MODIFY |
+| Fillet | `sketch.fillet` | SKETCH › MODIFY |
+| Finish Sketch | `sketch.finish` | SKETCH › FINISH SKETCH |
+| Finish with AutoConstrain | `sketch.finish_auto_constrain` | SKETCH › FINISH SKETCH |
+| Fit Curves to Mesh Section | `sketch.fit_curves_to_section` | SKETCH › CREATE |
+| Constraint Glyphs | `sketch.glyphs` | – |
+| Include 3D Geometry | `sketch.include_3d` | SKETCH › CREATE |
+| Infinite Line | `sketch.infinite` | – |
+| Insert DXF | `sketch.insert_dxf` | SKETCH › INSERT |
+| Insert SVG | `sketch.insert_svg` | SKETCH › INSERT |
+| Inspect Sketch | `sketch.inspect` | – |
+| Intersect | `sketch.intersect` | SKETCH › CREATE |
+| Intersection Curve | `sketch.intersection_curve` | SKETCH › CREATE |
+| Isoparametric Curve | `sketch.isoparametric_curve` | SKETCH › CREATE |
+| Line (L) | `sketch.line` | SKETCH › CREATE |
+| Midpoint Line | `sketch.line.midpoint` | SKETCH › CREATE |
+| 3D Line | `sketch.line3d` | – |
+| Loose Ends | `sketch.loose_ends` | – |
+| Tie Loose Ends | `sketch.loose_ends.tie` | – |
+| Mirror | `sketch.mirror` | SKETCH › PATTERN |
+| Move/Copy Sketch Entities | `sketch.move` | SKETCH › MODIFY |
+| Move 3D Point | `sketch.move3d` | – |
+| Drag Sketch Point | `sketch.move_point` | – |
+| Offset (O) | `sketch.offset` | SKETCH › MODIFY |
+| Break Offset Association | `sketch.offset.break` | – |
+| Sketch Palette Options | `sketch.options` | – |
+| Paste Sketch Entities | `sketch.paste` | – |
+| Circular Pattern | `sketch.pattern.circular` | SKETCH › PATTERN |
+| Rectangular Pattern | `sketch.pattern.rectangular` | SKETCH › PATTERN |
+| Point | `sketch.point` | SKETCH › CREATE |
+| 3D Point | `sketch.point3d` | – |
+| Circumscribed Polygon | `sketch.polygon.circumscribed` | SKETCH › CREATE |
+| Edge Polygon | `sketch.polygon.edge` | SKETCH › CREATE |
+| Inscribed Polygon | `sketch.polygon.inscribed` | SKETCH › CREATE |
+| Project (P) | `sketch.project` | SKETCH › CREATE |
+| Project To Surface | `sketch.project_to_surface` | SKETCH › CREATE |
+| Center Rectangle | `sketch.rectangle.center` | SKETCH › CREATE |
+| Rounded Rectangle | `sketch.rectangle.rounded` | SKETCH › CREATE |
+| 3-Point Rectangle | `sketch.rectangle.three_point` | SKETCH › CREATE |
+| 2-Point Rectangle (R) | `sketch.rectangle.two_point` | SKETCH › CREATE |
+| Redefine Sketch Plane | `sketch.redefine` | – |
+| Sketch Scale | `sketch.scale` | SKETCH › MODIFY |
+| Center Point Arc Slot | `sketch.slot.arc_center` | SKETCH › CREATE |
+| Three Point Arc Slot | `sketch.slot.arc_three_point` | SKETCH › CREATE |
+| Center Point Slot | `sketch.slot.center_point` | SKETCH › CREATE |
+| Center to Center Slot | `sketch.slot.center_to_center` | SKETCH › CREATE |
+| Overall Slot | `sketch.slot.overall` | SKETCH › CREATE |
+| Snap Inference | `sketch.snap` | – |
+| Solve Sketch | `sketch.solve` | – |
+| Control Point Spline | `sketch.spline.control_point` | SKETCH › CREATE |
+| Control Point Spline (Degree 5) | `sketch.spline.control_point_5` | SKETCH › CREATE |
+| Fit Point Spline | `sketch.spline.fit_point` | SKETCH › CREATE |
+| 3D Spline | `sketch.spline3d` | – |
+| Spun Profile | `sketch.spun_profile` | SKETCH › CREATE |
+| Text | `sketch.text` | SKETCH › CREATE |
+| Toggle Driven Dimension | `sketch.toggle_driven` | – |
+| Trim (T) | `sketch.trim` | SKETCH › MODIFY |
+| Trim Along Path | `sketch.trim.path` | – |
+
+## Assembly joints
+
+| Command | Id | Toolbar |
+|---|---|---|
+| As-Built Joint | `joint.as_built` | SOLID › ASSEMBLE |
+| Cam | `joint.cam` | SOLID › ASSEMBLE |
+| Joint (J) | `joint.create` | SOLID › ASSEMBLE |
+| Delete Joint | `joint.delete` | – |
+| Drive Joints | `joint.drive` | SOLID › ASSEMBLE |
+| Edit Joint | `joint.edit` | – |
+| Gear | `joint.gear` | SOLID › ASSEMBLE |
+| Inspect Joint | `joint.inspect` | – |
+| Joint Limits | `joint.limits` | – |
+| List Joints | `joint.list` | – |
+| Motion Link | `joint.motion_link` | SOLID › ASSEMBLE |
+| Joint Origin | `joint.origin` | SOLID › CREATE |
+| Rack and Pinion | `joint.rack_pinion` | SOLID › ASSEMBLE |
+| Reach Point | `joint.reach` | – |
+| Rigid Group | `joint.rigid_group` | SOLID › ASSEMBLE |
+| Screw | `joint.screw` | SOLID › ASSEMBLE |
+| Solve Joints | `joint.solve` | – |
+| Sweep Joint | `joint.sweep` | – |
+
+<!-- docs-english-updates:end -->
