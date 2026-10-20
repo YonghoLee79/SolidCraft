@@ -242,7 +242,7 @@ fn deepest(a: &solidcraft_geom::Mesh, b: &solidcraft_geom::Mesh, tol: f64) -> f6
 /// lie inside, deeper than `tol`, as elsewhere in the check). Two plates crossing each other's
 /// faces put no vertex, mid-edge or triangle centre of either inside the other — the chord an
 /// edge cuts is how that crossing is seen (#3323).
-fn crossing(p: Vec3, q: Vec3, tb: &[[Vec3; 3]], bx: Aabb3, tol: f64) -> f64 {
+fn crossing(p: Vec3, q: Vec3, tb: &[Triangle], bx: Aabb3, tol: f64) -> f64 {
     if p.x.max(q.x) < bx.min.x - tol
         || p.x.min(q.x) > bx.max.x + tol
         || p.y.max(q.y) < bx.min.y - tol
@@ -260,7 +260,7 @@ fn crossing(p: Vec3, q: Vec3, tb: &[[Vec3; 3]], bx: Aabb3, tol: f64) -> f64 {
     // Where the edge crosses the surface, along the edge. A crossing at a vertex or along an
     // edge shared by two triangles is found twice (or more); merges of neighbours leave the
     // entry and exit of each chord as one pair each.
-    let mut hits: Vec<f64> = tb.iter().filter_map(|t| contact_sweep::segment_hits_triangle(p, q, t)).map(|h| (h - p).dot(d) / len2).collect();
+    let mut hits: Vec<f64> = tb.iter().filter_map(|t| contact_sweep::segment_hits_triangle(p, q, &t.0)).map(|h| (h - p).dot(d) / len2).collect();
     if hits.len() < 2 {
         return 0.0;
     }
@@ -272,7 +272,7 @@ fn crossing(p: Vec3, q: Vec3, tb: &[[Vec3; 3]], bx: Aabb3, tol: f64) -> f64 {
             break;
         }
         let m = p + d * ((pair[0] + pair[1]) * 0.5);
-        let deep = tb.iter().map(|[a, b, c]| closest(m, *a, *b, *c).dist(m)).fold(f64::MAX, f64::min);
+        let deep = tb.iter().map(|t| t.closest_point(m).dist(m)).fold(f64::MAX, f64::min);
         if deep > tol.max(best) && inside(m, tb) {
             best = deep;
         }
