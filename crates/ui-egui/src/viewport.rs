@@ -3296,6 +3296,33 @@ fn hover_highlight(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     }
 }
 
+/// The standalone points of the finished sketches shown (placed with Point, not a curve's
+/// ends or centres), in world space: they can still be picked (a hole's centre), so they are
+/// drawn too (#3267). Not the sketch's origin, projected points, or a sketch's points while it
+/// hides them.
+pub(crate) fn standalone_points(app: &SolveApp) -> Vec<Vec3> {
+    let st = app.session.world_state();
+    let mut out = Vec::new();
+    for sid in visible_sketches(app) {
+        if app.session.active_sketch == Some(sid) {
+            continue;
+        }
+        let Some(ss) = st.sketch(sid) else { continue };
+        let sk = &ss.sketch;
+        if sk.view.hide_points {
+            continue;
+        }
+        let used: std::collections::HashSet<usize> = sk.curves.iter().flat_map(|c| c.kind.point_ids()).collect();
+        let visible = solidcraft_engine::view::SketchPointVisibility::new(sk);
+        for (i, p) in sk.points.iter().enumerate().skip(1) {
+            if !used.contains(&i) && p.link.is_none() && visible.takes(p) {
+                out.push(ss.plane.to_world(p.pos));
+            }
+        }
+    }
+    out
+}
+
 /// Sketch points and the status of the active sketch (constraint glyphs: `sketch_tools`).
 fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     let t = Tokens::get();
@@ -3307,6 +3334,11 @@ fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
             && let Some(pos) = proj.to_screen(ss.plane.to_world(point))
         {
             painter.circle_stroke(pos, 6.0, Stroke::new(2.0, t.sel_edge));
+        }
+    }
+    for p in standalone_points(app) {
+        if let Some(sp) = proj.to_screen(p) {
+            painter.rect_filled(Rect::from_center_size(sp, vec2(4.0, 4.0)), 0.0, t.sketch);
         }
     }
     let Some(sid) = app.session.active_sketch else { return };
@@ -6649,5 +6681,28 @@ mod grid_plane_tests {
         let primary = crate::tool_modifiers::Held { primary: true, ..Default::default() };
         assert!(preview_should_roll_back(&app, primary, false), "Primary alone rolls the preview back when a preview dialog is open");
         assert!(!preview_should_roll_back(&app, primary, true), "Primary must not roll the preview back while a manipulator arrow is dragged");
+    }
+}
+
+#[cfg(test)]
+mod standalone_point_tests {
+    use super::*;
+
+    /// #3267: a finished sketch's standalone points stay drawn (they can be picked for a hole);
+    /// its curves' ends are not added, the open sketch draws its own points, and a hidden
+    /// sketch draws none.
+    #[test]
+    fn a_finished_sketch_shows_its_standalone_points() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [20, 10]})).unwrap();
+        app.run("sketch.point", json!({"point": [5, 4]})).unwrap();
+        assert!(standalone_points(&app).is_empty(), "the open sketch draws its own points");
+        app.run("sketch.finish", json!({})).unwrap();
+        let points = standalone_points(&app);
+        assert_eq!(points.len(), 1, "only the placed point, not the rectangle's corners: {points:?}");
+        assert!(points[0].dist(Vec3::new(5.0, 4.0, 0.0)) < 1e-9, "{points:?}");
+        app.ui.show_sketches = false;
+        assert!(standalone_points(&app).is_empty(), "sketches hidden");
     }
 }

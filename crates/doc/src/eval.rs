@@ -1416,6 +1416,7 @@ impl Model {
                 if let Some(note) = boolean_diagnostics.warning() {
                     append_warning(&mut warning, note);
                 }
+                track_altered_sheets(&state, &mut next, f, &mut warning);
             } else {
                 boolean_diagnostics = Default::default();
             }
@@ -1620,6 +1621,52 @@ fn pattern_copy_name(state: &ModelState, f: &Feature, k: usize, source: &str) ->
 fn copy_body_name(state: &ModelState, f: &Feature, k: usize, source: &str) -> String {
     let base = f.body_names.get(k).filter(|name| !name.trim().is_empty()).map(String::as_str).unwrap_or(source);
     unique_body_name(state, base)
+}
+
+/// Keeps each sheet metal body's flat pattern true to the body (see `SheetBody::altered_by`).
+/// A feature that changes a sheet body's material but not its sheet model (a fillet, a join, a
+/// mirror combined into it) marks the sheet with its name, and says so. A feature that rebuilds
+/// the body from the model (a sheet metal feature, or machining the model keeps as cut-outs,
+/// which changes the model) clears the mark, and says that the change it drops is not kept.
+/// Features that move whole bodies or only mark their faces (a cosmetic thread, not a modelled
+/// one, which cuts material) leave the flat pattern as it was.
+fn track_altered_sheets(before: &ModelState, after: &mut ModelState, f: &Feature, warning: &mut Option<String>) {
+    if matches!(
+        f.kind,
+        FeatureKind::Move { .. }
+            | FeatureKind::Align { .. }
+            | FeatureKind::Rest { .. }
+            | FeatureKind::BodyTransfer { .. }
+            | FeatureKind::SplitFace { .. }
+            | FeatureKind::Thread { modeled: false, .. }
+    ) {
+        return;
+    }
+    let ModelState { sheets, bodies, .. } = after;
+    for sh in sheets.iter_mut() {
+        let Some(old) = before.sheets.iter().find(|s| s.body == sh.body) else { continue };
+        let (Some(was), Some(now)) = (before.body(&sh.body), bodies.iter().find(|b| b.name == sh.body)) else { continue };
+        if was.body.same_shape(&now.body) {
+            continue;
+        }
+        if f.kind.is_sheet() || sh != old {
+            if let Some(lost) = sh.altered_by.take() {
+                append_warning(
+                    warning,
+                    format!("`{}` is rebuilt from its sheet metal features: what {lost} changed is not kept (not supported yet)", sh.body),
+                );
+            }
+        } else if sh.altered_by.is_none() {
+            sh.altered_by = Some(f.name.clone());
+            append_warning(
+                warning,
+                format!(
+                    "`{}` is sheet metal: its flat pattern, DXF and bend table can't include this change yet and are refused; a later sheet metal feature rebuilds the body without it",
+                    sh.body
+                ),
+            );
+        }
+    }
 }
 
 /// Add tool bodies to the model according to the operation.
@@ -5855,7 +5902,7 @@ impl PlacedBodies {
                 fresh.plan_mesh = placed.plan_mesh.clone();
                 fresh
             }
-            None => match kernel::transform_matrix(&b.body, *m) {
+            None => match kernel::place_matrix(&b.body, *m) {
                 Ok(body) => {
                     let mut fresh = ModelBody::new(name, body, b.feature);
                     fresh.mesh_placement = placed_mesh::PlacedMesh::new(b, m).map(Arc::new);

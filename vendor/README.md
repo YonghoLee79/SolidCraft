@@ -45,6 +45,12 @@ Changes:
   operand's shell meshes made beforehand (copied for each use, since the loops stores cut their
   edges): a large body cut down to the regions of many small ones is meshed once, which was most
   of each operation's time.
+- `transversal/integrate/mod.rs`: in an AND, a face no intersection divides (a shell that meets
+  nothing of the other) is placed by the crossings of a ray with the other shell counted as each
+  face is oriented, not by its surface alone, and an inward shell (a void, a cut's inverted tool)
+  holds what lies outside it. Faces with reversed surfaces (a revolved body's) counted the wrong
+  way, and a void dropped every face outside it: a cut beside a sealed void came out empty or
+  with the body gone. An OR keeps truck's count.
 
 ## truck-geometry 0.5.0 (Apache-2.0, © RICOS Co. Ltd., https://github.com/ricosjp/truck)
 
