@@ -47,6 +47,48 @@ impl Aabb3 {
     pub fn diagonal(&self) -> f64 {
         self.size().len()
     }
+    /// The box grown by `by` on every side; an empty box stays empty.
+    pub fn inflated(&self, by: f64) -> Aabb3 {
+        if self.is_empty() {
+            return *self;
+        }
+        let d = Vec3::new(by, by, by);
+        Aabb3 { min: self.min - d, max: self.max + d }
+    }
+    /// Whether `p` lies in the box, its sides included (never in an empty box, never for NaN).
+    pub fn contains(&self, p: Vec3) -> bool {
+        p.x >= self.min.x && p.y >= self.min.y && p.z >= self.min.z && p.x <= self.max.x && p.y <= self.max.y && p.z <= self.max.z
+    }
+    /// The box both hold: empty when they do not meet.
+    pub fn intersection(&self, o: &Aabb3) -> Aabb3 {
+        Aabb3 { min: self.min.max(o.min), max: self.max.min(o.max) }
+    }
+    /// Whether the two boxes share a point (never when either is empty).
+    pub fn meets(&self, o: &Aabb3) -> bool {
+        self.min.x <= o.max.x
+            && o.min.x <= self.max.x
+            && self.min.y <= o.max.y
+            && o.min.y <= self.max.y
+            && self.min.z <= o.max.z
+            && o.min.z <= self.max.z
+    }
+}
+
+/// The box around the finite points (non-finite ones are skipped, as [`Aabb3::add`] does).
+impl FromIterator<Vec3> for Aabb3 {
+    fn from_iter<I: IntoIterator<Item = Vec3>>(points: I) -> Aabb3 {
+        let mut b = Aabb3::EMPTY;
+        b.extend(points);
+        b
+    }
+}
+
+impl Extend<Vec3> for Aabb3 {
+    fn extend<I: IntoIterator<Item = Vec3>>(&mut self, points: I) {
+        for p in points {
+            self.add(p);
+        }
+    }
 }
 
 /// An indexed triangle mesh with per-vertex normals, a face id per triangle (the B-rep face it
@@ -74,10 +116,6 @@ pub struct Mesh {
     /// Per edge: the B-rep faces it bounds (one or two).
     #[serde(default)]
     pub edge_faces: Vec<Vec<u32>>,
-}
-
-fn boxes_meet(a: &Aabb3, b: &Aabb3) -> bool {
-    a.min.x <= b.max.x && b.min.x <= a.max.x && a.min.y <= b.max.y && b.min.y <= a.max.y && a.min.z <= b.max.z && b.min.z <= a.max.z
 }
 
 /// A triangle with its bounding box, as [`find_close_pair`] takes them.
@@ -559,7 +597,7 @@ impl Mesh {
                     let t = m.tri(t)?;
                     let mut bx = Aabb3::EMPTY;
                     t.iter().for_each(|p| bx.add(*p));
-                    (!bx.is_empty() && boxes_meet(&bx, &region)).then(|| ((t, bx), m.tri_face.get(i).copied().unwrap_or(u32::MAX)))
+                    (!bx.is_empty() && bx.meets(&region)).then(|| ((t, bx), m.tri_face.get(i).copied().unwrap_or(u32::MAX)))
                 })
                 .unzip()
         };

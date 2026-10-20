@@ -158,9 +158,11 @@ pub enum Kind {
         count: String,
         angle: String,
     },
-    /// Loft through profiles of different sketches, in pick order.
+    /// Loft through profiles of different sketches, in pick order; `rail_fit` how its guide
+    /// rails reshape the sections (an index into the sweep dialog's rail fits).
     Loft {
         operation: usize,
+        rail_fit: usize,
     },
     /// Sweep a profile along a path of sketch curves.
     Sweep {
@@ -644,7 +646,10 @@ impl Dialog {
                 Kind::PatternCirc { count: "6".into(), angle: "360 deg".into() },
                 vec![SelInput::new("Objects", BODIES, true), SelInput::new("Axis", AXES, false)],
             ),
-            "solid.loft" => Dialog::new(Kind::Loft { operation: usize::from(has_bodies) }, vec![SelInput::new("Profiles", PROFILES, true)]),
+            "solid.loft" => Dialog::new(Kind::Loft { operation: usize::from(has_bodies), rail_fit: 0 }, {
+                let [rail, rail2] = crate::dialogs_sweep::rail_inputs();
+                vec![SelInput::new("Profiles", PROFILES, true), rail, rail2]
+            }),
             "solid.sweep" => Dialog::new(Kind::Sweep { operation: usize::from(has_bodies), opts: crate::dialogs_sweep::SweepOpts::default() }, {
                 let [rail, rail2] = crate::dialogs_sweep::rail_inputs();
                 vec![
@@ -2993,7 +2998,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             feature_pattern_alignment_row(ui, &mut d.extra, 0);
                         }
                     }
-                    Kind::Loft { operation } => {
+                    Kind::Loft { operation, rail_fit } => {
+                        crate::dialogs_sweep::rail_fit_row(ui, "lf", rail_fit);
                         row_label(ui, "Operation");
                         combo(ui, "lf_op", &OP_LABELS, operation);
                         ui.end_row();
@@ -3683,9 +3689,29 @@ fn look_at_sketch_from(app: &mut SolveApp, again: bool) {
             let x = ss.plane.x;
             to.yaw = if n.z > 0.0 { (-x.y).atan2(x.x) } else { x.y.atan2(x.x) };
         }
-        to.target = ss.plane.origin;
-        app.animate_to(to);
+        app.animate_to(onto_sketch(to, ss));
     }
+}
+
+/// `to` (already facing the sketch) moved onto sketch `ss` (#3198): centred on its geometry, and
+/// zoomed out when that would not fit in the view; it never zooms in, so a zoom the user chose
+/// stays. A sketch without geometry keeps its plane's origin. Centring on the origin alone left a
+/// sketch drawn away from it (a part placed far from the origin, as imports often are) out of view.
+pub(crate) fn onto_sketch(mut to: solidcraft_engine::render::Camera, ss: &solidcraft_engine::doc::SolvedSketch) -> solidcraft_engine::render::Camera {
+    let Some((lo, hi)) = ss.sketch.bounds() else {
+        to.target = ss.plane.origin;
+        return to;
+    };
+    let mut b = Aabb3::default();
+    for p in [lo, hi, solidcraft_engine::geom::Vec2::new(lo.x, hi.y), solidcraft_engine::geom::Vec2::new(hi.x, lo.y)] {
+        b.add(ss.plane.to_world(p));
+    }
+    let keep = to.distance;
+    to.fit(&b);
+    if keep.is_finite() && keep > to.distance {
+        to.distance = keep;
+    }
+    to
 }
 
 /// The side to look from at a plane with normal `n`: its own side, or with `again` the other
@@ -4086,7 +4112,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             pattern_objects(s, sels(d, 0), &mut p);
             ("solid.pattern.circular", p)
         }
-        Kind::Loft { operation } => {
+        Kind::Loft { operation, rail_fit } => {
             need(0, "profiles of two or more sketches")?;
             // One section per sketch, in the order the sketches were first picked.
             let mut sections: Vec<(u64, Vec<usize>)> = Vec::new();
@@ -4102,7 +4128,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 return Err("pick profiles in two or more sketches".into());
             }
             let sections: Vec<Value> = sections.into_iter().map(|(sk, v)| json!({"sketch": sk, "profiles": v})).collect();
-            ("solid.loft", json!({"sections": sections, "operation": OPS.get(*operation).copied().unwrap_or("new")}))
+            let mut p = json!({"sections": sections, "operation": OPS.get(*operation).copied().unwrap_or("new")});
+            crate::dialogs_sweep::rail_params(app, *rail_fit, [sels(d, 1), sels(d, 2)], &mut p)?;
+            ("solid.loft", p)
         }
         Kind::Sweep { operation, opts } => {
             need(0, "a profile")?;
@@ -5344,9 +5372,12 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Loft { sections, operation, targets } => {
+        FeatureKind::Loft { sections, operation, targets, rails, rail_fit } => {
             let mut d = start("solid.loft")?;
-            d.kind = Kind::Loft { operation: op_index(operation) };
+            d.kind = Kind::Loft { operation: op_index(operation), rail_fit: crate::dialogs_sweep::rail_fit_index(*rail_fit) };
+            for (inp, items) in d.inputs.iter_mut().skip(1).zip(crate::dialogs_sweep::rail_sels(rails)) {
+                inp.items = items;
+            }
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = sections
                     .iter()

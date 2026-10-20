@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Aabb3, Vec3};
 
 use solidcraft_sketch::linalg;
 
@@ -1209,15 +1209,14 @@ fn limit_bounds(tree: &Tree, vars: &[(u64, usize)]) -> Vec<(f64, f64)> {
 /// The loops' size: the diagonal of the box around their joints' A frames, 1 mm to 1 km. Points
 /// that far apart weigh turns like moves.
 fn loop_scale(tree: &Tree, around: &BTreeSet<u64>, vals: &Values) -> f64 {
-    let (mut lo, mut hi) = (Vec3::new(f64::MAX, f64::MAX, f64::MAX), Vec3::new(f64::MIN, f64::MIN, f64::MIN));
-    for id in around {
-        let (Some(j), Some((fa, _))) = (tree.joints.get(id), tree.frames.get(id)) else { continue };
-        let Some(t) = tree.world(j.a.occurrence, vals) else { continue };
-        let p = apply_point(&mat_mul(&t, fa), Vec3::ZERO);
-        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
-        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
-    }
-    if lo.x <= hi.x { (hi - lo).len().clamp(1.0, 1e6) } else { 1.0 }
+    let joints: Aabb3 = around
+        .iter()
+        .filter_map(|id| {
+            let (j, (fa, _)) = (tree.joints.get(id)?, tree.frames.get(id)?);
+            Some(apply_point(&mat_mul(&tree.world(j.a.occurrence, vals)?, fa), Vec3::ZERO))
+        })
+        .collect();
+    if joints.is_empty() { 1.0 } else { joints.diagonal().clamp(1.0, 1e6) }
 }
 
 /// How far each closing joint is from meeting: three points of B's joint frame, `scale` apart,

@@ -749,7 +749,7 @@ fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
     let sketch_plane = solidcraft_engine::view::open_sketch_plane(s);
     if sketch_plane.is_some() || (app.ui.show_grid && !active_view(app).hide_grid) {
         let (minor, major) = grid_step(app.cam.half_height());
-        let ext = (app.cam.half_height() * 3.0 / major).ceil() * major;
+        let mut ext = (app.cam.half_height() * 3.0 / major).ceil() * major;
         // An open sketch always has its grid on its own plane; otherwise the ground plane: XY with
         // Z up, XZ with Y up (laid out in the camera's Z-up frame), or the upright origin plane
         // facing the view when the ground is seen edge-on.
@@ -768,7 +768,17 @@ fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
             } else {
                 (Vec3::X, Vec3::Y)
             };
-            let snap = |a: Vec3| a * ((tf.dot(a) / major).round() * major);
+            // Centred where the view's axis meets the ground, the part of the ground in the middle
+            // of the view (#3087): the camera's target may lie off the ground (above a part, or
+            // below the ground after an orbit), and zoomed in, a grid round the point under the
+            // target was off screen. Seen at a slant the ground stretches across the view, so the
+            // grid reaches further.
+            let back = app.cam.to_frame(app.cam.back());
+            let n = u.cross(v);
+            let slant = back.dot(n);
+            ext = (ext / slant.abs().max(0.25) / major).ceil() * major;
+            let centre = grid_centre(tf, back, n, ext);
+            let snap = |a: Vec3| a * ((centre.dot(a) / major).round() * major);
             (snap(u) + snap(v), u, v, Box::new(|p| app.cam.from_frame(p).to_f32()))
         };
         let n = ((ext / minor) as i64).clamp(1, 300);
@@ -3241,6 +3251,21 @@ fn points_2d(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     {
         painter.circle(p, 4.5, t.hover_edge_halo, Stroke::new(1.5, t.hover_edge));
     }
+}
+
+/// Where the ground grid is centred: where the view's axis (`back`, through the camera's target
+/// `tf`) meets the plane through the origin with normal `n`, so the middle of the view has grid
+/// (#3087). At a grazing slant that point runs far off, and the ground in front of the camera
+/// would have none: it stays within `ext` (the grid's half-size) of the point under the target.
+fn grid_centre(tf: Vec3, back: Vec3, n: Vec3, ext: f64) -> Vec3 {
+    let under = tf - n * tf.dot(n);
+    let slant = back.dot(n);
+    if slant.abs() <= 1e-3 {
+        return under;
+    }
+    let along = tf - back * (tf.dot(n) / slant) - under;
+    let len = along.len();
+    if len > ext && len > 0.0 { under + along * (ext / len) } else { under + along }
 }
 
 /// Hover feedback for the active sketch's points and curves (drawn on top of everything).
@@ -6491,6 +6516,60 @@ mod grid_plane_tests {
         app.cam.pitch = 0.3;
         let _ = build_sketch_scene(&app, &projection(&app, rect));
         assert_eq!(*app.viewport.grid_plane.lock().unwrap(), GridPlane::Ground, "a clear turn off the ground returns");
+    }
+
+    /// The grid's centre is where the view's axis meets the ground, but at a grazing slant (a
+    /// camera 10 mm above the ground, looking almost along it) no further than the grid's
+    /// half-size from the point under the target, so the ground in front of the camera keeps
+    /// its grid.
+    #[test]
+    fn the_grid_centre_stays_within_reach_of_the_point_under_the_target() {
+        let n = Vec3::Z;
+        // Looking down at 45 degrees at a target 10 above the ground: the axis meets it 10 ahead.
+        let tf = Vec3::new(0.0, 0.0, 10.0);
+        let back = Vec3::new(0.0, -1.0, 1.0).normalized().unwrap();
+        let c = grid_centre(tf, back, n, 100.0);
+        assert!((c - Vec3::new(0.0, 10.0, 0.0)).len() < 1e-9, "{c:?}");
+        // Grazing: the axis meets the ground 1 m ahead, the grid is 120 wide.
+        let back = Vec3::new(0.0, -1.0, 0.01).normalized().unwrap();
+        let c = grid_centre(tf, back, n, 120.0);
+        assert!(c.z.abs() < 1e-9 && (c - Vec3::new(0.0, 0.0, 0.0)).len() <= 120.0 + 1e-9, "{c:?}");
+        assert!(c.y > 0.0, "still toward where the view looks: {c:?}");
+        // Edge-on: under the target.
+        let c = grid_centre(tf, Vec3::Y, n, 120.0);
+        assert!(c.len() < 1e-9, "{c:?}");
+    }
+
+    /// #3087: zoomed in on a target below the ground (an orbit left it there), seen at a slant,
+    /// the grid still covers the ground in the middle of the view: where the view's axis meets
+    /// it, some fifty millimetres from the point under the target, round which it was drawn.
+    #[test]
+    fn the_grid_covers_the_middle_of_the_view_when_the_target_is_off_the_ground() {
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1280.0, 720.0));
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        app.ui.show_grid = true;
+        app.ui.perspective = false;
+        // The camera of the report.
+        app.cam.target = Vec3::new(-38.888, -34.247, -28.617);
+        app.cam.yaw = -2.288;
+        app.cam.pitch = 0.504;
+        app.cam.distance = 25.563;
+        let back = app.cam.back();
+        let mid = app.cam.target - back * (app.cam.target.z / back.z);
+        assert!(mid.z.abs() < 1e-9 && (mid - app.cam.target).len() > 40.0, "{mid:?}");
+        let under = build_sketch_scene(&app, &projection(&app, rect)).under;
+        let points: Vec<[f32; 3]> = under
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .flat_map(|l| [&l[0..12], &l[12..24]])
+            .map(|b| [0, 4, 8].map(|i| f32::from_le_bytes(b[i..i + 4].try_into().unwrap())))
+            .collect();
+        let (lo, hi) = points
+            .iter()
+            .fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]));
+        let (x, y) = (mid.x as f32, mid.y as f32);
+        assert!(x > lo[0] && x < hi[0] && y > lo[1] && y < hi[1], "the grid spans {lo:?}..{hi:?}, the middle of the view is at {mid:?}");
     }
 
     /// An open sketch always has its grid, on its own plane, whatever the Grid switch and the
