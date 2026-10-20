@@ -440,6 +440,8 @@ preference_settings! {
     up_axis: String = "z".into(), PAGE_DESIGN;
     /// After a STEP or IGES file opens, offer to stand a Y-up part up (`stand_up`).
     offer_stand_up: bool = true, PAGE_DESIGN => check("Offer to stand up Y-up files", "After a STEP or IGES file opens with Z up, offer a quarter turn about X");
+    /// The browser's Origin folder starts hidden in designs that don't keep its eye themselves.
+    hide_origin: bool = false, PAGE_DESIGN => check_tr("ui.hide_origin_by_default");
     /// What a middle-button double-click in the view does: `home`, `fit` or `off`.
     middle_double_click: String = "home".into(), 1;
     /// Colour vision mode (#778): `off`, `protan`, `deutan` or `tritan`.
@@ -1306,6 +1308,8 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 ui_kit::Text::Note("orientation"),
             );
             setting::offer_stand_up(app, ui);
+            setting::hide_origin(app, ui);
+            ui_kit::text(ui, crate::i18n::tr("ui.hide_origin_note"), ui_kit::Text::Note("hide_origin"));
         }
         PAGE_GRAPHICS => {
             ui_kit::row(ui, app.tr("ui.graphics_preset"), |ui| graphics_preset_selector(app, ui));
