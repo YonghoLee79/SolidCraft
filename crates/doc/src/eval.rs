@@ -1129,7 +1129,9 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
     };
     // A mirror of placed bodies follows where they are placed.
     let placed_mirror = matches!(&f.kind, FeatureKind::Mirror { placements, .. } if !placements.is_empty());
-    if to_object || placed_mirror {
+    // A combine moves tools placed differently from its target into the target's frame (#3383).
+    let combine = matches!(&f.kind, FeatureKind::Combine { .. });
+    if to_object || placed_mirror || combine {
         return if doc.occurrences.is_empty() && doc.body_offsets.is_empty() { 0 } else { placements_hash(doc) };
     }
     let FeatureKind::Sketch { plane, sketch } = &f.kind else { return 0 };
@@ -5477,10 +5479,26 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             if tools.iter().any(|t| t == target) {
                 return Err(DocError::Invalid("a body cannot be combined with itself".into()));
             }
+            // Each body is kept in its own component's frame: a tool placed differently from the
+            // target is moved into the target's frame, so it is combined where it is shown (#3383).
+            // A tool placed exactly as the target is left as it is.
+            let target_world = st.body(target).map(|b| body_world(doc, b));
             let mut tb = Vec::new();
             for t in tools {
                 match st.body(t) {
-                    Some(b) => tb.push(b.traced()),
+                    Some(b) => {
+                        let traced = b.traced();
+                        let world = body_world(doc, b);
+                        match target_world.filter(|w| *w != world) {
+                            Some(w) => {
+                                let into_target = crate::mat_inverse(&w)
+                                    .ok_or_else(|| DocError::Invalid(format!("`{target}` is placed where it cannot be combined")))?;
+                                let rel = crate::mat_mul(&into_target, &world);
+                                tb.push(Traced::step(kernel::transform_matrix(&b.body, rel)?, &[&traced]));
+                            }
+                            None => tb.push(traced),
+                        }
+                    }
                     // Designs saved before #2247 combined the pieces a cut split off a body that
                     // was already several pieces (`Posts`, `Posts (1)`). A cut keeps them in one
                     // body now: the piece is in `Posts`, which is a tool too or the body joined to.
@@ -5762,6 +5780,13 @@ fn plane_reads_geometry(plane: &PlaneRef) -> bool {
         | PlaneRef::Perpendicular { .. }
         | PlaneRef::Face { .. } => true,
     }
+}
+
+/// Where a body's geometry is placed in the world: through its component's placement and any
+/// offset it was moved into that component with (as [`state_in_frame_at`] places it).
+fn body_world(doc: &Document, mb: &ModelBody) -> Mat {
+    let m = doc.component_transform(doc.model_body_component(mb));
+    doc.model_body_offset(mb).map(|offset| crate::mat_mul(&m, offset)).unwrap_or(m)
 }
 
 pub fn state_in_frame<'a>(doc: &Document, st: &'a ModelState, comp: u64) -> std::borrow::Cow<'a, ModelState> {

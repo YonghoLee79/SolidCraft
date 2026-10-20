@@ -662,3 +662,33 @@ fn matrix_move_orthonormalises_rounding_and_refuses_what_is_not_rigid() {
     assert_eq!(s.doc.occurrences.iter().find(|o| o.id == occ).unwrap().transform, before);
     run(&mut s, "occurrence.move", json!({"occurrence": occ, "matrix": rounded, "tolerance": 1e-3}));
 }
+
+/// #3383: a combine across components meets the tool where it is shown, not where its numbers
+/// would be in the target's own frame. The plate in a component turned a quarter about X sits at
+/// y -10..0, z -20..20; the boss in the root overlaps it by 10 x 5 x 5. The reverse (a peg in the
+/// turned component cut from a root plate) removes 10 x 10 x 5 of it, not 10 x 10 x 10.
+#[test]
+fn combine_across_a_turned_occurrence_meets_the_tool_where_it_is_shown() {
+    let volume = |s: &Session, name: &str| s.model.state().body(name).map(|b| solidcraft_kernel::measure(&b.body).unwrap().volume).unwrap_or(0.0);
+    let turned = |s: &mut Session, body: Value| {
+        created(s, "Part");
+        run(s, "solid.box", body);
+        run(s, "component.activate", json!({"component": "root"}));
+        run(s, "occurrence.move", json!({"occurrence": "Part:1", "axis": [1, 0, 0], "angle": "90 deg"}));
+        run(s, "component.capture_position", json!({}));
+    };
+    let mut s = Session::default();
+    turned(&mut s, json!({"length": 40, "width": 40, "height": 10, "corner": [-20, -20, 0], "body_name": "Plate"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [-5, -5, -25], "operation": "new", "body_name": "Boss"}));
+    run(&mut s, "solid.combine", json!({"target": "Plate", "tools": ["Boss"]}));
+    assert_eq!(s.model.state().body("Plate").map(|b| b.body.shell_count()), Some(1));
+    let want = 40.0 * 40.0 * 10.0 + 10.0 * 10.0 * 10.0 - 10.0 * 5.0 * 5.0;
+    assert!((volume(&s, "Plate") - want).abs() < 1e-6 * want, "{} vs {want}", volume(&s, "Plate"));
+
+    let mut s = Session::default();
+    turned(&mut s, json!({"length": 10, "width": 10, "height": 10, "corner": [-5, -5, 0], "body_name": "Peg"}));
+    run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 10, "corner": [-20, -20, 0], "operation": "new", "body_name": "Base"}));
+    run(&mut s, "solid.combine", json!({"target": "Base", "tools": ["Peg"], "operation": "cut"}));
+    let want = 40.0 * 40.0 * 10.0 - 10.0 * 10.0 * 5.0;
+    assert!((volume(&s, "Base") - want).abs() < 1e-6 * want, "{} vs {want}", volume(&s, "Base"));
+}
