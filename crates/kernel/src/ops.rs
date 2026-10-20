@@ -965,11 +965,9 @@ fn conical_cut_junction(a: &Body, b: &Body) -> bool {
 fn boolean_via(a: &Body, b: &Body, op: BoolOp, whole: &dyn Fn(&Body, &Body, BoolOp) -> Result<Option<Body>>) -> Result<Option<Body>> {
     let (mut r, mut diagnostics) = capture_boolean_diagnostics(|| whole(a, b, op));
     // Bodies in several pieces: when the whole failed (or came out empty), a piece at a time.
-    let retry = match &r {
-        Err(_) => true,
-        Ok(None) => op != BoolOp::Intersect,
-        Ok(Some(_)) => false,
-    };
+    // An empty intersect too: the whole of two spheres apart, met by one box, came out empty
+    // (#3526); the pieces still say empty where no piece meets another.
+    let retry = !matches!(r, Ok(Some(_)));
     if retry && (a.solid.boundaries().len() > 1 || b.solid.boundaries().len() > 1) {
         let (la, lb) = (a.lumps()?, b.lumps()?);
         if la.len() > 1 || lb.len() > 1 {
