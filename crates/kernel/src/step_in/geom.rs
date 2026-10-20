@@ -176,6 +176,13 @@ fn knot_vec(mults: Option<&Param>, knots: Option<&Param>, expected: usize) -> R<
     if m.len() > expected || m.iter().try_fold(0usize, |a, v| a.checked_add(*v)) != Some(expected) {
         return Err("knot multiplicities do not match the control points".into());
     }
+    // A spline's shape does not depend on the scale of its knots. Siemens NX writes edges whose
+    // knots span 1e-7 (a cubic Bézier over (0, 1.02e-7)); truck takes a span within its tolerance
+    // (1e-6) for a single value and the face was left out. Such a vector is rescaled to (0, 1).
+    let k = match (k.first(), k.last()) {
+        (Some(&a), Some(&b)) if b > a && b - a < 1e-4 => k.iter().map(|x| (x - a) / (b - a)).collect(),
+        _ => k,
+    };
     mt::KnotVec::from_single_multi(k, m).map_err(|e| format!("knot vector: {e}"))
 }
 
@@ -551,7 +558,11 @@ where
         return Err(format!("edge vertices are {:.3e} mm off their curve", ds.max(de)));
     }
     let span = t1 - t0;
-    let near = |a: f64, b: f64| (a - b).abs() <= span * 1e-7;
+    // Never closer than truck evaluates: a piece whose knot range is within its tolerance (1e-6,
+    // absolute) panics with ZeroRange at its first evaluation, and took the whole solid with it.
+    // A vertex that close to the end of a closed curve is at its end.
+    let min_piece = 4.0 * mt::TOLERANCE;
+    let near = |a: f64, b: f64| (a - b).abs() <= (span * 1e-7).max(min_piece);
     let mut pieces = if closed {
         // Whole closed curve starting at the vertex.
         if near(ts, t0) || near(ts, t1) {
@@ -577,7 +588,17 @@ where
                 return Ok(v);
             }
         }
-        if b - a <= span * 1e-9 {
+        if b - a <= (span * 1e-9).max(min_piece) {
+            // A closed curve between two distinct vertices within the tolerance of each other runs
+            // the whole way round: NX closes a round hole with such an edge and a 1e-6 mm edge
+            // across the seam, and both vertices land on the seam parameter.
+            if c.subs(t0).distance(c.subs(t1)) <= tol && ps.distance(pe) <= tol {
+                let mut v = vec![sub_curve(c, t0, t1)];
+                if !sense {
+                    v.iter_mut().for_each(|x| x.invert());
+                }
+                return Ok(v);
+            }
             return Err("degenerate spline edge".into());
         }
         vec![sub_curve(c, a, b)]
@@ -587,6 +608,16 @@ where
         pieces.iter_mut().for_each(|x| x.invert());
     }
     Ok(pieces)
+}
+
+/// An edge between distinct vertices closer than the tolerance, on a spline it covers too little
+/// of to cut out (NX leaves 1.26 µm edges at the start of an 8 mm curve), becomes the straight
+/// segment between them, so the loops around it stay closed.
+fn micro_edge(pieces: R<Vec<mt::Curve>>, ps: mt::Point3, pe: mt::Point3, closed: bool, tol: f64) -> R<Vec<mt::Curve>> {
+    match pieces {
+        Err(_) if !closed && ps.distance(pe) <= tol && ps.distance(pe) > 0.0 => Ok(vec![mt::Curve::Line(mt::Line(ps, pe))]),
+        other => other,
+    }
 }
 
 /// Kernel curves for an edge from `ps` to `pe`: one piece, or two for a closed edge (so no
@@ -635,8 +666,16 @@ pub(crate) fn edge_pieces(g: &CurveGeo, ps: mt::Point3, pe: mt::Point3, sense: b
             }
             Ok(vec![open_conic_curve(g, ts, te)?])
         }
-        CurveGeo::BSpline(c) => Ok(spline_pieces(c, ps, pe, sense, closed, tol)?.into_iter().map(mt::Curve::BSplineCurve).collect()),
-        CurveGeo::Nurbs(c) => Ok(spline_pieces(c, ps, pe, sense, closed, tol)?.into_iter().map(mt::Curve::NurbsCurve).collect()),
+        CurveGeo::BSpline(c) => micro_edge(
+            spline_pieces(c, ps, pe, sense, closed, tol).map(|v| v.into_iter().map(mt::Curve::BSplineCurve).collect()),
+            ps,
+            pe,
+            closed,
+            tol,
+        ),
+        CurveGeo::Nurbs(c) => {
+            micro_edge(spline_pieces(c, ps, pe, sense, closed, tol).map(|v| v.into_iter().map(mt::Curve::NurbsCurve).collect()), ps, pe, closed, tol)
+        }
     }
 }
 

@@ -1707,3 +1707,88 @@ fn explicit_outer_bound_crossing_a_closed_nurbs_seam_stays_trimmed() {
         assert!((mesh.measure().area - 42.0).abs() < 0.01, "sense={sense}: area {}", mesh.measure().area);
     }
 }
+
+/// Siemens NX writes cubic Bézier edges whose knots span 1e-7, e.g. `(0., 1.020781457822E-07)`.
+/// truck takes a knot range within its tolerance (1e-6) for a single value, so the curve was
+/// refused and the face that used it was left out. The knots are rescaled; the shape is the same.
+#[test]
+fn a_bezier_over_a_tiny_knot_span_is_read() {
+    use mt::{BoundedCurve, MetricSpace, ParametricCurve};
+    let text = format!(
+        "{HEAD}#1=CARTESIAN_POINT('',(0.,0.,0.));\n#2=CARTESIAN_POINT('',(1.,1.,0.));\n\
+         #3=CARTESIAN_POINT('',(2.,1.,0.));\n#4=CARTESIAN_POINT('',(3.,0.,0.));\n\
+         #5=B_SPLINE_CURVE_WITH_KNOTS('',3,(#1,#2,#3,#4),.UNSPECIFIED.,.F.,.F.,(4,4),\
+         (0.,1.020781457822E-07),.PIECEWISE_BEZIER_KNOTS.);\n{TAIL}"
+    );
+    let ex = p21::parse(&text).unwrap();
+    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6 };
+    let Ok(geom::CurveGeo::BSpline(c)) = geom::curve(&cx, 5, 0) else { panic!("the Bézier is read as a B-spline") };
+    let (t0, t1) = c.range_tuple();
+    assert!(c.subs(t0).distance(mt::Point3::new(0.0, 0.0, 0.0)) < 1e-12);
+    assert!(c.subs(t1).distance(mt::Point3::new(3.0, 0.0, 0.0)) < 1e-12);
+    // The middle of a symmetric cubic Bézier: (P0 + 3 P1 + 3 P2 + P3) / 8.
+    assert!(c.subs(0.5 * (t0 + t1)).distance(mt::Point3::new(1.5, 0.75, 0.0)) < 1e-12);
+}
+
+/// A closed square, as a degree-1 B-spline over (0, 1), and the kernel pieces of an edge on it.
+fn square_pieces(ps: mt::Point3, pe: mt::Point3, closed: bool) -> R<Vec<mt::Curve>> {
+    let pts = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0], [0.0, 0.0]].map(|[x, y]| mt::Point3::new(x, y, 0.0));
+    let knots = mt::KnotVec::from(vec![0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0]);
+    let curve = geom::CurveGeo::BSpline(mt::BSplineCurve::new(knots, pts.to_vec()));
+    geom::edge_pieces(&curve, ps, pe, true, closed, 1e-3)
+}
+
+/// Every piece evaluates at both ends: a piece whose knot range is within truck's tolerance
+/// panics with ZeroRange there.
+fn assert_pieces_evaluate(pieces: &[mt::Curve]) {
+    use mt::{BoundedCurve, ParametricCurve};
+    for c in pieces {
+        let (t0, t1) = c.range_tuple();
+        assert!(t1 - t0 > mt::TOLERANCE, "a piece over ({t0}, {t1})");
+        let (a, b) = guard("piece ends", || Ok((c.subs(t0), c.subs(t1)))).expect("the piece evaluates");
+        assert!(a.x.is_finite() && b.x.is_finite());
+    }
+}
+
+/// A closed edge whose vertex lies 5e-7 into the curve's parameter range was cut into pieces
+/// over (0, 5e-7) and (5e-7, 1). truck refuses to evaluate the first (ZeroRange), and the panic
+/// took the whole solid with it. The vertex is at the curve's end, so the edge is cut in half.
+#[test]
+fn a_closed_edge_with_its_vertex_at_the_seam_is_cut_into_two_halves() {
+    let v = mt::Point3::new(5e-7 * 32.0, 0.0, 0.0); // 5e-7 of the parameter, on the 32 mm square
+    let pieces = square_pieces(v, v, true).expect("the closed edge is read");
+    assert_eq!(pieces.len(), 2);
+    assert_pieces_evaluate(&pieces);
+}
+
+/// NX closes a round hole with an edge that runs the whole way round a closed curve between two
+/// vertices 1e-6 mm apart, plus a micro edge across the seam. The end vertex lands a hair after
+/// the start one, so the edge was cut as the 1 µm piece between them (or refused as degenerate)
+/// instead of the loop round the hole.
+#[test]
+fn an_edge_between_two_vertices_at_the_seam_runs_the_whole_way_round() {
+    use mt::{BoundedCurve, MetricSpace, ParametricCurve};
+    let (ps, pe) = (mt::Point3::new(0.0, 0.0, 0.0), mt::Point3::new(1e-6, 0.0, 0.0));
+    let pieces = square_pieces(ps, pe, false).expect("the edge round the hole is read");
+    assert_pieces_evaluate(&pieces);
+    let length: f64 = pieces
+        .iter()
+        .map(|c| {
+            let (t0, t1) = c.range_tuple();
+            (0..64).map(|i| c.subs(t0 + (t1 - t0) * i as f64 / 64.0).distance(c.subs(t0 + (t1 - t0) * (i + 1) as f64 / 64.0))).sum::<f64>()
+        })
+        .sum();
+    assert!((length - 32.0).abs() < 1e-6, "the edge runs {length} mm, the square is 32 mm round");
+}
+
+/// NX leaves edges 1.26 µm long at the start of an 8 mm spline. Too little of the curve to cut
+/// out, the edge was refused and the loops around it left open; it is the straight segment
+/// between its vertices.
+#[test]
+fn a_micro_edge_on_a_long_spline_is_its_straight_segment() {
+    let pts = [mt::Point3::new(0.0, 0.0, 0.0), mt::Point3::new(4.0, 1.0, 0.0), mt::Point3::new(8.0, 0.0, 0.0)];
+    let curve = geom::CurveGeo::BSpline(mt::BSplineCurve::new(mt::KnotVec::bezier_knot(2), pts.to_vec()));
+    let (ps, pe) = (pts[0], mt::Point3::new(1.26e-6, 0.0, 0.0));
+    let pieces = geom::edge_pieces(&curve, ps, pe, true, false, 1e-3).expect("the micro edge is read");
+    assert!(matches!(pieces.as_slice(), [mt::Curve::Line(mt::Line(a, b))] if *a == ps && *b == pe), "{pieces:?}");
+}
