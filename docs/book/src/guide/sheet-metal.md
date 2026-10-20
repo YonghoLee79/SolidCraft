@@ -314,6 +314,14 @@ but a pocket crossing a bend zone cannot yet be refolded. Machining folded bend 
 tapered sheet cuts and other unsupported 3D sheet Cut/Intersect operations report an error before changing
 the design; they cannot silently restore removed material during a later sheet rebuild.
 
+Other features that change a sheet body's material without the sheet knowing it (a fillet or
+chamfer on a corner, an extrude joined onto it, a Mirror or Combine joined into it) are not in
+the flat pattern yet. Such a feature warns, and while the body carries its change the flat
+pattern, the DXF and the bend table are refused with an error that names it, rather than writing
+a part that does not match the body. A later sheet metal feature rebuilds the body from its sheet
+features and says that the change is not kept. Moving the body, splitting its faces and cosmetic
+threads leave the flat pattern as it is.
+
 A sketch can be drawn on a flat face of the sheet: the base or a flange, on either side. Pick
 the face (or give `sketch.create` the point `plane: {face: [x, y, z]}`) and the sketch attaches
 to that panel instead of to a certified source face. It keeps the face's name,

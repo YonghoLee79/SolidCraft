@@ -513,6 +513,13 @@ pub struct SheetBody {
     /// The base sketch's lines (id, ends in flat coordinates), naming the base panel's edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub base_curves: Vec<(String, Vec2, Vec2)>,
+    /// The feature (its name) that changed this body's material without changing its sheet
+    /// model: a fillet or chamfer, a join, a mirror combined into it, any feature that is not
+    /// sheet metal machining. The flat pattern, its DXF and the bend table no longer describe the
+    /// body while it is set, so they are refused. Cleared when a sheet metal feature rebuilds the
+    /// body from the model. Derived from feature history, like `pockets`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub altered_by: Option<String>,
 }
 
 /// A straight round bore of one panel (None = the base), in flat coordinates: a cylinder from
@@ -849,6 +856,20 @@ struct ReturnCorner {
 }
 
 impl SheetBody {
+    /// Whether the flat pattern still describes the body: refused, naming the feature, once a
+    /// feature that is not sheet metal changed the body's material (see `altered_by`). The flat
+    /// pattern, its DXF and the bend table all check it, so none of them makes a part other than
+    /// the one in the design.
+    pub fn flat_matches_body(&self) -> Result<()> {
+        match &self.altered_by {
+            None => Ok(()),
+            Some(feature) => Err(DocError::Invalid(format!(
+                "not supported yet: the flat pattern of `{}` can't include {feature}, which changed the body after its sheet metal features, so the flat pattern, DXF and bend table would not match the part; remove or suppress {feature}, or make that shape with sheet metal features",
+                self.body
+            ))),
+        }
+    }
+
     /// Bend allowance of a flange.
     pub fn allowance(&self, f: &SheetFlange) -> f64 {
         f.angle.abs() * (f.radius + self.k * self.t)
@@ -4343,6 +4364,7 @@ pub fn base_flange(body: &str, rule: &str, rv: &RuleValues, plane: Plane, region
         relief_size: rv.corner_relief,
         bend_relief: (rv.relief_width, rv.relief_depth),
         base_curves: Vec::new(),
+        altered_by: None,
     }
 }
 
@@ -4401,6 +4423,7 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
         relief_size: rv.corner_relief,
         bend_relief: (rv.relief_width, rv.relief_depth),
         base_curves: Vec::new(),
+        altered_by: None,
     };
     let (y0, y1) = if ysign > 0.0 { (0.0, width) } else { (-width, 0.0) };
     // First segment: the base panel.

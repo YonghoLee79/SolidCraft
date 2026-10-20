@@ -568,17 +568,22 @@ impl Body {
     /// operation made it) is not part of it: an operation that leaves a body as it is (a cut by
     /// a tool clear of it) gives the same body, with that operation's history.
     pub fn same(&self, other: &Body) -> bool {
+        self.same_shape(other)
+            && self.color == other.color
+            && same_shared(&self.paint, &other.paint)
+            && same_shared(&self.splits, &other.splits)
+            && same_shared(&self.face_sources, &other.face_sources)
+            && self.regularization_protected == other.regularization_protected
+    }
+
+    /// The very same shape (shared solid or mesh), whatever its colour, paint or face splits.
+    pub fn same_shape(&self, other: &Body) -> bool {
         std::sync::Arc::ptr_eq(&self.solid, &other.solid)
             && match (&self.mesh, &other.mesh) {
                 (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
                 (None, None) => true,
                 _ => false,
             }
-            && self.color == other.color
-            && same_shared(&self.paint, &other.paint)
-            && same_shared(&self.splits, &other.splits)
-            && same_shared(&self.face_sources, &other.face_sources)
-            && self.regularization_protected == other.regularization_protected
     }
 
     pub(crate) fn new(solid: Solid) -> Result<Body> {
