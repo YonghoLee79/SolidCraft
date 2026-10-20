@@ -1096,7 +1096,7 @@ impl SolveApp {
     pub fn highlighted(&self) -> Vec<solidcraft_engine::Sel> {
         let mut v = self.session.selection.clone();
         if let Some(d) = &self.dialog {
-            v.extend(d.items());
+            v.extend(d.highlighted(&self.session));
         }
         v.extend(sketch_text::highlighted(self));
         v.extend(sketch_text_move::highlighted(self));

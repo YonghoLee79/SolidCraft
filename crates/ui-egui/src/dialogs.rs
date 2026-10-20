@@ -424,6 +424,15 @@ pub struct Dialog {
     pub(crate) picked_edges: Vec<Sel>,
     /// Whether `inputs[0]` currently includes the tangent chains of `picked_edges`.
     pub(crate) chain_applied: bool,
+    /// Shell feedback is derived from the picks, never saved as additional face references.
+    shell_chain: std::cell::RefCell<Option<ShellChain>>,
+}
+
+#[derive(Clone, Debug)]
+struct ShellChain {
+    revision: u64,
+    picks: Vec<Sel>,
+    faces: Vec<Sel>,
 }
 
 /// OK computing off the window thread: the dialog's commands evaluated on a scratch copy of the
@@ -547,6 +556,7 @@ impl Dialog {
             then_start: None,
             picked_edges: Vec::new(),
             chain_applied,
+            shell_chain: Default::default(),
         }
     }
 
@@ -975,6 +985,47 @@ impl Dialog {
     /// Everything the inputs hold (for highlighting).
     pub fn items(&self) -> Vec<Sel> {
         self.inputs.iter().flat_map(|i| i.items.iter().cloned()).collect()
+    }
+
+    /// Faces Shell will open, including the tangent chain. Keep the input itself as the
+    /// user's picks so switching the option off, clearing, and editing all remain reversible.
+    fn shell_faces(&self, s: &Session) -> Option<Vec<Sel>> {
+        if !matches!(self.kind, Kind::Shell { .. }) || self.extra.get("tangent_chain").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        let picks = sels(self, 0);
+        if let Ok(cache) = self.shell_chain.try_borrow()
+            && let Some(chain) = cache.as_ref()
+            && chain.revision == s.revision
+            && chain.picks == picks
+        {
+            return Some(chain.faces.clone());
+        }
+        let state = s.world_state();
+        let mut by_body = std::collections::BTreeMap::<&str, Vec<Vec3>>::new();
+        for pick in picks {
+            if let Sel::Face { body, point, .. } = pick {
+                by_body.entry(body).or_default().push(*point);
+            }
+        }
+        let mut faces = Vec::new();
+        for (name, points) in by_body {
+            if let Some(body) = state.body(name) {
+                faces.extend(solidcraft_engine::doc::tangent_face_chain(body, &points).into_iter().map(|(index, point)| Sel::Face {
+                    body: name.to_string(),
+                    index,
+                    point,
+                }));
+            }
+        }
+        if let Ok(mut cache) = self.shell_chain.try_borrow_mut() {
+            *cache = Some(ShellChain { revision: s.revision, picks: picks.to_vec(), faces: faces.clone() });
+        }
+        Some(faces)
+    }
+
+    pub(crate) fn highlighted(&self, s: &Session) -> Vec<Sel> {
+        self.shell_faces(s).unwrap_or_else(|| self.items())
     }
 
     pub fn highlight_key(&self) -> u64 {
@@ -1831,6 +1882,7 @@ fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, range: std::
     let mut clear: Option<usize> = None;
     let mut activate: Option<usize> = None;
     let mut remove = None;
+    let shell_count = d.shell_faces(s).map(|faces| faces.len());
     for (i, inp) in d.inputs.iter().enumerate().skip(range.start).take(range.end.saturating_sub(range.start)) {
         let stored_reference = feature_pattern_reference_key(d, i).and_then(|key| d.extra.get(key)).filter(|_| inp.items.is_empty());
         form_row(ui, inp.label, |ui| {
@@ -1845,7 +1897,8 @@ fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, range: std::
                     } else if !inp.multi {
                         inp.items.first().map(|item| selection_label(s, item)).unwrap_or_default()
                     } else {
-                        crate::i18n::format("dialog.selected_count", &[("count", &inp.items.len().to_string())])
+                        let count = if i == 0 { shell_count.unwrap_or(inp.items.len()) } else { inp.items.len() };
+                        crate::i18n::format("dialog.selected_count", &[("count", &count.to_string())])
                     })
                     .color(t.on_accent)
                 } else {
@@ -1854,6 +1907,13 @@ fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, range: std::
                 let selected_text = text.text().strip_prefix("↖ ").unwrap_or_else(|| text.text());
                 let prompt = if !filled && inp.label == "Edges" { tr("Select edges") } else { selected_text };
                 let chip = crate::ui_kit::selection_field(ui, prompt, crate::ui_kit::Selection { active, filled });
+                if matches!(d.kind, Kind::Shell { .. }) && i == 0 {
+                    chip.widget_info(|| {
+                        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tr(inp.label));
+                        info.current_text_value = Some(prompt.to_string());
+                        info
+                    });
+                }
                 let chip_rect = chip.rect;
                 let tooltip = if let Some(reference) = stored_reference {
                     reference.to_string()

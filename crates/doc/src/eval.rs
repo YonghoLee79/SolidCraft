@@ -4862,8 +4862,10 @@ fn face_samples(b: &ModelBody) -> Vec<Vec3> {
     out.into_iter().flatten().collect()
 }
 
-/// The picked faces and every face joined to them smoothly (across tangent edges), as points.
-fn smooth_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<Vec3> {
+/// The picked faces and every face joined to them smoothly (across tangent edges).
+/// Each face appears once, with a point on it. Shell evaluation and selection feedback use
+/// the same expansion; callers keep the original picks when saving the feature.
+pub fn tangent_face_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<(usize, Vec3)> {
     let m = b.mesh();
     let samples = face_samples(b);
     let face_of = |p: Vec3| crate::appearance::face_index_at(b, p);
@@ -4880,6 +4882,8 @@ fn smooth_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<Vec3> {
             .and_then(|(_, n)| n.normalized())
     };
     let mut chosen: Vec<u32> = picks.iter().filter_map(|p| face_of(*p).map(|f| f as u32)).collect();
+    chosen.sort_unstable();
+    chosen.dedup();
     let mut k = 0;
     while k < chosen.len() && chosen.len() < 10_000 {
         let f = chosen[k];
@@ -4904,12 +4908,18 @@ fn smooth_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<Vec3> {
             }
         }
     }
-    let mut out = picks.to_vec();
+    let mut out = Vec::new();
     for f in chosen {
-        if let Some(p) = samples.iter().find(|p| face_of(**p) == Some(f as usize)) {
-            out.push(*p);
+        if let Some(p) = picks.iter().chain(&samples).find(|p| face_of(**p) == Some(f as usize)) {
+            out.push((f as usize, *p));
         }
     }
+    out
+}
+
+fn smooth_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<Vec3> {
+    let mut out = picks.to_vec();
+    out.extend(tangent_face_chain(b, picks).into_iter().map(|(_, point)| point));
     out
 }
 
@@ -5208,7 +5218,23 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             let t = val(vals, thickness, Kind::Length)?;
             let i = body_at(st, body, &crate::plain(faces))?;
             let Some(mb) = st.bodies.get(i).cloned() else { return Err(DocError::Invalid("body".into())) };
-            let open = if *tangent_chain { smooth_chain(&mb, &crate::plain(faces)) } else { crate::plain(faces) };
+            let picks = crate::plain(faces);
+            let open = if *tangent_chain {
+                let chain = tangent_face_chain(&mb, &picks);
+                if !chain.is_empty() && chain.len() == mb.body.face_count() {
+                    return Err(DocError::Invalid(
+                        "Tangent Chain opens every face of this body, leaving no walls; turn off Tangent Chain to remove only the picked faces"
+                            .into(),
+                    ));
+                }
+                // Keep every authored pick, including any the kernel must reject, as before
+                // chain expansion. The derived samples must not silently drop a bad input.
+                let mut open = picks;
+                open.extend(chain.into_iter().map(|(_, point)| point));
+                open
+            } else {
+                picks
+            };
             let input = mb.traced();
             // The shell, and the operands of the operation that made it.
             let (nb, operands) = match direction.as_str() {
@@ -6299,9 +6325,14 @@ mod chain_tests {
         m.evaluate(&doc);
         let st = m.state();
         let b = &st.bodies[0];
-        let pts = smooth_chain(b, &[Vec3::new(20.0, 15.0, 20.0)]);
-        let faces: std::collections::BTreeSet<usize> = pts.iter().filter_map(|p| crate::appearance::face_index_at(b, *p)).collect();
+        let pts = tangent_face_chain(b, &[Vec3::new(20.0, 15.0, 20.0)]);
+        let faces: std::collections::BTreeSet<usize> = pts.iter().map(|(index, _)| *index).collect();
         assert_eq!(faces.len(), 3, "{faces:?}");
+        assert_eq!(pts.len(), faces.len());
+        for (index, point) in &pts {
+            assert_eq!(crate::appearance::face_index_at(b, *point), Some(*index));
+        }
+        assert_eq!(tangent_face_chain(b, &[Vec3::new(20.0, 15.0, 20.0); 2]), pts);
     }
 }
 
