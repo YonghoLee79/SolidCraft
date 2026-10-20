@@ -208,8 +208,9 @@ pub fn nav_preset(id: &str) -> &'static NavPreset {
     NAV_PRESETS.iter().find(|p| p.id == id).unwrap_or(&NAV_PRESETS[0])
 }
 /// The dialog's pages, in order.
-pub const PAGES: [&str; 8] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection", "AI"];
+pub const PAGES: [&str; 9] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection", "AI", "Plugins"];
 pub const PAGE_AI: usize = 7;
+pub const PAGE_PLUGINS: usize = 8;
 pub const PAGE_SHORTCUTS: usize = 2;
 pub const PAGE_DESIGN: usize = 3;
 pub const PAGE_GRAPHICS: usize = 4;
@@ -267,6 +268,8 @@ pub struct Prefs {
     pub navigator_style: NavigatorStyle,
     /// Show the radial ring and enable hold/flick gestures for viewport context menus.
     pub radial_context_menu: bool,
+    /// Mouse gestures: a ring of tools on the right button (SolidWorks mouse mode only).
+    pub mouse_gestures: crate::mouse_gesture::Config,
     /// The wheel zooms out when turned forward.
     pub zoom_reverse: bool,
     /// What an orbit turns around.
@@ -406,6 +409,8 @@ pub struct Prefs {
     /// When true: Shift+click adds without removing; Primary toggles.
     /// When false (default): Shift and Primary both toggle.
     pub selection_shift_add_only: bool,
+    /// Plugin ids turned off (Preferences › Plugins). An installed plugin whose id is absent is on.
+    pub disabled_plugins: std::collections::BTreeSet<String>,
 }
 
 /// What a middle-button double-click in the view does.
@@ -443,6 +448,7 @@ impl Default for Prefs {
             nav: "fusion".into(),
             navigator_style: NavigatorStyle::default(),
             radial_context_menu: false,
+            mouse_gestures: Default::default(),
             zoom_reverse: false,
             orbit_around: OrbitAround::default(),
             orbit_cursor: false,
@@ -506,6 +512,7 @@ impl Default for Prefs {
             suppress_sketch_snap: ModifierCombo::CTRL_ALT,
             manipulator_free_alt: true,
             selection_shift_add_only: false,
+            disabled_plugins: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -740,6 +747,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
             app.autosave_minutes = 5.0;
             set_autosave(app);
         }
+        PAGE_PLUGINS => p.disabled_plugins.clear(),
         PAGE_AI => {
             // The agents the user added and their "always allow" answers stay.
             p.ai_features = d.ai_features;
@@ -757,6 +765,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
             p.nav = d.nav;
             p.navigator_style = d.navigator_style;
             p.radial_context_menu = d.radial_context_menu;
+            p.mouse_gestures = d.mouse_gestures;
             p.zoom_reverse = d.zoom_reverse;
             p.zoom_to_cursor = d.zoom_to_cursor;
             p.smooth_wheel_zoom = d.smooth_wheel_zoom;
@@ -880,6 +889,10 @@ pub fn set_autosave(app: &mut SolveApp) {
 
 /// Which navigation dragging `button` with `mods` held does under the preset.
 pub fn nav_mode(app: &SolveApp, button: NavButton, mods: Modifiers) -> Option<NavMode> {
+    // With mouse gestures on, the right button opens the ring of tools instead of orbiting.
+    if button == NavButton::Right && crate::mouse_gesture::active(app) {
+        return None;
+    }
     nav_preset(&app.preferences.nav).mode(button, mods)
 }
 
@@ -1221,6 +1234,10 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
         crate::agent_chat::settings::page(app, ui);
         return;
     }
+    if app.prefs_window.section == PAGE_PLUGINS {
+        crate::plugins::page(app, ui);
+        return;
+    }
     egui::Grid::new(("sc_prefs_grid", app.prefs_window.section)).num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| match app.prefs_window.section {
         0 => {
             ui.label(app.tr("ui.language"));
@@ -1317,6 +1334,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             ui.label(crate::i18n::tr_label("Context menu"));
             ui.checkbox(&mut app.preferences.radial_context_menu, crate::i18n::tr_label("Radial context menu"));
             ui.end_row();
+            crate::mouse_gesture::nav_rows(app, ui, t);
             ui.label(crate::i18n::tr_label("View navigator"));
             let picker =
                 egui::ComboBox::from_id_salt("pref_navigator_style").selected_text(crate::i18n::tr_label(app.preferences.navigator_style.label())).show_ui(ui, |ui| {
@@ -1842,12 +1860,23 @@ pub fn migrate(mut p: Prefs) -> Prefs {
     p
 }
 
+/// Drop plugin ids this page would not show, and keep at most [`crate::plugins::MAX_DISABLED`],
+/// so a hand-edited preferences file cannot carry a huge or nonsense list. `set` still refuses
+/// those instead of dropping them.
+fn limit_disabled_plugins(mut p: Prefs) -> Prefs {
+    p.disabled_plugins.retain(|id| crate::plugins::valid_id(id));
+    if p.disabled_plugins.len() > crate::plugins::MAX_DISABLED {
+        p.disabled_plugins = p.disabled_plugins.into_iter().take(crate::plugins::MAX_DISABLED).collect();
+    }
+    p
+}
+
 /// Saved preferences, keeping every one that still reads. A value this version doesn't
 /// understand (a setting a newer or older release saved differently, a hand edit) falls back to
 /// its default on its own instead of discarding all of them.
 pub fn lenient(saved: &serde_json::Value) -> Prefs {
     if let Ok(p) = serde_json::from_value::<Prefs>(saved.clone()) {
-        return migrate(p);
+        return limit_disabled_plugins(migrate(p));
     }
     let Ok(mut cur) = serde_json::to_value(Prefs::default()) else { return Prefs::default() };
     if let (Some(o), Some(src)) = (cur.as_object_mut(), saved.as_object()) {
@@ -1861,7 +1890,7 @@ pub fn lenient(saved: &serde_json::Value) -> Prefs {
             }
         }
     }
-    serde_json::from_value(cur).map(migrate).unwrap_or_default()
+    serde_json::from_value(cur).map(migrate).map(limit_disabled_plugins).unwrap_or_default()
 }
 
 /// Set preferences from JSON (control channel); returns them all.
@@ -1903,6 +1932,9 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
     }
     if new.ui_font != app.preferences.ui_font && !new.ui_font.trim().is_empty() && crate::fonts::ui_font(&new.ui_font).is_none() {
         return Err(format!("`ui_font`: `{}` is not an installed font family or a readable font file", new.ui_font.trim()));
+    }
+    if new.disabled_plugins.len() > crate::plugins::MAX_DISABLED || new.disabled_plugins.iter().any(|id| !crate::plugins::valid_id(id)) {
+        return Err(format!("`disabled_plugins` must be at most {} ids of lowercase letters, digits and hyphens", crate::plugins::MAX_DISABLED));
     }
     if !(0.5..=2.5).contains(&new.ui_scale) || !(0.25..=4.0).contains(&new.look_at_speed) {
         return Err("`ui_scale` must be 0.5…2.5 and `look_at_speed` 0.25…4".into());
@@ -2478,7 +2510,7 @@ mod tests {
         let mut out = ctx.run_ui(Default::default(), |ui| show(&mut app, ui.ctx()));
         out.textures_delta.clear();
         assert!(app.prefs_window.open && app.prefs_window.section == PAGE_SHORTCUTS && !app.keymap.open);
-        assert!(control(&mut app, &json!({"open": "Plugins"})).is_err());
+        assert!(control(&mut app, &json!({"open": "NoSuch"})).is_err());
         assert!(set(&mut app, &json!({"up_axis": "x"})).is_err());
         assert!(set(&mut app, &json!({"theme": "sepia"})).is_err());
         assert!(set(&mut app, &json!({"language": "xx"})).is_err());

@@ -490,6 +490,43 @@ fn tapered_extrude_of_lines_and_arcs() {
     assert!(e.to_string().contains("arc meets another edge at a corner"), "{e}");
 }
 
+/// A circle with a lobe on each side (four arcs of three circles, meeting at corners: the outline of
+/// a scale pocket with finger notches) tapered inward: every circle shrinks by d = z · tan 45°,
+/// and the corners go to where the shrunk circles cross, so each section is the union of the
+/// shrunk circles. Before, the arcs kept their end angles and the sides missed the corners (#2810).
+#[test]
+fn tapered_extrude_of_arcs_meeting_at_corners() {
+    let (r0, w0, c, h, a) = (49.2, 16.2, 41.0, 2.5, 45f64.to_radians());
+    let corner = |r: f64, w: f64| {
+        let x = (r * r - w * w + c * c) / (2.0 * c);
+        (x, (r * r - x * x).sqrt())
+    };
+    let (x, y) = corner(r0, w0);
+    let at = |cx: f64, px: f64, py: f64| (py).atan2(px - cx);
+    let lobed = Loop2 {
+        segs: vec![
+            Seg2::Arc { center: Vec2::ZERO, radius: r0, start: at(0.0, x, y), sweep: at(0.0, -x, y) - at(0.0, x, y) },
+            Seg2::Arc { center: Vec2::new(-c, 0.0), radius: w0, start: at(-c, -x, y), sweep: 2.0 * PI - 2.0 * at(-c, -x, y) },
+            Seg2::Arc { center: Vec2::ZERO, radius: r0, start: at(0.0, -x, -y), sweep: at(0.0, x, -y) - at(0.0, -x, -y) },
+            Seg2::Arc { center: Vec2::new(c, 0.0), radius: w0, start: at(c, x, -y), sweep: 2.0 * at(c, x, y) },
+        ],
+    };
+    let b = extrude_tapered(&Plane::XY, &Region2 { outer: lobed, holes: vec![] }, h, -1.0, -a).unwrap();
+    // Union of the circle and two lobes: the circle plus each lobe less its lens with the circle.
+    let area = |d: f64| {
+        let (r, w) = (r0 - d, w0 - d);
+        let lens = r * r * ((c * c + r * r - w * w) / (2.0 * c * r)).acos() + w * w * ((c * c + w * w - r * r) / (2.0 * c * w)).acos()
+            - 0.5 * ((-c + r + w) * (c + r - w) * (c - r + w) * (c + r + w)).sqrt();
+        PI * r * r + 2.0 * (PI * w * w - lens)
+    };
+    let k = 200;
+    let v: f64 = (0..k).map(|j| area((j as f64 + 0.5) * h / k as f64 * a.tan())).sum::<f64>() * h / k as f64;
+    let m = measure(&b).unwrap();
+    assert!(rel(m.volume, v) < 2e-4, "{} vs {v}", m.volume);
+    assert_eq!(m.merged.faces, 6);
+    assert!(m.bbox.max.z < 1e-6 && m.bbox.min.z > -h - 1e-6, "{:?}", m.bbox);
+}
+
 /// A circle drawn as four conics (the way free curves come, as in text) tapered inward: each
 /// conic's control polygon moves in by d, which for a circle is the exact smaller circle, so
 /// the solid is a cone frustum.
@@ -584,7 +621,7 @@ fn tapered_extrude_swallows_a_short_tip() {
     let meet = |(p0, t0): (Vec2, Vec2), (p1, t1): (Vec2, Vec2)| p0 + t0 * ((p1 - p0).cross(t1) / t0.cross(t1));
     let (low, high, left) = (moved(pts[0], pts[1]), moved(pts[2], pts[3]), moved(pts[3], pts[0]));
     let top = [meet(left, low), meet(low, high), meet(high, left)];
-    let area = |q: &[Vec2]| 0.5 * q.iter().zip(q.iter().cycle().skip(1)).map(|(a, b)| a.cross(*b)).sum::<f64>();
+    let area = |q: &[Vec2]| solidcraft_geom::Ring::from(q.to_vec()).signed_area();
     // Halfway up, each side edge's midpoint (the two tip corners both run to the top's tip).
     let mid = [pts[0].lerp(top[0], 0.5), pts[1].lerp(top[1], 0.5), pts[2].lerp(top[1], 0.5), pts[3].lerp(top[2], 0.5)];
     let v = h / 6.0 * (area(&pts) + 4.0 * area(&mid) + area(&top));
@@ -2925,4 +2962,53 @@ fn loft_pairs_the_vertices_of_matching_non_convex_sections() {
     // skewed quad, one twisted face, 0.3 % under), so the bounds leave room for that.
     assert!(rel(m.volume, want) < 5e-3, "{} vs {want}", m.volume);
     assert!(m.centroid.x.abs() < 0.05, "centre of mass x {}", m.centroid.x);
+}
+
+/// Two cylinders crossing at right angles need the kernel's own intersection: with no tries
+/// left the boolean fails at once, a budget inside another uses the outer one's up, and none
+/// lingers after.
+#[test]
+fn an_attempt_budget_stops_the_boolean_and_is_shared_by_nesting() {
+    let a = cylinder(Vec3::new(0.0, 0.0, -10.0), Vec3::Z, 3.0, 20.0).unwrap();
+    let b = cylinder(Vec3::new(-10.0, 0.0, 0.0), Vec3::X, 2.0, 20.0).unwrap();
+    assert!(with_attempt_budget(0, || boolean(&a, &b, BoolOp::Intersect)).is_err());
+    // The inner budget asks for more than the outer has left: it gets what is left.
+    let (inner, after) = with_attempt_budget(1, || {
+        let inner = with_attempt_budget(10, || boolean(&a, &b, BoolOp::Intersect).is_ok());
+        (inner, boolean(&a, &b, BoolOp::Intersect).is_ok())
+    });
+    assert!(inner && !after);
+    assert!(boolean(&a, &b, BoolOp::Intersect).unwrap().is_some());
+}
+
+/// Moving an assembly places every body of it again: a copy placed for showing keeps its
+/// revolved faces where its source turned them, so placing searches none of them again (that search was most
+/// of the time an occurrence move took on a large assembly, #3044), and the copy is the same
+/// solid as placing a freshly turned one.
+#[test]
+fn placing_a_body_does_not_turn_its_revolved_faces_again() {
+    let body = cylinder(Vec3::new(1.0, 2.0, 0.0), Vec3::Z, 3.0, 5.0).unwrap();
+    assert!(body.phased);
+    let m = [[0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [10.0, 20.0, 30.0, 1.0]];
+    crate::body::REPHASED.with(|c| c.set(0));
+    let mut placed = body.clone();
+    for _ in 0..10 {
+        placed = crate::place_matrix(&placed, m).unwrap();
+    }
+    assert_eq!(crate::body::REPHASED.with(|c| c.get()), 0, "no placement searched the revolved faces again");
+    // A modelling move (a pattern's copy, a hole's tool) still turns them in its own frame.
+    let _ = crate::transform_matrix(&body, m).unwrap();
+    assert_eq!(crate::body::REPHASED.with(|c| c.get()), 1);
+    crate::body::REPHASED.with(|c| c.set(0));
+    assert!(placed.phased);
+    let unphased = Body { phased: false, ..body.clone() };
+    let mut turned = unphased;
+    for _ in 0..10 {
+        turned = crate::place_matrix(&turned, m).unwrap();
+    }
+    assert!(crate::body::REPHASED.with(|c| c.get()) > 0, "a body not known to be turned still is");
+    let (a, b) = (measure(&placed).unwrap(), measure(&turned).unwrap());
+    assert!((a.volume - b.volume).abs() < 1e-9 * a.volume && (a.area - b.area).abs() < 1e-9 * a.area);
+    assert_eq!(a.faces, b.faces);
+    assert!(a.bbox.min.dist(b.bbox.min) < 1e-9 && a.bbox.max.dist(b.bbox.max) < 1e-9);
 }

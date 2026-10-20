@@ -31,6 +31,7 @@ pub mod dialogs_coupling;
 pub mod dialogs_library;
 pub mod dialogs_motion;
 pub mod dialogs_move;
+pub mod dialogs_part_size;
 pub mod dialogs_parts;
 pub mod dialogs_plastic;
 pub mod dialogs_save_mesh;
@@ -71,7 +72,12 @@ pub mod issue_report;
 pub mod joint_drag;
 pub mod keymap;
 mod linked_source;
+#[cfg(test)]
+mod loft_rails_dialog_tests;
+#[cfg(test)]
+mod look_at_tests;
 mod material_card_review;
+
 #[cfg(test)]
 mod measurement_ui_tests;
 #[cfg(test)]
@@ -110,11 +116,14 @@ mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
 mod file_picker;
+pub(crate) mod frame_watch;
 #[cfg(test)]
 mod history_off_thread_tests;
 pub use file_picker::FilePickerFuture;
 #[cfg(test)]
 mod blend_arrow_tests;
+#[cfg(test)]
+mod blend_dialog_tests;
 #[cfg(test)]
 mod boundary_dialog_tests;
 pub(crate) mod display_lod;
@@ -122,11 +131,14 @@ pub(crate) mod display_lod;
 mod file_load_ui_tests;
 #[cfg(test)]
 mod fillet_spline_handle_tests;
+pub mod mouse_gesture;
 pub(crate) mod navigation;
+pub(crate) mod open_meshing;
 pub mod palette;
 pub mod params_dialog;
 pub(crate) mod pick_buffer;
 pub(crate) mod pick_index;
+pub(crate) mod plugins;
 pub mod prefs;
 #[cfg(test)]
 mod preselect_tests;
@@ -140,6 +152,7 @@ pub mod render_workspace;
 mod revolve_edit_tests;
 #[cfg(test)]
 mod revolve_manipulator_tests;
+pub mod save_job;
 pub mod scenario;
 pub mod select_other;
 pub mod selection;
@@ -166,6 +179,8 @@ mod sketch_guidance_ui_tests;
 pub mod sketch_modify_ui;
 #[cfg(test)]
 mod sketch_modify_ui_tests;
+#[cfg(test)]
+mod sketch_moving_click_tests;
 pub mod sketch_palette;
 mod sketch_pattern_tree;
 #[cfg(test)]
@@ -310,6 +325,8 @@ pub struct SolveApp {
     pub pre_sketch_marker: Option<Option<usize>>,
     pub services: Services,
     file_picker: Option<file_picker::Pending>,
+    /// A Save or Save As being written on a worker (see [`save_job`]).
+    saving: Option<save_job::Saving>,
     pub viewport: viewport::ViewportState,
     pub render_workspace: render_workspace::State,
     pub tool: Option<tools::Tool>,
@@ -324,8 +341,12 @@ pub struct SolveApp {
     pub palette: palette::Palette,
     /// Context menus, rename box and Properties window.
     pub menu: context_menu::MenuState,
+    /// Mouse gestures: the ring of tools and its customization window.
+    pub gesture: mouse_gesture::State,
     /// Browser tree state (reveal, groups being edited, occurrence moves).
     pub tree: browser::TreeState,
+    /// A saved design copied for insertion into another open document.
+    pub linked_design_clipboard: Option<String>,
     /// The S box (command search at the cursor): recent and pinned commands.
     pub sbox: shortcut_box::ShortcutBox,
     /// Keyboard shortcuts the user changed.
@@ -357,6 +378,9 @@ pub struct SolveApp {
     /// thread, and those asked for meanwhile ([`deferred`]).
     pub deferred: Option<deferred::Deferred>,
     pub deferred_queue: Vec<(String, Value)>,
+    /// A delete's check of what it takes with it or breaks, computing off the window thread
+    /// ([`deferred::DeleteCheck`], #2678).
+    pub delete_check: Option<deferred::DeleteCheck>,
     /// How long OK waits for a feature before computing it off the window thread, saying so;
     /// `None`: it waits as long as it takes (headless use, tests). The desktop app sets it.
     pub apply_off_thread: Option<std::time::Duration>,
@@ -419,6 +443,12 @@ pub struct SolveApp {
     /// The 3D mouse: which device, its reading, and the calibration window.
     pub space_mouse: space_mouse::Input,
     pub file_load: file_load::FileLoad,
+    /// An opened design's bodies still being meshed, off the UI thread.
+    pub(crate) open_meshing: Option<open_meshing::Meshing>,
+    /// A design is being put in the window and will be meshed after it: framing it uses outlines.
+    pub(crate) open_meshing_next: bool,
+    /// How long each frame takes on the window thread, by phase.
+    pub(crate) frame_watch: frame_watch::Watch,
     /// The other open designs (tabs).
     pub docs: documents::Documents,
     /// The language the installed font fallback chain is ordered for (`fonts::fallback_order`);
@@ -449,6 +479,7 @@ impl SolveApp {
             pre_sketch_marker: None,
             services,
             file_picker: None,
+            saving: None,
             viewport: viewport::ViewportState::default(),
             render_workspace,
             tool: None,
@@ -459,7 +490,9 @@ impl SolveApp {
             material_card_review: None,
             palette: palette::Palette::default(),
             menu: context_menu::MenuState::default(),
+            gesture: mouse_gesture::State::default(),
             tree: browser::TreeState::default(),
+            linked_design_clipboard: None,
             sbox: shortcut_box::ShortcutBox::default(),
             keymap: keymap::Keymap::default(),
             help: help::HelpState::default(),
@@ -477,6 +510,7 @@ impl SolveApp {
             applying: None,
             deferred: None,
             deferred_queue: Vec::new(),
+            delete_check: None,
             apply_off_thread: None,
             last_command: None,
             esc_handled: false,
@@ -512,6 +546,9 @@ impl SolveApp {
             home: home::HomeState::default(),
             space_mouse: Default::default(),
             file_load: file_load::FileLoad::default(),
+            open_meshing: None,
+            open_meshing_next: false,
+            frame_watch: Default::default(),
             docs: documents::Documents::default(),
             applied_fonts_language: "en".into(),
             applied_ui_font: String::new(),
@@ -648,7 +685,7 @@ impl SolveApp {
 
     /// Run a command programmatically (JSON parameters, no dialogs).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
-        if self.file_load.busy() || self.file_picker.is_some() {
+        if self.file_load.busy() || self.file_picker.is_some() || self.saving.is_some() {
             return Err("a file operation is in progress".into());
         }
         let t0 = now_ms();
@@ -679,7 +716,14 @@ impl SolveApp {
             // Curves drawn in construction (or centerline) mode take that line type.
             sketch_palette::apply_mode(self, id, v);
         }
-        match &r {
+        self.finish_command(id, &r);
+        r
+    }
+
+    /// What follows a command's run, whether it ran here or on a worker (a save): its echo,
+    /// the status line when it failed, what opening and saving update, and the toolbar tab.
+    pub(crate) fn finish_command(&mut self, id: &str, r: &Result<Value, String>) {
+        match r {
             Ok(v) => {
                 // Programmatic callers (the control channel, scripts) run outside a render
                 // language scope, so resolve the echo from the saved preference instead of the
@@ -731,7 +775,6 @@ impl SolveApp {
             self.ui.tab = "SOLID".into();
             self.tool = None;
         }
-        r
     }
 
     /// Start a command the way a toolbar click does: interactive tools and dialogs for commands
@@ -1288,10 +1331,17 @@ impl SolveApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        frame_watch::begin(self);
         file_picker::tick(self, ctx);
         render_workspace::sync_backend(self);
         render_workspace::tick(self, ctx);
         file_load::tick(self, ctx);
+        save_job::tick(self, false);
+        if self.saving.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        open_meshing::tick(self, ctx);
+        open_meshing::refresh(self, ctx.input(|i| i.time));
         self.esc_handled = false;
         prefs::apply(self, ctx);
         if !self.styled || theme::is_dark() != self.ui.dark || theme::vision() != self.preferences.color_vision {
@@ -1401,14 +1451,17 @@ impl SolveApp {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
         }
         self.frame_ms = now_ms() - t0;
+        frame_watch::end(self);
     }
 
     fn cad_ui(&mut self, ui: &mut egui::Ui, report_input: &mut Option<issue_report::CadInput>) {
         scenario::clear_handles();
         self.poll_deferred(ui.ctx());
+        self.poll_delete_check(ui.ctx());
         toolbar::app_bar(self, ui);
         issue_report::CadInput::block(self, ui, report_input);
         file_load::show(self, ui.ctx());
+        open_meshing::show(self, ui.ctx());
         documents::prompt(self, ui.ctx());
         update::show(self, ui.ctx());
         install::show(self, ui.ctx());
@@ -1467,6 +1520,7 @@ impl SolveApp {
         stand_up::show(self, ui.ctx());
         prefs::show_reset_notice(self, ui.ctx());
         context_menu::show(self, ui.ctx());
+        mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
@@ -1493,13 +1547,25 @@ impl SolveApp {
                 break;
             }
             // Held requests go first, in order, once the file is in.
-            let held = if self.file_load.busy() || self.file_picker.is_some() { None } else { self.control_held.pop_front() };
+            // A screenshot waiting for an opened design to be meshed holds what came after it.
+            let shot_waits = open_meshing::active(self) && self.control_held.front().is_some_and(|r| r.method == "ui.screenshot");
+            let held = if self.file_load.busy() || self.file_picker.is_some() || shot_waits { None } else { self.control_held.pop_front() };
             let Some(req) = held.or_else(|| rx.as_ref().and_then(|rx| rx.try_recv().ok())) else { break };
+            if shot_waits {
+                if self.control_held.len() < MAX_HELD {
+                    self.control_held.push_back(req);
+                } else {
+                    let _ = req.reply.send(json!({"ok": false, "error": "a file operation is in progress"}));
+                }
+                continue;
+            }
             // A file is loading: commands that change the design wait for it (the window,
             // inspection and screenshots still answer).
             if ((self.file_load.busy() || self.file_picker.is_some())
                 && matches!(req.method.as_str(), "engine.execute" | "command" | "engine.script" | "engine.batch"))
                 || (self.file_picker_busy() && matches!(req.method.as_str(), "ui.file" | "ui.home"))
+                // A screenshot shows the whole design: it waits until an opened one is meshed.
+                || (open_meshing::active(self) && req.method == "ui.screenshot")
             {
                 if self.control_held.len() < MAX_HELD {
                     self.control_held.push_back(req);

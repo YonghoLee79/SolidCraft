@@ -108,7 +108,9 @@ ratio comes from the parts rather than a typed number:
 A radius or pitch may be an expression of the design's parameters, and a picked face is found
 again whenever the design changes. Change the parameter or the gear's diameter, and the ratio
 follows. The new link leaves the driven joint where it is, so teeth modelled in mesh stay in mesh.
-**Reverse** turns the driven joint the other way, for joints whose axes point opposite ways. These
+**Reverse** turns the driven joint the other way, for joints whose axes point opposite ways.
+Redefining a link (`link: i`, such as turning it the other way with **Reverse**) also leaves the
+driven joint where it is, so the gears stay in mesh at the pose they are in. These
 couplings are motion links, so they work in closed loops, with contact sets and in motion studies:
 a rack can push the piston of a slider-crank, or a pinion can steer through a rack and its tie
 rods. Drive the joint that drives the coupling (joint 1, the pinion, or the screw's turn), not the
@@ -158,7 +160,8 @@ example driving a rocker beyond its swing, the motion stops at the last position
 closes, and the drive reports `stopped_by_loop`. A loop that cannot close at all is listed
 under `conflicts` and nothing in it moves. `joint.list` reports how many degrees of freedom each
 part still has with its loops closed: the moving parts of a four-bar have one between them, and a
-loop locked by a rigid joint has none. The Drive Joints dialog says when a drive stops short and
+loop locked by a rigid joint has none. A joint a motion link drives adds no freedom of its own:
+two meshed gears on a fixed housing have one between them, each turning with the driving gear. The Drive Joints dialog says when a drive stops short and
 why. While it previews, a row under the values gives the value the joint reached and the reason
 (the loop that can't close further, or the two parts a contact set keeps apart), and after OK the
 status line repeats it. The value box keeps what you typed. The dialog opens on the joint

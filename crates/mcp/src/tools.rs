@@ -73,6 +73,14 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "describe_command",
+            "Describe a command",
+            "One command's parameter docs and, for commands with a typed contract (solid.box, solid.extrude and engine.describe so far), the \
+             JSON Schemas (2020-12) of its parameters (`input`) and of a successful result (`output`); null for the others.",
+            obj(json!({"id": string("Command id, e.g. \"solid.extrude\"")}), &["id"]),
+            Effect::ReadOnly,
+        ),
+        tool(
             "execute",
             "Execute a command",
             "Run one command with JSON parameters, exactly as the toolbar, palette and scripts do. Never opens a dialog. \
@@ -187,7 +195,9 @@ pub fn tool_definitions() -> Vec<Value> {
              Connected to the app: a screenshot of the window (source \"window\", the default) or a render of the model \
              with the app's camera (source \"model\"). Both show an active section (inspect.section) with its cut face \
              capped. `view` first turns the camera to a standard view or a saved named view (view.save), `camera` to              any camera (as view.apply). \
-             `grid: false` and `axes: false` leave the ground grid (on Z 0) and the origin's axes out of a model render.",
+             `grid: false` and `axes: false` leave the ground grid (on Z 0) and the origin's axes out of a model render. \
+             A body whose appearance is see-through (appearance.assign with an `opacity` below 1) is drawn see-through, \
+             so what is inside it shows: that is how to look at the body a cut would remove inside the material it meets.",
             obj(
                 json!({
                     "view": string(
@@ -385,6 +395,10 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
                 ["id", "label", "panel", "tab"].iter().any(|k| c.get(*k).and_then(Value::as_str).is_some_and(|s| s.to_lowercase().contains(&f)))
             };
             Ok(Value::Array(all.as_array().map(|v| v.iter().filter(|c| hit(c)).cloned().collect()).unwrap_or_default()))
+        }
+        "describe_command" => {
+            let id = str_arg(a, "id").ok_or("`id` is required")?;
+            exec(b, "engine.describe", json!({"command": id}))
         }
         "execute" => {
             let id = str_arg(a, "command").ok_or("`command` is required")?;

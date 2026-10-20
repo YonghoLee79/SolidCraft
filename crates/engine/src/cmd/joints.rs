@@ -17,11 +17,11 @@ use crate::{EngineError, Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.origin", "Joint Origin", joint_origin).at("SOLID", "CREATE").icon("joint_origin").params(
-        "name?, occurrence?: id|name (default: from the pick, or the named face's component), face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size) | point: [x,y,z], z?: [x,y,z]; body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
+        "name?, occurrence?: id|name (default: from the pick, or the named face's component), face: [x,y,z] | \"<name>\" (centre of a planar face) | circle: [x,y,z] | \"<name>\" (centre of a round end: a point on its wall or rim, the end's centre, or the round face's name as model.faces lists it) | edge: [x,y,z] (a point on an edge of a planar face: the edge's middle, z out of the face, y into it; on?: [x,y,z] a point on the face (default: the larger planar face beside the edge); corner?: [x,y,z] near one end: the corner there, x and y along its two edges into the face; found again by name, so it follows the face as it changes size) | point: [x,y,z], z?: [x,y,z]; body?: the named face's body; end?: \"<name>\" (a circle's end: the face across its rim there; default the end nearer the pick); x?: [x,y,z] (a direction, world) | \"<face name>\" | {face: [x,y,z]} (the frame's x: a direction, a plane's normal, or the way to another hole's axis; keeps a round origin's turn; a point's x is a direction, laid square to its z, default: chosen from z alone). Faces are kept by name: the origin follows its face, and a circle its end, when the design changes",
     ),
     CommandSpec::new("joint.create", "Joint", joint).at("SOLID", "ASSEMBLE").icon("joint").key("J").params(
         "type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, or a relation: parallel|perpendicular|angle|point_on_plane|point_on_line|line_on_plane \
-         (ties only some directions or points, made where the parts are; several between two parts add up); a, b: joint origins ({occurrence, face|circle|edge|point: [x,y,z] in world, or face|circle: \"<face name>\"; end?, x? as joint.origin} | origin name); \
+         (ties only some directions or points, made where the parts are; several between two parts add up); a, b: joint origins ({occurrence, face|circle|edge|point: [x,y,z] in world, or face|circle: \"<face name>\"; z? for a point, end?, x? as joint.origin} | origin name); \
          values?: [angles in deg or expressions, distances]; limits?: [[min, max] | null…]; flip?: bool (default false: the origins are mated, \
          b's z against a's as two faces meet; true: b's z along a's, so two origins given at one point with the same z stay as they are); \
          offset?: mm or an expression; angle?: deg or an expression (an angle relation's tilt from mated; for other joints the default \
@@ -53,21 +53,23 @@ pub static COMMANDS: &[CommandSpec] = &[
         "a, b: joints that turn (revolute), b driven by a; ra, rb: the gears' pitch radii (or tooth counts): mm, an expression, or \
          {circle: [x,y,z], occurrence?}: the round face there, its radius (read again whenever the design changes, so the ratio follows \
          edits); internal?: bool (one is a ring gear: both turn the same way; by default b turns the other way); reverse?: bool; \
-         link?: index (replace that motion link) → link, ratio (b's degrees per a's); b keeps where it is",
+         link?: index (replace that motion link) → link, ratio (b's degrees per a's); b keeps where it is, also when the link replaces \
+         another (at the current pose)",
     ),
     CommandSpec::new("joint.rack_pinion", "Rack and Pinion", rack_pinion).at("SOLID", "ASSEMBLE").icon("rack_pinion").params(
         "a, b: a joint that turns (revolute: the pinion) and one that slides (slider: the rack), in either order, b driven by a; \
          radius: the pinion's pitch radius (mm, an expression, or {circle: [x,y,z], occurrence?}): the rack travels radius × the turn in \
          radians; reverse?: bool; link?: index (replace that motion link) → link, ratio (mm per degree, or degrees per mm); b keeps \
-         where it is",
+         where it is, also when the link replaces another (at the current pose)",
     ),
     CommandSpec::new("joint.screw", "Screw", screw).at("SOLID", "ASSEMBLE").icon("screw").params(
         "joint: a cylindrical joint (its turn drives its travel) | a, b: a joint that turns and one that slides, b driven by a; pitch: \
          travel per turn (mm or an expression); reverse?: bool (a left-hand thread); link?: index (replace that motion link) → link, \
-         ratio (mm per degree, or degrees per mm); b keeps where it is",
+         ratio (mm per degree, or degrees per mm); b keeps where it is, also when the link replaces another (at the current \
+         pose)",
     ),
     CommandSpec::new("joint.cam", "Cam", cam_cmd).at("SOLID", "ASSEMBLE").icon("cam").params(
-        "a: the cam's joint (revolute); b: the follower's joint, a slider (a translating follower) or a revolute (an oscillating one),          b driven by a; profile: {sketch: id|name, index?: the profile (default: the largest)} | {edges: [[x,y,z]…] (points on edges of          the cam's bodies forming one closed loop, world), occurrence?}: the cam's outline, in a plane square to its axis, read again          whenever the design changes; follower?: knife|roller|flat (default knife; flat: a face square to a slider's line); radius?: the          roller's radius (mm, an expression or {circle: [x,y,z], occurrence?}: the roller's round face, which is its tip too); tip?: a          joint origin where the follower touches: its knife's point or its roller's centre, such as {circle: [x,y,z]} on the roller          (needed for an oscillating follower; a translating one's line runs through it, by default along its slider's axis); flip?: bool (ride the cam from the other side          than the one the follower is on now); link?: index (replace that motion link) → link, lift: {min, max, rise, unit} (b's travel          over a turn of the cam), reverse (the side it rides from), follower_offset (mm: how far a translating follower's line passes          from the cam's axis); b keeps where it is",
+        "a: the cam's joint (revolute); b: the follower's joint, a slider (a translating follower) or a revolute (an oscillating one),          b driven by a; profile: {sketch: id|name, index?: the profile (default: the largest)} | {edges: [[x,y,z]…] (points on edges of          the cam's bodies forming one closed loop, world), occurrence?}: the cam's outline, in a plane square to its axis, read again          whenever the design changes; follower?: knife|roller|flat (default knife; flat: a face square to a slider's line); radius?: the          roller's radius (mm, an expression or {circle: [x,y,z], occurrence?}: the roller's round face, which is its tip too); tip?: a          joint origin where the follower touches: its knife's point or its roller's centre, such as {circle: [x,y,z]} on the roller          (needed for an oscillating follower; a translating one's line runs through it, by default along its slider's axis); flip?: bool (ride the cam from the other side          than the one the follower is on now); link?: index (replace that motion link) → link, lift: {min, max, rise, unit} (b's travel          over a turn of the cam), reverse (the side it rides from), follower_offset (mm: how far a translating follower's line passes          from the cam's axis); b keeps where it is, also when the link replaces another (at the current pose)",
     ),
     CommandSpec::new("joint.limits", "Joint Limits", limits).icon("joint").params("joint; index?: value index (default 0); min?, max? (omit both to clear)"),
     CommandSpec::new("joint.edit", "Edit Joint", edit)
@@ -344,7 +346,20 @@ fn origin_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<JointOrigin
             let (on, corner) = (v.get("on").and_then(vec3).map(local), v.get("corner").and_then(vec3).map(local));
             joints::edge_snap(&s.doc, &st, component, local(world), on, corner).map_err(|e| bad(cmd, e.to_string()))?
         }
-        "point" => Snap::Point { point: local(world), z: v.get("z").and_then(vec3).map(local_dir) },
+        "point" => {
+            let z = v.get("z").and_then(vec3).map(local_dir);
+            let x = match v.get("x") {
+                None | Some(Value::Null) => None,
+                Some(x) => Some(vec3(x).map(local_dir).ok_or_else(|| bad(cmd, "a point origin's `x` is a direction [x, y, z]"))?),
+            };
+            // An x along z (or no direction at all) would leave the frame's turn to chance.
+            if let Some(x) = x
+                && (!x.is_finite() || x.cross(z.unwrap_or(Vec3::Z)).len() <= 1e-9 * x.len().max(1.0))
+            {
+                return Err(bad(cmd, "a point origin's `x` must be a direction off its z axis"));
+            }
+            Snap::Point { point: local(world), z, x }
+        }
         _ => {
             let f = v.get("frame").cloned().unwrap_or_default();
             let z = f.get("z").and_then(vec3).ok_or_else(|| bad(cmd, "`frame` needs a z axis"))?;
@@ -461,7 +476,7 @@ fn circle_centre(s: &Session, occurrence: u64, pick: Vec3) -> Option<Snap> {
         .find_map(|b| solidcraft_doc::kernel::cylinder_end_at(&b.body, pick))?;
     let along = (pick - c.axis_point).dot(c.axis);
     let (at, dir) = if (along - c.start).abs() <= (c.end - along).abs() { (c.start, -1.0) } else { (c.end, 1.0) };
-    Some(Snap::Point { point: c.axis_point + c.axis * at, z: Some(c.axis * dir) })
+    Some(Snap::Point { point: c.axis_point + c.axis * at, z: Some(c.axis * dir), x: None })
 }
 
 pub(crate) fn joint_id(s: &Session, v: Option<&Value>, cmd: &str) -> Result<u64> {
@@ -1092,7 +1107,8 @@ fn cam_profile(s: &Session, p: &Value, cmd: &str) -> Result<CamProfile> {
 }
 
 /// Add a coupling's motion link, or put it in place of link `link`: its ratio worked out from its
-/// sizes, a new link's offset leaving b where it is (the teeth mesh as they are modelled).
+/// sizes, its offset leaving b where it is (the teeth mesh as they are now), for a new link and
+/// one put in place of another alike.
 fn couple(s: &mut Session, p: &Value, cmd: &str, mut l: MotionLink) -> Result<Value> {
     let links = &s.doc.assembly.links;
     let replace = match p.get("link") {
@@ -1124,11 +1140,10 @@ fn couple(s: &mut Session, p: &Value, cmd: &str, mut l: MotionLink) -> Result<Va
         joints::coupling_values(&s.doc, &s.model.state(), &l).unwrap_or(Ok((l.ratio, Vec::new()))).map_err(|e| bad(cmd, e.to_string()))?;
     let vals = joints::joint_values(&s.doc.assembly);
     let value = |id: u64, i: usize| vals.get(&id).and_then(|q| q.get(i)).copied().unwrap_or(0.0);
-    // A link put in place of another keeps its offset, as a radius edited in the design does.
-    l.offset = match replace.and_then(|i| links.get(i)) {
-        Some(old) => old.offset,
-        None => value(l.b, l.ib) - MotionLink { offset: 0.0, ..l.clone() }.follow(value(l.a, l.ia)),
-    };
+    // New or put in place of another (turned the other way, a ring gear now), b keeps where it
+    // is: the gears stay in mesh at the pose they are in. (A radius edited in the design keeps
+    // the offset instead, so the gears turn from where they meshed when they were coupled.)
+    l.offset = value(l.b, l.ib) - MotionLink { offset: 0.0, ..l.clone() }.follow(value(l.a, l.ia));
     if !l.offset.is_finite() {
         return Err(bad(cmd, "the coupling gives the driven joint no value where it is"));
     }
@@ -1391,6 +1406,9 @@ mod face_tests;
 #[cfg(test)]
 #[path = "joint_frames_tests.rs"]
 mod frames_tests;
+#[cfg(test)]
+#[path = "joints_point_x_tests.rs"]
+mod point_x_tests;
 #[cfg(test)]
 #[path = "joints_reach_tests.rs"]
 mod reach_tests;
