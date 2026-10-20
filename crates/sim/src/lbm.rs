@@ -165,6 +165,41 @@ impl Lattice {
         (self.tau - 0.5) / 3.0
     }
 
+    /// The Smagorinsky constant (0: laminar).
+    pub fn smagorinsky(&self) -> f64 {
+        self.smagorinsky
+    }
+
+    /// Which cells are solid, in grid order.
+    pub fn solid(&self) -> &[bool] {
+        &self.solid
+    }
+
+    /// The opening cells: (cell, the fluid cell just inside it, what is imposed there).
+    pub fn openings(&self) -> &[(usize, usize, Opening)] {
+        &self.openings
+    }
+
+    /// Every cell's populations, cell after cell: direction `q` of cell `c` is at `c * 19 + q`
+    /// (solid cells hold zeros).
+    pub fn populations(&self) -> &[f64] {
+        &self.f
+    }
+
+    /// Replace the populations, for example with a GPU run's: as many finite values as
+    /// [`Lattice::populations`] has. Solid cells keep their zeros.
+    pub fn set_populations(&mut self, f: &[f64]) -> Result<()> {
+        if f.len() != self.f.len() || f.iter().any(|v| !v.is_finite()) {
+            return Err(SimError::BadPopulations);
+        }
+        for ((dst, src), solid) in self.f.chunks_mut(Q).zip(f.chunks(Q)).zip(&self.solid) {
+            if !solid {
+                dst.copy_from_slice(src);
+            }
+        }
+        Ok(())
+    }
+
     fn index(&self, i: usize, j: usize, k: usize) -> Option<usize> {
         let [nx, ny, nz] = self.dims;
         (i < nx && j < ny && k < nz).then_some(i + nx * (j + ny * k))

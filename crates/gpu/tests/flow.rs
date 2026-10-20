@@ -1,0 +1,194 @@
+//! The GPU lattice Boltzmann step against its CPU reference (`solidcraft_sim::Lattice`) and
+//! against exact solutions. Skipped, with a note, on machines without a GPU.
+
+use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_gpu::GpuError;
+use solidcraft_gpu::flow::FlowGpu;
+use solidcraft_sim::{Cell, Grid, Lattice, Opening};
+
+fn gpu() -> Option<FlowGpu> {
+    match FlowGpu::headless() {
+        Ok(g) => {
+            eprintln!("GPU: {}", g.adapter_name());
+            Some(g)
+        }
+        Err(e @ GpuError::Pipeline(_)) => panic!("{e}"),
+        Err(e) if std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_some() => panic!("a GPU is required here: {e}"),
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            None
+        }
+    }
+}
+
+fn ok<T, E: std::fmt::Debug>(r: Result<T, E>) -> T {
+    match r {
+        Ok(v) => v,
+        Err(e) => panic!("{e:?}"),
+    }
+}
+
+fn add_box(mesh: &mut Mesh, min: [f64; 3], max: [f64; 3]) {
+    let base = mesh.positions.len() as u32;
+    for k in 0..8 {
+        let pick = |bit: usize, axis: usize| if k & bit == 0 { min[axis] } else { max[axis] };
+        mesh.positions.push(Vec3 { x: pick(1, 0), y: pick(2, 1), z: pick(4, 2) });
+    }
+    for [a, b, c, d] in [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]] {
+        mesh.triangles.push([base + a, base + b, base + c]);
+        mesh.triangles.push([base + a, base + c, base + d]);
+    }
+}
+
+/// A square duct along x, `outer` wide outside with `wall`-thick walls, voxelized in unit cells.
+fn duct(outer: f64, wall: f64, len: f64) -> Grid {
+    let mut mesh = Mesh::default();
+    add_box(&mut mesh, [0.0, 0.0, 0.0], [len, outer, wall]);
+    add_box(&mut mesh, [0.0, 0.0, outer - wall], [len, outer, outer]);
+    add_box(&mut mesh, [0.0, 0.0, wall], [len, wall, outer - wall]);
+    add_box(&mut mesh, [0.0, outer - wall, wall], [len, outer, outer - wall]);
+    let mut grid = ok(Grid::around(mesh.bounds(), 1.0, 0, 1_000_000));
+    ok(solidcraft_sim::voxelize(&mesh, &mut grid));
+    grid
+}
+
+/// The duct with a velocity inlet at x = 0 and a pressure outlet at the far end.
+fn duct_with_openings(grid: &Grid, tau: f64, u0: f64, cs: f64) -> (Lattice, Vec<(usize, usize)>) {
+    let [nx, ny, nz] = grid.dims;
+    let bore: Vec<(usize, usize)> =
+        (0..ny).flat_map(|j| (0..nz).map(move |k| (j, k))).filter(|&(j, k)| grid.get(0, j, k) == Some(Cell::Fluid)).collect();
+    let mut lattice = ok(ok(Lattice::new(grid, tau, [0.0; 3], [false; 3])).with_smagorinsky(cs));
+    let inlet: Vec<[usize; 3]> = bore.iter().map(|&(j, k)| [0, j, k]).collect();
+    let outlet: Vec<[usize; 3]> = bore.iter().map(|&(j, k)| [nx - 1, j, k]).collect();
+    ok(lattice.add_opening(&inlet, [1, 0, 0], Opening::Velocity([u0, 0.0, 0.0])));
+    ok(lattice.add_opening(&outlet, [-1, 0, 0], Opening::Density(1.0)));
+    (lattice, bore)
+}
+
+/// The largest difference in density and in velocity between two lattices on the same grid.
+fn difference(a: &Lattice, b: &Lattice) -> (f64, f64) {
+    let [nx, ny, nz] = a.dims;
+    let (mut rho, mut u) = (0.0f64, 0.0f64);
+    for k in 0..nz {
+        for j in 0..ny {
+            for i in 0..nx {
+                if let (Some((ra, ua)), Some((rb, ub))) = (a.moments(i, j, k), b.moments(i, j, k)) {
+                    rho = rho.max((ra - rb).abs());
+                    u = u.max((0..3).map(|c| (ua[c] - ub[c]).abs()).fold(0.0, f64::max));
+                }
+            }
+        }
+    }
+    (rho, u)
+}
+
+/// The same duct, openings and turbulence model stepped on the CPU in f64 and on the GPU in f32
+/// give the same flow, cell by cell, while it develops.
+#[test]
+fn the_gpu_step_follows_the_cpu_reference() {
+    let Some(gpu) = gpu() else { return };
+    let grid = duct(14.0, 2.0, 24.0);
+    let u0 = 0.05;
+    for cs in [0.0, 0.17] {
+        let (mut cpu, _) = duct_with_openings(&grid, 0.56, u0, cs);
+        let mut on_gpu = ok(gpu.upload(&cpu));
+        let mut back = duct_with_openings(&grid, 0.56, u0, cs).0;
+        for steps in [1u32, 49, 250] {
+            for _ in 0..steps {
+                cpu.step();
+            }
+            ok(on_gpu.run(steps));
+            ok(on_gpu.download(&mut back));
+            let (rho, u) = difference(&cpu, &back);
+            eprintln!("cs {cs}, after {} steps: density within {rho:e}, velocity within {u:e}", on_gpu.steps());
+            assert!(rho < 1e-5 && u < 1e-4 * u0, "cs {cs}: density {rho:e}, velocity {u:e} apart after {} steps", on_gpu.steps());
+        }
+    }
+}
+
+/// A body force and periodic axes on the GPU: the channel between two plates develops the
+/// exact parabola, as the CPU reference does.
+#[test]
+fn plane_poiseuille_flow_on_the_gpu_matches_the_parabola() {
+    let Some(gpu) = gpu() else { return };
+    let (nz, h) = (18usize, 16.0);
+    let bounds = Aabb3 { min: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, max: Vec3 { x: 4.0, y: 4.0, z: nz as f64 } };
+    let mut grid = ok(Grid::around(bounds, 1.0, 0, 10_000));
+    for j in 0..grid.dims[1] {
+        for i in 0..grid.dims[0] {
+            for k in [0, nz - 1] {
+                if let Some(idx) = grid.index(i, j, k) {
+                    grid.cells[idx] = Cell::Solid;
+                }
+            }
+        }
+    }
+    let g = 1e-6;
+    let mut lattice = ok(Lattice::new(&grid, 0.8, [g, 0.0, 0.0], [true, true, false]));
+    let mut on_gpu = ok(gpu.upload(&lattice));
+    ok(on_gpu.run(20_000));
+    ok(on_gpu.download(&mut lattice));
+    let nu = lattice.viscosity();
+    let peak = g * h * h / (8.0 * nu);
+    let mut worst = 0.0f64;
+    for k in 1..nz - 1 {
+        let z = k as f64 - 0.5;
+        let exact = g / (2.0 * nu) * z * (h - z);
+        let (rho, u) = ok(lattice.moments(1, 2, k).ok_or("fluid"));
+        assert!((rho - 1.0).abs() < 1e-5, "mass is kept: {rho}");
+        assert!(u[1].abs() < 1e-3 * peak && u[2].abs() < 1e-3 * peak, "{u:?}");
+        worst = worst.max((u[0] - exact).abs() / peak);
+    }
+    eprintln!("worst error {worst:e} of the peak speed");
+    assert!(worst < 1e-2, "worst error {worst} of the peak speed");
+}
+
+/// The duct with an inlet and an outlet run to a developed flow on the GPU: what goes in comes
+/// out, and the pressure falls at the exact laminar rate (as in the CPU reference's test).
+#[test]
+fn a_duct_on_the_gpu_keeps_mass_and_the_laminar_pressure_drop() {
+    let Some(gpu) = gpu() else { return };
+    let (outer, wall, len) = (18.0, 3.0, 36.0);
+    let grid = duct(outer, wall, len);
+    let u0 = 0.02;
+    let (mut lattice, bore) = duct_with_openings(&grid, 0.8, u0, 0.0);
+    let mut on_gpu = ok(gpu.upload(&lattice));
+    ok(on_gpu.run(8_000));
+    ok(on_gpu.download(&mut lattice));
+    let section = |i: usize| -> (f64, f64) {
+        let (mut flow, mut rho) = (0.0, 0.0);
+        for &(j, k) in &bore {
+            let (r, u) = ok(lattice.moments(i, j, k).ok_or("fluid"));
+            flow += r * u[0];
+            rho += r;
+        }
+        (flow, rho / bore.len() as f64)
+    };
+    let a = outer - 2.0 * wall;
+    let nominal = u0 * a * a;
+    let (q_mid, rho_a) = section(12);
+    let (q_out, rho_b) = section(28);
+    assert!((q_mid - nominal).abs() / nominal < 0.06, "flow {q_mid} vs {nominal} nominal");
+    assert!((q_out - q_mid).abs() / q_mid < 0.002, "mass kept: {q_out} out vs {q_mid}");
+    let gradient = (rho_a - rho_b) / 3.0 / 16.0;
+    let exact = lattice.viscosity() * q_mid / (0.035_144 * a.powi(4));
+    let error = (gradient - exact).abs() / exact;
+    assert!(error < 0.05, "dp/dx {gradient:e}, exact {exact:e}, error {error}");
+}
+
+/// What the GPU cannot run is an error, not a crash: openings stacked so that one reads another,
+/// and a lattice that is not the one uploaded.
+#[test]
+fn what_the_gpu_cannot_run_is_an_error() {
+    let Some(gpu) = gpu() else { return };
+    let grid = duct(10.0, 2.0, 8.0);
+    let (mut lattice, bore) = duct_with_openings(&grid, 0.8, 0.02, 0.0);
+    let second: Vec<[usize; 3]> = bore.iter().map(|&(j, k)| [1, j, k]).collect();
+    ok(lattice.add_opening(&second, [-1, 0, 0], Opening::Density(1.0)));
+    assert!(matches!(gpu.upload(&lattice), Err(GpuError::Unsupported(_))), "an opening read from another opening");
+
+    let (plain, _) = duct_with_openings(&grid, 0.8, 0.02, 0.0);
+    let on_gpu = ok(gpu.upload(&plain));
+    let mut other = ok(Lattice::new(&duct(10.0, 2.0, 12.0), 0.8, [0.0; 3], [false; 3]));
+    assert!(on_gpu.download(&mut other).is_err(), "another grid");
+}

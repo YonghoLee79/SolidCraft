@@ -4198,6 +4198,7 @@ dependencies = [
  "solidcraft-geom",
  "solidcraft-kernel",
  "solidcraft-render",
+ "solidcraft-sim",
  "thiserror 2.0.21",
  "wgpu",
 ]

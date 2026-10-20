@@ -33,6 +33,8 @@ pub enum SimError {
     BadOpening,
     #[error("the seed cell is outside the grid or not fluid")]
     BadSeed,
+    #[error("the populations must be finite and one set per cell")]
+    BadPopulations,
 }
 
 pub type Result<T> = std::result::Result<T, SimError>;
