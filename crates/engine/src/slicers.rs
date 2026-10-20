@@ -587,8 +587,11 @@ impl Slicer {
 
     /// The arguments after the program: the command's own, the single-instance flag when asked for
     /// and this slicer has one, and the file. A desktop entry that already carries a
-    /// `--single-instance…` flag (PrusaSlicer 3.0's launcher has `--single-instance-on-url`) is
-    /// never given a second one, and loses its own when `single_instance` is off.
+    /// `--single-instance…` flag is never given a second one, and loses its own when
+    /// `single_instance` is off. PrusaSlicer 3.0's launcher has `--single-instance-on-url`, which
+    /// hands the file to a running instance, and keeps it. PrusaSlicer 2.9's Flatpak entry has the
+    /// same flag, but there it does not hand a file over (each send opened a new window); only
+    /// `--single-instance` does, so on a slicer that is not on the wait table it is swapped.
     #[cfg(not(target_arch = "wasm32"))]
     fn args(&self, path: &str, single_instance: bool) -> Vec<String> {
         with_file(&self.base_args(single_instance), path)
@@ -611,6 +614,10 @@ impl Slicer {
         let has = |args: &[String]| args.iter().any(|a| a.starts_with("--single-instance"));
         if !single_instance {
             args.retain(|a| !a.starts_with("--single-instance"));
+        } else if self.waits_for_ready().is_none() && args.iter().any(|a| a == "--single-instance-on-url") {
+            for a in args.iter_mut().filter(|a| *a == "--single-instance-on-url") {
+                *a = "--single-instance".into();
+            }
         } else if self.command.first().is_some_and(|p| p != "open") && !has(&args) {
             // A custom program is recognised by its name, as for its icon.
             let id = if self.id == "custom" { known_for(&self.name).map_or("", |k| k.id) } else { self.base_id() };
@@ -1391,5 +1398,37 @@ mod tests {
         let up = fake("up", "echo 'com.prusa3d.prusaslicer.BroadcastListener.ab 1 x'");
         assert_eq!(launcher.ready_via(&up, limit), Some(true));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_on_url_flag_is_swapped_where_it_does_not_hand_the_file_over() {
+        let slicer = |command: &str| Slicer {
+            id: "prusa".into(),
+            name: "PrusaSlicer".into(),
+            command: command.split(' ').map(str::to_string).collect(),
+            icon: None,
+        };
+        // The command lines of this desktop's entries, with `%u` and `%U` dropped as `parse_exec` does.
+        let v29 =
+            slicer("flatpak run --branch=stable --command=entrypoint --file-forwarding com.prusa3d.PrusaSlicer --single-instance-on-url @@u @@");
+        let v30 = slicer(
+            "flatpak run --branch=beta --arch=x86_64 --command=slic3r-app-launcher --file-forwarding com.prusa3d.PrusaSlicer --single-instance-on-url @@u @@",
+        );
+        let with = |flag: &str| {
+            let mut v: Vec<String> =
+                ["run", "--branch=stable", "--command=entrypoint", "--file-forwarding", "com.prusa3d.PrusaSlicer"].map(String::from).into();
+            v.extend([flag, "@@", "/t/a.3mf", "@@"].map(String::from).into_iter().filter(|a| !a.is_empty()));
+            v
+        };
+        // 2.9: `--single-instance` in its place, the file markers as before.
+        assert_eq!(v29.args("/t/a.3mf", true), with("--single-instance"));
+        assert_eq!(v29.args("/t/a.3mf", false), with(""));
+        assert!(v29.waits_for_ready().is_none());
+        // 3.0: the launcher's own flag stays, and the preference off strips it.
+        let kept = v30.args("/t/a.3mf", true);
+        assert!(kept.contains(&"--single-instance-on-url".to_string()) && !kept.contains(&"--single-instance".to_string()), "{kept:?}");
+        assert!(!v30.args("/t/a.3mf", false).iter().any(|a| a.starts_with("--single-instance")));
+        // Starting 3.0 on its own keeps it whatever the preference says (the earlier rule).
+        assert!(v30.start_args(false).contains(&"--single-instance-on-url".to_string()));
     }
 }
