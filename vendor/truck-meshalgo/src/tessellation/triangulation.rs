@@ -888,17 +888,9 @@ impl PolyBoundary {
         self.0.iter().flatten().map(|pt| triangulation.insert(scale.to_cdt(*pt)).ok()).collect()
     }
 
-    /// Adds the loops' segments between the vertices [`Self::insert_points`] gave.
-    ///
-    /// SolidCraft: every segment of every loop becomes a constraint. A segment that crosses or
-    /// overlaps one already added is split where they meet, so the boundary stays whole: a
-    /// boundary polyline that hooks back on itself (an intersection edge can, by a few
-    /// micrometres past its vertex), or a loop that touches itself or another within
-    /// `TOLERANCE` (a face pinched to a point where a body touches its edge, #1648). Truck instead
-    /// dropped such a segment and joined its start to the first later node it could reach: a
-    /// constraint across the face, behind which one hook dropped the 130 nodes of a trimming
-    /// curve (the grid fanned into slivers millimetres off a tube's surface), and a pinched face
-    /// came out with no triangles. Only faces with such a segment mesh differently.
+    /// Adds the loops' segments between the vertices [`Self::insert_points`] gave. SolidCraft: a
+    /// segment that crosses one already added is split where they meet (truck dropped it and
+    /// joined across the face; #1648).
     fn add_constraints(&self, triangulation: &mut Cdt, poly2tri: &[Option<VertexId>]) {
         let mut counter = 0;
         self.0
@@ -923,13 +915,9 @@ impl PolyBoundary {
     }
 }
 
-/// SolidCraft: the (u, v) scale the constrained Delaunay triangulation works in. Delaunay in
-/// raw parameters is Delaunay in 3D only where the surface moves as fast along u as along v; a
-/// loft side 30 mm across its unit u range and 600 mm along its unit v range is a strip
-/// stretched twentyfold, and a trimming node partway along u was fanned to boundary nodes
-/// hundreds of millimetres away, by triangles that cut through the surface. Each parameter is
-/// scaled by the surface's mean speed along it over the boundary's box, rounded to a power of two
-/// so the scaling and its inverse are exact.
+/// SolidCraft: the (u, v) scale the triangulation works in, each parameter by the surface's mean
+/// speed along it (a power of two, so exact both ways): Delaunay in raw parameters fans a
+/// stretched strip (a long loft side) across the surface.
 #[derive(Clone, Copy, Debug)]
 struct UvScale([f64; 2]);
 
@@ -1023,17 +1011,11 @@ fn trimming_with_steps<S: PreMeshableSurface>(surface: &S, polyboundary: &PolyBo
     let scale = if tol.display { UvScale::of(surface, polyboundary) } else { UvScale::IDENTITY };
     let poly2tri = polyboundary.insert_points(&mut triangulation, scale);
     if tol.display {
-        // Every point before any constraint, the usual order for a constrained Delaunay
-        // triangulation: a boundary segment is then split only where it really crosses another,
-        // and no grid point is inserted onto a split, whose computed crossing is inexact. Grid
-        // lines run through boundary points (`with_boundary_lines`), and inserting their points
-        // after the splits met triangles of no area and broke the triangulation's invariants.
+        // Every point before any constraint, so no grid point lands on a split's inexact crossing.
         let grid = insert_surface(&mut triangulation, surface, polyboundary, tol, cap, steps, scale);
         polyboundary.add_constraints(&mut triangulation, &poly2tri);
         add_grid_constraints(&mut triangulation, &grid);
     } else {
-        // The meshes Boolean operations intersect take the boundary first, as truck did, so
-        // their grid points stay where their results were recorded with them.
         polyboundary.add_constraints(&mut triangulation, &poly2tri);
         let grid = insert_surface(&mut triangulation, surface, polyboundary, tol, cap, steps, scale);
         add_grid_constraints(&mut triangulation, &grid);

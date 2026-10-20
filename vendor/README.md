@@ -190,11 +190,8 @@ Changes:
   back a few micrometres past its vertex) is split where they meet. truck dropped such a
   segment and joined its start to the first later node it could reach, which on a joined tube
   left a trimming curve's 130 nodes behind one constraint across the face: slivers from it
-  sagged millimetres off the surface. A face whose boundary touches itself or another of its
-  loops within `TOLERANCE` (pinched to a point where a body touches its edge, #1648) can cross
-  there by less than that, and the same fallback cut across it: it came out with no triangles,
-  or without those at the pinch. Splitting keeps its boundary whole. This holds for every
-  mesh; only faces with such a segment mesh differently.
+  sagged millimetres off the surface, and a face pinched to a point (#1648) got no triangles.
+  All meshes; faces whose segments all go in mesh as before.
 - `tessellation/mod.rs`: `Deflection::rulings` is now `Deflection::display`: a mesh to display
   or export (the kernel's `tessellate` and display meshes), which gets the ruling grid lines,
   and the speed-scaled triangulation above. The meshes a Boolean operation intersects
