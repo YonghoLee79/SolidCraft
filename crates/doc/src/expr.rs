@@ -304,9 +304,23 @@ fn is_constant(id: &str) -> bool {
     CONSTANTS.contains(&id)
 }
 
+/// What kind of word the expression language reserves `name` as: `unit`, `constant` or
+/// `function` (None: free for a parameter).
+pub fn reserved_kind(name: &str) -> Option<&'static str> {
+    if unit(name).is_some() {
+        Some("unit")
+    } else if is_constant(name) {
+        Some("constant")
+    } else if FUNCTIONS.iter().any(|(f, _)| *f == name) {
+        Some("function")
+    } else {
+        None
+    }
+}
+
 /// Is this a name the expression language reserves (unit, constant or function)?
 pub fn is_reserved(name: &str) -> bool {
-    unit(name).is_some() || is_constant(name) || FUNCTIONS.iter().any(|(f, _)| *f == name)
+    reserved_kind(name).is_some()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1251,5 +1265,20 @@ mod tests {
         for text in ["20", "20 mm", "width / 2", "= 20", "=", "", "2w = 3", "a b = 3", "a-b = 3", "w.x = 3", "(w) = 3", "-w = 3"] {
             assert_eq!(definition(text), None, "{text:?}");
         }
+    }
+
+    /// A reserved name is refused by saying what kind of word it is.
+    #[test]
+    fn a_reserved_name_is_refused_by_its_kind() {
+        assert_eq!(
+            (reserved_kind("mm"), reserved_kind("deg"), reserved_kind("pi"), reserved_kind("sin"), reserved_kind("width")),
+            (Some("unit"), Some("unit"), Some("constant"), Some("function"), None)
+        );
+        let problem = |n: &str| crate::Document::param_name_problem(n).unwrap_or_default();
+        assert_eq!(problem("mm"), "`mm` is a unit name, so it cannot be a parameter name");
+        assert_eq!(problem("sin"), "`sin` is a function name, so it cannot be a parameter name");
+        assert_eq!(problem("pi"), "`pi` is a constant, so it cannot be a parameter name");
+        assert_eq!(crate::Document::param_name_problem("width"), None);
+        assert!(problem("2w").contains("not a valid parameter name"));
     }
 }

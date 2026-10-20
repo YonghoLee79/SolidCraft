@@ -103,7 +103,7 @@ impl DimensionDraft {
     }
     fn evaluate(&self, app: &SolveApp, expr: &str) -> Result<solidcraft_engine::Session, String> {
         let mut scratch = app.session.scratch();
-        let result = scratch.execute("sketch.dimension", &self.params(expr)).map_err(|e| e.to_string())?;
+        let result = scratch.execute("sketch.dimension", &self.params(expr)).map_err(|e| shown_error("sketch.dimension", &e.to_string()))?;
         let param = result.get("param").and_then(serde_json::Value::as_str).ok_or("The dimension value is unavailable")?;
         let state = scratch.world_state();
         let solved = state.sketch(self.sketch).ok_or("The dimension sketch is unavailable")?;
@@ -118,6 +118,14 @@ impl DimensionDraft {
         }
         Ok(scratch)
     }
+}
+
+/// A command's error as the value box and the status line show it: the command's label instead
+/// of its id, and without the `value:` field tag, since the box is the value
+/// ("Sketch Dimension: `mm` is a unit name, so it cannot be a parameter name").
+fn shown_error(id: &str, e: &str) -> String {
+    let label = crate::i18n::tr_label(crate::command_label(id));
+    crate::friendly_error(id, e).replacen(&format!("{label}: value: "), &format!("{label}: "), 1)
 }
 
 pub fn cancel() {
@@ -764,7 +772,9 @@ fn edit_box(app: &mut SolveApp, ctx: &egui::Context) {
         Some(true) => {
             let result = if let Some(draft) = &e.draft {
                 if draft.valid(app) {
-                    draft.evaluate(app, &e.expr).and_then(|_| app.run("sketch.dimension", draft.params(&e.expr)))
+                    draft
+                        .evaluate(app, &e.expr)
+                        .and_then(|_| app.run("sketch.dimension", draft.params(&e.expr)).map_err(|err| shown_error("sketch.dimension", &err)))
                 } else {
                     Err("The sketch changed; place the dimension again".into())
                 }
@@ -777,7 +787,7 @@ fn edit_box(app: &mut SolveApp, ctx: &egui::Context) {
                     .map(|(k, _)| k)
                     .unwrap_or(solidcraft_engine::doc::expr::Kind::Unitless);
                 let expression = app.session.doc.with_design_unit(&e.expr, kind);
-                app.run("parameters.change", json!({"name": e.param, "expression": expression}))
+                app.run("parameters.change", json!({"name": e.param, "expression": expression})).map_err(|err| shown_error("parameters.change", &err))
             };
             match result {
                 Err(err) => {
@@ -910,12 +920,32 @@ mod tests {
         h.step(&json!({"text":"w = 25"})).unwrap();
         h.step(&json!({"key":"Enter"})).unwrap();
         assert!(editing(), "{:?}", h.app.status);
-        assert!(h.app.status.as_ref().is_some_and(|s| s.2 && s.0.contains("already a parameter `w`")), "{:?}", h.app.status);
+        // The refusal reads as the command's own words, in the status line and in the box.
+        let taken = "Sketch Dimension: there is already a parameter `w`: type `w` to use it, or change it in Parameters";
+        assert_eq!(h.app.status.as_ref().map(|s| (s.0.as_str(), s.2)), Some((taken, true)));
+        assert_eq!(box_error(), Some(taken.to_string()));
         assert_eq!(EDIT.with(|e| e.borrow().as_ref().map(|e| e.expr.clone())), Some("w = 25".to_string()));
         assert_eq!(h.app.session.undo.len(), undo, "a refused definition changed nothing");
         h.step(&json!({"key":"Escape"})).unwrap();
         h.step(&json!({"key":"Escape"})).unwrap();
+        // A reserved name says what kind of word it is.
+        h.app.run("sketch.line", json!({"points":[[10,50],[40,50]],"infer":false})).unwrap();
+        h.step(&json!({"start":"sketch.dimension"})).unwrap();
+        h.step(&json!({"click":{"sketch":[25,50]}})).unwrap();
+        h.step(&json!({"text":"mm = 5"})).unwrap();
+        h.step(&json!({"key":"Enter"})).unwrap();
+        assert!(editing(), "{:?}", h.app.status);
+        let reserved = "Sketch Dimension: `mm` is a unit name, so it cannot be a parameter name";
+        assert_eq!(h.app.status.as_ref().map(|s| (s.0.as_str(), s.2)), Some((reserved, true)));
+        assert_eq!(box_error(), Some(reserved.to_string()));
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.step(&json!({"key":"Escape"})).unwrap();
         cancel();
+    }
+
+    /// The error shown inside the open value box.
+    fn box_error() -> Option<String> {
+        EDIT.with(|e| e.borrow().as_ref().and_then(|e| e.draft.as_ref()).and_then(|d| d.error.clone()))
     }
 
     /// Placing a dimension the sketch can't take previews it as driven: in the draft it is a

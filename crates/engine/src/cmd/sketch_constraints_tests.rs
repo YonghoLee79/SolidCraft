@@ -833,8 +833,9 @@ fn a_definition_that_cannot_be_made_is_refused_and_leaves_nothing() {
     let refused = [
         ("w = 20", json!({"name": "w", "expression": "5 mm"}), "there is already a parameter `w`: type `w` to use it"),
         ("len = 20", Value::Null, "there is already a parameter `len`"),
-        ("mm = 5", Value::Null, "unit, constant or function name"),
-        ("sin = 5", Value::Null, "unit, constant or function name"),
+        ("mm = 5", Value::Null, "`mm` is a unit name, so it cannot be a parameter name"),
+        ("sin = 5", Value::Null, "`sin` is a function name, so it cannot be a parameter name"),
+        ("pi = 5", Value::Null, "`pi` is a constant, so it cannot be a parameter name"),
         ("w =", Value::Null, "`w =` needs a value after the `=`"),
         ("w = ", Value::Null, "needs a value"),
         ("2 = 3", Value::Null, "unexpected `=`"),
