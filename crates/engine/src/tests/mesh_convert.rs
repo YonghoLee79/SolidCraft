@@ -147,6 +147,10 @@ fn a_converted_mesh_takes_fillets_holes_and_sketches_on_its_faces() {
     let filleted = volume(&mut s);
     assert!(filleted < base - 1.0, "the fillet removed material: {base} -> {filleted}");
 
+    // A chamfer on the base's opposite vertical edge.
+    run(&mut s, "solid.chamfer", json!({"body": name, "edges": [[0., 20., 5.]], "distance": 2}));
+    assert!(failed(&s).is_empty(), "{:?}", failed(&s));
+
     // A hole into the base's top face, beside the boss.
     run(&mut s, "solid.hole", json!({"position": [25., 17., 10.], "diameter": 4}));
     assert!(failed(&s).is_empty(), "{:?}", failed(&s));
@@ -166,6 +170,23 @@ fn a_converted_mesh_takes_fillets_holes_and_sketches_on_its_faces() {
     assert!(failed(&s).is_empty(), "{:?}", failed(&s));
     let cut = volume(&mut s);
     assert!(cut < holed - 100.0, "{holed} -> {cut}");
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A body converted from a general mesh takes a shell as well: one wall thickness inward,
+/// hollow through the face picked.
+#[test]
+fn a_freshly_converted_mesh_takes_a_shell() {
+    let path = stepped_block_stl("shell");
+    let mut s = Session::default();
+    run(&mut s, "doc.open", json!({"path": path}));
+    let name = s.model.state().bodies[0].name.clone();
+    run(&mut s, "mesh.convert", json!({"body": name, "tolerance": "0.05 mm"}));
+    let solid = volume(&mut s);
+    run(&mut s, "solid.shell", json!({"faces": [[15., 10., 0.]], "thickness": 2., "body": name}));
+    assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results.iter().filter_map(|r| r.error.clone()).collect::<Vec<_>>());
+    let shelled = volume(&mut s);
+    assert!(shelled < solid && shelled > solid * 0.2, "the shell hollowed the body: {solid} -> {shelled}");
     std::fs::remove_file(path).unwrap();
 }
 
