@@ -238,6 +238,18 @@ pub enum KernelError {
 
 pub type Result<T> = std::result::Result<T, KernelError>;
 
+/// `x` mm as a [`Length`](solidcraft_geom::Length), for tests.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+pub(crate) fn mm(x: f64) -> solidcraft_geom::Length {
+    solidcraft_geom::Length::new(x).unwrap()
+}
+
+/// `x` as a [`Length`](solidcraft_geom::Length), or a refusal naming `what` it is.
+pub(crate) fn length(x: f64, what: &str) -> Result<solidcraft_geom::Length> {
+    solidcraft_geom::Length::new(x).ok_or_else(|| KernelError::Invalid(format!("{what} out of range: {x}")))
+}
+
 thread_local! {
     static GUARDED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }

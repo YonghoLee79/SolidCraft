@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
-use solidcraft_geom::{Mesh, Plane, Positive, Region2, UnitVec3, Vec2, Vec3, regions_apart};
+use solidcraft_geom::{Length, Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
 use solidcraft_sketch::{CurveKind, Profile, SolveReport, find_profiles};
 
@@ -441,9 +441,9 @@ fn thread_groove(t: &ThreadInfo, radius: f64, open: (bool, bool)) -> Result<soli
 fn fillet_fitted(
     body: &kernel::Body,
     edges: &[Vec3],
-    r: f64,
+    r: Length,
     fit: crate::FilletFit,
-) -> std::result::Result<(kernel::Body, Option<Vec<f64>>), kernel::KernelError> {
+) -> std::result::Result<(kernel::Body, Option<Vec<Length>>), kernel::KernelError> {
     match kernel::fillet(body, edges, r) {
         Err(kernel::KernelError::TooLarge(why)) if fit == crate::FilletFit::Reduce => match kernel::fillet_max_each(body, edges, r) {
             // Built at the radius asked for after all (the groups apart): nothing reduced.
@@ -456,8 +456,8 @@ fn fillet_fitted(
 }
 
 /// The warning of a fillet whose radius `asked` was reduced to `used` (per edge).
-fn reduced_note(used: &[f64], asked: f64) -> String {
-    let mut values: Vec<f64> = used.iter().copied().filter(|r| *r < asked).collect();
+fn reduced_note(used: &[Length], asked: Length) -> String {
+    let mut values: Vec<f64> = used.iter().copied().filter(|r| *r < asked).map(Length::get).collect();
     values.sort_by(f64::total_cmp);
     values.dedup();
     let shown = values.iter().map(|v| show_mm(*v)).collect::<Vec<_>>().join(", ");
@@ -522,7 +522,11 @@ impl ModelState {
     /// The smallest and largest radius fillet `feature` used when it reduced a radius too large
     /// for some of its edges.
     pub fn fitted_range(&self, feature: u64) -> Option<(f64, f64)> {
-        self.fitted.get(&feature)?.iter().fold(None, |acc, r| Some(acc.map_or((*r, *r), |(lo, hi): (f64, f64)| (lo.min(*r), hi.max(*r)))))
+        self.fitted
+            .get(&feature)?
+            .iter()
+            .map(|r| r.get())
+            .fold(None, |acc, r| Some(acc.map_or((r, r), |(lo, hi): (f64, f64)| (lo.min(r), hi.max(r)))))
     }
 
     /// Each edge fillet `feature` tapered (a point on it) with the radius spline it was given.
@@ -535,7 +539,7 @@ impl ModelState {
     pub fn fitted_edges(&self, feature: u64) -> Option<Vec<(Vec3, f64)>> {
         let radii = self.fitted.get(&feature)?;
         let edges = self.blend_edges.get(&feature)?;
-        Some(edges.iter().copied().zip(radii.iter().copied()).collect())
+        Some(edges.iter().copied().zip(radii.iter().map(|r| r.get())).collect())
     }
 }
 
@@ -560,7 +564,7 @@ pub struct ModelState {
     blend_edges: BTreeMap<u64, Vec<Vec3>>,
     /// The radius per edge a fillet used when it reduced a radius too large for some of its edges
     /// (by feature id, see `FilletFit::Reduce`).
-    fitted: BTreeMap<u64, Vec<f64>>,
+    fitted: BTreeMap<u64, Vec<Length>>,
     /// The radius spline of each edge a fillet tapered (a point on the edge with it, by feature
     /// id, see `FilletFit::Taper`).
     tapered: BTreeMap<u64, Vec<(Vec3, kernel::Taper)>>,
@@ -1608,9 +1612,9 @@ fn point(vals: &BTreeMap<String, Value>, p: &crate::PointExpr) -> Result<Vec3> {
     if [v.x, v.y, v.z].iter().all(|c| c.is_finite() && c.abs() < 1e9) { Ok(v) } else { Err(DocError::Invalid("the position is out of range".into())) }
 }
 
-/// `x` as a [`Positive`], or a refusal naming `what` it is.
-pub(crate) fn positive(x: f64, what: &str) -> Result<Positive> {
-    Positive::new(x).ok_or_else(|| DocError::Invalid(format!("{what} must be finite and positive")))
+/// `x` as a [`Length`], or a refusal naming `what` it is.
+pub(crate) fn length(x: f64, what: &str) -> Result<Length> {
+    Length::new(x).ok_or_else(|| DocError::Invalid(format!("{what} must be between {:e} and {:e} mm", Length::MIN, Length::MAX)))
 }
 
 pub(crate) fn val(vals: &BTreeMap<String, Value>, e: &str, k: Kind) -> Result<f64> {
@@ -4629,7 +4633,7 @@ fn replay(
             .ok_or_else(|| DocError::Unknown(format!("feature `{name}`")))?;
         // A fillet or chamfer repeats at the copied edges.
         if let FeatureKind::Fillet { edges, radius, .. } | FeatureKind::Chamfer { edges, distance: radius, .. } = &src.kind {
-            let r = val(vals, radius, Kind::Length)?;
+            let r = length(val(vals, radius, Kind::Length)?, "the blend size")?;
             // The edges the feature blended in this evaluation (found by name), falling back to
             // its picked points.
             let found = st.blend_edges.get(&src.id).cloned().unwrap_or_else(|| crate::plain(edges));
@@ -5003,7 +5007,7 @@ fn chamfer_with(
     vals: &BTreeMap<String, Value>,
     b: &kernel::Body,
     edges: &[Vec3],
-    d: f64,
+    d: Length,
     distance2: &Option<crate::Expr>,
     angle: &Option<crate::Expr>,
     flip: bool,
@@ -5164,7 +5168,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             let groove = thread_groove(&t, cyl.radius, ((t.start - cyl.start).abs() < tol, (t.end - cyl.end).abs() < tol))?;
             // The B-rep boolean can't take helical walls in reasonable time: the body is cut
             // faceted (curved faces within a two-hundredth of the pitch).
-            let nb = kernel::faceted_boolean(&mb.body, &groove, BoolOp::Cut, positive(t.pitch * 0.005, "the thread pitch")?)?
+            let nb = kernel::faceted_boolean(&mb.body, &groove, BoolOp::Cut, t.pitch * 0.005)?
                 .ok_or_else(|| DocError::Invalid("the thread removed everything".into()))?;
             // The groove's faces are its triangles, with no role to name them by.
             let groove = crate::lineage::Lineage::unnamed_faces(groove.triangles.len());
@@ -5498,13 +5502,13 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             {
                 return Err(DocError::Invalid("a G2 corner is built for a constant-radius fillet (type: constant, fit: exact) only".into()));
             }
+            // A constant blend's size; a variable fillet's radius may be zero at an end.
+            let size = || length(r, "the blend size");
             // The blended body, and the lineage of what the last blend started from.
             let (nb, from) = match &f.kind {
-                FeatureKind::Fillet { corner: crate::FilletCorner::G2, .. } => {
-                    (kernel::fillet_g2_corners(&mb.body, &edges, positive(r, "the blend radius")?)?, input)
-                }
-                FeatureKind::Fillet { style: crate::FilletStyle::Curvature, .. } => (kernel::fillet_g2(&mb.body, &edges, r)?, input),
-                FeatureKind::Fillet { style: crate::FilletStyle::Chord, .. } => (kernel::fillet_chord(&mb.body, &edges, r)?, input),
+                FeatureKind::Fillet { corner: crate::FilletCorner::G2, .. } => (kernel::fillet_g2_corners(&mb.body, &edges, size()?)?, input),
+                FeatureKind::Fillet { style: crate::FilletStyle::Curvature, .. } => (kernel::fillet_g2(&mb.body, &edges, size()?)?, input),
+                FeatureKind::Fillet { style: crate::FilletStyle::Chord, .. } => (kernel::fillet_chord(&mb.body, &edges, size()?)?, input),
                 FeatureKind::Fillet { style: crate::FilletStyle::Variable { radius2, start, mid, smooth }, .. } => {
                     let r2 = val(vals, radius2, Kind::Length)?;
                     let mut pts = vec![(0.0, r), (1.0, r2)];
@@ -5522,7 +5526,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                     one_by_one(input, &edges, |b, p| kernel::fillet_variable_spline(b, p, start.0, &law))?
                 }
                 FeatureKind::Fillet { fit: crate::FilletFit::Taper, .. } => {
-                    let (b, tapers) = kernel::fillet_tapered(&mb.body, &edges, r)?;
+                    let (b, tapers) = kernel::fillet_tapered(&mb.body, &edges, size()?)?;
                     if let Some(note) = tapered_note(&tapers) {
                         append_warning(warning, note);
                     }
@@ -5533,6 +5537,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                     (b, input)
                 }
                 FeatureKind::Fillet { fit, .. } => {
+                    let r = size()?;
                     let (b, used) = fillet_fitted(&mb.body, &edges, r, *fit)?;
                     if let Some(used) = used {
                         append_warning(warning, reduced_note(&used, r));
@@ -5540,7 +5545,9 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                     }
                     (b, input)
                 }
-                FeatureKind::Chamfer { distance2, angle, flip, .. } => (chamfer_with(vals, &mb.body, &edges, r, distance2, angle, *flip)?, input),
+                FeatureKind::Chamfer { distance2, angle, flip, .. } => {
+                    (chamfer_with(vals, &mb.body, &edges, size()?, distance2, angle, *flip)?, input)
+                }
                 _ => return Err(DocError::Invalid("blend".into())),
             };
             // Keeping the input's planar certificates may join faces; their history stays over

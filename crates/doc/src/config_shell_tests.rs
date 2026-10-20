@@ -369,7 +369,7 @@ fn saved_curved_strip_projection_is_lost_after_exact_wall_coalescence() {
     let cavity = solidcraft_kernel::fillet(
         &cavity_box,
         &[Vec3::new(38., 28., 15.), Vec3::new(-38., 28., 15.), Vec3::new(-38., -28., 15.), Vec3::new(38., -28., 15.)],
-        4.,
+        solidcraft_geom::Length::new(4.).unwrap(),
     )
     .unwrap();
     let raw = solidcraft_kernel::boolean(&old_source, &cavity, solidcraft_kernel::BoolOp::Cut).unwrap().unwrap();

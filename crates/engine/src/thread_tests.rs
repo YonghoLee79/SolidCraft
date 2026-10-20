@@ -27,7 +27,7 @@ const SIZES: [(f64, f64); 9] = [(3.0, 0.5), (4.0, 0.7), (5.0, 0.8), (6.0, 1.0), 
 /// threads now use more stations. The same cut polygons must rebuild as a closed solid.
 #[test]
 fn faceted_flange_thread_preserves_thin_crest_boundaries() {
-    use crate::geom::{Plane, Positive, Vec2, Vec3};
+    use crate::geom::{Plane, Vec2, Vec3};
     use crate::kernel;
 
     let mut s = Session::default();
@@ -47,7 +47,7 @@ fn faceted_flange_thread_preserves_thin_crest_boundaries() {
     let base = cylinder.axis_point + cylinder.axis * start;
     let plane = Plane { origin: base, x: cylinder.axis.cross(Vec3::new(1.0, 0.0, 0.0)).normalized().unwrap(), y: *cylinder.axis };
     let groove = kernel::sweep_helix_mesh(&plane, &section, base, *cylinder.axis, pitch, (end - start) / pitch, 48).unwrap();
-    let cut = kernel::faceted_boolean(body, &groove, kernel::BoolOp::Cut, Positive::new(pitch * 0.005).unwrap()).unwrap().unwrap();
+    let cut = kernel::faceted_boolean(body, &groove, kernel::BoolOp::Cut, pitch * 0.005).unwrap().unwrap();
     assert!(cut.validity().is_empty(), "{:?}", cut.validity());
     let before = body.tessellate(0.001).unwrap().measure().volume;
     let after = cut.tessellate(0.001).unwrap().measure().volume;
