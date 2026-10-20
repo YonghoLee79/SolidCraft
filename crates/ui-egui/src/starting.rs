@@ -3,6 +3,10 @@
 //! scan, a design to open) runs in later frames, one step each, behind a light "Starting" page:
 //! the first frame only paints that page, and each later one runs the next step and names the one
 //! after it.
+//!
+//! The steps run from the app's logic, which eframe keeps calling for a minimized or occluded window
+//! without painting it. Nobody sees the page then, so the rest of the setup runs at once: the app
+//! is ready when the window comes back, as it was when all of it ran before the window opened.
 
 use std::collections::VecDeque;
 
@@ -43,16 +47,21 @@ impl<T> Starting<T> {
     }
 
     /// The start of a frame: on the first one nothing runs (the page goes up first); on each
-    /// later one, the next step. Returns whether the app is still starting, so this frame shows
-    /// the page again.
+    /// later one, the next step; every step left while the window is minimized or occluded.
+    /// Returns whether the app is still starting, so this frame shows the page again.
     pub fn logic(&mut self, target: &mut T, ctx: &egui::Context) -> bool {
-        if !self.shown {
+        let hidden = ctx.input(|i| i.viewport().visible() == Some(false));
+        if !self.shown && !hidden {
             self.shown = true;
             ctx.request_repaint();
             return !self.done();
         }
-        if let Some((_, step)) = self.steps.pop_front() {
+        self.shown = true;
+        while let Some((_, step)) = self.steps.pop_front() {
             step(target, ctx);
+            if !hidden {
+                break;
+            }
         }
         if self.done() {
             return false;
@@ -103,6 +112,22 @@ mod tests {
         out
     }
 
+    fn three_steps() -> Starting<Vec<&'static str>> {
+        Starting::default()
+            .then("", |log: &mut Vec<&'static str>, _| log.push("fonts"))
+            .then("starting.view", |log: &mut Vec<&'static str>, _| log.push("view"))
+            .then("starting.recovery", |log: &mut Vec<&'static str>, _| log.push("recovery"))
+    }
+
+    /// What eframe does for a window it does not paint: the app's logic alone, nothing presented.
+    fn logic_only(ctx: &egui::Context, starting: &mut Starting<Vec<&'static str>>, log: &mut Vec<&'static str>, info: egui::ViewportInfo) -> bool {
+        let mut input = egui::RawInput::default();
+        input.viewports.insert(egui::ViewportId::ROOT, info);
+        let mut still = false;
+        let _ = ctx.run_logic(&input, |ctx| still = starting.logic(log, ctx));
+        still
+    }
+
     fn frame(ctx: &egui::Context, starting: &mut Starting<Vec<&'static str>>, log: &mut Vec<&'static str>) -> (bool, Vec<String>) {
         let mut still = false;
         let mut output = ctx.run_ui(
@@ -123,10 +148,7 @@ mod tests {
     #[test]
     fn the_first_frame_shows_the_page_before_any_step_runs() {
         let ctx = egui::Context::default();
-        let mut starting = Starting::default()
-            .then("", |log: &mut Vec<&'static str>, _| log.push("fonts"))
-            .then("starting.view", |log: &mut Vec<&'static str>, _| log.push("view"))
-            .then("starting.recovery", |log: &mut Vec<&'static str>, _| log.push("recovery"));
+        let mut starting = three_steps();
         let mut log = Vec::new();
 
         let (still, painted) = frame(&ctx, &mut starting, &mut log);
@@ -159,5 +181,42 @@ mod tests {
         let mut log = Vec::new();
         assert!(!frame(&ctx, &mut starting, &mut log).0);
         assert!(!frame(&ctx, &mut starting, &mut log).0);
+    }
+
+    /// A minimized or occluded window gets the app's logic but no frames: the setup finishes
+    /// there, at once, instead of waiting for the window to be painted again.
+    #[test]
+    fn a_window_nobody_sees_finishes_the_setup_without_frames() {
+        for (minimized, occluded) in [(Some(true), None), (Some(false), Some(true))] {
+            let info = egui::ViewportInfo { minimized, occluded, ..Default::default() };
+            // From the launch (a window started minimized) …
+            let ctx = egui::Context::default();
+            let mut starting = three_steps();
+            let mut log = Vec::new();
+            assert!(!logic_only(&ctx, &mut starting, &mut log, info.clone()));
+            assert_eq!(log, ["fonts", "view", "recovery"]);
+            // … and after the page was shown, then the window minimized or covered.
+            let mut starting = three_steps();
+            let mut log = Vec::new();
+            assert!(frame(&ctx, &mut starting, &mut log).0);
+            assert!(log.is_empty());
+            assert!(!logic_only(&ctx, &mut starting, &mut log, info));
+            assert_eq!(log, ["fonts", "view", "recovery"]);
+            assert!(starting.done());
+        }
+    }
+
+    /// The steps follow the app's logic, not presented frames: logic calls alone finish the setup.
+    #[test]
+    fn the_setup_moves_on_with_logic_alone() {
+        let ctx = egui::Context::default();
+        let mut starting = three_steps();
+        let mut log = Vec::new();
+        let mut calls = 0;
+        while logic_only(&ctx, &mut starting, &mut log, egui::ViewportInfo::default()) {
+            calls += 1;
+            assert!(calls < 10, "the setup never finished: {log:?}");
+        }
+        assert_eq!(log, ["fonts", "view", "recovery"]);
     }
 }
