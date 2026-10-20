@@ -367,6 +367,9 @@ preference_settings! {
     orbit_cursor: bool = false, 1;
     /// Whether a connected 3D mouse moves the view.
     space_mouse_enabled: bool = true, 1 => check("Navigate with SpaceNavigator / SpaceMouse");
+    /// Whether a picture of the connected 3D mouse, moving as it does, sits in the 3D view's lower
+    /// left corner. Off by default.
+    space_mouse_in_view: bool = false, 1 => check_id("ui.space_mouse_show_in_view");
     /// Speed multiplier for 3D mouse navigation.
     space_mouse_speed: f32 = 1.0, 1 => enabled_slider(space_mouse_enabled, "3D mouse speed", 0.25..=3.0, 0.05, |v| format!("{v:.2}×"));
     /// Per physical axis of the cap (push X, Y, Z, then tilt X, Y, Z), whether it moves the view
@@ -378,6 +381,10 @@ preference_settings! {
     /// 3Dconnexion's. A device without one is read as it reports. Page resets keep calibrations.
     #[serde(deserialize_with = "calibrations_that_read")]
     space_mouse_calibrations: std::collections::BTreeMap<String, solidcraft_space_mouse::Calibration> = Default::default();
+    /// Per 3D mouse, what each of its buttons does, by number from 1, once the user has changed
+    /// any of them; until then a measured device has its printed keys' jobs
+    /// (`space_mouse::default_button_jobs`). Kept, like calibrations, when settings are reset.
+    space_mouse_buttons: std::collections::BTreeMap<String, std::collections::BTreeMap<u8, crate::space_mouse::ButtonJob>> = Default::default();
     /// Anti-aliasing samples (applies on restart).
     msaa: u32 = 4, PAGE_GRAPHICS;
     /// Soft contact shading in the GPU viewport; optional and applied immediately.
@@ -1225,73 +1232,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             });
             setting::look_at_anim(app, ui);
             setting::look_at_speed(app, ui);
-            setting::space_mouse_enabled(app, ui);
-            setting::space_mouse_speed(app, ui);
-            for (axis, name) in SPACE_MOUSE_AXES.iter().enumerate() {
-                ui_kit::row(ui, crate::i18n::tr_label(name), |ui| {
-                    ui.add_enabled_ui(app.preferences.space_mouse_enabled, |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(reverse) = app.preferences.space_mouse_reverse.get_mut(axis) {
-                                ui_kit::checkbox(ui, crate::i18n::tr_label("Invert"), reverse);
-                            }
-                            if let Some(speed) = app.preferences.space_mouse_axis_speed.get_mut(axis) {
-                                ui_kit::slider(
-                                    ui,
-                                    speed,
-                                    0.0..=3.0,
-                                    ui_kit::Slider { step: Some(0.05), format: |v| format!("{v:.2}×"), ..Default::default() },
-                                );
-                            }
-                        });
-                    });
-                });
-            }
-            ui_kit::row(ui, app.tr("ui.space_mouse_calibration"), |ui| {
-                let device = app.space_mouse.device.clone();
-                let saved = device.as_ref().is_some_and(|device| app.preferences.space_mouse_calibrations.contains_key(device));
-                ui.add_enabled_ui(app.preferences.space_mouse_enabled && device.is_some(), |ui| {
-                    if ui_kit::button(ui, app.tr("ui.space_mouse_calibrate"), ui_kit::Button::Normal)
-                        .on_hover_text(app.tr("ui.space_mouse_calibrate_tip"))
-                        .clicked()
-                    {
-                        crate::space_mouse_calibration::start(app);
-                    }
-                    if saved
-                        && ui_kit::button(ui, app.tr("ui.space_mouse_forget"), ui_kit::Button::Normal).clicked()
-                        && let Some(device) = &device
-                    {
-                        app.preferences.space_mouse_calibrations.remove(device);
-                    }
-                });
-                let status = match (&device, saved) {
-                    (None, _) => app.tr("ui.space_mouse_none").to_owned(),
-                    (Some(device), true) => format!("{} ({device})", app.tr("ui.space_mouse_calibrated")),
-                    (Some(device), false) => format!("{} ({device})", app.tr("ui.space_mouse_not_calibrated")),
-                };
-                ui_kit::text(ui, &status, ui_kit::Text::Report("calibration_status", false));
-            });
-            let enabled = app.preferences.space_mouse_enabled;
-            let (label, tip) = (app.tr("ui.space_mouse_dead_zone").to_owned(), app.tr("ui.space_mouse_dead_zone_tip").to_owned());
-            let (device, raw) = (app.space_mouse.device.clone(), app.space_mouse.raw.into());
-            if let Some(calibration) = device.and_then(|device| app.preferences.space_mouse_calibrations.get_mut(&device)) {
-                ui_kit::row(ui, &label, |ui| {
-                    ui.add_enabled_ui(enabled, |ui| {
-                        ui_kit::slider(
-                            ui,
-                            &mut calibration.dead_zone_share,
-                            0.0..=solidcraft_space_mouse::MAX_DEAD_ZONE_SHARE,
-                            ui_kit::Slider { step: Some(0.01), format: |v| format!("{:.0} %", v * 100.0), ..Default::default() },
-                        )
-                        .on_hover_text(tip);
-                    });
-                });
-                crate::space_mouse_calibration::dead_zone_pads(ui, calibration, raw);
-            }
-            ui_kit::text(
-                ui,
-                crate::i18n::tr_label("Move and rotate the view together; sketches use pan and zoom only."),
-                ui_kit::Text::Note("space_mouse"),
-            );
+            space_mouse_section(app, ui);
         }
         PAGE_DESIGN => {
             ui_kit::row(ui, app.tr_label("Default modelling orientation"), |ui| {
@@ -1430,6 +1371,187 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             });
         }
     }
+}
+
+/// The 3D mouse's settings under Navigation, folded away while no 3D mouse is connected so they
+/// don't take the page from everyone without one: whether it moves the view and shows in it, its
+/// speed and each axis, its calibration and dead zone, and what its buttons do.
+fn space_mouse_section(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let t = Tokens::get();
+    let open = app.space_mouse.device.is_some();
+    ui_kit::section(ui, "sc_prefs_space_mouse", crate::i18n::tr_label("3D mouse"), open, |ui| {
+        setting::space_mouse_enabled(app, ui);
+        setting::space_mouse_in_view(app, ui).on_hover_text(crate::i18n::tr("ui.space_mouse_show_in_view_tip"));
+        setting::space_mouse_speed(app, ui);
+        for (axis, name) in SPACE_MOUSE_AXES.iter().enumerate() {
+            ui_kit::row(ui, crate::i18n::tr_label(name), |ui| {
+                ui.add_enabled_ui(app.preferences.space_mouse_enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        if let Some(reverse) = app.preferences.space_mouse_reverse.get_mut(axis) {
+                            ui_kit::checkbox(ui, crate::i18n::tr_label("Invert"), reverse);
+                        }
+                        if let Some(speed) = app.preferences.space_mouse_axis_speed.get_mut(axis) {
+                            ui_kit::slider(
+                                ui,
+                                speed,
+                                0.0..=3.0,
+                                ui_kit::Slider { step: Some(0.05), format: |v| format!("{v:.2}×"), ..Default::default() },
+                            );
+                        }
+                    });
+                });
+            });
+        }
+        ui_kit::row(ui, app.tr("ui.space_mouse_calibration"), |ui| {
+            let device = app.space_mouse.device.clone();
+            let saved = device.as_ref().is_some_and(|device| app.preferences.space_mouse_calibrations.contains_key(device));
+            ui.add_enabled_ui(app.preferences.space_mouse_enabled && device.is_some(), |ui| {
+                if ui_kit::button(ui, app.tr("ui.space_mouse_calibrate"), ui_kit::Button::Normal)
+                    .on_hover_text(app.tr("ui.space_mouse_calibrate_tip"))
+                    .clicked()
+                {
+                    crate::space_mouse_calibration::start(app);
+                }
+                if saved
+                    && ui_kit::button(ui, app.tr("ui.space_mouse_forget"), ui_kit::Button::Normal).clicked()
+                    && let Some(device) = &device
+                {
+                    app.preferences.space_mouse_calibrations.remove(device);
+                }
+            });
+            let status = match (&device, saved) {
+                (None, _) => app.tr("ui.space_mouse_none").to_owned(),
+                (Some(device), true) => format!("{} ({device})", app.tr("ui.space_mouse_calibrated")),
+                (Some(device), false) => format!("{} ({device})", app.tr("ui.space_mouse_not_calibrated")),
+            };
+            ui_kit::text(ui, &status, ui_kit::Text::Report("calibration_status", false));
+        });
+        let enabled = app.preferences.space_mouse_enabled;
+        let (label, tip) = (app.tr("ui.space_mouse_dead_zone").to_owned(), app.tr("ui.space_mouse_dead_zone_tip").to_owned());
+        let (device, raw) = (app.space_mouse.device.clone(), app.space_mouse.raw.into());
+        if let Some(calibration) = device.and_then(|device| app.preferences.space_mouse_calibrations.get_mut(&device)) {
+            ui_kit::row(ui, &label, |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui_kit::slider(
+                        ui,
+                        &mut calibration.dead_zone_share,
+                        0.0..=solidcraft_space_mouse::MAX_DEAD_ZONE_SHARE,
+                        ui_kit::Slider { step: Some(0.01), format: |v| format!("{:.0} %", v * 100.0), ..Default::default() },
+                    )
+                    .on_hover_text(tip);
+                });
+            });
+            // The calibrated device moving as it does, then its dead zones.
+            ui.add_space(t.space_8);
+            crate::space_mouse_model::live(ui, calibration, raw);
+            crate::space_mouse_calibration::dead_zone_pads(ui, calibration, raw);
+        }
+        ui_kit::text(
+            ui,
+            crate::i18n::tr_label("Move and rotate the view together; sketches use pan and zoom only."),
+            ui_kit::Text::Note("space_mouse"),
+        );
+        space_mouse_buttons(app, ui);
+    });
+}
+
+/// The 3D mouse's buttons, each with what it does: those that do something and any pressed since
+/// the app started. A pressed one is marked in its row; Preferences doesn't run them.
+fn space_mouse_buttons(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::text(ui, crate::i18n::tr("ui.space_mouse_buttons"), ui_kit::Text::Heading("space_mouse_buttons"));
+    let Some(device) = app.space_mouse.device.clone() else {
+        ui_kit::text(ui, crate::i18n::tr("ui.space_mouse_buttons_no_device"), ui_kit::Text::Note("space_mouse_buttons"));
+        return;
+    };
+    ui_kit::text(ui, crate::i18n::tr("ui.space_mouse_buttons_hint"), ui_kit::Text::Note("space_mouse_buttons"));
+    let mut jobs = crate::space_mouse::button_jobs(app, &device);
+    let bit = |number: u8| number.checked_sub(1).and_then(|index| 1_u32.checked_shl(u32::from(index))).unwrap_or(0);
+    let mut numbers: std::collections::BTreeSet<u8> = jobs.keys().copied().collect();
+    numbers.extend((1..=32).filter(|&number| app.space_mouse.seen & bit(number) != 0));
+    let mut changed = false;
+    for number in numbers {
+        let mut name = crate::i18n::format("ui.space_mouse_button", &[("number", &number.to_string())]);
+        if app.space_mouse.buttons & bit(number) != 0 {
+            name.push_str("  ●");
+        }
+        let current = jobs.get(&number).cloned();
+        if let Some(choice) = ui_kit::row(ui, &name, |ui| button_job_picker(app, ui, number, current.as_ref())) {
+            changed = true;
+            match choice {
+                Some(job) => jobs.insert(number, job),
+                None => jobs.remove(&number),
+            };
+        }
+    }
+    if changed {
+        app.preferences.space_mouse_buttons.insert(device.clone(), jobs);
+    }
+    if app.preferences.space_mouse_buttons.contains_key(&device)
+        && ui_kit::button(ui, crate::i18n::tr("ui.space_mouse_buttons_reset"), ui_kit::Button::Normal).clicked()
+    {
+        app.preferences.space_mouse_buttons.remove(&device);
+    }
+}
+
+/// What a button job is called in its picker.
+fn button_job_label(app: &SolveApp, job: Option<&crate::space_mouse::ButtonJob>) -> String {
+    use crate::space_mouse::{ButtonJob, ButtonKey};
+    match job {
+        None => crate::i18n::tr("ui.space_mouse_button_nothing").to_string(),
+        Some(ButtonJob::Settings) => crate::i18n::tr("ui.space_mouse_button_settings").to_string(),
+        Some(ButtonJob::View(view)) => {
+            let mut name = view.clone();
+            if let Some(first) = name.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            app.tr_label(&name).to_string()
+        }
+        Some(ButtonJob::Key(key)) => match key {
+            ButtonKey::Esc => "Esc",
+            ButtonKey::Shift => "Shift",
+            ButtonKey::Ctrl => "Ctrl",
+            ButtonKey::Alt => "Alt",
+        }
+        .to_string(),
+        Some(ButtonJob::Command(id)) => solidcraft_engine::find_command(id).map_or_else(|| id.clone(), |c| app.tr_label(c.label).to_string()),
+    }
+}
+
+/// A job as the picker's value: what it is and, for a view, key or command, which.
+fn button_job_value(job: Option<&crate::space_mouse::ButtonJob>) -> String {
+    use crate::space_mouse::ButtonJob;
+    match job {
+        None => "none".into(),
+        Some(ButtonJob::Settings) => "settings".into(),
+        Some(ButtonJob::View(view)) => format!("view:{view}"),
+        Some(ButtonJob::Key(key)) => format!("key:{key:?}"),
+        Some(ButtonJob::Command(id)) => format!("cmd:{id}"),
+    }
+}
+
+/// A button's job, chosen from nothing, the 3D mouse settings, the views, the keys, then any
+/// command, in the kit's searchable dropdown. `Some` with the new job when one is picked.
+fn button_job_picker(
+    app: &SolveApp,
+    ui: &mut egui::Ui,
+    number: u8,
+    current: Option<&crate::space_mouse::ButtonJob>,
+) -> Option<Option<crate::space_mouse::ButtonJob>> {
+    use crate::space_mouse::{ButtonJob, ButtonKey};
+    let views = ["home", "fit", "top", "front", "right", "left", "back", "bottom"].map(|view| ButtonJob::View(view.into()));
+    let keys = [ButtonKey::Esc, ButtonKey::Shift, ButtonKey::Ctrl, ButtonKey::Alt].map(ButtonJob::Key);
+    let commands = solidcraft_engine::command_specs().into_iter().map(|spec| ButtonJob::Command(spec.id.into()));
+    let jobs: Vec<Option<ButtonJob>> =
+        [None, Some(ButtonJob::Settings)].into_iter().chain(views.into_iter().chain(keys).chain(commands).map(Some)).collect();
+    let entries: Vec<(String, String)> = jobs.iter().map(|job| (button_job_value(job.as_ref()), button_job_label(app, job.as_ref()))).collect();
+    let options: Vec<_> = entries.iter().map(|(value, label)| ui_kit::SearchOption { value, label, handle: None }).collect();
+    let filter_id = egui::Id::new(("sc_space_mouse_button_filter", number));
+    let mut filter: String = ui.data_mut(|data| data.get_temp(filter_id).unwrap_or_default());
+    let id = format!("sc_space_mouse_button_{number}");
+    let chosen = ui_kit::searchable_dropdown(ui, &id, &button_job_label(app, current), &mut filter, &options, None, None);
+    ui.data_mut(|data| data.insert_temp(filter_id, filter));
+    let chosen = chosen?;
+    jobs.into_iter().find(|job| button_job_value(job.as_ref()) == chosen)
 }
 
 /// The names under the Colour vision sample (message ids).

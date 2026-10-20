@@ -1,9 +1,10 @@
-//! The 3D mouse calibration window, opened from Preferences › Navigation. It asks the user to
-//! leave the cap still, then to move it along each axis both ways, moving on by itself after each
+//! The 3D mouse calibration window, opened from Preferences › Navigation. It asks what kind of
+//! device it is (a cap that springs back, or a trackball), then asks the user to leave it still and
+//! to move it along each axis both ways, moving on by itself after each
 //! (`solidcraft_space_mouse::Wizard`), and saves what it found for the device it started with.
 //! The window closes with Preferences, and when another device (or none) is read instead.
 
-use solidcraft_space_mouse::{Calibration, Problem, Stage, Wizard};
+use solidcraft_space_mouse::{Calibration, Kind, Problem, Stage, Wizard};
 
 use crate::SolveApp;
 
@@ -15,13 +16,32 @@ const STEP_PROMPTS: [&str; 12] = [
     "ui.space_mouse_step_push",
     "ui.space_mouse_step_press",
     "ui.space_mouse_step_lift",
-    "ui.space_mouse_step_tilt_back",
-    "ui.space_mouse_step_tilt_forward",
+    "ui.space_mouse_step_tilt_toward",
+    "ui.space_mouse_step_tilt_away",
     "ui.space_mouse_step_tilt_left",
     "ui.space_mouse_step_tilt_right",
     "ui.space_mouse_step_twist_clockwise",
     "ui.space_mouse_step_twist_counterclockwise",
 ];
+
+/// The same for a trackball: it has nothing to tilt, so those steps aren't asked.
+const TRACKBALL_PROMPTS: [&str; 12] = [
+    "ui.space_mouse_step_roll_right",
+    "ui.space_mouse_step_roll_left",
+    "ui.space_mouse_step_roll_toward",
+    "ui.space_mouse_step_roll_away",
+    "ui.space_mouse_step_ring_clockwise",
+    "ui.space_mouse_step_ring_counterclockwise",
+    "",
+    "",
+    "",
+    "",
+    "ui.space_mouse_step_spin_clockwise",
+    "ui.space_mouse_step_spin_counterclockwise",
+];
+
+/// Each kind of device, as the first step offers it.
+const KINDS: [(Kind, &str); 2] = [(Kind::ReturnToCenter, "ui.space_mouse_kind_cap"), (Kind::Trackball, "ui.space_mouse_kind_trackball")];
 
 /// The dead zone, as a share of full travel, shown as a percentage.
 pub(crate) fn dead_zone_slider(ui: &mut egui::Ui, share: &mut f32) -> egui::Response {
@@ -84,17 +104,25 @@ pub(crate) fn dead_zone_pads(ui: &mut egui::Ui, calibration: &Calibration, raw: 
 
 /// Starts calibrating the device being read, if there is one.
 pub fn start(app: &mut SolveApp) {
-    app.space_mouse.calibrating = app.space_mouse.device.clone().map(|device| (device, Wizard::default()));
+    app.space_mouse.calibrating = app.space_mouse.device.clone().map(|device| (device, Wizard::choosing()));
 }
 
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some((_, wizard)) = &app.space_mouse.calibrating else { return };
-    let (stage, progress, result) = (wizard.stage(), wizard.progress(), wizard.result());
+    let (stage, kind, progress, result) = (wizard.stage(), wizard.kind(), wizard.progress(), wizard.result());
+    let (can_skip, mismatch, (step_number, steps)) = (wizard.can_skip(), wizard.mismatch(), wizard.counter());
     let mut dead_zone = wizard.dead_zone_share();
     let raw: [i16; 6] = app.space_mouse.raw.into();
+    let prompts = match kind {
+        Kind::ReturnToCenter => &STEP_PROMPTS,
+        Kind::Trackball => &TRACKBALL_PROMPTS,
+    };
     let prompt = match (stage, result) {
+        (Stage::Choose, _) => "ui.space_mouse_kind_question",
+        (Stage::Rest, _) if kind == Kind::Trackball => "ui.space_mouse_step_rest_trackball",
         (Stage::Rest, _) => "ui.space_mouse_step_rest",
-        (Stage::Step(index), _) => STEP_PROMPTS.get(index).copied().unwrap_or_default(),
+        (Stage::Touch, _) => "ui.space_mouse_step_touch",
+        (Stage::Step(index), _) => prompts.get(index).copied().unwrap_or_default(),
         (Stage::Done, Some(Ok(_))) => "ui.space_mouse_calibration_done",
         (Stage::Done, _) => "ui.space_mouse_calibration_no_response",
     };
@@ -104,11 +132,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         _ => None,
     };
     let counter = match stage {
-        Stage::Rest => String::new(),
-        Stage::Step(index) => format!("{} / {}", index + 1, STEP_PROMPTS.len()),
-        Stage::Done => format!("{0} / {0}", STEP_PROMPTS.len()),
+        Stage::Choose | Stage::Rest | Stage::Touch => String::new(),
+        Stage::Step(_) | Stage::Done => format!("{step_number} / {steps}"),
     };
-    let (mut back, mut over, mut cancel, mut save) = (false, false, false, false);
+    let (mut back, mut over, mut cancel, mut save, mut skip) = (false, false, false, false, false);
+    let mut chosen = None;
     crate::frame::window(ctx, app.tr("ui.space_mouse_calibrate_title"), crate::frame::Width::Normal)
         .id(egui::Id::new("sc_space_mouse_calibration"))
         .collapsible(false)
@@ -118,12 +146,48 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             if let Some(axis) = weak {
                 ui.label(egui::RichText::new(app.tr_label(axis)).strong());
             }
+            // The device doesn't behave like the kind picked: say so, and offer the other.
+            if let Some(other) = mismatch {
+                let (hint, switch) = match other {
+                    Kind::Trackball => ("ui.space_mouse_looks_like_trackball", "ui.space_mouse_switch_trackball"),
+                    Kind::ReturnToCenter => ("ui.space_mouse_looks_like_cap", "ui.space_mouse_switch_cap"),
+                };
+                ui.label(egui::RichText::new(app.tr(hint)).color(ui.visuals().warn_fg_color));
+                if crate::ui_kit::button(ui, app.tr(switch), crate::ui_kit::Button::Normal).clicked() {
+                    chosen = Some(other);
+                }
+            }
             ui.add_space(6.0);
-            crate::ui_kit::progress(ui, "space_mouse_calibration", progress as f32);
-            ui.label(counter);
-            if let Some(Ok(calibration)) = result {
+            if stage == Stage::Choose {
+                ui.horizontal(|ui| {
+                    for (kind, label) in KINDS {
+                        ui.vertical(|ui| {
+                            crate::space_mouse_model::rest(ui, kind);
+                            if crate::ui_kit::button(ui, app.tr(label), crate::ui_kit::Button::Normal).clicked() {
+                                chosen = Some(kind);
+                            }
+                        });
+                    }
+                });
+            } else {
+                crate::ui_kit::progress(ui, "space_mouse_calibration", progress as f32);
+                ui.label(counter);
                 ui.add_space(6.0);
-                dead_zone_pads(ui, &Calibration { dead_zone_share: dead_zone, ..calibration }, raw);
+                // Each step shows the motion it asks for; once calibrated, the device's picture follows it.
+                let step = match stage {
+                    Stage::Step(index) => solidcraft_space_mouse::STEPS.get(index).copied(),
+                    _ => None,
+                };
+                match (step, result) {
+                    (Some(step), _) => crate::space_mouse_model::demo(ui, step, kind),
+                    (_, Some(Ok(calibration))) => {
+                        let calibration = Calibration { dead_zone_share: dead_zone, ..calibration };
+                        crate::space_mouse_model::live(ui, &calibration, raw);
+                        ui.add_space(6.0);
+                        dead_zone_pads(ui, &calibration, raw);
+                    }
+                    _ => crate::space_mouse_model::rest(ui, kind),
+                }
             }
             // The device's six raw axes as they come, so the jitter at rest is there to see.
             let reading = raw.map(|value| format!("{value:>6}")).join(" ");
@@ -135,9 +199,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 back = ui
-                    .add_enabled_ui(stage != Stage::Rest, |ui| crate::ui_kit::button(ui, app.tr("ui.back"), crate::ui_kit::Button::Normal))
+                    .add_enabled_ui(stage != Stage::Choose, |ui| crate::ui_kit::button(ui, app.tr("ui.back"), crate::ui_kit::Button::Normal))
                     .inner
                     .clicked();
+                skip = can_skip
+                    && crate::ui_kit::button(ui, app.tr("ui.space_mouse_skip"), crate::ui_kit::Button::Normal)
+                        .on_hover_text(app.tr("ui.space_mouse_skip_tip"))
+                        .clicked();
                 over = matches!(result, Some(Err(_))) && crate::ui_kit::button(ui, app.tr("ui.start_over"), crate::ui_kit::Button::Normal).clicked();
                 cancel = crate::ui_kit::button(ui, app.tr("ui.cancel"), crate::ui_kit::Button::Normal).clicked();
                 save = matches!(result, Some(Ok(_))) && crate::ui_kit::button(ui, app.tr("ui.save"), crate::ui_kit::Button::Normal).clicked();
@@ -151,10 +219,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         if save && let Some(Ok(calibration)) = result {
             app.preferences.space_mouse_calibrations.insert(std::mem::take(device), calibration);
             app.space_mouse.calibrating = None;
+        } else if let Some(kind) = chosen {
+            wizard.choose(kind);
         } else if over {
-            // A new recording; the dead zone set so far stays.
-            *wizard = Wizard::default();
-            wizard.set_dead_zone_share(dead_zone);
+            // A new recording of the same kind; the dead zone set so far stays.
+            wizard.choose(wizard.kind());
+        } else if skip {
+            wizard.skip();
         } else if back {
             wizard.back();
         }

@@ -2975,6 +2975,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::select_other::show(app, ui.ctx());
     axis_view(app, ui, rect);
     nav_bar(app, ui, rect);
+    // Under the notices that share the corner, so they still read on top of it.
+    if app.preferences.space_mouse_in_view
+        && app.space_mouse.calibrating.is_none()
+        && let Some(device) = &app.space_mouse.device
+    {
+        let calibration = app.preferences.space_mouse_calibrations.get(device);
+        crate::space_mouse_model::corner(ui, rect, calibration, app.space_mouse.raw.into());
+    }
     transient_messages(app, ui, rect);
 }
 

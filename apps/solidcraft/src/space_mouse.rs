@@ -203,11 +203,13 @@ struct Reading {
     /// A HID device repeats its report while the cap is held; spacenavd sends a record only when
     /// the values change, and a steady hold can go seconds without one.
     held: bool,
+    /// The buttons that are down: bit N for button N + 1, as the device (or spacenavd) numbers them.
+    buttons: u32,
 }
 
 impl Reading {
     fn new(now: Instant) -> Self {
-        Self { device: None, axes: Axes::default(), at: [now; 6], held: false }
+        Self { device: None, axes: Axes::default(), at: [now; 6], held: false, buttons: 0 }
     }
 
     /// The axes at `now`. One with nothing fresh reads as `rest`: the device's own rest when it
@@ -250,6 +252,10 @@ fn decode_report(report: &[u8], layout: Layout, reading: &mut Reading, now: Inst
             *at = now;
         }
     }
+    // A report that carries buttons says which are down, all up included.
+    if let Some(buttons) = decoded.buttons {
+        reading.buttons = buttons;
+    }
     true
 }
 
@@ -269,7 +275,16 @@ fn publish(ctx: &Context, shared: &Mutex<Reading>, layout: Layout, report: &[u8]
 #[cfg(target_os = "linux")]
 fn publish_held(ctx: &Context, shared: &Mutex<Reading>, axes: Axes) {
     if let Ok(mut reading) = shared.lock() {
-        *reading = Reading { device: reading.device, axes, held: true, ..Reading::new(Instant::now()) };
+        *reading = Reading { device: reading.device, axes, held: true, buttons: reading.buttons, ..Reading::new(Instant::now()) };
+        ctx.request_repaint();
+    }
+}
+
+/// A button pressed or released, from spacenavd, which numbers them from 0.
+#[cfg(target_os = "linux")]
+fn publish_button(ctx: &Context, shared: &Mutex<Reading>, button: u32, down: bool) {
+    if let (Ok(mut reading), Some(bit)) = (shared.lock(), 1_u32.checked_shl(button)) {
+        reading.buttons = if down { reading.buttons | bit } else { reading.buttons & !bit };
         ctx.request_repaint();
     }
 }
@@ -372,7 +387,7 @@ fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
         if let Some(daemon) = spacenavd::connect() {
             log::info!("3D mouse: reading spacenavd, which applies the spnavcfg settings");
             connected(&ctx, &shared, Source::Spacenavd);
-            spacenavd::read(daemon, |axes| publish_held(&ctx, &shared, axes));
+            spacenavd::read(daemon, |axes| publish_held(&ctx, &shared, axes), |button, down| publish_button(&ctx, &shared, button, down));
             reset(&ctx, &shared);
         } else if let Some(device) = hidraw::find() {
             match std::fs::File::open(&device.path) {
@@ -431,7 +446,12 @@ fn start_driver_client(ctx: &Context, shared: &Arc<Mutex<Reading>>) {
                     ctx.request_repaint();
                 }
             }
-            Event::Buttons(_) => {}
+            Event::Buttons(buttons) => {
+                if let Ok(mut reading) = shared.lock() {
+                    reading.buttons = buttons;
+                    ctx.request_repaint();
+                }
+            }
         },
         |connected| match connected {
             Ok(()) => DRIVER_REGISTERED.store(true, Ordering::Relaxed),
@@ -498,6 +518,11 @@ impl SpaceMouse {
             })
             .unwrap_or(false);
         self.wheel.filter(moving, now.duration_since(self.started).as_secs_f64(), &mut raw.events);
+    }
+
+    /// The buttons down on the device being read, one bit each (bit N for button N + 1).
+    pub fn buttons(&self) -> u32 {
+        self.shared.lock().map(|reading| reading.buttons).unwrap_or(0)
     }
 
     pub fn tick(&mut self, app: &mut SolveApp, ctx: &Context) {
@@ -732,6 +757,7 @@ mod tests {
     fn resting_at_100() -> Calibration {
         Calibration {
             dead_zone_share: 0.0,
+            kind: Default::default(),
             axes: std::array::from_fn(|source| solidcraft_space_mouse::AxisCalibration {
                 source,
                 reversed: false,

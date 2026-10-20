@@ -209,6 +209,7 @@ pub mod smart_extrude;
 mod smart_extrude_ui_tests;
 pub mod space_mouse;
 pub mod space_mouse_calibration;
+pub mod space_mouse_model;
 pub mod stand_up;
 #[cfg(test)]
 mod sweep_dialog_tests;

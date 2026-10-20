@@ -51,6 +51,161 @@ pub struct Input {
     pub raw: Axes,
     /// The guided calibration while its window is open, and the device it is for.
     pub calibrating: Option<(String, solidcraft_space_mouse::Wizard)>,
+    /// Drops readings that have stopped changing close to the dead zone.
+    pub settle: solidcraft_space_mouse::Settle,
+    /// The buttons down as of the last frame, one bit each (bit N for button N + 1).
+    pub buttons: u32,
+    /// Every button pressed since the app started, so Preferences can list the ones the device has.
+    pub seen: u32,
+    /// The modifiers the buttons hold down, as of the last frame.
+    pub held: egui::Modifiers,
+}
+
+/// A key a 3D mouse button can stand in for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ButtonKey {
+    Esc,
+    Shift,
+    Ctrl,
+    Alt,
+}
+
+/// What a 3D mouse button does.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ButtonJob {
+    /// Opens Preferences at Navigation, where the 3D mouse's settings are.
+    Settings,
+    /// A view as `SolveApp::animate_view` takes it: `fit`, `home` or a standard view (`top`, …).
+    View(String),
+    /// Stands in for a key: Esc when pressed, Shift, Ctrl and Alt for as long as it's held.
+    Key(ButtonKey),
+    /// Runs a command, as its keyboard shortcut would.
+    Command(String),
+}
+
+/// What each of `device`'s buttons does, by number from 1: what the user set, else for a device
+/// we have measured, its printed keys' jobs.
+pub fn button_jobs(app: &SolveApp, device: &str) -> std::collections::BTreeMap<u8, ButtonJob> {
+    app.preferences.space_mouse_buttons.get(device).cloned().unwrap_or_else(|| default_button_jobs(device))
+}
+
+/// The printed keys' jobs on a device we have measured (`solidcraft_space_mouse::buttons`), from
+/// its key (`hid 046d:c62b`, `web 046d:c62b`); nothing for any other device, spacenavd included,
+/// which numbers buttons its own way. Keys with no job here (Roll, the rotation lock) start empty.
+pub fn default_button_jobs(device: &str) -> std::collections::BTreeMap<u8, ButtonJob> {
+    use solidcraft_space_mouse::buttons::{Action, defaults};
+    let ids = device.split_once(' ').and_then(|(_, ids)| ids.split_once(':'));
+    let table = ids.and_then(|(vendor, product)| Some((u16::from_str_radix(vendor, 16).ok()?, u16::from_str_radix(product, 16).ok()?)));
+    let Some(table) = table.and_then(|(vendor, product)| defaults(vendor, product)) else { return Default::default() };
+    table
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| {
+            let job = match (*action)? {
+                Action::Menu => ButtonJob::Settings,
+                Action::Fit => ButtonJob::View("fit".into()),
+                Action::ViewTop => ButtonJob::View("top".into()),
+                Action::ViewRight => ButtonJob::View("right".into()),
+                Action::ViewFront => ButtonJob::View("front".into()),
+                Action::Esc => ButtonJob::Key(ButtonKey::Esc),
+                Action::Shift => ButtonJob::Key(ButtonKey::Shift),
+                Action::Ctrl => ButtonJob::Key(ButtonKey::Ctrl),
+                Action::Alt => ButtonJob::Key(ButtonKey::Alt),
+                Action::Roll | Action::RotationLock => return None,
+            };
+            Some((u8::try_from(index + 1).ok()?, job))
+        })
+        .collect()
+}
+
+/// The 3D mouse's buttons this frame (`buttons`, bit N for button N + 1), before the app sees the
+/// frame's input: each button just pressed does its job, and those standing in for Shift, Ctrl or
+/// Alt hold them while down. Nothing runs with navigation off, during calibration, or while
+/// Preferences is open, so pressing a button there finds it in the list instead.
+pub fn buttons_hook(app: &mut SolveApp, ctx: &egui::Context, buttons: u32, raw: &mut egui::RawInput) {
+    let pressed = buttons & !app.space_mouse.buttons;
+    app.space_mouse.buttons = buttons;
+    app.space_mouse.seen |= buttons;
+    let mut held = egui::Modifiers::NONE;
+    let device = app
+        .space_mouse
+        .device
+        .clone()
+        .filter(|_| app.preferences.space_mouse_enabled && !app.prefs_window.open && app.space_mouse.calibrating.is_none());
+    let jobs = device.map(|device| button_jobs(app, &device)).unwrap_or_default();
+    // The keyboard's own modifiers: egui's, less what the buttons held last frame.
+    let before = std::mem::replace(&mut app.space_mouse.held, egui::Modifiers::NONE);
+    let mut keyboard = ctx.input(|i| i.modifiers);
+    keyboard.shift &= !before.shift;
+    keyboard.alt &= !before.alt;
+    keyboard.ctrl &= !before.ctrl;
+    keyboard.command &= !before.command;
+    keyboard.mac_cmd &= !before.mac_cmd;
+    for (number, job) in jobs {
+        let Some(bit) = number.checked_sub(1).and_then(|index| 1_u32.checked_shl(u32::from(index))) else { continue };
+        if buttons & bit == 0 {
+            continue;
+        }
+        match job {
+            ButtonJob::Key(ButtonKey::Shift) => held.shift = true,
+            ButtonJob::Key(ButtonKey::Alt) => held.alt = true,
+            ButtonJob::Key(ButtonKey::Ctrl) => {
+                held.ctrl = true;
+                // Ctrl is the command key everywhere but on a Mac.
+                held.command |= !cfg!(target_os = "macos");
+            }
+            _ => {}
+        }
+        if pressed & bit != 0 {
+            run_button_job(app, &job, keyboard, raw);
+        }
+    }
+    app.space_mouse.held = held;
+    let add = |modifiers: &mut egui::Modifiers| {
+        modifiers.shift |= held.shift;
+        modifiers.alt |= held.alt;
+        modifiers.ctrl |= held.ctrl;
+        modifiers.command |= held.command;
+    };
+    // egui keeps modifiers from frame to frame and takes new ones from `ModifiersChanged`: the
+    // keyboard's get the held ones added, and a change in what's held is one of its own.
+    let mut changed = false;
+    for event in &mut raw.events {
+        match event {
+            egui::Event::ModifiersChanged(modifiers) => {
+                add(modifiers);
+                changed = true;
+            }
+            egui::Event::PointerButton { modifiers, .. } | egui::Event::Key { modifiers, .. } => add(modifiers),
+            _ => {}
+        }
+    }
+    if !changed && held != before {
+        let mut modifiers = keyboard;
+        add(&mut modifiers);
+        raw.events.insert(0, egui::Event::ModifiersChanged(modifiers));
+    }
+}
+
+fn run_button_job(app: &mut SolveApp, job: &ButtonJob, modifiers: egui::Modifiers, raw: &mut egui::RawInput) {
+    match job {
+        // Navigation, where the 3D mouse's section is.
+        ButtonJob::Settings => crate::prefs::open_at(app, 1),
+        ButtonJob::View(view) => app.animate_view(view),
+        ButtonJob::Key(ButtonKey::Esc) => {
+            for pressed in [true, false] {
+                raw.events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed, repeat: false, modifiers });
+            }
+        }
+        ButtonJob::Key(_) => {}
+        ButtonJob::Command(id) => {
+            if solidcraft_engine::find_command(id).is_some_and(|c| c.info(&app.session).enabled) {
+                app.start(id);
+            }
+        }
+    }
 }
 
 /// Seconds after the cap last moved that wheel events are still taken for 3DxWare's: one can be
@@ -192,6 +347,8 @@ pub fn navigate_frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMa
         app.space_mouse.calibrating = None;
     }
     let axes = calibrated(axes, calibration(app));
+    // A hand leaning on the cap, holding it just past the dead zone, doesn't creep the view.
+    let axes: Axes = app.space_mouse.settle.filter(axes.into(), seconds).into();
     // Only the window with focus: with two windows open, the cap moves the one being used, not both.
     if !app.preferences.space_mouse_enabled || app.home.open || app.file_picker_busy() || !axes.moving() || !ctx.input(|i| i.focused) {
         return false;
@@ -256,6 +413,58 @@ mod tests {
         let mut app = SolveApp::new(Session::default(), Services::default());
         app.home.open = false;
         app
+    }
+
+    #[test]
+    fn a_measured_device_starts_with_its_printed_keys() {
+        let jobs = default_button_jobs("hid 046d:c62b");
+        assert_eq!(jobs.get(&1), Some(&ButtonJob::Settings));
+        assert_eq!(jobs.get(&3), Some(&ButtonJob::View("top".into())));
+        assert_eq!(jobs.get(&25), Some(&ButtonJob::Key(ButtonKey::Shift)));
+        // Roll and the rotation lock have nothing to do here yet; the numbered keys start empty.
+        assert_eq!((jobs.get(&9), jobs.get(&27), jobs.get(&13)), (None, None, None));
+        // Unmeasured, spacenavd (its own numbers) and nonsense keys start empty.
+        for device in ["hid 256f:c63a", "spacenavd", "web 046d", "hid zz:c62b", ""] {
+            assert!(default_button_jobs(device).is_empty(), "{device}");
+        }
+    }
+
+    #[test]
+    fn a_button_does_its_job_once_per_press_and_holds_its_modifier() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = egui::Context::default();
+        let frame = |app: &mut SolveApp, buttons: u32| {
+            let mut raw = egui::RawInput::default();
+            buttons_hook(app, &ctx, buttons, &mut raw);
+            // As the frame would: egui takes its modifiers from the events.
+            ctx.run_ui(raw.clone(), |_| {}).textures_delta.clear();
+            raw
+        };
+        let shifted = |_: &egui::RawInput| ctx.input(|i| i.modifiers.shift);
+        // Esc (button 23) presses Escape once, not again while it's held.
+        let esc = 1 << 22;
+        let escapes =
+            |raw: &egui::RawInput| raw.events.iter().filter(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. })).count();
+        assert_eq!(escapes(&frame(&mut app, esc)), 1);
+        assert_eq!(escapes(&frame(&mut app, esc)), 0);
+        // Shift (button 25) holds Shift for as long as it's down.
+        let shift = 1 << 24;
+        assert!(shifted(&frame(&mut app, shift)));
+        assert!(shifted(&frame(&mut app, shift)));
+        assert!(!shifted(&frame(&mut app, 0)));
+        // Menu (button 1) opens Preferences; there, buttons only light up their rows.
+        frame(&mut app, 1);
+        assert!(app.prefs_window.open);
+        frame(&mut app, 0);
+        assert_eq!(escapes(&frame(&mut app, esc)), 0);
+        assert_eq!(app.space_mouse.seen & esc, esc);
+        // A job the user set replaces the defaults.
+        app.prefs_window.open = false;
+        frame(&mut app, 0);
+        app.preferences.space_mouse_buttons.insert("hid 046d:c62b".into(), [(23, ButtonJob::Key(ButtonKey::Alt))].into());
+        let raw = frame(&mut app, esc);
+        assert_eq!((escapes(&raw), ctx.input(|i| i.modifiers.alt)), (0, true));
     }
 
     #[test]
@@ -527,6 +736,7 @@ mod tests {
         let axis = |source, reversed| solidcraft_space_mouse::AxisCalibration { source, reversed, rest: 0, dead_zone: 0, full: [3500; 2] };
         solidcraft_space_mouse::Calibration {
             dead_zone_share: 0.0,
+            kind: Default::default(),
             axes: [axis(0, false), axis(4, true), axis(2, false), axis(3, false), axis(1, false), axis(5, false)],
         }
     }
@@ -558,6 +768,10 @@ mod tests {
         assert!(app.space_mouse.calibrating.is_none(), "nothing to calibrate without a device");
         app.space_mouse.device = Some("hid 256f:c63a".into());
         crate::space_mouse_calibration::start(&mut app);
+        // It asks what kind of device it is first.
+        let Some((_, wizard)) = &mut app.space_mouse.calibrating else { panic!("calibration didn't start") };
+        assert_eq!(wizard.stage(), solidcraft_space_mouse::Stage::Choose);
+        wizard.choose(solidcraft_space_mouse::Kind::ReturnToCenter);
         let before = app.cam;
         assert!(!frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
         assert_eq!(app.cam, before);
