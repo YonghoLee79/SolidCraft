@@ -149,6 +149,33 @@ fn zero_cursor_budget_does_not_start_optimization() {
     assert!(budget.exhausted());
 }
 
+#[cfg(feature = "solver-profiling")]
+#[test]
+fn profiling_preserves_budgeted_cursor_motion_and_records_budget_stops() {
+    use solidcraft_sketch::profiling::{StopReason, capture};
+
+    let target = Vec2::new(-10.0, 16.0);
+    let mut saw_budget_stop = false;
+    for work in [0, 128, 256, 512, 1024, 2048, 4096, 8192, 16384] {
+        let (mut plain, a, _) = linkage();
+        let mut measured = plain.clone();
+        let mut plain_budget = solidcraft_sketch::Budget::new(work);
+        let mut measured_budget = solidcraft_sketch::Budget::new(work);
+        let expected = move_point_towards(&mut plain, a, target, 1.25, Some(&mut plain_budget), |_, _| true);
+        let (actual, profile) = capture(|| move_point_towards(&mut measured, a, target, 1.25, Some(&mut measured_budget), |_, _| true));
+        assert_eq!(actual, expected);
+        assert_eq!(measured, plain);
+        assert_eq!(measured_budget.spent(), plain_budget.spent());
+        assert_eq!(measured_budget.exhausted(), plain_budget.exhausted());
+        assert!(profile.runs.iter().all(|run| run.stop_reason.is_some() && run.final_max_residual.is_some()));
+        saw_budget_stop |= profile.runs.iter().any(|run| run.stop_reason == Some(StopReason::WorkBudget));
+        if work == 0 {
+            assert_eq!(profile.counters.lm_runs, 0);
+        }
+    }
+    assert!(saw_budget_stop, "exercise LM returning at its shared work limit");
+}
+
 #[test]
 fn a_cursor_budget_stop_keeps_the_best_corrected_pose_and_reference_dimensions() {
     let target = Vec2::new(-10.0, 16.0);

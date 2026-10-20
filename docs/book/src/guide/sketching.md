@@ -30,7 +30,9 @@ Lines and polylines (L), rectangles (two-point R, three-point, centre), circles 
 two-point, three-point, tangent), arcs (three-point, centre, tangent), polygons, slots, ellipses,
 fit-point and control-point splines, conics, points and text. **Construction** (X) turns curves
 into reference geometry that doesn't form profiles. Modify tools include trim (T), extend, break,
-fillet, chamfer, offset (O), mirror, patterns, move/copy and scale.
+fillet, chamfer, offset (O), mirror, patterns, move/copy and scale. With trim on, click a
+piece to remove it, or press and drag a path across several pieces: the ones it crosses light up
+and all go when you let go, in one undo step (`sketch.trim.path`).
 
 The Sketch Palette's **Construction Geometries** option hides construction curves while you
 work. A hidden construction curve cannot be picked by a click or by a box. Nothing invisible

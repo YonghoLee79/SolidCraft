@@ -294,6 +294,31 @@ fn parameters_drive_the_design() {
     assert!(d["params"].as_array().unwrap().iter().any(|p| p["name"] == "len" && p["value"] == 50.0), "{d}");
 }
 
+/// `inspect_design` gives each joint's definition (as `joint.inspect`) when the design has
+/// joints, leaves the key out when it has none, and `joints: false` leaves them out.
+#[test]
+fn inspect_design_lists_joint_definitions() {
+    let mut s = server();
+    let d = tool(&mut s, "inspect_design", json!({"measure": false, "sketches": false}));
+    assert!(d.get("joints").is_none(), "{d}");
+    for (name, corner) in [("A", [0, 0, 0]), ("B", [20, 0, 0])] {
+        tool(&mut s, "execute", json!({"command": "component.activate", "params": {"component": "root"}}));
+        tool(&mut s, "execute", json!({"command": "component.create", "params": {"name": name}}));
+        tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10, "corner": corner}}));
+    }
+    tool(
+        &mut s,
+        "execute",
+        json!({"command": "joint.create", "params": {"type": "rigid", "name": "Glue", "a": {"occurrence": "A:1", "face": [5, 5, 10]}, "b": {"occurrence": "B:1", "face": [25, 5, 0]}}}),
+    );
+    let d = tool(&mut s, "inspect_design", json!({"measure": false, "sketches": false}));
+    assert_eq!(d["joints"][0]["name"], "Glue", "{d}");
+    assert_eq!(d["joints"][0]["a"]["snap"]["type"], "face_center", "{d}");
+    assert_eq!(d["joints"][0]["b"]["resolves"], true, "{d}");
+    let d = tool(&mut s, "inspect_design", json!({"measure": false, "sketches": false, "joints": false}));
+    assert!(d.get("joints").is_none(), "{d}");
+}
+
 /// `set_parameter` takes the new value as `value` or as `expression` (the name parameters.change
 /// uses), which it used to refuse instead of forwarding.
 #[test]
