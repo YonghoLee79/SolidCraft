@@ -68,9 +68,9 @@ enum Size<'a> {
     Law(&'a RadiusSpline),
 }
 
-struct Fit {
-    surface: mt::Surface,
-    contacts: [mt::Curve; 2],
+pub(crate) struct Fit {
+    pub(crate) surface: mt::Surface,
+    pub(crate) contacts: [mt::Curve; 2],
     /// Parameter range belonging to this edge (the fit includes neighbouring sections).
     range: (f64, f64),
     /// The part of the fit that is the chain's own run, as fractions of its parameter range.
@@ -160,7 +160,7 @@ fn fit_sections(sections: &[Vec<Section>], k: usize, closed: bool, round: bool) 
 
 /// [`fit_sections`] with the neighbouring sections given: best spaced as the strip's own, since
 /// the interpolation's parameters are uniform.
-fn fit_strip(list: &[Section], before: &[Section], after: &[Section], round: bool) -> Result<Fit> {
+pub(crate) fn fit_strip(list: &[Section], before: &[Section], after: &[Section], round: bool) -> Result<Fit> {
     use mt::Cut;
     let fail = |m: &str| KernelError::Failed(format!("curve blend: {m}"));
     let mut ext = Vec::with_capacity(list.len() + before.len() + after.len());
@@ -469,10 +469,10 @@ fn tangent_cap(fit: &Fit, g: &mt::Face, tangent_side: u8, seams: [Option<&mt::Ed
 
 /// One cross-section of the blend: ball centre and its contacts with side 1 and side 2.
 #[derive(Clone, Copy, Debug)]
-struct Section {
-    c: Vec3,
-    q1: Vec3,
-    q2: Vec3,
+pub(crate) struct Section {
+    pub(crate) c: Vec3,
+    pub(crate) q1: Vec3,
+    pub(crate) q2: Vec3,
 }
 
 /// The third condition of a section's solve, in place of staying in the plane square to the edge: a contact held at a seam.
@@ -485,7 +485,7 @@ enum Extra<'a> {
 }
 
 /// The seam's point nearest `x` and its unit tangent there.
-fn nearest_on_seam(seam: &mt::Edge, x: Vec3) -> Option<(Vec3, Vec3)> {
+pub(crate) fn nearest_on_seam(seam: &mt::Edge, x: Vec3) -> Option<(Vec3, Vec3)> {
     use mt::{BoundedCurve, ParametricCurve, SearchNearestParameter};
     let curve = seam.curve();
     let (lo, hi) = curve.range_tuple();
@@ -769,7 +769,7 @@ fn closed_section(s: &Section) -> bool {
 }
 
 /// Homogeneous control points of the circular (or straight) cross-section from q1 to q2.
-fn section_controls(s: &Section, round: bool) -> Option<[mt::Vector4; 3]> {
+pub(crate) fn section_controls(s: &Section, round: bool) -> Option<[mt::Vector4; 3]> {
     let h = |p: Vec3, w: f64| mt::Vector4::new(p.x * w, p.y * w, p.z * w, w);
     if !round {
         let m = (s.q1 + s.q2) * 0.5;
