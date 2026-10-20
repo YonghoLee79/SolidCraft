@@ -2,7 +2,8 @@
 //! drawn, so the setup that is slow on some computers (fonts, the 3D view's shaders, the recovery
 //! scan, a design to open) runs in later frames, one step each, behind a light "Starting" page:
 //! the first frame only paints that page, and each later one runs the next step and names the one
-//! after it.
+//! after it. A step can also wait for work on another thread (the 3D view's shader compile), so
+//! the window keeps drawing and answering (moving, minimizing) while it runs.
 //!
 //! The steps run from the app's logic, which eframe keeps calling for a minimized or occluded window
 //! without painting it. Nobody sees the page then, so the rest of the setup runs at once: the app
@@ -14,8 +15,12 @@ use egui::{Align2, FontId, Id, Sense, Stroke, ViewportCommand, vec2};
 
 use crate::theme::Tokens;
 
-/// One step of the setup, run on its own frame with what it sets up (`T`, the app).
-pub type Step<T> = Box<dyn FnOnce(&mut T, &egui::Context)>;
+/// How often the page is drawn while a step waits for its worker (see [`Starting::wait_frame`]).
+const WAIT_FRAME: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// One step of the setup, run on its own frame with what it sets up (`T`, the app); `true` once it
+/// is done, `false` to be asked again next frame.
+pub type Step<T> = Box<dyn FnMut(&mut T, &egui::Context) -> bool>;
 
 /// The steps still to run. `T` is what they set up: the desktop app's window state.
 pub struct Starting<T> {
@@ -23,11 +28,12 @@ pub struct Starting<T> {
     /// Whether a frame showed the page yet: no step runs before it has.
     shown: bool,
     total: usize,
+    wait_frame: std::time::Duration,
 }
 
 impl<T> Default for Starting<T> {
     fn default() -> Self {
-        Self { steps: VecDeque::new(), shown: false, total: 0 }
+        Self { steps: VecDeque::new(), shown: false, total: 0, wait_frame: WAIT_FRAME }
     }
 }
 
@@ -35,9 +41,30 @@ impl<T> Starting<T> {
     /// A step, after the ones already added. `label` (a message id; empty for none) says on the
     /// page what is being done while the step runs.
     #[must_use]
-    pub fn then(mut self, label: &'static str, step: impl FnOnce(&mut T, &egui::Context) + 'static) -> Self {
+    pub fn then(self, label: &'static str, step: impl FnOnce(&mut T, &egui::Context) + 'static) -> Self {
+        let mut step = Some(step);
+        self.until(label, move |target, ctx| {
+            if let Some(step) = step.take() {
+                step(target, ctx);
+            }
+            true
+        })
+    }
+
+    /// A step that is asked once a frame until it says it is done: one that waits for a worker
+    /// thread, keeping the window drawing meanwhile.
+    #[must_use]
+    pub fn until(mut self, label: &'static str, step: impl FnMut(&mut T, &egui::Context) -> bool + 'static) -> Self {
         self.steps.push_back((label, Box::new(step)));
         self.total += 1;
+        self
+    }
+
+    /// How often the page is drawn while a step waits; longer where drawing takes the CPU the
+    /// waited-for work needs (a software renderer).
+    #[must_use]
+    pub fn wait_frame(mut self, every: std::time::Duration) -> Self {
+        self.wait_frame = every;
         self
     }
 
@@ -57,8 +84,13 @@ impl<T> Starting<T> {
             return !self.done();
         }
         self.shown = true;
-        while let Some((_, step)) = self.steps.pop_front() {
-            step(target, ctx);
+        let mut waiting = false;
+        while let Some((_, step)) = self.steps.front_mut() {
+            if !step(target, ctx) {
+                waiting = true;
+                break;
+            }
+            self.steps.pop_front();
             if !hidden {
                 break;
             }
@@ -66,7 +98,13 @@ impl<T> Starting<T> {
         if self.done() {
             return false;
         }
-        ctx.request_repaint();
+        if waiting {
+            // A few frames a second keep the bar moving; drawing flat out would take the GPU (or a
+            // software renderer's CPU) from the work being waited for. Input still draws at once.
+            ctx.request_repaint_after(self.wait_frame);
+        } else {
+            ctx.request_repaint();
+        }
         true
     }
 
@@ -89,7 +127,15 @@ impl<T> Starting<T> {
             let bar = egui::Rect::from_center_size(c, vec2(240.0, 4.0));
             painter.rect_filled(bar, 2.0, t.border);
             let share = if self.total == 0 { 1.0 } else { done as f32 / self.total as f32 };
-            painter.rect_filled(egui::Rect::from_min_size(bar.min, vec2(bar.width() * share.clamp(0.0, 1.0), bar.height())), 2.0, t.accent);
+            let filled = bar.width() * share.clamp(0.0, 1.0);
+            painter.rect_filled(egui::Rect::from_min_size(bar.min, vec2(filled, bar.height())), 2.0, t.accent);
+            // A light that runs along the rest of the bar: the app is busy, not stuck.
+            let rest = bar.width() - filled;
+            if rest > 24.0 {
+                let phase = (ui.input(|i| i.time) % 1.4 / 1.4) as f32;
+                let x = bar.min.x + filled + (rest - 24.0) * phase;
+                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(x, bar.min.y), vec2(24.0, bar.height())), 2.0, t.accent_soft);
+            }
             if !label.is_empty() {
                 painter.text(c + vec2(0.0, 20.0), Align2::CENTER_TOP, crate::i18n::tr(label), FontId::proportional(14.0), t.text_dim);
             }
@@ -218,5 +264,62 @@ mod tests {
             assert!(calls < 10, "the setup never finished: {log:?}");
         }
         assert_eq!(log, ["fonts", "view", "recovery"]);
+    }
+
+    /// A step that waits for a worker (the 3D view's shader compile) is asked each frame, and the
+    /// page keeps drawing and naming it meanwhile: the window answers while the work runs.
+    #[test]
+    fn a_step_that_waits_keeps_the_page_drawing() {
+        let ctx = egui::Context::default();
+        let mut polls = 0;
+        let mut starting = Starting::default()
+            .until("starting.view", move |log: &mut Vec<&'static str>, _| {
+                polls += 1;
+                if polls < 3 {
+                    return false;
+                }
+                log.push("view");
+                true
+            })
+            .then("starting.recovery", |log: &mut Vec<&'static str>, _| log.push("recovery"));
+        let mut log = Vec::new();
+        assert!(frame(&ctx, &mut starting, &mut log).0);
+        for _ in 0..2 {
+            let (still, painted) = frame(&ctx, &mut starting, &mut log);
+            assert!(still);
+            assert!(log.is_empty(), "nothing after the waiting step ran: {log:?}");
+            assert!(painted.iter().any(|t| t == "Preparing the 3D view…"), "{painted:?}");
+            assert!(ctx.has_requested_repaint(), "frames go on while the step waits");
+        }
+        let (still, painted) = frame(&ctx, &mut starting, &mut log);
+        assert!(still);
+        assert_eq!(log, ["view"]);
+        assert!(painted.iter().any(|t| t == "Checking for unsaved work…"), "{painted:?}");
+        assert!(!frame(&ctx, &mut starting, &mut log).0);
+        assert_eq!(log, ["view", "recovery"]);
+    }
+
+    /// Minimized, a waiting step is asked at each of eframe's logic ticks; the steps after it run
+    /// in the same tick it finishes.
+    #[test]
+    fn a_window_nobody_sees_waits_without_spinning_then_finishes() {
+        let ctx = egui::Context::default();
+        let mut polls = 0;
+        let mut starting = Starting::default()
+            .until("starting.view", move |log: &mut Vec<&'static str>, _| {
+                polls += 1;
+                if polls < 2 {
+                    return false;
+                }
+                log.push("view");
+                true
+            })
+            .then("starting.recovery", |log: &mut Vec<&'static str>, _| log.push("recovery"));
+        let mut log = Vec::new();
+        let minimized = egui::ViewportInfo { minimized: Some(true), ..Default::default() };
+        assert!(logic_only(&ctx, &mut starting, &mut log, minimized.clone()), "still waiting");
+        assert!(log.is_empty());
+        assert!(!logic_only(&ctx, &mut starting, &mut log, minimized));
+        assert_eq!(log, ["view", "recovery"]);
     }
 }

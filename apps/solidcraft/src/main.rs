@@ -641,29 +641,51 @@ fn main() -> eframe::Result {
             // behind the starting page (#1210).
             let render_state = cc.wgpu_render_state.clone();
             let opening = sample || !files.is_empty();
+            // A software renderer draws the page on the CPU the shader compile needs: rarely.
+            let software = render_state.as_ref().is_some_and(|rs| rs.adapter.get_info().device_type == eframe::wgpu::DeviceType::Cpu);
             let setup = solidcraft_ui_egui::starting::Starting::default()
+                .wait_frame(std::time::Duration::from_millis(if software { 1000 } else { 100 }))
                 .then("", |_: &mut App, ctx| {
                     solidcraft_engine::crash::phase("fonts");
                     solidcraft_ui_egui::fonts::setup_fonts(ctx);
                 })
-                .then("starting.view", move |a: &mut App, _| {
-                    let Some(rs) = &render_state else { return };
-                    let app = &mut a.solve;
-                    eprintln!("SolidCraft graphics: {:?}, MSAA {}x (requested {}x)", rs.adapter.get_info().backend, rs.msaa_samples, samples);
-                    solidcraft_engine::crash::phase("viewport pipelines (shader compile)");
-                    app.set_wgpu(rs, depth_bits, STENCIL_BITS, rs.msaa_samples);
-                    solidcraft_ui_egui::gpu::install_picture_renderer(rs);
-                    // The graphics driver is loaded now; it may have put its own exception filter
-                    // in front of ours.
-                    #[cfg(target_os = "windows")]
-                    native_crash::reinstall();
-                    // A saved anti-aliasing the device can't do: back to the default, with a notice.
-                    solidcraft_ui_egui::prefs::check_msaa(app, u32::from(samples));
-                    let info = rs.adapter.get_info();
-                    solidcraft_engine::crash::set_environment(&format!(
-                        "Renderer: {:?} {} ({}), MSAA {}x",
-                        info.backend, info.name, info.driver, rs.msaa_samples
-                    ));
+                .until("starting.view", {
+                    // The shader compile runs on a worker thread: the window keeps drawing and
+                    // answering (moving, minimizing) meanwhile (#1210).
+                    let mut job: Option<std::thread::JoinHandle<solidcraft_ui_egui::gpu::Built>> = None;
+                    move |a: &mut App, _| {
+                        let Some(rs) = &render_state else { return true };
+                        let gpu_meshing = !a.solve.cpu_meshing;
+                        let build = move |rs: &eframe::egui_wgpu::RenderState| {
+                            let built = solidcraft_ui_egui::gpu::build(rs, depth_bits, STENCIL_BITS, rs.msaa_samples, gpu_meshing);
+                            solidcraft_ui_egui::gpu::install_picture_renderer(rs);
+                            built
+                        };
+                        if job.is_none() {
+                            eprintln!("SolidCraft graphics: {:?}, MSAA {}x (requested {}x)", rs.adapter.get_info().backend, rs.msaa_samples, samples);
+                            solidcraft_engine::crash::phase("viewport pipelines (shader compile)");
+                            let worker_rs = rs.clone();
+                            match std::thread::Builder::new().name("viewport pipelines".into()).spawn(move || build(&worker_rs)) {
+                                Ok(handle) => job = Some(handle),
+                                Err(e) => {
+                                    log::warn!("viewport pipelines: no worker thread ({e}); compiling on the window's thread");
+                                    let built = build(rs);
+                                    gpu_ready(a, rs, built, samples);
+                                    return true;
+                                }
+                            }
+                        }
+                        if !job.as_ref().is_some_and(std::thread::JoinHandle::is_finished) {
+                            return false;
+                        }
+                        match job.take().map(std::thread::JoinHandle::join) {
+                            Some(Ok(built)) => gpu_ready(a, rs, built, samples),
+                            // The panic hook has written its crash report; the viewport draws on the CPU.
+                            Some(Err(_)) => a.solve.set_status("The 3D view could not start on this graphics device; it draws without it.", true),
+                            None => {}
+                        }
+                        true
+                    }
                 })
                 .then(if opening { "starting.design" } else { "" }, move |a: &mut App, _ctx| {
                     solidcraft_engine::crash::phase("design");
@@ -744,6 +766,19 @@ fn startup_step(step: &'static str, detail: &str) {
         solidcraft_engine::crash::set_environment(&format!("Renderer: {detail}"));
     }
     solidcraft_engine::crash::phase(step);
+}
+
+/// The viewport's pipelines, compiled (on a worker thread), in use.
+fn gpu_ready(a: &mut App, rs: &eframe::egui_wgpu::RenderState, built: solidcraft_ui_egui::gpu::Built, samples: u16) {
+    let app = &mut a.solve;
+    app.adopt_wgpu(rs, built, rs.msaa_samples);
+    // The graphics driver is loaded now; it may have put its own exception filter in front of ours.
+    #[cfg(target_os = "windows")]
+    native_crash::reinstall();
+    // A saved anti-aliasing the device can't do: back to the default, with a notice.
+    solidcraft_ui_egui::prefs::check_msaa(app, u32::from(samples));
+    let info = rs.adapter.get_info();
+    solidcraft_engine::crash::set_environment(&format!("Renderer: {:?} {} ({}), MSAA {}x", info.backend, info.name, info.driver, rs.msaa_samples));
 }
 
 /// The renderer settings: with `cpu`, the software adapter (WARP, lavapipe, llvmpipe). The
