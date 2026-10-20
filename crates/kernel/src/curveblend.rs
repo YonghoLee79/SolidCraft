@@ -68,9 +68,9 @@ enum Size<'a> {
     Law(&'a RadiusSpline),
 }
 
-struct Fit {
-    surface: mt::Surface,
-    contacts: [mt::Curve; 2],
+pub(crate) struct Fit {
+    pub(crate) surface: mt::Surface,
+    pub(crate) contacts: [mt::Curve; 2],
     /// Parameter range belonging to this edge (the fit includes neighbouring sections).
     range: (f64, f64),
     /// The part of the fit that is the chain's own run, as fractions of its parameter range.
@@ -160,7 +160,7 @@ fn fit_sections(sections: &[Vec<Section>], k: usize, closed: bool, round: bool) 
 
 /// [`fit_sections`] with the neighbouring sections given: best spaced as the strip's own, since
 /// the interpolation's parameters are uniform.
-fn fit_strip(list: &[Section], before: &[Section], after: &[Section], round: bool) -> Result<Fit> {
+pub(crate) fn fit_strip(list: &[Section], before: &[Section], after: &[Section], round: bool) -> Result<Fit> {
     use mt::Cut;
     let fail = |m: &str| KernelError::Failed(format!("curve blend: {m}"));
     let mut ext = Vec::with_capacity(list.len() + before.len() + after.len());
@@ -469,15 +469,15 @@ fn tangent_cap(fit: &Fit, g: &mt::Face, tangent_side: u8, seams: [Option<&mt::Ed
 
 /// One cross-section of the blend: ball centre and its contacts with side 1 and side 2.
 #[derive(Clone, Copy, Debug)]
-struct Section {
-    c: Vec3,
-    q1: Vec3,
-    q2: Vec3,
+pub(crate) struct Section {
+    pub(crate) c: Vec3,
+    pub(crate) q1: Vec3,
+    pub(crate) q2: Vec3,
 }
 
 /// The third condition of a section's solve, in place of staying in the plane square to the edge: a contact held at a seam.
 #[derive(Clone, Copy)]
-enum Extra<'a> {
+pub(crate) enum Extra<'a> {
     /// Side `k`'s contact lies in this plane (a point on it, its normal): beside a straight seam.
     Plane(usize, Vec3, Vec3),
     /// Side `k`'s contact lies on this curved seam (a lofted wall's seam between its two halves).
@@ -527,11 +527,22 @@ pub(crate) fn in_range(f: &mt::Face, uv: (f64, f64)) -> bool {
 
 /// Solve for the ball touching both sides near `p`. `extra` adds a third condition (a plane the
 /// side-k contact must lie in, or a curved seam it must lie on); without it the centre stays in the
-/// plane through `p` square to `t`. `sigma` is +1 when the ball sits outside the material (concave edge), −1 inside.
+/// plane through `p` square to `t`. `sigma` is, for each side, +1 when the ball sits on the side its
+/// normal points to (outside the material: a concave edge), −1 on the other.
 /// `cusp` is ±1 at a knife edge (the faces' normals opposite: both leave the edge the same way,
 /// along `cusp · n1 × t`, and the ball lies where the cusp has opened to its width), else 0.
 #[allow(clippy::too_many_arguments)]
-fn solve(f1: &[&mt::Face], f2: &[&mt::Face], p: Vec3, t: Vec3, r: f64, sigma: f64, cusp: f64, extra: Option<Extra<'_>>, tol: f64) -> Option<Section> {
+pub(crate) fn solve(
+    f1: &[&mt::Face],
+    f2: &[&mt::Face],
+    p: Vec3,
+    t: Vec3,
+    r: f64,
+    sigma: [f64; 2],
+    cusp: f64,
+    extra: Option<Extra<'_>>,
+    tol: f64,
+) -> Option<Section> {
     solve_from(f1, f2, p, t, r, sigma, cusp, extra, tol, None)
 }
 
@@ -544,7 +555,7 @@ fn solve_from(
     p: Vec3,
     t: Vec3,
     r: f64,
-    sigma: f64,
+    sigma: [f64; 2],
     cusp: f64,
     extra: Option<Extra<'_>>,
     tol: f64,
@@ -573,7 +584,8 @@ fn solve_from(
     let (q1, n1) = near(f1, p)?;
     let (q2, n2) = near(f2, p)?;
     let _ = (q1, q2);
-    let den = 1.0 + n1.dot(n2);
+    let [s1, s2] = sigma;
+    let den = 1.0 + s1 * s2 * n1.dot(n2);
     let mut c = if let Some(c) = start {
         c
     } else if cusp != 0.0 && den.abs() < KNIFE {
@@ -582,12 +594,12 @@ fn solve_from(
         let w = n1.cross(t).normalized()? * cusp;
         let centre = |s: f64| -> Option<Vec3> {
             let (qa, na) = near(f1, p + w * s)?;
-            Some(qa + na * (sigma * r))
+            Some(qa + na * (s1 * r))
         };
         let gap = |s: f64| -> Option<f64> {
             let c = centre(s)?;
             let (q2, n2) = near(f2, c)?;
-            Some((c - q2).dot(n2) - sigma * r)
+            Some((c - q2).dot(n2) - s2 * r)
         };
         let (mut lo, mut g_lo) = (0.0, gap(0.0)?);
         let mut hi = None;
@@ -615,13 +627,13 @@ fn solve_from(
         if den.abs() < 1e-9 {
             return None;
         }
-        p + (n1 + n2) * (sigma * r / den)
+        p + (n1 * s1 + n2 * s2) * (r / den)
     };
     for _ in 0..60 {
         let (q1, n1) = near(f1, c)?;
         let (q2, n2) = near(f2, c)?;
-        let g1 = (c - q1).dot(n1) - sigma * r;
-        let g2 = (c - q2).dot(n2) - sigma * r;
+        let g1 = (c - q1).dot(n1) - s1 * r;
+        let g2 = (c - q2).dot(n2) - s2 * r;
         // Third row: stay in the section plane, or put a contact on the seam plane.
         let (row3, g3) = match extra {
             None => (t, (c - p).dot(t)),
@@ -656,7 +668,7 @@ fn solve_from(
 /// Contacts of a convex chamfer in a cross-section normal to a straight edge. The caller
 /// checks that sweeping the section stays on both supports within the fitting tolerance.
 pub(crate) fn straight_chamfer_contacts(f1: &mt::Face, f2: &mt::Face, p: Vec3, d: Vec3, r: f64, tolerance: f64) -> Option<(Vec3, Vec3)> {
-    let section = solve(&[f1], &[f2], p, d, r, -1.0, 0.0, None, tolerance)?;
+    let section = solve(&[f1], &[f2], p, d, r, [-1.0; 2], 0.0, None, tolerance)?;
     Some((section.q1, section.q2))
 }
 
@@ -689,7 +701,7 @@ fn solve_chord(
         if !(r.is_finite() && r > 0.0 && r < 1e9) {
             return None;
         }
-        let s = solve(f1, f2, p, t, r, sigma, cusp, extra, tol)?;
+        let s = solve(f1, f2, p, t, r, [sigma; 2], cusp, extra, tol)?;
         let width = s.q1.dist(s.q2);
         if !width.is_finite() || width <= 0.0 {
             return None;
@@ -725,14 +737,14 @@ impl Sizer<'_> {
         extra: Option<Extra<'_>>,
     ) -> Option<(Section, f64)> {
         match self.size {
-            Size::Constant(r) => solve(f1, f2, p, t, r, sigma, cusp, extra, self.tol).map(|x| (x, r)),
+            Size::Constant(r) => solve(f1, f2, p, t, r, [sigma; 2], cusp, extra, self.tol).map(|x| (x, r)),
             Size::Chord(chord) => solve_chord(f1, f2, p, t, chord, sigma, cusp, extra, self.tol),
             Size::Law(law) => {
                 let r = law_beyond(law, s)?;
                 if !(r.is_finite() && (0.0..1e6).contains(&r)) {
                     return None;
                 }
-                solve(f1, f2, p, t, r, sigma, cusp, extra, self.tol).map(|x| (x, r))
+                solve(f1, f2, p, t, r, [sigma; 2], cusp, extra, self.tol).map(|x| (x, r))
             }
         }
     }
@@ -769,7 +781,7 @@ fn closed_section(s: &Section) -> bool {
 }
 
 /// Homogeneous control points of the circular (or straight) cross-section from q1 to q2.
-fn section_controls(s: &Section, round: bool) -> Option<[mt::Vector4; 3]> {
+pub(crate) fn section_controls(s: &Section, round: bool) -> Option<[mt::Vector4; 3]> {
     let h = |p: Vec3, w: f64| mt::Vector4::new(p.x * w, p.y * w, p.z * w, w);
     if !round {
         let m = (s.q1 + s.q2) * 0.5;

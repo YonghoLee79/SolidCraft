@@ -1714,6 +1714,44 @@ fn trim_dialog_takes_curves_several_keep_points_and_another_surface() {
 }
 
 #[test]
+fn surface_fillet_dialog_takes_two_faces_a_radius_and_what_to_trim() {
+    // A 40 × 30 floor and wall at right angles: the fillet's first and second faces and its
+    // radius go to surface.fillet, trimming both by default; Edit Feature brings them back.
+    let mut app = app_with(json!([
+        {"command": "sketch.create", "params": {"plane": "XY", "name": "F"}},
+        {"command": "sketch.rectangle.two_point", "params": {"p0": [0, 0], "p1": [40, 30]}},
+        {"command": "sketch.finish", "params": {}},
+        {"command": "surface.patch", "params": {"sketch": "F", "body_name": "Floor"}},
+        {"command": "sketch.create", "params": {"plane": "YZ", "name": "W"}},
+        {"command": "sketch.rectangle.two_point", "params": {"p0": [0, 0], "p1": [30, 40]}},
+        {"command": "sketch.finish", "params": {}},
+        {"command": "surface.patch", "params": {"sketch": "W", "body_name": "Wall"}}
+    ]));
+    let face = |body: &str, p: [f64; 3]| Sel::Face { body: body.into(), index: 0, point: Vec3::new(p[0], p[1], p[2]) };
+    let mut d = start(&mut app, vec![], "surface.fillet");
+    assert_eq!(d.inputs.len(), 2);
+    assert!(apply_commands(&app, &d).is_err(), "no faces yet");
+    d.inputs[0].items = vec![face("Floor", [20.0, 15.0, 0.0])];
+    d.inputs[1].items = vec![face("Wall", [0.0, 15.0, 20.0])];
+    if let Kind::Surface(crate::dialogs_surface::Surf::Fillet { radius, .. }) = &mut d.kind {
+        *radius = "5 mm".into();
+    }
+    let (id, p) = apply_commands(&app, &d).unwrap().remove(0);
+    assert_eq!(id, "surface.fillet");
+    assert_eq!(
+        (&p["body"], &p["at"], &p["with"], &p["with_at"], &p["radius"], &p["trim"]),
+        (&json!("Floor"), &json!([20.0, 15.0, 0.0]), &json!("Wall"), &json!([0.0, 15.0, 20.0]), &json!("5 mm"), &json!("both")),
+        "{p}"
+    );
+    app.session.execute(&id, &p).unwrap();
+    assert!(app.session.world_state().body("Wall").is_none(), "stitched into the floor");
+    let fid = app.session.doc.features.last().unwrap().id;
+    let back = crate::dialogs::for_feature(&app, fid, None).unwrap();
+    assert!(matches!(&back.kind, Kind::Surface(crate::dialogs_surface::Surf::Fillet { radius, trim: 0 }) if radius == "5 mm"));
+    assert_eq!((back.inputs[0].items.len(), back.inputs[1].items.len()), (1, 1));
+}
+
+#[test]
 fn untrim_dialog_takes_a_face_its_holes_and_the_outer_boundary() {
     // A 40 × 20 × 2 plate with three holes: its top untrimmed (every hole) is the whole 800 mm²
     // rectangle; one hole picked by an edge; Edit Feature brings the picks and options back.

@@ -128,6 +128,9 @@ mod step;
 mod step_in;
 mod step_out;
 mod surface_extend;
+mod surface_fillet;
+#[cfg(test)]
+mod surface_fillet_tests;
 mod surface_kind;
 mod surface_offset;
 mod surface_ruled;
@@ -207,6 +210,7 @@ pub use step_in::{
 };
 pub use step_out::{ExportBody, ExportProduct, StepHeader, step_export_bodies, step_export_products};
 pub use surface_extend::{ExtendLimit, ExtendMode, ExtendOptions, extend_surface};
+pub use surface_fillet::{FilletFace, FilletTrim, surface_fillet};
 pub use surface_kind::{EdgeCircle, FaceSurface, edge_circle, face_surface};
 pub use surface_offset::offset_surface;
 pub use surface_ruled::{Ruled, RuledCorners, RuledMode, ruled_surface};

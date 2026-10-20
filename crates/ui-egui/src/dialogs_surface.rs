@@ -51,6 +51,11 @@ pub enum Surf {
     Patch {
         continuity: usize,
     },
+    /// `trim`: an index into [`FILLET_TRIM`].
+    Fillet {
+        radius: String,
+        trim: usize,
+    },
     Unstitch,
     ReverseNormal,
     Offset {
@@ -101,6 +106,7 @@ impl Surf {
             Surf::Blend { .. } => "BLEND SURFACE",
             Surf::Boundary { .. } => "BOUNDARY SURFACE",
             Surf::Patch { .. } => "PATCH",
+            Surf::Fillet { .. } => "SURFACE FILLET",
             Surf::Unstitch => "UNSTITCH",
             Surf::ReverseNormal => "REVERSE NORMAL",
             Surf::Offset { .. } => "OFFSET SURFACE",
@@ -122,6 +128,7 @@ impl Surf {
                 ("Distance", ValueKind::Length, distance)
             }
             Surf::Revolve { angle, .. } => ("Angle", ValueKind::Angle, angle),
+            Surf::Fillet { radius, .. } => ("Radius", ValueKind::Length, radius),
             _ => return None,
         })
     }
@@ -137,6 +144,9 @@ const BLEND_CONTINUITY: [(&str, &str); 4] =
 
 /// What a boundary surface becomes: a body of its own, or part of the body of its edges.
 const BOUNDARY_OPS: [&str; 2] = ["New Body", "Join"];
+
+/// Which faces a surface fillet cuts back and stitches to itself (labels, and the `trim` words).
+const FILLET_TRIM: [(&str, &str); 4] = [("Both", "both"), ("First face", "first"), ("Second face", "second"), ("None", "none")];
 
 /// Which holes Untrim takes away: every one, the picked ones, or none (the outer boundary only).
 const UNTRIM_HOLES: [&str; 3] = ["All", "Picked", "None"];
@@ -168,6 +178,7 @@ fn inputs(k: &Surf) -> Vec<SelInput> {
         Surf::Blend { .. } => vec![SelInput::new("From edges", EDGES, true), SelInput::new("To edges", EDGES, true)],
         Surf::Boundary { .. } => vec![SelInput::new("Curves", CURVES | EDGES, true), SelInput::new("Cross curves", CURVES | EDGES, true)],
         Surf::Patch { .. } => vec![SelInput::new("Boundary", PROFILES | EDGES, true), SelInput::new("Pass through", VERTICES | FACES, true)],
+        Surf::Fillet { .. } => vec![SelInput::new("First face", FACES, false), SelInput::new("Second face", FACES, false)],
         Surf::Unstitch => vec![SelInput::new("Body, or faces to take out", BODIES | FACES, true)],
         Surf::ReverseNormal => vec![SelInput::new("Surface, or faces to turn over", BODIES | FACES, true)],
         Surf::Offset { .. } => vec![SelInput::new("Faces", FACES, true)],
@@ -199,6 +210,7 @@ pub fn start(_app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
         "surface.blend" => Surf::Blend { continuity: [1, 1], bulge: [0.0, 0.0], stitch: false },
         "surface.boundary" => Surf::Boundary { continuity: 1, join: false },
         "surface.patch" => Surf::Patch { continuity: 0 },
+        "surface.fillet" => Surf::Fillet { radius: "2 mm".into(), trim: 0 },
         "surface.unstitch" => Surf::Unstitch,
         "surface.reverse_normal" => Surf::ReverseNormal,
         "surface.offset" => Surf::Offset { distance: "2 mm".into(), chain: false },
@@ -291,6 +303,14 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Surf) -> bool {
             combo(ui, "sx_dir", &EXTRUDE_SIDES.map(|(label, _)| label), direction);
             ui.end_row();
         }
+        Surf::Fillet { radius, trim } => {
+            row_label(ui, "Radius");
+            enter |= field(ui, radius);
+            ui.end_row();
+            row_label(ui, "Trim");
+            combo(ui, "sf_trim", &FILLET_TRIM.map(|(label, _)| label), trim);
+            ui.end_row();
+        }
         Surf::Untrim { holes, outer, in_place } => {
             row_label(ui, "Holes");
             combo(ui, "ut_holes", &UNTRIM_HOLES, holes);
@@ -358,6 +378,11 @@ fn items(inputs: &[SelInput], i: usize) -> &[Sel] {
 
 fn pt(v: Vec3) -> Value {
     json!([v.x, v.y, v.z])
+}
+
+/// The body and point of the first face picked in input `i`.
+fn face_pick(inputs: &[SelInput], i: usize) -> Option<(String, Value)> {
+    items(inputs, i).first().and_then(|x| if let Sel::Face { body, point, .. } = x { Some((body.clone(), pt(*point))) } else { None })
 }
 
 fn bodies(inputs: &[SelInput], i: usize) -> Vec<String> {
@@ -805,12 +830,15 @@ pub fn commands(app: &SolveApp, k: &Surf, inputs: &[SelInput], extra: &Map<Strin
             }
             ("surface.trim", p)
         }
+        Surf::Fillet { radius, trim } => {
+            let (body, at) = face_pick(inputs, 0).ok_or("pick the first face")?;
+            let (with, with_at) = face_pick(inputs, 1).ok_or("pick the second face")?;
+            let trim = FILLET_TRIM.get(*trim).map_or("both", |(_, w)| *w);
+            ("surface.fillet", json!({"body": body, "at": at, "with": with, "with_at": with_at, "radius": radius, "trim": trim}))
+        }
         Surf::Untrim { holes, outer, in_place } => {
             need(0, "the face to untrim")?;
-            let (body, point) = items(inputs, 0)
-                .first()
-                .and_then(|x| if let Sel::Face { body, point, .. } = x { Some((body.clone(), pt(*point))) } else { None })
-                .ok_or("pick the face to untrim")?;
+            let (body, point) = face_pick(inputs, 0).ok_or("pick the face to untrim")?;
             let mut p = json!({"face": {"body": body, "point": point}});
             match holes {
                 0 => p["holes"] = json!("all"),
@@ -1110,6 +1138,10 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind, frame: &Mat) -> Option<(K
                 ],
             )
         }
+        FeatureKind::SurfaceFillet { at, with_at, radius, trim, .. } => (
+            Surf::Fillet { radius: radius.to_string(), trim: FILLET_TRIM.iter().position(|(_, w)| *w == trim.as_str()).unwrap_or(0) },
+            vec![crate::dialogs::face_sel(s, at.0).into_iter().collect(), crate::dialogs::face_sel(s, with_at.0).into_iter().collect()],
+        ),
         FeatureKind::SurfaceUntrim { face, holes, outer, in_place } => {
             let (index, picked) = match holes {
                 None => (0, Vec::new()),

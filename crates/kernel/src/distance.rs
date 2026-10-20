@@ -100,7 +100,7 @@ impl<'a> DistanceShape<'a> {
     /// Does `p`, a point on face `face`'s surface, lie on the face itself? Its mesh rules out
     /// points farther than twice the chord. Nearer the face's boundary than that, the exact edge
     /// nearest `p` decides: `p` must lie on the side of it where the face's mesh is.
-    fn on_face(&self, face: u32, p: Vec3) -> bool {
+    pub(crate) fn on_face(&self, face: u32, p: Vec3) -> bool {
         let tris = self.face_triangles(face);
         let tiny = 1e-9 * self.body.size().max(1.0);
         let reach = 2.0 * self.chord + tiny;

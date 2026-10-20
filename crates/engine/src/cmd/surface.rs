@@ -1,10 +1,10 @@
 //! Surface commands: Patch, Stitch, Thicken and Trim (surface bodies and turning them into
-//! solids), and the planned surface toolset (`planned!`: registered, not built yet).
+//! solids), and the rest of the surface toolset.
 
 use serde_json::Value;
 use solidcraft_doc::{
-    BlendSide, EdgeContinuity, Expr, ExtendMode, ExtendTo, FaceAt, FeatureKind, PatchContinuity, PlaneRef, ProfileSel, RuledCorners, RuledMode,
-    TrimCurves, expr::Kind,
+    BlendSide, EdgeContinuity, Expr, ExtendMode, ExtendTo, FaceAt, FeatureKind, FilletTrim, PatchContinuity, PlaneRef, ProfileSel, RuledCorners,
+    RuledMode, TrimCurves, expr::Kind,
 };
 use solidcraft_doc::{BodyName, SketchId};
 use solidcraft_doc::{Dir, FacePick, Position};
@@ -12,7 +12,7 @@ use solidcraft_kernel::Continuity;
 
 use super::CommandSpec;
 use super::features::{add_feature, axis_param, check_expr, extent_param, feature_sketch, operation, plane_param, profiles, sketch_id};
-use crate::params::{bad, bool_, expr, num, str_, string_list, vec3};
+use crate::params::{bad, bool_, expr, num, req_expr, req_vec3, str_, string_list, vec3};
 use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
@@ -60,6 +60,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SURFACE", "CREATE")
         .icon("surface_ruled")
         .params("body; edges: [[x,y,z]] (points on a chain of its edges, open or closed); distance: expr (how far the strip reaches); mode?: normal|tangent|angle|direction (default normal: along the normal of the face beside each edge; tangent: continuing it); angle?: expr (angle mode: from `direction`, else from the face's normal, turned away from the face; 90 deg from the normal is tangent); direction?: [x,y,z] (direction mode: the rulings; angle mode: the reference, e.g. a pull direction for a draft); face?: [x,y,z] (a point on the face the directions come from; default: the face beside the most picked edges); flip?: bool (the other side); corners?: mitre|round (sharp corners of the chain; inside corners are always cut back). Lines and arcs give exact planes, cylinders and cones, other edges a fitted ruled B-spline. A new surface body"),
+    CommandSpec::new("surface.fillet", "Surface Fillet", fillet)
+        .at("SURFACE", "MODIFY")
+        .icon("surface_fillet")
+        .params("body, with: surface bodies (a solid may be `with` when trim is first or none); at, with_at: [x,y,z] (a point on the face of each; the ball sits on the side of each face the other's point is on, so the points pick the corner to round); radius: expr; trim?: both|first|second|none (default both: both faces cut back to the fillet and stitched to it into `body`, `with` then gone; first: `body` only; second: `with` only; none: the fillet alone, a new body); name?, body_name?"),
     CommandSpec::new("surface.blend", "Blend Surface", blend)
         .at("SURFACE", "CREATE")
         .icon("surface_blend")
@@ -80,10 +84,6 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SURFACE", "MODIFY")
         .icon("surface_fair")
         .params("body: surface name; faces?: [[x,y,z]] points on the faces to fair (default: every face); strength?: number (0..1 of the full fairing step, default 1); iterations?: number (1..1000 steps, default 1); keep_edges?: bool (default true: hold the boundary row and the row next to it, so a face keeps meeting its neighbours in position and in tangent); tolerance?: expr mm (how far a control vertex may move, default 0.001 of the body's size). Moves the interior control vertices of each B-spline face to flatten its curvature variation while the boundary stays put: the face keeps its edges and the body its shape within the tolerance, and the warning in the reply carries the energy before and after; name?"),
-    planned!("surface.fillet", "Surface Fillet", "769")
-        .at("SURFACE", "MODIFY")
-        .icon("surface_fillet")
-        .params("planned: a, b: {body, point} (two faces of separate bodies that meet or cross; the points pick the side the ball rolls on); radius: expr; trim?: both|first|none"),
 ];
 
 fn patch(s: &mut Session, p: &Value) -> Result<Value> {
@@ -607,6 +607,30 @@ fn keep_points(v: Option<&Value>, cmd: &str, key: &str) -> Result<Vec<solidcraft
         .filter(|a| !a.is_empty() && a.len() <= 10_000)
         .ok_or_else(|| bad(cmd, format!("`{key}` must be [x, y, z] or a list of them")))?;
     list.iter().map(|q| vec3(q).ok_or_else(|| bad(cmd, format!("`{key}` must be [x, y, z] or a list of them")))).collect()
+}
+
+fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "surface.fillet";
+    let named = |k: &str| -> Result<String> {
+        let n = str_(p, k).ok_or_else(|| bad(cmd, format!("`{k}` must name a surface body")))?.to_string();
+        if s.model.state().body(&n).is_none() {
+            return Err(bad(cmd, format!("no body `{n}`")));
+        }
+        Ok(n)
+    };
+    let (body, with) = (named("body")?, named("with")?);
+    if body == with {
+        return Err(bad(cmd, "`with` must be another body"));
+    }
+    let (at, with_at) = (req_vec3(cmd, p, "at")?, req_vec3(cmd, p, "with_at")?);
+    let radius = req_expr(cmd, p, "radius")?;
+    check_expr(s, &radius, Kind::Length, cmd, "radius")?;
+    let trim = match p.get("trim").filter(|v| !v.is_null()) {
+        None => FilletTrim::default(),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|_| bad(cmd, "`trim` must be both, first, second or none"))?,
+    };
+    let kind = FeatureKind::SurfaceFillet { body: BodyName(body), at: Position(at), with: BodyName(with), with_at: Position(with_at), radius, trim };
+    add_feature(s, p, kind)
 }
 
 fn trim(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1357,29 +1381,6 @@ mod tests {
         assert_eq!(s.doc.features.len(), before);
     }
 
-    /// The planned surface commands are registered but refuse to run: disabled with the
-    /// issue that tracks them, an error (never a panic) from every caller, and the design left
-    /// as it was.
-    #[test]
-    fn planned_commands_refuse_and_leave_the_design_alone() {
-        let planned = ["surface.fillet"];
-        let mut s = Session::default();
-        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "B"}));
-        let before = s.doc.features.len();
-        for id in planned {
-            let spec = crate::find_command(id).unwrap_or_else(|| panic!("{id} is not registered"));
-            let info = spec.info(&s);
-            assert!(!info.enabled, "{id} must stay disabled until it is built");
-            let why = info.disabled_reason.unwrap_or_default();
-            assert!(why.starts_with("not supported yet (issue #"), "{id}: {why}");
-            assert!(!spec.icon.is_empty() && !spec.params.is_empty(), "{id}: icon and params doc");
-            assert!(s.execute(id, &json!({"body": "B"})).is_err(), "{id} ran");
-            let e = (spec.run)(&mut s, &json!({})).unwrap_err().to_string();
-            assert!(e.starts_with("not supported yet: ") && e.contains("(issue #"), "{id}: {e}");
-        }
-        assert_eq!(s.doc.features.len(), before, "a planned command changed the design");
-    }
-
     /// A rectangle patch in a plane (`plane`: a sketch plane name), corners (u0, v0) and (u1, v1)
     /// in its coordinates.
     fn sheet(s: &mut Session, plane: &str, name: &str, p0: [f64; 2], p1: [f64; 2]) {
@@ -1437,6 +1438,82 @@ mod tests {
         assert!((area(&s, "Floor") - 100.0).abs() < 1e-9 && (area(&s, "Wall") - 100.0).abs() < 1e-9);
         let bb = solidcraft_kernel::measure(&s.world_state().body("Wall").unwrap().body).unwrap().bbox;
         assert!((bb.max.z).abs() < 1e-9, "the wall's lower half: {bb:?}");
+    }
+
+    /// A 40 × 30 floor and wall meeting at right angles (z = 0 and x = 0, y = 0…30), rounded
+    /// with radius 5 (#769): trimmed (the default), one sheet of the floor and wall each cut back
+    /// by 5 and the quarter cylinder between, 2 · 35 · 30 + 5 · π/2 · 30; editing the radius to 3
+    /// rebuilds it; undo, redo and reopening give the same sheet. With `trim: none` the fillet is a
+    /// body of its own and both sheets stay whole.
+    #[test]
+    fn surface_fillet_rounds_the_corner_between_two_sheets() {
+        use std::f64::consts::PI;
+        let mut s = Session::default();
+        sheet(&mut s, "XY", "Floor", [0.0, 0.0], [40.0, 30.0]);
+        // YZ sketches have u along Y and v along Z.
+        sheet(&mut s, "YZ", "Wall", [0.0, 0.0], [30.0, 40.0]);
+        let corner = json!({"body": "Floor", "at": [20, 15, 0], "with": "Wall", "with_at": [0, 15, 20], "radius": 5, "name": "Round"});
+        run(&mut s, "surface.fillet", corner.clone());
+        let want = |r: f64| 2.0 * (40.0 - r) * 30.0 + r * PI / 2.0 * 30.0;
+        assert!(s.world_state().body("Wall").is_none(), "stitched into the floor");
+        assert!((area(&s, "Floor") - want(5.0)).abs() < 1e-3 * want(5.0), "{} vs {}", area(&s, "Floor"), want(5.0));
+        let st = s.world_state();
+        let floor = &st.body("Floor").unwrap().body;
+        assert!(floor.is_surface() && floor.face_count() == 3);
+        run(&mut s, "timeline.edit", json!({"feature": "Round", "set": {"radius": 3}}));
+        assert!((area(&s, "Floor") - want(3.0)).abs() < 1e-3 * want(3.0), "{} vs {}", area(&s, "Floor"), want(3.0));
+        let saved = s.doc.to_json();
+        run(&mut s, "edit.undo", json!({}));
+        assert!((area(&s, "Floor") - want(5.0)).abs() < 1e-3 * want(5.0));
+        run(&mut s, "edit.redo", json!({}));
+        let cold = Session::new(solidcraft_doc::Document::from_json(&saved).unwrap());
+        assert!((area(&cold, "Floor") - want(3.0)).abs() < 1e-3 * want(3.0) && cold.world_state().body("Wall").is_none());
+
+        let mut s = Session::default();
+        sheet(&mut s, "XY", "Floor", [0.0, 0.0], [40.0, 30.0]);
+        sheet(&mut s, "YZ", "Wall", [0.0, 0.0], [30.0, 40.0]);
+        let mut alone = corner;
+        alone["trim"] = json!("none");
+        alone["body_name"] = json!("Fillet");
+        run(&mut s, "surface.fillet", alone);
+        assert!((area(&s, "Fillet") - 5.0 * PI / 2.0 * 30.0).abs() < 1e-3 * 75.0 * PI);
+        assert!((area(&s, "Floor") - 1200.0).abs() < 1e-9 && (area(&s, "Wall") - 1200.0).abs() < 1e-9);
+    }
+
+    /// Surface fillets the command can't make are refused and leave the design as it was:
+    /// missing or wrong bodies, points and radius, a radius the faces are too small for, two
+    /// faces that never meet.
+    #[test]
+    fn surface_fillet_refuses_what_it_cannot_round() {
+        let mut s = Session::default();
+        sheet(&mut s, "XY", "Floor", [0.0, 0.0], [40.0, 30.0]);
+        sheet(&mut s, "YZ", "Wall", [0.0, 0.0], [30.0, 40.0]);
+        sheet(&mut s, "XY", "Narrow", [50.0, 0.0], [52.0, 30.0]);
+        let before = s.doc.to_json();
+        let ok = json!({"body": "Floor", "at": [20, 15, 0], "with": "Wall", "with_at": [0, 15, 20], "radius": 5});
+        let with = |k: &str, v: Value| {
+            let mut p = ok.clone();
+            p[k] = v;
+            p
+        };
+        for bad in [
+            with("body", json!("Nope")),
+            with("with", json!("Floor")),
+            with("with", Value::Null),
+            with("at", json!([1, 2])),
+            with("with_at", json!([0, "x", 0])),
+            with("radius", json!("nonsense +")),
+            with("radius", json!(-2)),
+            with("radius", json!(0)),
+            with("radius", json!(1e9)),
+            with("trim", json!("sideways")),
+            with("at", json!([f64::MAX, 0, 0])),
+            // The floor and a sheet beside it on the same plane: parallel, never meeting.
+            json!({"body": "Floor", "at": [20, 15, 0], "with": "Narrow", "with_at": [51, 15, 0], "radius": 1}),
+        ] {
+            assert!(s.execute("surface.fillet", &bad).is_err(), "{bad}");
+            assert_eq!(s.doc.to_json(), before, "{bad} changed the design");
+        }
     }
 
     /// A wall that stops 3 short of the floor is refused until `extend` brings it down to meet

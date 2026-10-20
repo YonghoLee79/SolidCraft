@@ -162,6 +162,8 @@ surface_network
 surface_match
   moves: edges[0][0], edges[0][1], edges[0][2], faces[0][0], faces[0][1], faces[0][2]
   face points: [0, 0, 0]
+surface_fillet
+  moves: at[0], at[1], at[2], with_at[0], with_at[1], with_at[2]
 surface_fair
   moves: faces[0][0], faces[0][1], faces[0][2]
   face points: [0, 0, 0]
