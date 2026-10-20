@@ -177,7 +177,7 @@ The slot's width is `corner_relief`, and it survives unfolding, refolding and DX
 yet and leaves the notch with a warning. A mitre that would overlap the flat pattern stays
 open with a warning. Side-edge setbacks on curved panels or on only part of an edge left by
 a cut-out are not supported yet. The edge connecting a panel to its existing bend is not a
-free edge. See `examples/regressions/sheet-side-flange-corner.json` for a small reproduction.
+free edge. See `examples/regressions/sheet_side_flange_corner.json` for a small reproduction.
 
 **Convert** also takes a solid or a shelled body: pick the face that stays fixed and the sharp
 edges that become bends (`bends`; Bend Edges in the dialog). The flat faces reached from the
