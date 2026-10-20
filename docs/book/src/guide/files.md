@@ -65,7 +65,8 @@ If the slicer is already running, PrusaSlicer, SuperSlicer and Cura load the fil
 the open window instead of starting another one (they are started with `--single-instance`).
 Other slicers, Bambu Studio and OrcaSlicer among them, are started as they are, so they may open a
 second window. You can turn this off in
-Preferences → General. Scripts pass `single_instance: false` to `file.open_in_slicer` or `file.save_mesh`.
+Preferences → General, except for PrusaSlicer 3.0, whose launcher can't hand a file to a running
+window without it. Scripts pass `single_instance: false` to `file.open_in_slicer` or `file.save_mesh`.
 
 Closed mechanical meshes with a constant cross-section can be rebuilt as solids with the
 `mesh.convert` command (command palette, scripts and the control channel).

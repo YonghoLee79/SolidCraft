@@ -592,8 +592,13 @@ impl Slicer {
     /// hands the file to a running instance, and keeps it. PrusaSlicer 2.9's Flatpak entry has the
     /// same flag, but there it does not hand a file over (each send opened a new window); only
     /// `--single-instance` does, so on a slicer that is not on the wait table it is swapped.
+    ///
+    /// A slicer on the wait table (the 3.0 launcher) gets the flag whatever `single_instance` says:
+    /// it can't hand a file to a running instance without it (a send with no flag left a launcher
+    /// process that never forwarded, and a start with a file and no flag loaded nothing).
     #[cfg(not(target_arch = "wasm32"))]
     fn args(&self, path: &str, single_instance: bool) -> Vec<String> {
+        let single_instance = single_instance || self.waits_for_ready().is_some();
         with_file(&self.base_args(single_instance), path)
     }
 
@@ -1002,7 +1007,8 @@ mod tests {
         // PrusaSlicer 3.0's launcher entry already has the flag (`%u` is dropped when the entry is read).
         let launcher = slicer("prusa", "PrusaSlicer", &["slic3r-app-launcher", "--single-instance-on-url"]);
         assert_eq!(args(&launcher, true), ["--single-instance-on-url", "/t/a.3mf"]);
-        assert_eq!(args(&launcher, false), ["/t/a.3mf"]);
+        // Its launcher can't hand a file over without the flag, so the preference does not remove it.
+        assert_eq!(args(&launcher, false), ["--single-instance-on-url", "/t/a.3mf"]);
         // Flatpak: the flag goes among the application's arguments, before the file markers.
         let flatpak = slicer("prusa", "PrusaSlicer", &["flatpak", "run", "com.prusa3d.PrusaSlicer", "@@u", "@@"]);
         assert_eq!(args(&flatpak, true), ["run", "com.prusa3d.PrusaSlicer", "--single-instance", "@@", "/t/a.3mf", "@@"]);
@@ -1127,13 +1133,13 @@ mod tests {
                 "--single-instance-on-url"
             ]
         );
-        // The preference does not take the flag off a start of the launcher (its entry's own is kept,
-        // and one is added where there is none); a normal send with the preference off has none.
+        // The preference does not take the flag off the launcher, on a start or a send (its entry's own
+        // is kept, and one is added where there is none).
         assert_eq!(launcher.start_args(false), ["--single-instance-on-url"]);
         let bare = slicer(&["slic3r-app-launcher"]);
         assert_eq!(bare.start_args(false), ["--single-instance"]);
         assert_eq!(bare.start_args(true), ["--single-instance"]);
-        assert_eq!(bare.args("/t/a.3mf", false), ["/t/a.3mf"]);
+        assert_eq!(bare.args("/t/a.3mf", false), ["--single-instance", "/t/a.3mf"], "a normal send, preference off");
         assert_eq!(bare.args("/t/a.3mf", true), ["--single-instance", "/t/a.3mf"]);
         // A slicer that does not need a start first is started as the preference says.
         assert!(slicer(&["prusa-slicer"]).start_args(false).is_empty());
@@ -1427,7 +1433,8 @@ mod tests {
         // 3.0: the launcher's own flag stays, and the preference off strips it.
         let kept = v30.args("/t/a.3mf", true);
         assert!(kept.contains(&"--single-instance-on-url".to_string()) && !kept.contains(&"--single-instance".to_string()), "{kept:?}");
-        assert!(!v30.args("/t/a.3mf", false).iter().any(|a| a.starts_with("--single-instance")));
+        let off = v30.args("/t/a.3mf", false);
+        assert!(off.contains(&"--single-instance-on-url".to_string()) && !off.contains(&"--single-instance".to_string()), "{off:?}");
         // Starting 3.0 on its own keeps it whatever the preference says (the earlier rule).
         assert!(v30.start_args(false).contains(&"--single-instance-on-url".to_string()));
     }

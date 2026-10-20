@@ -1531,7 +1531,7 @@
   "ui.slicer_no_response": "{slicer} didn't respond in time. The file is already saved at {path}: send it again once the slicer has started.",
   "ui.slicer_resend_hint": "Sending again replaces the file the slicer has open.",
   "ui.slicer_single_instance": "Open files in a slicer that is already running",
-  "ui.slicer_single_instance_tip": "PrusaSlicer, SuperSlicer and Cura load the file in the window that is open instead of starting another. Other slicers are started as they are.",
+  "ui.slicer_single_instance_tip": "PrusaSlicer, SuperSlicer and Cura load the file in the window that is open instead of starting another. Other slicers are started as they are. PrusaSlicer 3.0 always does this: its launcher can't take a file any other way.",
   "ui.slicer_starting": "Starting {slicer}…",
   "ui.slicer_still_starting": "Still waiting for {slicer} to start. Nothing else was sent.",
   "ui.slicer_stl_fallback": "The 3MF could not be written, so this is an STL.",

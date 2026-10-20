@@ -663,7 +663,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_send_after_a_start_carries_the_flag_even_when_the_preference_is_off() {
+    fn the_launcher_gets_the_flag_on_a_send_and_after_a_start_even_when_the_preference_is_off() {
         use std::os::unix::fs::PermissionsExt;
         let ctx = egui::Context::default();
         let dir = std::env::temp_dir().join(format!("solidcraft-slicer-flag-{}", std::process::id()));
@@ -679,10 +679,10 @@ mod tests {
         let spec = script.to_string_lossy().into_owned();
         app.preferences.custom_slicers = vec![spec.clone()];
         app.preferences.slicer_single_instance = false;
-        // A normal send with the preference off: no flag.
+        // A normal send with the preference off: this launcher still gets the flag, it can't hand a file over without.
         app.run("file.open_in_slicer", json!({"slicer": spec, "bodies": ["Part"], "wait": "no", "single_instance": false})).unwrap();
         assert_eq!(sent(&seen), 1);
-        assert!(!std::fs::read_to_string(&seen).unwrap().contains("--single-instance"), "{:?}", std::fs::read_to_string(&seen));
+        assert!(std::fs::read_to_string(&seen).unwrap().starts_with("--single-instance "), "{:?}", std::fs::read_to_string(&seen));
         // The send that follows a start: the flag, preference or not.
         let slicer = slicers::custom(&spec).unwrap();
         assert!(slicer.waits_for_ready().is_some());

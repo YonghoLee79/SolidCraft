@@ -1531,7 +1531,7 @@
   "ui.slicer_no_response": "{slicer} 未在规定时间内响应。文件已保存到 {path}：切片软件启动后请再次发送。",
   "ui.slicer_resend_hint": "再次发送会替换切片软件中已打开的文件。",
   "ui.slicer_single_instance": "在已运行的切片软件中打开文件",
-  "ui.slicer_single_instance_tip": "PrusaSlicer、SuperSlicer 和 Cura 会在已打开的窗口中加载文件，而不是再启动一个。其他切片软件按原样启动。",
+  "ui.slicer_single_instance_tip": "PrusaSlicer、SuperSlicer 和 Cura 会在已打开的窗口中加载文件，而不是再启动一个。其他切片软件按原样启动。PrusaSlicer 3.0 始终如此：其启动器无法以其他方式接收文件。",
   "ui.slicer_starting": "正在启动 {slicer}…",
   "ui.slicer_still_starting": "仍在等待 {slicer} 启动。没有发送其他内容。",
   "ui.slicer_stl_fallback": "无法写入 3MF，因此发送的是 STL。",
