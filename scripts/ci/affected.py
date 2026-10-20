@@ -41,9 +41,8 @@ EMBEDDED = {
     "NOTICE": "solidcraft-engine",
     "THIRD-PARTY-LICENSES.txt": "solidcraft-engine",
 }
-# Folders that only some packages read: the UI embeds the catalogs and xtask checks them; the MCP
-# server's tests read the agent skills.
-EMBEDDED_PREFIXES = {"assets/locales/": ("solidcraft-ui-egui", "xtask"), "skills/": ("solidcraft-mcp",)}
+# Folders that only some packages read: the UI embeds the catalogs and xtask checks them.
+EMBEDDED_PREFIXES = {"assets/locales/": ("solidcraft-ui-egui", "xtask")}
 # Test data and the package directories whose tests (or xtask) read it. Any other folder under
 # tests/ selects the full workspace.
 TEST_DATA = {

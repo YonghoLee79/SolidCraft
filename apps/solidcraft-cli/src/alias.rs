@@ -1,8 +1,8 @@
 //! `solvecraft-cli`: the CLI's former name, kept for at least one release so existing scripts
-//! and MCP client setups (`claude mcp add solvecraft -- solvecraft-cli mcp`) keep working.
+//! keep working.
 //! Compatibility shim: it runs `solidcraft-cli` (next to this executable, else on PATH) with the
-//! same arguments and standard streams, after a one-line deprecation note on stderr (stdout
-//! stays clean for MCP's JSON-RPC), and exits with its status.
+//! same arguments and standard streams, after a one-line deprecation note on stderr, and exits
+//! with its status.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 

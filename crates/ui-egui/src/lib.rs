@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 pub mod access;
-pub mod agent_chat;
 pub mod agent_cursor;
 pub mod bom_panel;
 pub mod browser;
@@ -304,10 +303,6 @@ pub struct Services {
     pub http_download: Option<update::install::HttpDownload>,
     /// The browser's offer to install the web app (`install`); None: no Install button (desktop).
     pub install_app: Option<install::InstallApp>,
-    /// HTTP for the agent chat's API agents (OpenAI-compatible endpoints); None: no API agents.
-    pub agent_http: Option<agent_chat::backend::HttpFn>,
-    /// The system keychain, for API agents' keys; None: keys can't be stored.
-    pub secrets: Option<std::sync::Arc<dyn agent_chat::backend::Secrets>>,
 }
 
 pub struct SolveApp {
@@ -428,8 +423,6 @@ pub struct SolveApp {
     control_held: std::collections::VecDeque<ControlRequest>,
     /// The agent cursor acting out control requests.
     pub agent: agent_cursor::AgentCursor,
-    /// The agent chat panel (docs/design/in-app-agent-chat.md).
-    pub agent_chat: agent_chat::AgentChat,
     pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
     queued_shots: Vec<(u64, f64, u32)>,
     shot_token: u64,
@@ -533,7 +526,6 @@ impl SolveApp {
             synthetic: Vec::new(),
             synthetic_mods: egui::Modifiers::default(),
             control_rx: None,
-            agent_chat: Default::default(),
             control_held: Default::default(),
             agent: Default::default(),
             pending_shots: Vec::new(),
@@ -1373,8 +1365,6 @@ impl SolveApp {
         recovery_ui::tick(self);
         update::tick(self, ctx);
         if self.issue_report.draft.is_none() && self.file_picker.is_none() {
-            // Files dropped on the agent chat attach to its next message instead.
-            agent_chat::take_drops(self, ctx);
             for f in ctx.input(|i| i.raw.dropped_files.clone()) {
                 let p = f.path().to_string_lossy().to_string();
                 if !p.is_empty() {
@@ -1493,7 +1483,6 @@ impl SolveApp {
         if render_workspace::active(self) {
             render_workspace::panel(self, ui);
         }
-        agent_chat::show(self, ui);
         preview::update(self, ui.ctx());
         if browser_float {
             // The room the central view is about to take, before it takes it.

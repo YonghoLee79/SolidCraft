@@ -50,18 +50,6 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
     rx
 }
 
-/// The agent chat's own endpoint for its agent's MCP server (docs/agent-chat.md): a free loopback
-/// port with a fresh token of its own (never `SOLIDCRAFT_CONTROL_TOKEN`), written to the usual
-/// token file, where the MCP server finds it, so the token never passes through the agent. Its
-/// requests go to `tx`, where the chat's gate reads them; one may wait long for the user's Allow.
-pub fn listen_agent(tx: Sender<ControlRequest>, ctx: egui::Context) -> Option<u16> {
-    let Some(token) = new_token() else {
-        eprintln!("solidcraft: agent chat endpoint not started: no random token available");
-        return None;
-    };
-    listen(0, token, tx, ctx, true)
-}
-
 /// Listen on `port` (0: a free port the system picks) with `token`; the port it listens on.
 /// `patient`: every request may wait as long as a batch (a person decides on it).
 fn listen(port: u16, token: String, tx: Sender<ControlRequest>, ctx: egui::Context, patient: bool) -> Option<u16> {

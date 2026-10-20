@@ -1,8 +1,7 @@
 # Browser runtime (design)
 
 Design note for SolidCraft in the browser: tiered storage, worker offload, GPU jobs, and
-agent control that stay aligned with the desktop app, the control channel, and
-[MCP](mcp.md). Implementation lives primarily in
+control that stays aligned with the desktop app and the control channel. Implementation lives primarily in
 [craft-libs](https://github.com/storytold/craft-libs) (`craft-tier-store`, `craft-worker-host`,
 `craft-gpu`, `craft-runtime`); SolidCraft wires those crates into
 [`apps/solidcraft-web`](../apps/solidcraft-web) and [`files.rs`](../apps/solidcraft-web/src/files.rs)
@@ -22,7 +21,7 @@ Access import/export. That works for small and medium designs but hits three wal
 |------|------------------------|
 | Quota | Large STEP imports and container blobs compete with autosave and cache in OPFS |
 | Main thread | Open, save, and timeline evaluation run synchronously on the UI thread with egui |
-| Agents | MCP runs out of process (`solidcraft-cli mcp`); the tab has no first-class agent session |
+| Agents | (not in this release) |
 
 WebGPU for the viewport already runs on the main thread (wgpu via eframe). Moving the entire UI
 renderer into a worker is out of scope for the first integration; worker GPU is for offload jobs
@@ -30,9 +29,8 @@ renderer into a worker is out of scope for the first integration; worker GPU is 
 
 ## Principles
 
-1. **One command surface.** Toolbar, scripts, control channel, MCP, and (eventually) in-browser
-   agents all use the same engine commands. Dialog-free commands only for unattended paths, same
-   rule as [MCP](mcp.md).
+1. **One command surface.** Toolbar, scripts, control channel, and (eventually) in-browser
+   agents all use the same engine commands. Dialog-free commands only for unattended paths.
 2. **Generic traits in craft-libs.** Storage tiers, worker RPC, and GPU dispatch are implemented
    once in craft-libs. Web and native use the same traits; hosts differ (OPFS vs paths, SharedWorker
    vs thread pool).
@@ -65,7 +63,7 @@ Tiers (craft-tier-store)
 ```
 
 On **desktop**, the same `BlobStore` and job envelopes apply: warm/cold map to normal directories;
-[`solidcraft-cli mcp`](mcp.md) and wasmtime plugin hosts ([#1221](https://github.com/bherbruck/solidcraft/issues/1221))
+wasmtime plugin hosts ([#1221](https://github.com/bherbruck/solidcraft/issues/1221))
 call the same `run(command, args)` JSON.
 
 ## Mapping SolidCraft today
@@ -75,7 +73,7 @@ call the same `run(command, args)` JSON.
 | [`files.rs`](../apps/solidcraft-web/src/files.rs) OPFS + `/opfs/` VFS | Warm tier keys; migration keeps existing filenames initially |
 | Recovery autosave | Warm tier, same semantics as [`compatibility.md`](compatibility.md) |
 | [Design containers](design-container.md) content-addressed blobs | Tier keys by hash; cold tier holds large blobs without copying into OPFS |
-| [Control protocol](control-protocol.md) over TCP | Same methods over `MessagePort` to broker headless session (WebMCP-shaped, not a second registry) |
+| [Control protocol](control-protocol.md) over TCP | Same methods over `MessagePort` to broker headless session |
 | Parallel mesh work ([ROADMAP](../ROADMAP.md): web path serial) | Offload eval / IO jobs via `JobSubmit`; viewport stays on main thread |
 
 ## craft-libs crates (reference)
@@ -102,17 +100,6 @@ providers and key namespaces only.
   readback fences) for offload; same entry point on native thread pools.
 - **Limits:** Capability probe once at init; UI and workers share reported max buffer sizes.
 
-## Agents in the browser
-
-| Mode | Transport |
-|------|-----------|
-| Desktop agent | `solidcraft-cli mcp` (stdio) or `--connect` to [control protocol](control-protocol.md) |
-| Browser agent | RPC to broker session; dialog-free tools only |
-| IDE bridge | Optional local relay (stdio MCP ↔ tab); not required for CollabCraft-hosted wasm |
-
-File policy for web agents mirrors MCP folders: design directory, cold tier roots, recovery;
-never `--allow-any-path` in the tab.
-
 ## Plugins ([#1221](https://github.com/bherbruck/solidcraft/issues/1221))
 
 | Host | Runtime |
@@ -137,8 +124,7 @@ budgeted; per-app worker URLs are acceptable for pilots. CSP must allow `worker-
 1. **Document and track** (this file); no user-visible change.
 2. **Tier-store wiring:** replace ad-hoc OPFS glue with `craft-tier-store` keys; keep on-disk layout.
 3. **Worker broker:** headless `engine.execute` batches and container IO off UI thread.
-4. **Agent bridge:** MessagePort tool surface equivalent to MCP dialog-free tools.
-5. **Plugins on web:** after desktop wasmtime milestone and WIT stability.
+4. **Plugins on web:** after desktop wasmtime milestone and WIT stability.
 6. **Parametric plugin features:** [plugins.md](plugins.md) phase 2 (`evaluate`, display metadata, fallback policy).
 
 ## Out of scope (initial integration)

@@ -12,9 +12,6 @@
 //! solidcraft-cli commands                                     the command registry as JSON
 //! solidcraft-cli recipe <recipe.json>                         translate an oracle recipe to a script
 //! solidcraft-cli oracle <case-dir>...                         replay recipes and compare with expected.json
-//! solidcraft-cli mcp [--in design|script] [--connect HOST:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
-//!                    [--param-check off|warn|strict]
-//!                                                             MCP server on stdio (docs/mcp.md)
 //! solidcraft-cli licences                                     SolidCraft's licence and the third-party licences
 //! solidcraft-cli icon --out F.png|F.ico [--size N]             the app icon (packaging; drawn, not a file)
 //! ```
@@ -57,7 +54,7 @@ const USAGE: &str = "usage:
   solidcraft-cli snapshot --in <design.solidcraft|part.step> --out shot.png ...
       (as with run, --in starts from a design and the script runs on top of it; an option snapshot doesn't take is an error;
        --view: iso, front, back, top, bottom, left, right, or the name of a view saved in the design with view.save;
-       --camera: {target: [x,y,z], yaw, pitch, distance, fov?} in mm and radians, as the MCP screenshot takes it (docs/mcp.md);
+       --camera: {target: [x,y,z], yaw, pitch, distance, fov?} in mm and radians;
        --no-grid and --no-axes leave the ground grid (on Z 0) and the origin's axes out of the picture;
        --body: how one body is drawn, as appearance.assign takes it: opacity 0-1 (below 1 is see-through, so what is inside
          it shows) and color #rrggbb, either or both, once per body;
@@ -71,8 +68,6 @@ const USAGE: &str = "usage:
   solidcraft-cli recipe <recipe.json>
   solidcraft-cli oracle <case-dir>... [--json]
   solidcraft-cli fuzz [--from N] [--count N] [--jobs J] [--timeout S] [--steps N] [--minimise] [--out DIR] [--report FILE]
-  solidcraft-cli mcp [--in design.solidcraft|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
-                     [--param-check off|warn|strict]
   solidcraft-cli crashes [list [--json] | show <id> | replay <id> | dir | clear [<id>]]
   solidcraft-cli licences
   solidcraft-cli gpu [--policy auto|hardware|software|cpu]
@@ -112,7 +107,6 @@ fn main() -> ExitCode {
         Some("oracle") => oracle::run(&args[1..]),
         Some("fuzz") => fuzz::run(&args[1..]),
         Some("fuzz-one") => fuzz::one(&args[1..]),
-        Some("mcp") => cmd_mcp(&args[1..]),
         Some("crashes") => crashes::run(&args[1..]),
         Some("icon") => cmd_icon(&args[1..]),
         Some("licences" | "licenses") => {
@@ -529,65 +523,6 @@ fn cmd_exec(args: &[String]) -> Result<(), String> {
     let v = s.execute(id, &p).map_err(|e| e.to_string())?;
     println!("{}", pretty(&v));
     Ok(())
-}
-
-/// MCP server on stdio: headless (optionally starting from a design or script) or bridged to
-/// a running app's control port. stdout carries only protocol messages. Files the agent's tool
-/// calls reach are confined to `solidcraft_mcp::agent_scope` unless `--allow-any-path` is given.
-fn cmd_mcp(args: &[String]) -> Result<(), String> {
-    install_renderer();
-    let scope = (!args.iter().any(|a| a == "--allow-any-path"))
-        .then(|| solidcraft_mcp::agent_scope(flags(args, "--allow-path").into_iter().map(std::path::PathBuf::from)));
-    if let Some(s) = &scope {
-        let roots: Vec<String> = s.roots().iter().map(|r| r.display().to_string()).collect();
-        eprintln!(
-            "solidcraft mcp: files limited to {} and the open design's folder (--allow-path DIR adds one, --allow-any-path lifts the limit)",
-            roots.join(", ")
-        );
-        let design_dir = flag(args, "--in")
-            .and_then(|p| std::path::Path::new(p).parent())
-            .map(|d| if d.as_os_str().is_empty() { std::path::Path::new(".") } else { d });
-        if let Some(why) = design_dir.and_then(solidcraft_engine::io::vfs::design_folder_refusal) {
-            eprintln!("solidcraft mcp: the design's folder is left out because {why}; add it with --allow-path if you mean it");
-        }
-    }
-    // How a headless session treats calls that break a command's parameter contract (docs/mcp.md).
-    let param_check = match flag(args, "--param-check") {
-        None if args.iter().any(|a| a == "--param-check") => return Err("mcp: --param-check wants off, warn or strict".into()),
-        None => solidcraft_engine::schema::ParamCheck::Off,
-        Some(v) => {
-            solidcraft_engine::schema::ParamCheck::parse(v).ok_or_else(|| format!("mcp: --param-check wants off, warn or strict, not `{v}`"))?
-        }
-    };
-    if param_check != solidcraft_engine::schema::ParamCheck::Off && flag(args, "--connect").is_some() {
-        eprintln!("solidcraft mcp: --param-check applies to headless sessions; calls to the app are not checked yet");
-    }
-    let backend: Box<dyn solidcraft_mcp::Backend> = match (flag(args, "--connect"), flag(args, "--in")) {
-        (Some(_), Some(_)) => return Err("mcp: use either --connect or --in, not both".into()),
-        (Some(addr), None) => {
-            let Some(port) = addr.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()).filter(|p| *p != 0) else {
-                return Err(format!("mcp: --connect wants HOST:PORT, such as 127.0.0.1:7878, not `{addr}`"));
-            };
-            // Serve without the app too: the tools connect once it runs, and say it isn't until then.
-            let mut remote = solidcraft_mcp::Remote::new(addr, flag(args, "--token"));
-            if let Err(e) = remote.try_connect() {
-                eprintln!(
-                    "solidcraft mcp: no SolidCraft app at {addr} yet ({e}); start it with `solidcraft --control {port}` \
-                     (or SOLIDCRAFT_CONTROL_PORT={port}), tool calls connect once it runs"
-                );
-            }
-            Box::new(remote)
-        }
-        (None, Some(path)) => Box::new(solidcraft_mcp::Headless::new(load_checked(path, param_check)?)),
-        (None, None) => {
-            let mut headless = solidcraft_mcp::Headless::default();
-            headless.session.param_check = param_check;
-            Box::new(headless)
-        }
-    };
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    solidcraft_mcp::Server::new(backend).with_path_scope(scope).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
 }
 
 /// `save-stress <path> <rounds>`: save a design of a few hundred kilobytes `rounds` times, its

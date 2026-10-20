@@ -12,11 +12,10 @@ It runs as:
 - a **desktop app** for Windows and Linux (egui + wgpu);
 - a **web app** in the browser (wasm, WebGPU or WebGL2), [try it here](app/);
 - a **headless CLI**, `solidcraft-cli`, that runs command scripts, measures and exports;
-- an **MCP server** that AI agents model with, headless or driving the running app.
 
 Everything the user can do is a *command* with JSON parameters. The toolbar, the dialogs, scripts,
-the CLI, the control channel and MCP all run the same commands, so anything you can click you can
-also script, test or hand to an agent.
+the CLI and the control channel all run the same commands, so anything you can click you can
+also script and test.
 
 SolidCraft is early. Sketching, solid modelling, parameters, components with joints, sheet metal
 and a plastic-enclosure subset work; surfaces, drawings, CAM and simulation are deferred. The

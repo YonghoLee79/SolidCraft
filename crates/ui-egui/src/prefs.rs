@@ -208,9 +208,8 @@ pub fn nav_preset(id: &str) -> &'static NavPreset {
     NAV_PRESETS.iter().find(|p| p.id == id).unwrap_or(&NAV_PRESETS[0])
 }
 /// The dialog's pages, in order.
-pub const PAGES: [&str; 9] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection", "AI", "Plugins"];
-pub const PAGE_AI: usize = 7;
-pub const PAGE_PLUGINS: usize = 8;
+pub const PAGES: [&str; 8] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection", "Plugins"];
+pub const PAGE_PLUGINS: usize = 7;
 pub const PAGE_SHORTCUTS: usize = 2;
 pub const PAGE_DESIGN: usize = 3;
 pub const PAGE_GRAPHICS: usize = 4;
@@ -371,35 +370,6 @@ pub struct Prefs {
     pub save_mesh_send: bool,
     pub save_mesh_slicer: String,
     pub custom_slicers: Vec<String>,
-    /// AI features (docs/agent-chat.md): the master switch. Off: no AI button, shortcut, menu
-    /// entry or panel, and nothing is looked for or started.
-    pub ai_features: bool,
-    /// The AI button at the toolbar row's right end (the shortcut and View menu entry stay).
-    pub ai_toolbar_button: bool,
-    /// Agents the user added (the installed ones are found by themselves). API keys are never
-    /// here: they live in the system keychain.
-    pub agents: Vec<crate::agent_chat::agents::AgentConfig>,
-    /// The agent a new conversation starts with (an agent's id; empty: the first one available).
-    pub agent_default: String,
-    /// How much the agent may do without asking (`ask`, `edits`, `all`), and per agent.
-    pub ai_permissions: crate::agent_chat::agents::Mode,
-    pub agent_permissions: std::collections::BTreeMap<String, crate::agent_chat::agents::Mode>,
-    /// The model last chosen in the chat, per agent: put back when the agent offers it again.
-    pub agent_models: std::collections::BTreeMap<String, String>,
-    /// "Always allow" answers: per agent, the tools it may use without asking.
-    pub agent_always_allow: std::collections::BTreeMap<String, Vec<String>>,
-    /// The side the panel docks on (`left` or `right`), its width, and whether it is folded to a strip.
-    pub agent_chat_side: String,
-    pub agent_chat_width: f32,
-    pub agent_chat_minimized: bool,
-    /// Whether the chat is in its own window instead of the side panel, and that window's place
-    /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
-    /// negative or past the main screen when the window sits on another one).
-    pub agent_chat_popped: bool,
-    pub agent_chat_window: Option<[f32; 4]>,
-    /// Changes the agent may make for one message.
-    pub agent_chat_turn_limit: u32,
-
     // ---- Sketch / selection modifier bindings (classic defaults; alternate mapping is opt-in) ----
     /// Modifier that suppresses sketch auto-snap while drawing or dragging a sketch point.
     /// Default: Alt/Option. Set to Ctrl/Cmd for the alternate mapping.
@@ -495,20 +465,6 @@ impl Default for Prefs {
             save_mesh_send: false,
             save_mesh_slicer: String::new(),
             custom_slicers: Vec::new(),
-            ai_features: true,
-            ai_toolbar_button: true,
-            agents: Vec::new(),
-            agent_default: String::new(),
-            ai_permissions: crate::agent_chat::agents::Mode::Edits,
-            agent_permissions: Default::default(),
-            agent_models: Default::default(),
-            agent_always_allow: Default::default(),
-            agent_chat_side: "right".into(),
-            agent_chat_width: 380.0,
-            agent_chat_minimized: false,
-            agent_chat_popped: false,
-            agent_chat_window: None,
-            agent_chat_turn_limit: crate::agent_chat::gate::DEFAULT_TURN_LIMIT,
             suppress_sketch_snap: ModifierCombo::CTRL_ALT,
             manipulator_free_alt: true,
             selection_shift_add_only: false,
@@ -748,19 +704,6 @@ fn defaults(app: &mut SolveApp, page: usize) {
             set_autosave(app);
         }
         PAGE_PLUGINS => p.disabled_plugins.clear(),
-        PAGE_AI => {
-            // The agents the user added and their "always allow" answers stay.
-            p.ai_features = d.ai_features;
-            p.ai_toolbar_button = d.ai_toolbar_button;
-            p.ai_permissions = d.ai_permissions;
-            p.agent_permissions = d.agent_permissions;
-            p.agent_chat_side = d.agent_chat_side;
-            p.agent_chat_width = d.agent_chat_width;
-            p.agent_chat_minimized = d.agent_chat_minimized;
-            p.agent_chat_popped = d.agent_chat_popped;
-            p.agent_chat_window = d.agent_chat_window;
-            p.agent_chat_turn_limit = d.agent_chat_turn_limit;
-        }
         1 => {
             p.nav = d.nav;
             p.navigator_style = d.navigator_style;
@@ -1228,10 +1171,6 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
     };
     if app.prefs_window.section == PAGE_SHORTCUTS {
         crate::keymap::page(app, ui);
-        return;
-    }
-    if app.prefs_window.section == PAGE_AI {
-        crate::agent_chat::settings::page(app, ui);
         return;
     }
     if app.prefs_window.section == PAGE_PLUGINS {
