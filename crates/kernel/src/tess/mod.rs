@@ -21,6 +21,7 @@ pub(crate) mod collar;
 pub(crate) mod coons;
 pub(crate) mod cutgrid;
 pub(crate) mod edges;
+pub(crate) mod fallback;
 pub(crate) mod grid;
 pub(crate) mod motorcycle;
 pub(crate) mod pieces;
@@ -45,6 +46,8 @@ pub struct PlanStats {
     pub planar: usize,
     pub structured: usize,
     pub delaunay: usize,
+    /// Faces no method could plan, filled flat from their boundary nodes.
+    pub filled: usize,
 }
 
 /// Curved faces from which their sizes are worked out on the worker pool.
@@ -110,22 +113,18 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
     relax_crowded_faces(&faces, &jobs, &rules, &mut nodes);
     divide_collapsed_faces(&faces, &jobs, &rules, &mut nodes);
     let indexed: Vec<(usize, &mt::Face)> = faces.iter().copied().enumerate().collect();
-    // One face, from the edge nodes as they are and with the rules for its level of detail.
-    let plan_one = |fi: usize, face: &mt::Face, nodes: &HashMap<mt::EdgeID, edges::Nodes>, rules: &size::Rules| {
-        let (eval, size) = match sized.get(fi) {
-            Some((Some(eval), Some(size))) => (eval.clone(), *size),
-            _ => return Err(unsupported(format!("face {fi}: surface not evaluable"))),
-        };
-        // Boundary nodes, loop by loop (each edge's last node is the next edge's first), with
-        // their parameters on this face where the edge knows them (an intersection edge on
-        // this face's surface).
+    // A face's boundary nodes, loop by loop (each edge's last node is the next edge's first),
+    // with their parameters on the face's surface where the edge knows them (an intersection
+    // edge on this face's surface).
+    type Boundary = (Vec<Vec<Vec3>>, Vec<Vec<Option<[f64; 2]>>>);
+    let boundary = |face: &mt::Face, eval: &EvalSurface, nodes: &HashMap<mt::EdgeID, edges::Nodes>| -> Result<Boundary> {
         let mut loops3: Vec<Vec<Vec3>> = Vec::new();
         let mut known: Vec<Vec<Option<[f64; 2]>>> = Vec::new();
         for wire in face.absolute_boundaries() {
             let (mut pts, mut uvs) = (Vec::new(), Vec::new());
             for e in wire.edge_iter() {
                 let n = nodes.get(&e.id()).ok_or_else(|| unsupported("edge without nodes"))?;
-                let (mut ep, mut eq) = (n.points.clone(), n.params_on(&eval).unwrap_or_else(|| vec![None; n.points.len()]));
+                let (mut ep, mut eq) = (n.points.clone(), n.params_on(eval).unwrap_or_else(|| vec![None; n.points.len()]));
                 if !e.orientation() {
                     ep.reverse();
                     eq.reverse();
@@ -140,6 +139,22 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
                 known.push(uvs);
             }
         }
+        Ok((loops3, known))
+    };
+    // A plan in the surface's orientation turned the face's way.
+    let oriented_face = |face: &mt::Face, fp: FacePlan| FacePlan {
+        flip: !face.orientation(),
+        triangles: if face.orientation() { fp.triangles } else { fp.triangles.into_iter().map(|[a, b, c]| [a, c, b]).collect() },
+        ..fp
+    };
+    let surface_of = |fi: usize| match sized.get(fi) {
+        Some((Some(eval), Some(size))) => Ok((eval.clone(), *size)),
+        _ => Err(unsupported(format!("face {fi}: surface not evaluable"))),
+    };
+    // One face, from the edge nodes as they are and with the rules for its level of detail.
+    let plan_one = |fi: usize, face: &mt::Face, nodes: &HashMap<mt::EdgeID, edges::Nodes>, rules: &size::Rules| {
+        let (eval, size) = surface_of(fi)?;
+        let (loops3, known) = boundary(face, &eval, nodes)?;
         let mut stats = PlanStats::default();
         let replan = |stats: &mut PlanStats| match plan_face(fi, &eval, &loops3, &known, rules, size, stats) {
             Ok(fp) => Ok(fp),
@@ -156,12 +171,7 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
             }
         };
         let fp = replan(&mut stats)?;
-        let fp = FacePlan {
-            flip: !face.orientation(),
-            triangles: if face.orientation() { fp.triangles } else { fp.triangles.into_iter().map(|[a, b, c]| [a, c, b]).collect() },
-            ..fp
-        };
-        Ok((fp, eval, stats))
+        Ok((oriented_face(face, fp), eval, stats))
     };
     let mut planned = crate::par::map("face tessellation", &indexed, curved >= PARALLEL_FACES, |(fi, face)| plan_one(*fi, face, &nodes, &rules));
     // A face refused at this level of detail (a boundary that comes out degenerate, or that a
@@ -197,6 +207,18 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
             }
         }
     }
+    // A face refused however finely its edges are divided is filled flat from its boundary
+    // nodes (see `fallback`), so the rest of the body keeps its plan.
+    for (fi, slot) in planned.iter_mut().enumerate() {
+        if slot.is_ok() {
+            continue;
+        }
+        let (Some(face), Ok((eval, _))) = (faces.get(fi), surface_of(fi)) else { continue };
+        let Ok((loops3, _)) = boundary(face, &eval, &nodes) else { continue };
+        if let Some(fp) = fallback::fill(fi, &eval, &loops3, off_surface(&rules), rules.tol) {
+            *slot = Ok((oriented_face(face, fp), eval, PlanStats { filled: 1, ..PlanStats::default() }));
+        }
+    }
     let oriented = |e: &mt::Edge| -> Option<Vec<Vec3>> {
         let mut pts = nodes.get(&e.id())?.points.clone();
         if !e.orientation() {
@@ -214,6 +236,7 @@ pub(crate) fn plan(solid: &Solid, tol: f64, turn: Option<size::Turn>, boundary_t
         stats.planar += s.planar;
         stats.structured += s.structured;
         stats.delaunay += s.delaunay;
+        stats.filled += s.filled;
     }
     plan.edges = edges.iter().filter_map(oriented).collect();
     plan.edge_faces = edge_faces.into_iter().map(|fs| fs.into_iter().map(|f| u32::try_from(f).unwrap_or(u32::MAX)).collect()).collect();
@@ -424,6 +447,15 @@ fn divide_collapsed_faces(faces: &[&mt::Face], jobs: &[(&mt::Edge, f64)], rules:
     }
 }
 
+/// How far a boundary node may lie off its surface and still be projected onto it (see the note
+/// in [`plan_face`]).
+fn off_surface(rules: &size::Rules) -> f64 {
+    match rules.boundary_tol {
+        Some(file) => file.max(1e-6),
+        None => (rules.tol * 10.0).max(rules.extent * OFF_SURFACE).max(1e-6),
+    }
+}
+
 /// One face: boundary loops in 3D (shared edge nodes) to parameters and triangles.
 /// `size`: the face's target side length (mm) and the surface's mean speed along u and v.
 fn plan_face(
@@ -449,11 +481,14 @@ fn plan_face(
     // scaled copy of a part keeps the accuracy of the original. A body this kernel built
     // declares nothing, and keeps the bound it has always had: ten chord tolerances, or a
     // thousandth of the body, whichever is larger.
-    let accept = match rules.boundary_tol {
-        Some(file) => file.max(1e-6),
-        None => (tol * 10.0).max(rules.extent * OFF_SURFACE).max(1e-6),
-    };
+    let accept = off_surface(rules);
     let fail = |why: &str| unsupported(format!("face {fi}: {why}"));
+    // A boundary that runs out and back along itself (a sliver face, as STEP files write one:
+    // two edges between the same two vertices, a rounding apart) has no area to draw, and the
+    // faces on either side already meet along these very nodes.
+    if folded(loops3, tol * 1e-6) {
+        return Ok(FacePlan { face: u32::try_from(fi).unwrap_or(u32::MAX), ..FacePlan::default() });
+    }
     // Project every loop, unwrapping periodic parameters along it.
     let mut projected: Vec<seam::Loop> = Vec::with_capacity(loops3.len());
     for (li, pts) in loops3.iter().enumerate() {
@@ -644,6 +679,47 @@ fn plan_face(
     let mut all = uvs;
     all.extend(extra);
     Ok(FacePlan { face: u32::try_from(fi).unwrap_or(u32::MAX), surface: None, uv: all, fixed, normals: Vec::new(), flip: false, triangles })
+}
+
+/// Whether every side of the loops is matched by a side running back over it, within `eps`
+/// at both ends: a boundary enclosing nothing.
+fn folded(loops: &[Vec<Vec3>], eps: f64) -> bool {
+    let mut sides: Vec<(Vec3, Vec3)> = Vec::new();
+    for l in loops {
+        let n = l.len();
+        sides.extend((0..n).filter_map(|k| Some((*l.get(k)?, *l.get((k + 1) % n)?))));
+    }
+    if sides.len() < 2 || !sides.len().is_multiple_of(2) {
+        return false;
+    }
+    // Sides in order of their first end's x; each looks for an unmatched twin whose first end is
+    // its second, within `eps` along x.
+    let mut order: Vec<usize> = (0..sides.len()).collect();
+    order.sort_by(|a, b| sides[*a].0.x.total_cmp(&sides[*b].0.x));
+    let firsts: Vec<f64> = order.iter().map(|i| sides[*i].0.x).collect();
+    let mut used = vec![false; sides.len()];
+    for i in 0..sides.len() {
+        if used[i] {
+            continue;
+        }
+        let (a, b) = sides[i];
+        let from = firsts.partition_point(|x| *x < b.x - eps);
+        let twin = order
+            .get(from..)
+            .unwrap_or(&[])
+            .iter()
+            .take_while(|j| sides[**j].0.x <= b.x + eps)
+            .copied()
+            .find(|&j| j != i && !used[j] && sides[j].0.dist(b) <= eps && sides[j].1.dist(a) <= eps);
+        match twin {
+            Some(j) => {
+                used[i] = true;
+                used[j] = true;
+            }
+            None => return false,
+        }
+    }
+    true
 }
 
 /// A face's (u, v) region and what meshing it needs.

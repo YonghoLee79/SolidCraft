@@ -94,7 +94,7 @@ fn a_box_is_a_regular_grid_on_every_face() {
 fn primitives_are_watertight_with_the_right_volume() {
     for tol in [0.05, 0.005] {
         let s = check("box", &ok(crate::box_solid(Vec3::ZERO, Vec3::new(10.0, 6.0, 4.0))), tol, 240.0);
-        assert_eq!(s, PlanStats { planar: 6, structured: 0, delaunay: 0 });
+        assert_eq!(s, PlanStats { planar: 6, structured: 0, delaunay: 0, filled: 0 });
         let s = check("cylinder", &ok(crate::cylinder(Vec3::new(1.0, 2.0, 3.0), Vec3::new(0.0, 1.0, 1.0), 2.5, 7.0)), tol, PI * 2.5 * 2.5 * 7.0);
         assert_eq!(s.delaunay, 0, "cylinder walls are structured");
         let s = check("torus", &ok(crate::torus(Vec3::ZERO, 6.0, 1.5)), tol, 2.0 * PI * PI * 6.0 * 1.5 * 1.5);
@@ -432,4 +432,19 @@ fn a_point_on_a_long_helical_spline_projects() {
         let Some((back, _, _)) = s.derivs(q[0], q[1]) else { panic!("evaluate") };
         assert!(back.dist(p) <= 1e-4, "{target:?} from {hint:?}: {q:?} is {} away", back.dist(p));
     }
+}
+
+/// A sliver face as STEP files write one: two edges between the same two vertices, a rounding
+/// apart, so its boundary runs out and back along itself and encloses nothing. It is planned
+/// empty; a boundary enclosing anything is not.
+#[test]
+fn a_boundary_running_back_along_itself_is_folded() {
+    let out: Vec<Vec3> = (0..5).map(|i| Vec3::new(f64::from(i), 0.5 * f64::from(i), 0.0)).collect();
+    let mut sliver = out.clone();
+    sliver.extend(out.iter().rev().skip(1).take(3).map(|p| *p + Vec3::new(0.0, 1e-14, 0.0)));
+    assert!(folded(&[sliver], 1e-9));
+    let mut lens = out.clone();
+    lens.extend(out.iter().rev().skip(1).take(3).map(|p| *p + Vec3::new(0.0, 1e-3, 0.0)));
+    assert!(!folded(&[lens], 1e-9));
+    assert!(!folded(&[vec![Vec3::ZERO, Vec3::X, Vec3::Y]], 1e-9));
 }
