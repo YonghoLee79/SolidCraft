@@ -220,6 +220,25 @@ fn opening_a_mesh_as_a_solid_holds_a_solid_body() {
 
 /// A bare tolerance means the design's unit, as it does for any command: an inch design stores
 /// the conversion's tolerance in inches.
+/// A mesh body in another component converts from the root: the conversion is authored in the
+/// body's own component, so the right-click menu and scripts need no activation first.
+#[test]
+fn a_mesh_in_another_component_converts_without_activating_it() {
+    let path = stepped_block_stl("component");
+    let mut s = Session::default();
+    let imported = run(&mut s, "file.insert_mesh", json!({"path": path}));
+    let name = imported["created_bodies"][0].as_str().unwrap_or_default().to_string();
+    let component = imported["component"].as_u64().unwrap_or(0);
+    assert_ne!(component, 0, "the import made a component: {imported}");
+    run(&mut s, "component.activate", json!({"component": 0}));
+    run(&mut s, "mesh.convert", json!({"body": name, "tolerance": "0.05 mm"}));
+    let state = s.model.state();
+    assert!(!state.body(&name).unwrap().body.is_mesh(), "converted although the root is active");
+    assert_eq!(s.doc.model_body_component(state.body(&name).unwrap()), component, "the conversion stayed in the body's component");
+    assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results.iter().filter_map(|r| r.error.clone()).collect::<Vec<_>>());
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn an_inch_design_stores_the_conversions_tolerance_in_its_units() {
     let path = stepped_block_stl("inch");
