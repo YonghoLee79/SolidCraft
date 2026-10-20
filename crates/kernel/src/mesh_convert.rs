@@ -350,6 +350,11 @@ fn planar_solid(mesh: &crate::meshbody::TriMesh, tolerance: f64, signed_volume: 
     });
     let size = bounds.size().len().max(1.);
     let epsilon = (size * 1e-7).min(tolerance * 0.01).max(1e-9);
+    // Fusing triangles into one face makes that face's boundary hold their vertices, so it is
+    // only planar to the depth they sit off the region's plane: keep that well inside the
+    // 1e-6 mm truck's `attach_plane` allows, or the face is refused (a slicer's f32 mesh has
+    // its flat faces rounded by about 1e-5 mm, so they stay one facet per triangle instead).
+    let planar = 1e-7_f64.min(epsilon);
     // Long work reports to whoever waits for it (the import card) and stops when they cancel.
     let watch = crate::watch::current();
     let cancelled = || watch.as_ref().is_some_and(|w| w.cancelled());
@@ -411,7 +416,7 @@ fn planar_solid(mesh: &crate::meshbody::TriMesh, tolerance: f64, signed_volume: 
                     }
                     let on_plane = triangles
                         .get(other)
-                        .is_some_and(|o| o.iter().all(|&k| positions.get(k as usize).is_some_and(|p| (normal.dot(*p) - offset).abs() <= epsilon)));
+                        .is_some_and(|o| o.iter().all(|&k| positions.get(k as usize).is_some_and(|p| (normal.dot(*p) - offset).abs() <= planar)));
                     if on_plane {
                         region[other] = id;
                         members.push(other);
@@ -486,7 +491,6 @@ fn face_loops(
             }
         }
     }
-    let epsilon = (positions.iter().fold(0.0f64, |m, p| m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())) * 1e-7).max(1e-9);
     let mut loops = Vec::new();
     while let Some((&start, _)) = next.iter().next() {
         let mut u = start;
@@ -502,65 +506,27 @@ fn face_loops(
         if u != start {
             return Err(invalid("the mesh's face boundary is open"));
         }
-        let simplified = simplify_loop(&points, epsilon);
-        if simplified.len() < 3 {
+        // Every boundary vertex stays: a merged face must share each mesh edge with the face on
+        // its other side exactly, or a vertex dropped along a straight edge (a T-junction) would
+        // leave the shell open.
+        // Only a point repeating the one before it is dropped (a zero-length edge is refused).
+        let mut kept: Vec<Vec3> = Vec::with_capacity(points.len());
+        for p in points {
+            if kept.last().is_none_or(|q| q.dist(p) > 0.0) {
+                kept.push(p);
+            }
+        }
+        while kept.len() > 1 && kept.first().is_some_and(|a| kept.last().is_some_and(|b| a.dist(*b) <= 0.0)) {
+            kept.pop();
+        }
+        if kept.len() < 3 {
             return Err(invalid("a face of the mesh is degenerate"));
         }
-        let loop_edges = simplified
-            .iter()
-            .copied()
-            .zip(simplified.iter().copied().cycle().skip(1))
-            .take(simplified.len())
-            .map(|(a, b)| EdgeSpec::Line { a, b })
-            .collect();
+        let loop_edges =
+            kept.iter().copied().zip(kept.iter().copied().cycle().skip(1)).take(kept.len()).map(|(a, b)| EdgeSpec::Line { a, b }).collect();
         loops.push(loop_edges);
     }
     Ok(loops)
-}
-
-/// A boundary polyline without the points that repeat or lie on the straight line between their
-/// neighbours (a triangle's own corners always stay).
-fn simplify_loop(points: &[Vec3], epsilon: f64) -> Vec<Vec3> {
-    let mut kept: Vec<Vec3> = Vec::with_capacity(points.len());
-    for &p in points {
-        if kept.last().is_none_or(|q| q.dist(p) > epsilon) {
-            kept.push(p);
-        }
-    }
-    while kept.len() > 1 && kept.first().is_some_and(|a| kept.last().is_some_and(|b| a.dist(*b) <= epsilon)) {
-        kept.pop();
-    }
-    loop {
-        if kept.len() <= 3 {
-            return kept;
-        }
-        let mut out = Vec::with_capacity(kept.len());
-        for (i, &p) in kept.iter().enumerate() {
-            let a = kept[(i + kept.len() - 1) % kept.len()];
-            let b = kept[(i + 1) % kept.len()];
-            if !on_segment(p, a, b, epsilon) {
-                out.push(p);
-            }
-        }
-        if out.len() == kept.len() || out.len() < 3 {
-            return out;
-        }
-        kept = out;
-    }
-}
-
-/// Whether `p` lies on the line from `a` to `b`, between them, within `epsilon`.
-fn on_segment(p: Vec3, a: Vec3, b: Vec3, epsilon: f64) -> bool {
-    let ab = b - a;
-    let len2 = ab.len2();
-    if len2 <= epsilon * epsilon {
-        return p.dist(a) <= epsilon;
-    }
-    let t = (p - a).dot(ab) / len2;
-    if !(0.0..=1.0).contains(&t) {
-        return false;
-    }
-    (a + ab * t).dist(p) <= epsilon
 }
 
 fn certify_nesting(raw: &[Loop2], fitted: &[Loop2], epsilon: f64, size: f64) -> Result<()> {
@@ -747,6 +713,45 @@ mod tests {
         // The hole is measured through the new cylindrical face, so allow its tessellation.
         let hole = std::f64::consts::PI * 9. * 10.;
         assert!((crate::measure(&cut).unwrap().volume - (expected - hole)).abs() < 0.5, "{:?}", crate::measure(&cut).unwrap().volume);
+    }
+
+    #[test]
+    fn a_flat_face_meeting_a_rounded_one_converts_without_t_junctions() {
+        let boxed = crate::box_solid(Vec3::ZERO, Vec3::new(40., 30., 20.)).unwrap();
+        // Round one vertical edge: the flat faces then meet facets along shared vertices, and a
+        // fused flat face must keep the ones along a straight edge (dropping them was a
+        // T-junction that left the shell open on a real 3MF).
+        let filleted = crate::fillet(&boxed, &[Vec3::new(40., 0., 10.)], 8.).unwrap();
+        let mesh = mesh_of(&filleted);
+        let mesh_volume = mesh.mesh.as_ref().unwrap().to_mesh().measure().volume;
+        let converted = convert_mesh(&mesh, 0.05).unwrap();
+        assert!(converted.validity().is_empty(), "{:?}", converted.validity());
+        // The converted solid is the mesh (its fillet faceted), so it measures the mesh's volume.
+        assert!((crate::measure(&converted).unwrap().volume - mesh_volume).abs() < mesh_volume * 1e-6);
+        assert!((mesh_volume - crate::measure(&filleted).unwrap().volume).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_mesh_rounded_like_f32_converts_without_asking_for_one_plane() {
+        // A slicer's STL or 3MF rounds coordinates to f32, so a flat face's points are no longer
+        // exactly on one plane: they stay one facet per triangle, rather than fusing into a face
+        // truck refuses ("cannot attach a plane to a wire that is not on one plane").
+        let mesh = mesh_of(&crate::box_solid(Vec3::ZERO, Vec3::new(60., 40., 20.)).unwrap());
+        let inner = mesh.mesh.as_ref().unwrap();
+        let positions: Vec<Vec3> = inner
+            .positions
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let d = 3e-6 * ((i % 5) as f64 - 2.0);
+                Vec3::new(p.x + d, p.y - d * 0.5, p.z + d * 0.25)
+            })
+            .collect();
+        let rounded = crate::mesh_body(&positions, &inner.triangles).unwrap();
+        let converted = convert_mesh(&rounded, 0.05).unwrap();
+        assert!(converted.validity().is_empty(), "{:?}", converted.validity());
+        let expected = rounded.mesh.as_ref().unwrap().to_mesh().measure().volume;
+        assert!((crate::measure(&converted).unwrap().volume - expected).abs() < expected * 1e-6);
     }
 
     #[test]
