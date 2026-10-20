@@ -3019,6 +3019,102 @@ fn closed_corners_reach_the_flat_pattern_and_the_dxf() {
 }
 
 #[test]
+fn corner_overlap_reaches_the_part_flat_pattern_dxf_and_saved_design() {
+    let edges = [[60, 0, 2], [120, 45, 2], [60, 90, 2], [0, 45, 2]];
+    let mut butt = Session::default();
+    alu_tray(&mut butt, 90.0, json!({}));
+    let butt_volume = volume(&mut butt);
+    let butt_bends = flat(&mut butt)["bends"].clone();
+    for (kind, amount) in [("partial", 1.0), ("full", 2.0)] {
+        let mut s = Session::default();
+        run(
+            &mut s,
+            "sheet.manage_rules",
+            json!({"name": "AL2", "thickness": "2 mm", "k_factor": 0.5, "bend_radius": "1 mm", "gap": "0.5 mm", "active": true}),
+        );
+        base(&mut s, 120.0, 90.0);
+        run(&mut s, "parameters.change", json!({"name": "lap", "expression": "1 mm"}));
+        let corners: Vec<Value> = [(0, 1), (0, 3), (2, 1), (2, 3)]
+            .into_iter()
+            .map(|(covering, covered)| {
+                let mut corner = json!({"covering": edges[covering], "covered": edges[covered], "corner_type": kind});
+                if kind == "partial" {
+                    corner["overlap"] = json!("lap");
+                }
+                corner
+            })
+            .collect();
+        run(&mut s, "sheet.flange", json!({"edges": edges, "height": 38.6, "corners": corners}));
+        assert!(s.model.results.iter().all(|result| result.error.is_none() && result.warning.is_none()), "{kind}: {:?}", s.model.results);
+        let expected_added_volume = 4.0 * 35.6 * 2.0 * (amount + (std::f64::consts::SQRT_2 - 1.0) * 0.5);
+        let folded_volume = volume(&mut s);
+        assert!(
+            (folded_volume - butt_volume - expected_added_volume).abs() < 0.1,
+            "{kind}: {} vs {expected_added_volume}",
+            folded_volume - butt_volume
+        );
+        let pattern = flat(&mut s);
+        assert_eq!(pattern["bends"], butt_bends, "panel overlap must not extend bend lines");
+        let outline = pattern["outline"][0].as_array().unwrap();
+        let expected_x = 2.0 - amount;
+        assert!(outline.iter().any(|point| (point[0].as_f64().unwrap() - expected_x).abs() < 1e-9 && point[1].as_f64().unwrap() < 0.0));
+        let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+        let entities = solidcraft_io::read_dxf(&dxf).unwrap();
+        assert!(
+            entities.iter().any(|entity| match entity {
+                solidcraft_io::Geom2::Line(first, second) =>
+                    (first.x - expected_x).abs() < 1e-9 && (second.x - expected_x).abs() < 1e-9 && first.y < 0.0 && second.y < 0.0,
+                _ => false,
+            }),
+            "{kind}: longer flange is missing from the DXF"
+        );
+        run(&mut s, "sheet.unfold", json!({}));
+        assert!((volume(&mut s) - folded_volume).abs() < folded_volume * 1e-3);
+        run(&mut s, "sheet.refold", json!({}));
+        assert!((volume(&mut s) - folded_volume).abs() < 1e-6);
+        let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+        assert!((volume(&mut reopened) - folded_volume).abs() < 1e-6);
+        assert_eq!(flat(&mut reopened), flat(&mut s));
+        if kind == "partial" {
+            run(&mut reopened, "parameters.change", json!({"name": "lap", "expression": "1.5 mm"}));
+            let changed_volume = volume(&mut reopened);
+            assert!((changed_volume - folded_volume - 4.0 * 35.6 * 2.0 * 0.5).abs() < 0.1);
+            run(&mut reopened, "edit.undo", json!({}));
+            assert!((volume(&mut reopened) - folded_volume).abs() < 1e-6);
+            run(&mut reopened, "edit.redo", json!({}));
+            assert!((volume(&mut reopened) - changed_volume).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn bad_corner_overlap_is_refused_without_changing_the_design() {
+    let mut s = Session::default();
+    run(&mut s, "sheet.manage_rules", json!({"name": "AL2", "thickness": "2 mm", "active": true}));
+    base(&mut s, 120.0, 90.0);
+    let before = s.doc.to_json();
+    for corner in [
+        json!({"corner_type": "partial"}),
+        json!({"corner_type": "partial", "overlap": "0 mm"}),
+        json!({"corner_type": "partial", "overlap": "-1 mm"}),
+        json!({"corner_type": "partial", "overlap": "2 mm"}),
+        json!({"corner_type": "partial", "overlap": "1 deg"}),
+        json!({"corner_type": "full", "overlap": "1 mm"}),
+        json!({"corner_type": "unknown"}),
+        json!({"corner_type": "full", "covered": [60, 90, 2]}),
+        json!({"corner_type": "full", "covered": [60, 0, 2]}),
+        json!({"corner_type": "full", "covered": [999, 999, 2]}),
+    ] {
+        let mut entry = json!({"covering": [60, 0, 2], "covered": [0, 45, 2]});
+        entry.as_object_mut().unwrap().extend(corner.as_object().unwrap().clone());
+        let result =
+            s.execute("sheet.flange", &json!({"edges": [[60, 0, 2], [120, 45, 2], [60, 90, 2], [0, 45, 2]], "height": 30, "corners": [entry]}));
+        assert!(result.is_err(), "{entry}: {result:?}");
+        assert_eq!(s.doc.to_json(), before, "{entry}");
+    }
+}
+
+#[test]
 fn corner_reliefs_of_the_rule_reach_the_part_the_flat_pattern_and_the_dxf() {
     use solidcraft_geom::Vec2;
     // The tray at 72°: its bends meet at the corners of the base, s0 = 3·tan 36° in from the sheet's

@@ -468,6 +468,13 @@ pub struct EdgeFlange {
     pub angle: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CornerJoin {
+    pub covering: usize,
+    pub covered: usize,
+    pub overlap: f64,
+}
+
 /// A sheet metal body (see the module docs).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SheetBody {
@@ -2223,6 +2230,32 @@ impl SheetBody {
         self.add_flanges(&[pick], height, angle, radius, position, flip)?.into_iter().next().ok_or_else(|| DocError::Invalid("flange".into()))
     }
 
+    pub fn flange_corner_pairs(&self, picks: &[Vec3]) -> Vec<(usize, usize)> {
+        if picks.len() > 1000 {
+            return Vec::new();
+        }
+        let edges: Vec<_> = picks
+            .iter()
+            .map(|pick| {
+                self.edge_at(*pick)
+                    .and_then(|(parent, first, second, _, distance)| (parent.is_none() && distance <= self.t * 2.0 + 1e-3).then_some((first, second)))
+            })
+            .collect();
+        let mut pairs = Vec::new();
+        for (first_index, first) in edges.iter().enumerate() {
+            let Some((first_start, first_end)) = first else { continue };
+            for (second_index, second) in edges.iter().enumerate().skip(first_index + 1) {
+                let Some((second_start, second_end)) = second else { continue };
+                let shared = [first_start, first_end].iter().any(|point| point.dist(*second_start) < 1e-6 || point.dist(*second_end) < 1e-6);
+                let non_parallel = (*first_end - *first_start).cross(*second_end - *second_start).abs() > 1e-6;
+                if shared && non_parallel {
+                    pairs.push((first_index, second_index));
+                }
+            }
+        }
+        pairs
+    }
+
     /// Edge flanges on several edges at once: every edge is trimmed back first, so flanges on
     /// adjacent edges stop at each other's bends; the corners between them are then closed with
     /// the rule's gap and given the rule's relief (`close_corners`).
@@ -2265,8 +2298,23 @@ impl SheetBody {
         flip: bool,
         relief: ReliefOverride,
     ) -> Result<(Vec<usize>, Vec<String>)> {
+        self.add_flanges_joined(edges, radius, position, flip, relief, &[])
+    }
+
+    pub fn add_flanges_joined(
+        &mut self,
+        edges: &[EdgeFlange],
+        radius: f64,
+        position: &str,
+        flip: bool,
+        relief: ReliefOverride,
+        joins: &[CornerJoin],
+    ) -> Result<(Vec<usize>, Vec<String>)> {
         if edges.is_empty() || edges.len() > 1000 {
             return Err(DocError::Invalid("pick 1…1000 edges".into()));
+        }
+        if joins.len() > 1000 {
+            return Err(DocError::Invalid("at most 1000 corner joins are supported".into()));
         }
         // With several edges a message says which one it is about.
         let on = |k: usize| if edges.len() > 1 { format!("edge {}: ", k + 1) } else { String::new() };
@@ -2399,7 +2447,7 @@ impl SheetBody {
         for (&i, &free) in made.iter().zip(&freed) {
             notes.extend(self.relieve_bend_ends(i, free));
         }
-        notes.extend(self.close_corners(&made, relief));
+        notes.extend(self.close_corners_joined(&made, relief, joins)?);
         notes.extend(self.close_return_corners(&made));
         notes.extend(self.close_side_corners(&made, relief));
         Ok((made, notes))
@@ -2914,18 +2962,42 @@ impl SheetBody {
     /// Close the corners the new flanges make, then cut the relief at each (or tear it): the
     /// rule's, but for the shape or size `relief` names. Returns a note for every corner left
     /// open, without its relief or not torn.
-    fn close_corners(&mut self, made: &[usize], relief: ReliefOverride) -> Vec<String> {
+    fn close_corners_joined(&mut self, made: &[usize], relief: ReliefOverride, joins: &[CornerJoin]) -> Result<Vec<String>> {
         let corners = self.corners(made);
+        let mut resolved = Vec::with_capacity(joins.len());
+        for join in joins {
+            let covering = made.get(join.covering).copied().ok_or_else(|| DocError::Invalid("unknown covering flange".into()))?;
+            let covered = made.get(join.covered).copied().ok_or_else(|| DocError::Invalid("unknown covered flange".into()))?;
+            let index = corners
+                .iter()
+                .position(|corner| (corner.a == covering && corner.b == covered) || (corner.b == covering && corner.a == covered))
+                .ok_or_else(|| {
+                    DocError::Invalid("not supported yet: overlap requires neighbouring flanges on the base made in the same feature".into())
+                })?;
+            if resolved.iter().any(|&(previous, _, _)| previous == index) {
+                return Err(DocError::Invalid("a corner can only have one join".into()));
+            }
+            if relief.shape.unwrap_or(self.relief) == ReliefShape::Tear {
+                return Err(DocError::Invalid("not supported yet: overlapping corners with tear relief".into()));
+            }
+            resolved.push((index, covering, join.overlap));
+        }
         let mut notes = Vec::new();
         let mut closed = Vec::with_capacity(corners.len());
-        for k in &corners {
-            match self.close_corner(k) {
+        for (index, k) in corners.iter().enumerate() {
+            let overlap = resolved.iter().find(|&&(corner, _, _)| corner == index).map(|&(_, covering, amount)| (covering, amount));
+            let result = match overlap {
+                Some(overlap) => self.close_corner_overlap(k, Some(overlap)),
+                None => self.close_corner(k),
+            };
+            match result {
                 Ok(()) => closed.push(*k),
+                Err(why) if overlap.is_some() => return Err(DocError::Invalid(format!("corner overlap at {}: {why}", self.shown(k.c)))),
                 Err(why) => notes.push(format!("the flanges at {} are left open: {why}", self.shown(k.c))),
             }
         }
         notes.extend(self.relieve_corners(&corners, &closed, relief));
-        notes
+        Ok(notes)
     }
 
     /// A point of the flat frame, in the part's coordinates, for a note.
@@ -3012,6 +3084,15 @@ impl SheetBody {
     /// the edges nearest each other (on the inner faces) are `gap` apart along their length. Any
     /// angles, also unequal ones, at any convex corner of the base.
     fn close_corner(&mut self, k: &Corner) -> std::result::Result<(), String> {
+        self.close_corner_overlap(k, None)
+    }
+
+    fn close_corner_overlap(&mut self, k: &Corner, overlap: Option<(usize, f64)>) -> std::result::Result<(), String> {
+        if let Some((covering, amount)) = overlap
+            && (covering != k.a && covering != k.b || !amount.is_finite() || amount <= 0.0 || amount > self.t)
+        {
+            return Err("corner overlap must name a neighbouring flange and be greater than zero and at most the sheet thickness".into());
+        }
         let (Some(fa), Some(fb)) = (self.flanges.get(k.a).cloned(), self.flanges.get(k.b).cloned()) else {
             return Err("a flange is missing".into());
         };
@@ -3019,9 +3100,15 @@ impl SheetBody {
         let eb = if k.b_end { fb.d * -1.0 } else { fb.d };
         // At an inside corner of the base the flanges turn away from each other.
         if ea.dot(fb.n) > -1e-9 || eb.dot(fa.n) > -1e-9 {
+            if overlap.is_some() {
+                return Err("not supported yet: overlap at a concave corner".into());
+            }
             return Ok(());
         }
         if fa.leg <= 1e-9 || fb.leg <= 1e-9 {
+            if overlap.is_some() {
+                return Err("corner overlap needs a panel beyond both bends".into());
+            }
             // No panel past a bend: the bends meet at the corner, there is nothing to close.
             return Ok(());
         }
@@ -3033,6 +3120,11 @@ impl SheetBody {
             return Err(format!("the flange gap {gap:.4} mm is below {MIN_CORNER_GAP} mm"));
         }
         let (wa, wb) = (self.fold(k.a), self.fold(k.b));
+        let (z_in, normal_sign) = if fa.angle >= 0.0 { (self.t, 1.0) } else { (0.0, -1.0) };
+        let na = apply_vector(&wa, Vec3::Z) * normal_sign;
+        let nb = apply_vector(&wb, Vec3::Z) * normal_sign;
+        let pa = apply_point(&wa, v3(k.c) + Vec3::Z * z_in);
+        let pb = apply_point(&wb, v3(k.c) + Vec3::Z * z_in);
         // Signed distance from the plane bisecting the inner faces, positive on flange a's side.
         let Some(bisector) = self.halving_plane(k) else { return Err("the flanges are parallel".into()) };
         // A flange's end: its panel keeps u ≥ u_end(s) (u from the corner along its bend, s from
@@ -3041,16 +3133,21 @@ impl SheetBody {
         // flat: returns u_end at the panel's bend edge and how much further the panel runs on per
         // unit of height.
         let end = |f: &SheetFlange, w: &Mat, e: Vec2, sign: f64| -> std::result::Result<(f64, f64), String> {
-            let at = |u: f64, s: f64, z: f64| sign * bisector(apply_point(w, v3(k.c + e * u + f.n * s) + Vec3::Z * z));
+            let at = |u: f64, s: f64, z: f64| {
+                let point = apply_point(w, v3(k.c + e * u + f.n * s) + Vec3::Z * z);
+                if overlap.is_some() { if sign > 0.0 { nb.dot(point - pb) } else { na.dot(point - pa) } } else { sign * bisector(point) }
+            };
             let c0 = at(0.0, 0.0, 0.0);
             let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
             if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|x| x.is_finite()) {
                 return Err("the flanges don't meet across the corner".into());
             }
             let ba = self.allowance(f);
+            let clearance =
+                overlap.map_or(gap / 2.0, |(covering, amount)| if covering == if sign > 0.0 { k.a } else { k.b } { -amount } else { gap });
             // At 90° the end is square to the bend: keep the panel an exact rectangle.
             let slope = if (cs / cu).abs() < 1e-12 { 0.0 } else { cs / cu };
-            Ok(((gap / 2.0 - c0 - (cz * self.t).min(0.0) - cs * ba) / cu, slope))
+            Ok(((clearance - c0 - (cz * self.t).min(0.0) - cs * ba) / cu, slope))
         };
         let mut new = [fa.clone(), fb.clone()];
         for (f, (e, at_end, sign)) in new.iter_mut().zip([(ea, k.a_end, 1.0), (eb, k.b_end, -1.0)]) {
@@ -5273,6 +5370,46 @@ mod tests {
             assert!(b.validity().is_empty() && b.shell_count() == 1, "{deg}°: {:?}", b.validity());
             let v = vol(&b);
             assert!((v - flat_area(&s) * t).abs() < 1e-3 * v, "{deg}°: {v} vs {}", flat_area(&s) * t);
+        }
+    }
+
+    #[test]
+    fn overlapping_corners_keep_surface_clearance_and_flat_material() {
+        let base =
+            base_flange("Body1", "AL2", &alu(), Plane::XY, rect(Vec2::ZERO, Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0)));
+        let picks = [Vec3::new(60.0, 0.0, 2.0), Vec3::new(120.0, 45.0, 2.0), Vec3::new(60.0, 90.0, 2.0), Vec3::new(0.0, 45.0, 2.0)];
+        assert_eq!(base.flange_corner_pairs(&picks), vec![(0, 1), (0, 3), (1, 2), (2, 3)]);
+        for degrees in [90.0_f64, 72.0, -90.0, -72.0] {
+            for fraction in [0.5, 1.0] {
+                for covering in [0, 3] {
+                    let mut sheet = base.clone();
+                    let (_, notes) = sheet.add_flanges_noted(&picks, 38.6, degrees.abs().to_radians(), 1.0, "inside", degrees < 0.0).unwrap();
+                    assert!(notes.is_empty(), "{notes:?}");
+                    let corner = sheet.corners(&[0, 1, 2, 3]).into_iter().find(|corner| corner.a == 0 && corner.b == 3).unwrap();
+                    let previous = sheet.clone();
+                    sheet.close_corner_overlap(&corner, Some((covering, sheet.t * fraction))).unwrap();
+                    for (index, at_end, other) in [(corner.a, corner.a_end, corner.b), (corner.b, corner.b_end, corner.a)] {
+                        let flange = &sheet.flanges[index];
+                        let neighbour = sheet.fold(other);
+                        let normal = apply_vector(&neighbour, Vec3::Z) * degrees.signum();
+                        let origin = apply_point(&neighbour, v3(corner.c) + Vec3::Z * if degrees > 0.0 { sheet.t } else { 0.0 });
+                        let panel = corners_of(&sheet.panel(flange));
+                        let end = if at_end { [panel[1], panel[2]] } else { [panel[0], panel[3]] };
+                        let least = end
+                            .into_iter()
+                            .flat_map(|point| [0.0, sheet.t].map(|z| normal.dot(apply_point(&sheet.fold(index), v3(point) + Vec3::Z * z) - origin)))
+                            .fold(f64::INFINITY, f64::min);
+                        let expected = if index == covering { -sheet.t * fraction } else { sheet.gap };
+                        assert!((least - expected).abs() < 1e-9, "{degrees}, {fraction}, {covering}: {least} vs {expected}");
+                    }
+                    let regions = sheet.flat_regions().unwrap();
+                    assert_eq!(regions.len(), 1);
+                    let solid = sheet.solid().unwrap();
+                    assert!(solid.validity().is_empty(), "{:?}", solid.validity());
+                    assert!((vol(&solid) - flat_area(&sheet) * sheet.t).abs() < vol(&solid) * 1e-3);
+                    assert_ne!(flat_area(&sheet), flat_area(&previous));
+                }
+            }
         }
     }
 

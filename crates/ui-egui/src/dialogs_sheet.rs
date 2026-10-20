@@ -38,6 +38,17 @@ const RELIEF_SHAPE_LABELS: [&str; 4] = ["Notch", "Round", "Rectangular", "Tear"]
 /// The corner relief shapes an edge flange offers: the rule's (index 0, nothing of its own), then
 /// the shapes of `RELIEF_SHAPES` in order.
 const FLANGE_RELIEF_LABELS: [&str; 5] = ["Rule", "Notch", "Round", "Rectangular", "Tear"];
+const CORNER_TYPES: [&str; 3] = ["butt", "partial", "full"];
+const CORNER_LABELS: [&str; 3] = ["Butt", "Partial Overlap", "Full Overlap"];
+
+#[derive(Clone, Debug)]
+pub struct FlangeCornerChoice {
+    pub first: Vec3,
+    pub second: Vec3,
+    pub kind: usize,
+    pub cover_second: bool,
+    pub overlap: String,
+}
 
 #[derive(Clone, Debug)]
 pub enum Sm {
@@ -59,6 +70,7 @@ pub enum Sm {
         /// 0 is the rule's) and its size (empty: the rule's).
         relief: usize,
         relief_size: String,
+        corners: Vec<FlangeCornerChoice>,
     },
     Hem {
         length: String,
@@ -143,6 +155,7 @@ fn new_flange(ty: usize) -> Sm {
         own: Vec::new(),
         relief: 0,
         relief_size: String::new(),
+        corners: Vec::new(),
     }
 }
 
@@ -208,7 +221,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
     let t = Tokens::get();
     let mut enter = false;
     match k {
-        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size } => {
+        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, corners } => {
             *ty = flange_type(inputs);
             row_label(ui, "Type");
             ui.label(FLANGE_TYPES.get(*ty).copied().unwrap_or(""));
@@ -241,6 +254,28 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     // With several edges, a row for each: an angle and a height of its own, left
                     // empty for the values above (shown as the hints).
                     let points = edge_point_list(inputs);
+                    update_corner_choices(app, &points, corners);
+                    for corner in corners.iter_mut() {
+                        let Some(first) = points.iter().position(|point| point.dist(corner.first) < 1e-6) else { continue };
+                        let Some(second) = points.iter().position(|point| point.dist(corner.second) < 1e-6) else { continue };
+                        let label = format!("{} / {}", first + 1, second + 1);
+                        row_label(ui, &format!("Corner {label}"));
+                        combo(ui, &format!("sm_corner_type_{first}_{second}"), &CORNER_LABELS, &mut corner.kind);
+                        ui.end_row();
+                        if corner.kind > 0 {
+                            let names = [format!("Edge {}", first + 1), format!("Edge {}", second + 1)];
+                            let mut covering = usize::from(corner.cover_second);
+                            row_label(ui, &format!("Covering {label}"));
+                            combo(ui, &format!("sm_corner_cover_{first}_{second}"), &[names[0].as_str(), names[1].as_str()], &mut covering);
+                            corner.cover_second = covering == 1;
+                            ui.end_row();
+                        }
+                        if corner.kind == 1 {
+                            row_label(ui, &format!("Overlap {label}"));
+                            ui.push_id(("sm_corner_overlap", first, second), |ui| enter |= field(ui, &mut corner.overlap));
+                            ui.end_row();
+                        }
+                    }
                     if points.len() > 1 || own.iter().any(|o| !(o.1.trim().is_empty() && o.2.trim().is_empty())) {
                         row_label(ui, "Per Edge");
                         ui.label(RichText::new(crate::i18n::tr_label("angle, height")).weak())
@@ -499,6 +534,23 @@ fn edge_point_list(inputs: &[SelInput]) -> Vec<Vec3> {
     items(inputs, 0).iter().filter_map(|x| if let Sel::Edge { point, .. } = x { Some(*point) } else { None }).collect()
 }
 
+fn update_corner_choices(app: &SolveApp, points: &[Vec3], choices: &mut Vec<FlangeCornerChoice>) {
+    choices.retain(|choice| [choice.first, choice.second].iter().all(|edge| points.iter().any(|point| point.dist(*edge) < 1e-6)));
+    let state = app.session.world_state();
+    for sheet in &state.sheets {
+        for (first, second) in sheet.flange_corner_pairs(points) {
+            let (Some(first), Some(second)) = (points.get(first), points.get(second)) else { continue };
+            if choices.iter().any(|choice| {
+                (choice.first.dist(*first) < 1e-6 && choice.second.dist(*second) < 1e-6)
+                    || (choice.first.dist(*second) < 1e-6 && choice.second.dist(*first) < 1e-6)
+            }) {
+                continue;
+            }
+            choices.push(FlangeCornerChoice { first: *first, second: *second, kind: 0, cover_second: false, overlap: "1 mm".into() });
+        }
+    }
+}
+
 /// Where the own angle and height of the edge picked at `p` are kept (an empty entry on first use).
 fn own_slot(own: &mut Vec<(Vec3, String, String)>, p: Vec3) -> usize {
     own.iter().position(|o| o.0.dist(p) < 1e-9).unwrap_or_else(|| {
@@ -532,11 +584,21 @@ fn flange_edges(inputs: &[SelInput], own: &[(Vec3, String, String)]) -> Vec<Valu
 pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String, Value>) -> Result<Vec<(String, Value)>, String> {
     let s = &app.session;
     let (cmd, mut p): (&str, Value) = match k {
-        Sm::Flange { height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, .. } => {
+        Sm::Flange { height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, corners, .. } => {
             let mut p = match flange_type(inputs) {
                 1 => {
                     let mut p = json!({"type": "edge", "edges": flange_edges(inputs, own), "height": height, "angle": angle,
                         "position": POSITIONS.get(*position).copied().unwrap_or("inside")});
+                    let points = edge_point_list(inputs);
+                    p["corners"] = json!(corners.iter().filter(|corner| corner.kind > 0 && [corner.first, corner.second].iter().all(|edge| points.iter().any(|point| point.dist(*edge) < 1e-6)))
+                        .map(|corner| {
+                            let (covering, covered) = if corner.cover_second { (corner.second, corner.first) } else { (corner.first, corner.second) };
+                            let mut entry = json!({"covering": pt(covering), "covered": pt(covered), "corner_type": CORNER_TYPES.get(corner.kind).copied().unwrap_or("butt")});
+                            if corner.kind == 1 {
+                                entry["overlap"] = json!(corner.overlap);
+                            }
+                            entry
+                        }).collect::<Vec<_>>());
                     if !radius.trim().is_empty() {
                         p["radius"] = json!(radius);
                     }
@@ -691,7 +753,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             }
             (f, curves.iter().map(|id| Sel::SketchCurve { id: id.clone() }).collect())
         }
-        FeatureKind::SheetFlange { edges, height, angle, radius, position, flip, body, corner_relief_shape, corner_relief } => {
+        FeatureKind::SheetFlange { edges, height, angle, radius, position, flip, body, corner_relief_shape, corner_relief, corners } => {
             if let Some(b) = body {
                 extra.insert("body".into(), json!(b));
             }
@@ -725,6 +787,16 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
                     .and_then(|name| RELIEF_SHAPES.iter().position(|s| s.eq_ignore_ascii_case(name.trim())))
                     .map_or(0, |i| i + 1),
                 relief_size: corner_relief.as_deref().map(str::to_string).unwrap_or_default(),
+                corners: corners
+                    .iter()
+                    .map(|corner| FlangeCornerChoice {
+                        first: corner.covering.0,
+                        second: corner.covered.0,
+                        kind: CORNER_TYPES.iter().position(|kind| *kind == corner.corner_type).unwrap_or(0),
+                        cover_second: false,
+                        overlap: corner.overlap.as_deref().map(str::to_string).unwrap_or_else(|| "1 mm".into()),
+                    })
+                    .collect(),
             };
             (f, picked)
         }

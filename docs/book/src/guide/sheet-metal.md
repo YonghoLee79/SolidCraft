@@ -92,6 +92,38 @@ opposite ways, ends that would overlap in the flat pattern) stays open, and the 
 reports a warning saying where. A flange added by a later feature leaves the corner as it was:
 the earlier flange keeps its length and the new one ends at its bend.
 
+For neighbouring base edges selected in the same feature, the Flange dialog also offers a
+join for each **Corner**. **Butt** keeps the existing mitred join. **Partial Overlap** extends
+the **Covering** flange across part of the other wall's thickness; **Overlap** is a length
+expression greater than zero and less than the sheet thickness. **Full Overlap** covers the
+whole thickness and follows changes to the rule's thickness. Choose either edge as Covering.
+For these overlapping joins the rule's **Flange Gap** is the clearance between the covered
+wall's end and the covering wall's face, not a distance along the corner's bisector.
+
+The same choices are available as `corners` in `sheet.flange`. Each entry identifies two of
+the selected edges by their picked points, names the `covering` and `covered` edge, and sets
+`corner_type` to `butt`, `partial` or `full`. Only `partial` takes `overlap`. Omitted corners
+stay Butt, so existing designs keep their joins. The example makes the front and rear walls
+cover both side walls of a 120 x 90 mm base under the 2 mm rule above:
+
+```json
+{"command":"sheet.flange","params":{"edges":[[60,0,2],[120,45,2],[60,90,2],[0,45,2]],
+ "height":38.6,"corner_relief_shape":"notch","corners":[
+  {"covering":[60,0,2],"covered":[120,45,2],"corner_type":"full"},
+  {"covering":[60,0,2],"covered":[0,45,2],"corner_type":"full"},
+  {"covering":[60,90,2],"covered":[120,45,2],"corner_type":"full"},
+  {"covering":[60,90,2],"covered":[0,45,2],"corner_type":"partial","overlap":"1 mm"}
+ ]}}
+```
+
+Corner choices are saved with the feature and restored by Edit Feature. Choosing Butt there
+removes an overlap. The folded solid, mass and flat pattern use the same panel ends, including
+DXF output; an overlap changes panel lengths without extending bend lines. Currently overlap
+requires two convex, neighbouring base flanges with panels beyond their bends, made in the
+same feature and bending the same way. Returns, side-edge flanges, concave corners and tear
+relief are not supported for overlap. An unsupported overlap, or one that would intersect in
+the flat pattern, is refused rather than silently replaced with Butt.
+
 The flanges of one edge flange feature can each have an angle and a height of their own. An
 entry of `edges` is a point `[x, y, z]`, which takes the feature's `height` and `angle`, or an
 object `{"point": [x, y, z], "angle": "105 deg", "height": "30 mm"}` whose `angle` and `height`

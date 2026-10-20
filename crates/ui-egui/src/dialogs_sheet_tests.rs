@@ -497,6 +497,77 @@ fn flange_dialog_picks_a_corner_relief_of_its_own() {
 }
 
 #[test]
+fn flange_dialog_picks_corner_overlap_and_clears_it_on_edit() {
+    let mut h = crate::scenario::Harness::new();
+    h.app
+        .run(
+            "sheet.manage_rules",
+            json!({"name": "AL2", "thickness": "2 mm", "k_factor": 0.5, "bend_radius": "1 mm", "gap": "0.5 mm", "active": true}),
+        )
+        .unwrap();
+    h.app.run("sketch.create", json!({"plane": "XY", "name": "Base"})).unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [120, 90]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    h.app.session.selection =
+        [Vec3::new(60.0, 0.0, 2.0), Vec3::new(0.0, 45.0, 2.0)].into_iter().filter_map(|point| edge_sel(&h.app.session, point)).collect();
+    h.app.start("sheet.flange");
+    h.frames(3);
+    let shown = |app: &SolveApp| match app.dialog.as_ref().map(|dialog| &dialog.kind) {
+        Some(Kind::Sheet(Sm::Flange { corners, .. })) => corners.clone(),
+        _ => Vec::new(),
+    };
+    assert_eq!(shown(&h.app).len(), 1);
+    assert_eq!(shown(&h.app)[0].kind, 0);
+    h.step(&json!({"click": {"handle": "dialog:Corner 1 / 2"}})).unwrap();
+    h.step(&json!({"click": {"handle": "dialog:Corner 1 / 2:Partial Overlap"}})).unwrap();
+    h.frames(3);
+    h.step(&json!({"click": {"handle": "dialog:Covering 1 / 2"}})).unwrap();
+    h.step(&json!({"click": {"handle": "dialog:Covering 1 / 2:Edge 2"}})).unwrap();
+    h.frames(3);
+    let choices = shown(&h.app);
+    assert_eq!(choices[0].kind, 1);
+    assert!(choices[0].cover_second);
+    assert_eq!(choices[0].overlap, "1 mm");
+    assert!(h.app.preview.error.is_none(), "{:?}", h.app.preview.error);
+    let commands = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    let saved = &commands[0].1["corners"][0];
+    assert_eq!(saved["corner_type"], "partial");
+    assert_eq!(saved["overlap"], "1 mm");
+    assert_eq!(saved["covering"], pt(choices[0].second));
+    h.step(&json!({"widget": "OK"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+    let id = h.app.session.doc.features.last().unwrap().id;
+    let mut edited = edit_dialog(&h.app, id, None).unwrap();
+    assert!(
+        matches!(&edited.kind, Kind::Sheet(Sm::Flange { corners, .. }) if corners.len() == 1 && corners[0].kind == 1 && corners[0].first.dist(choices[0].second) < 1e-6)
+    );
+    if let Kind::Sheet(Sm::Flange { corners, .. }) = &mut edited.kind {
+        corners[0].kind = 2;
+    }
+    let commands = apply_commands(&h.app, &edited).unwrap();
+    assert_eq!(commands[0].1["params"]["corners"][0]["corner_type"], "full");
+    assert!(commands[0].1["params"]["corners"][0].get("overlap").is_none());
+    run_all(&mut h.app, commands);
+    assert!(h.app.session.model.results.iter().all(|result| result.error.is_none()));
+    if std::env::var_os("SOLIDCRAFT_SCENARIO_SHOTS").is_some() {
+        h.step(&json!({"shot": "corner-overlap-folded"})).unwrap();
+        h.app.run("sheet.unfold", json!({})).unwrap();
+        h.step(&json!({"shot": "corner-overlap-flat"})).unwrap();
+        h.app.run("sheet.refold", json!({})).unwrap();
+    }
+    if let Kind::Sheet(Sm::Flange { corners, .. }) = &mut edited.kind {
+        corners[0].kind = 0;
+    }
+    let commands = apply_commands(&h.app, &edited).unwrap();
+    assert_eq!(commands[0].1["params"]["corners"], json!([]));
+    run_all(&mut h.app, commands);
+    assert!(
+        matches!(&h.app.session.doc.features.iter().find(|feature| feature.id == id).unwrap().kind, FeatureKind::SheetFlange { corners, .. } if corners.is_empty())
+    );
+}
+
+#[test]
 fn pocket_depth_labels_follow_inches_without_changing_flat_data() {
     let mut app = plate();
     app.run("document.units", json!({"units":"in"})).unwrap();

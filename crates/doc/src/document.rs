@@ -450,6 +450,17 @@ impl EmbossFace {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, solidcraft_derive::Walk)]
+#[serde(deny_unknown_fields)]
+pub struct FlangeCorner {
+    pub covering: Position,
+    pub covered: Position,
+    pub corner_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[walk(length = "Corner overlap")]
+    pub overlap: Option<Expr>,
+}
+
 /// One edge of an edge flange feature: a point on the sheet's edge and, where given, this
 /// edge's own angle and height (expressions) in place of the feature's. In a design file an
 /// edge with neither is the point `[x, y, z]`, as every edge was before; one with its own
@@ -1039,6 +1050,8 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[walk(length = "Corner relief")]
         corner_relief: Option<Expr>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        corners: Vec<FlangeCorner>,
     },
     /// Flat hems on sheet edges.
     SheetHem {

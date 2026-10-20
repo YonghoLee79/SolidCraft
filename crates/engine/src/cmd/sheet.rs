@@ -6,7 +6,7 @@ use solidcraft_doc::expr::Kind;
 use solidcraft_doc::sheet::{self, SheetBody, SheetRule};
 use solidcraft_doc::{BodyName, SketchId};
 use solidcraft_doc::{FacePick, Position};
-use solidcraft_doc::{FeatureKind, FlangeEdge};
+use solidcraft_doc::{FeatureKind, FlangeCorner, FlangeEdge};
 use solidcraft_geom::{Aabb2, Ring, Vec2, Vec3};
 
 use super::CommandSpec;
@@ -21,6 +21,8 @@ pub static COMMANDS: &[CommandSpec] = &[
          height (to the outer face), angle? (default 90 deg), radius? (default: rule), \
          position?: inside|outside|middle, flip?, body?, corner_relief_shape?: notch|round|rectangular|tear and corner_relief? (size across): \
          the relief at the corners these flanges make (default: the rule's); \
+         corners?: [{covering: [x,y,z], covered: [x,y,z], corner_type: butt|partial|full, overlap?: length expression (partial only)}], \
+         points name two selected edges meeting on the base; overlap runs across the covered wall's thickness, with the rule's surface gap; \
          type?: base|edge|contour (default from the inputs); name?, body_name? (the new body). \
          Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused, \
          and so is the corner relief on a base or contour flange",
@@ -151,6 +153,9 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
         None => "base".into(),
     };
     let refused = |k: &&&str| !(ty == "edge" && EDGE_RELIEF.contains(*k));
+    if ty != "edge" && p.get("corners").is_some() {
+        return Err(bad(cmd, "`corners` is only supported on edge flanges"));
+    }
     if let Some(key) = RULE_ONLY.iter().filter(refused).find(|k| p.get(**k).is_some() || nested.is_some_and(|b| b.get(**k).is_some())) {
         return Err(bad(
             cmd,
@@ -221,6 +226,35 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(c) = &corner_relief {
                 check_expr(s, c, Kind::Length, cmd, "corner_relief")?;
             }
+            let mut corners = Vec::new();
+            if let Some(value) = p.get("corners").filter(|value| !value.is_null()) {
+                let entries = value
+                    .as_array()
+                    .filter(|entries| entries.len() <= 1000)
+                    .ok_or_else(|| bad(cmd, "`corners` must be an array with at most 1000 entries"))?;
+                for entry in entries {
+                    let object = entry.as_object().ok_or_else(|| bad(cmd, "each corner must be an object"))?;
+                    if object.keys().any(|key| !["covering", "covered", "corner_type", "overlap"].contains(&key.as_str())) {
+                        return Err(bad(cmd, "unknown corner parameter"));
+                    }
+                    let covering = entry.get("covering").and_then(vec3).ok_or_else(|| bad(cmd, "a corner needs a covering edge point"))?;
+                    let covered = entry.get("covered").and_then(vec3).ok_or_else(|| bad(cmd, "a corner needs a covered edge point"))?;
+                    let corner_type = str_(entry, "corner_type")
+                        .filter(|kind| ["butt", "partial", "full"].contains(kind))
+                        .ok_or_else(|| bad(cmd, "corner type must be butt, partial or full"))?;
+                    let overlap = expr(entry, "overlap");
+                    if corner_type == "partial" && overlap.is_none() {
+                        return Err(bad(cmd, "partial overlap needs an overlap length"));
+                    }
+                    if corner_type != "partial" && entry.get("overlap").is_some_and(|value| !value.is_null()) {
+                        return Err(bad(cmd, "only partial overlap takes an overlap length"));
+                    }
+                    if let Some(amount) = &overlap {
+                        check_expr(s, amount, Kind::Length, cmd, "overlap")?;
+                    }
+                    corners.push(FlangeCorner { covering: Position(covering), covered: Position(covered), corner_type: corner_type.into(), overlap });
+                }
+            }
             add_feature(
                 s,
                 p,
@@ -234,6 +268,7 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
                     body: body.map(BodyName),
                     corner_relief_shape,
                     corner_relief,
+                    corners,
                 },
             )
         }
