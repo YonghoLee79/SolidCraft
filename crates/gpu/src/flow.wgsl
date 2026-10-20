@@ -1,6 +1,7 @@
 // The Airflow solver's lattice Boltzmann step on the GPU: the f32 twin of
 // solidcraft_sim::Lattice (D3Q19, BGK with the Smagorinsky model, Guo forcing, half-way
-// bounce-back, regularized collision, openings by non-equilibrium extrapolation). See flow.rs.
+// bounce-back interpolated to the true wall where it is known, regularized collision, openings by
+// non-equilibrium extrapolation). See flow.rs.
 //
 // Populations are stored as their offset from the rest state (f - w), direction by direction:
 // direction q of cell c is at q * cells + c. The offsets keep a small flow's digits in f32.
@@ -32,7 +33,8 @@ struct Params {
     sponge_tau: f32,
     // The bulk relaxation time (regularized collision; 0: the shear one).
     bulk: f32,
-    pad1: u32,
+    // How many wall links follow the cells in `solid`.
+    walls: u32,
     pad2: u32,
 }
 
@@ -49,7 +51,10 @@ struct Opening {
 
 @group(0) @binding(0) var<uniform> params: Params;
 // Per cell: bit 0 solid; bits 16..31 the Smagorinsky length scale's share there (wall damping,
-// 65535 = all of it).
+// 65535 = all of it). After the cells, four words per wall link: the fluid cell, the direction q
+// into the wall, the fraction of the link where the wall is (f32 bits), and the fluid cell one
+// step back from the wall, which the interpolation reads. (One buffer for both: the downlevel
+// limit is four storage buffers per stage.)
 @group(0) @binding(1) var<storage, read> solid: array<u32>;
 @group(0) @binding(2) var<storage, read> src: array<f32>;
 @group(0) @binding(3) var<storage, read_write> dst: array<f32>;
@@ -234,4 +239,30 @@ fn apply_openings(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var q = 0u; q < 19u; q++) {
         dst[q * n + o.cell] = feq(q, drho, u) + f[q] - feq(q, drho_in, u_in);
     }
+}
+
+// After streaming, before the openings: each wall link's bounced population interpolated to
+// where the wall is (solidcraft_sim::Lattice::apply_walls). Every slot read here is one no link
+// writes, so all links run at once.
+@compute @workgroup_size(64)
+fn apply_walls(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let index = gid.x + gid.y * params.row;
+    if (index >= params.walls) {
+        return;
+    }
+    let n = params.cells;
+    let at = n + 4u * index;
+    let cell = solid[at];
+    let q = solid[at + 1u];
+    let frac = bitcast<f32>(solid[at + 2u]);
+    let up = solid[at + 3u];
+    let opp = OPP[q];
+    let a = dst[opp * n + cell];
+    var value: f32;
+    if (frac < 0.5) {
+        value = 2.0 * frac * a + (1.0 - 2.0 * frac) * dst[q * n + cell];
+    } else {
+        value = a / (2.0 * frac) + (1.0 - 1.0 / (2.0 * frac)) * dst[opp * n + up];
+    }
+    dst[opp * n + cell] = value;
 }

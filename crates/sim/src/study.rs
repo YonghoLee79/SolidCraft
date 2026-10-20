@@ -385,6 +385,53 @@ fn source_speeds(source: &Source, area: f64) -> Result<(f64, f64)> {
 
 /// Points on the bodies where the wall is thinner than a cell: no solid cell lies under a
 /// triangle's centre within a cell and a half inward. At most `max` points.
+/// About how thick the bodies' thinner walls are (mm): from up to 400 of their triangles, spread
+/// over the mesh, a ray straight into the material to where it comes out again; the thickness
+/// that a tenth of that area (by triangle area) is thinner than. None for no closed walls.
+pub fn wall_thickness(bodies: &[&Mesh]) -> Option<f64> {
+    let tris: Vec<[Vec3; 3]> = bodies.iter().flat_map(|m| m.triangles.iter().filter_map(|t| m.tri(t))).collect();
+    let stride = tris.len().div_ceil(400).max(1);
+    let mut found: Vec<(f64, f64)> = Vec::new();
+    for [a, b, c] in tris.iter().step_by(stride) {
+        let normal = (*b - *a).cross(*c - *a);
+        let area = normal.len() * 0.5;
+        let Some(n) = normal.normalized() else { continue };
+        let from = (*a + *b + *c) / 3.0;
+        let inward = n * -1.0;
+        let out = tris
+            .iter()
+            .filter_map(|[p, q, r]| {
+                let e1 = *q - *p;
+                let e2 = *r - *p;
+                let h = inward.cross(e2);
+                let det = e1.dot(h);
+                if det.abs() < 1e-18 {
+                    return None;
+                }
+                let to = from - *p;
+                let u = to.dot(h) / det;
+                let qv = to.cross(e1);
+                let v = inward.dot(qv) / det;
+                let t = e2.dot(qv) / det;
+                ((0.0..=1.0).contains(&u) && v >= 0.0 && u + v <= 1.0 && t > 1e-6).then_some(t)
+            })
+            .fold(f64::INFINITY, f64::min);
+        if out.is_finite() && area > 0.0 {
+            found.push((out, area));
+        }
+    }
+    found.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let total: f64 = found.iter().map(|f| f.1).sum();
+    let mut run = 0.0;
+    found
+        .iter()
+        .find(|(_, area)| {
+            run += area;
+            run >= 0.1 * total
+        })
+        .map(|f| f.0)
+}
+
 fn thin_walls(grid: &Grid, bodies: &[&Mesh], max: usize) -> Vec<Vec3> {
     let mut out = Vec::new();
     let s = grid.spacing;
@@ -608,8 +655,11 @@ pub fn prepare_paced(bodies: &[&Mesh], setup: &FlowSetup, pace: f64) -> Result<P
     if tau < 0.51 {
         warnings.push(Warning::LowViscosity { tau });
     }
-    let mut lattice =
-        Lattice::new(&grid, tau, [0.0; 3], [false; 3])?.with_smagorinsky(setup.turbulence)?.regularized().with_bulk(tau.max(BULK_TAU))?;
+    let mut lattice = Lattice::new(&grid, tau, [0.0; 3], [false; 3])?
+        .with_smagorinsky(setup.turbulence)?
+        .regularized()
+        .with_bulk(tau.max(BULK_TAU))?
+        .with_walls(crate::wall_links(bodies, &grid)?)?;
     if setup.turbulence > 0.0 {
         let largest = inlet_cells.iter().map(|(_, c)| c.len()).max().unwrap_or(0) as f64 * units_dx * units_dx;
         lattice = lattice.with_damping(wall_damping(&grid, fastest, (4.0 * largest / std::f64::consts::PI).sqrt(), setup.air.viscosity))?;
@@ -884,6 +934,15 @@ pub(crate) mod tests {
     /// the inlet speed times its area gives, it is kept along the duct, and the pressure the
     /// inlet needs is close to the laminar duct's (dp = 28.45 μ Q L / a⁴ for a square bore, plus
     /// a little for the developing flow and the exit). The duct is sealed: no leak.
+    #[test]
+    fn a_ducts_wall_thickness_is_measured() {
+        for w in [0.6, 2.0] {
+            let t = wall_thickness(&[&duct(8.0, w, 24.0, 0.0)]).unwrap();
+            assert!((t - w).abs() < 1e-6, "{t} for {w}");
+        }
+        assert_eq!(wall_thickness(&[&Mesh::default()]), None);
+    }
+
     #[test]
     fn a_duct_study_carries_its_inlet_flow_to_the_outlet() {
         let (a, w, len) = (8.0, 2.0, 24.0);

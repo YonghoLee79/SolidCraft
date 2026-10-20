@@ -445,9 +445,13 @@ pub fn setup(st: &ModelState, spec: &Spec, max_cells: u64) -> std::result::Resul
     let cell = match spec.cell {
         Some(c) => c,
         None => {
-            // Eight cells across the narrowest opening, then larger if the grid would be too big.
+            // Eight cells across the narrowest opening and no larger than the thinner walls are
+            // thick (or the walls come out a cell thick, and passages beside them narrower), then
+            // larger if the grid would be too big.
             let narrow = inlets.iter().map(|i| width(&i.patch)).chain(outlets.iter().map(|o| width(&o.patch))).fold(f64::INFINITY, f64::min);
-            let mut c = (narrow / 8.0).clamp(0.2, 5.0);
+            let refs: Vec<&Mesh> = meshes.iter().map(|m| m.as_ref()).collect();
+            let wall = sim::study::wall_thickness(&refs).unwrap_or(f64::INFINITY);
+            let mut c = (narrow / 8.0).min(wall).clamp(0.2, 5.0);
             let b = meshes.iter().map(|m| m.bounds()).reduce(|a, b| solidcraft_geom::Aabb3 { min: a.min.min(b.min), max: a.max.max(b.max) });
             if let Some(b) = b {
                 let size = b.max - b.min + Vec3::new(2.0, 2.0, 2.0) * spec.pad;

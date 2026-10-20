@@ -4,7 +4,8 @@
 use solidcraft_geom::{Aabb3, Mesh, Vec3};
 use solidcraft_gpu::GpuError;
 use solidcraft_gpu::flow::FlowGpu;
-use solidcraft_sim::{Cell, Grid, Lattice, Opening};
+use solidcraft_sim::lbm::C;
+use solidcraft_sim::{Cell, Grid, Lattice, Opening, WallLink};
 
 fn gpu() -> Option<FlowGpu> {
     match FlowGpu::headless() {
@@ -75,6 +76,31 @@ fn duct_with(grid: &Grid, tau: f64, u0: f64, cs: f64, regularized: bool) -> (Lat
     (lattice, bore)
 }
 
+/// Every link from a fluid cell into a wall, with fractions spread over (0, 1]: both kinds of
+/// interpolation, nearer and further than half-way.
+fn some_walls(grid: &Grid) -> Vec<WallLink> {
+    let [nx, ny, nz] = grid.dims;
+    let mut links = Vec::new();
+    for k in 0..nz {
+        for j in 0..ny {
+            for i in 0..nx {
+                let Some(cell) = grid.index(i, j, k).filter(|c| grid.cells.get(*c) == Some(&Cell::Fluid)) else { continue };
+                for (q, e) in C.iter().enumerate().skip(1) {
+                    let at = [i as i64 + i64::from(e[0]), j as i64 + i64::from(e[1]), k as i64 + i64::from(e[2])];
+                    if at.iter().any(|v| *v < 0) {
+                        continue;
+                    }
+                    if grid.get(at[0] as usize, at[1] as usize, at[2] as usize) == Some(Cell::Solid) {
+                        let frac = 0.1 + 0.9 * (((cell * 19 + q) * 7919 % 1000) as f64 / 1000.0);
+                        links.push(WallLink { cell, q, frac });
+                    }
+                }
+            }
+        }
+    }
+    links
+}
+
 /// The largest difference in density and in velocity between two lattices on the same grid.
 fn difference(a: &Lattice, b: &Lattice) -> (f64, f64) {
     let [nx, ny, nz] = a.dims;
@@ -92,17 +118,24 @@ fn difference(a: &Lattice, b: &Lattice) -> (f64, f64) {
     (rho, u)
 }
 
-/// The same duct, openings, turbulence model and collision (plain or regularized) stepped on the CPU in f64 and on the GPU in f32
+/// The same duct, openings, turbulence model, collision (plain or regularized) and walls (half-way
+/// or interpolated) stepped on the CPU in f64 and on the GPU in f32
 /// give the same flow, cell by cell, while it develops.
 #[test]
 fn the_gpu_step_follows_the_cpu_reference() {
     let Some(gpu) = gpu() else { return };
     let grid = duct(14.0, 2.0, 24.0);
     let u0 = 0.05;
-    for (cs, reg) in [(0.0, false), (0.17, false), (0.17, true), (0.0, true)] {
-        let (mut cpu, _) = duct_with(&grid, 0.56, u0, cs, reg);
+    let walls = some_walls(&grid);
+    assert!(walls.len() > 1000);
+    for (cs, reg, curved) in [(0.0, false, false), (0.17, false, false), (0.17, true, false), (0.0, true, false), (0.17, true, true)] {
+        let made = || {
+            let l = duct_with(&grid, 0.56, u0, cs, reg).0;
+            if curved { ok(l.with_walls(walls.clone())) } else { l }
+        };
+        let mut cpu = made();
         let mut on_gpu = ok(gpu.upload(&cpu));
-        let mut back = duct_with(&grid, 0.56, u0, cs, reg).0;
+        let mut back = made();
         for steps in [1u32, 49, 250] {
             for _ in 0..steps {
                 cpu.step();
@@ -110,7 +143,10 @@ fn the_gpu_step_follows_the_cpu_reference() {
             ok(on_gpu.run(steps));
             ok(on_gpu.download(&mut back));
             let (rho, u) = difference(&cpu, &back);
-            eprintln!("cs {cs}, regularized {reg}, after {} steps: density within {rho:e}, velocity within {u:e}", on_gpu.steps());
+            eprintln!(
+                "cs {cs}, regularized {reg}, curved walls {curved}, after {} steps: density within {rho:e}, velocity within {u:e}",
+                on_gpu.steps()
+            );
             assert!(rho < 1e-5 && u < 1e-4 * u0, "cs {cs}: density {rho:e}, velocity {u:e} apart after {} steps", on_gpu.steps());
         }
     }

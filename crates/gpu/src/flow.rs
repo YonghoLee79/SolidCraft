@@ -4,12 +4,12 @@
 //! populations), [`GpuLattice::run`] steps it on the GPU, and [`GpuLattice::download`] puts the
 //! populations back into a lattice, where its moments read as usual.
 //!
-//! Each step is two dispatches: collide and stream every fluid cell into the other population
-//! buffer, then rewrite the opening cells. Populations are stored as offsets from rest, so a
+//! Each step is three dispatches: collide and stream every fluid cell into the other population
+//! buffer, interpolate the wall links to where the walls are, then rewrite the opening cells. Populations are stored as offsets from rest, so a
 //! slow flow keeps its digits in f32.
 
 use solidcraft_sim::lbm::W;
-use solidcraft_sim::{Lattice, Opening};
+use solidcraft_sim::{Lattice, Opening, WallLink};
 use wgpu::util::DeviceExt;
 
 use crate::{GpuError, Result, popped};
@@ -21,6 +21,8 @@ const Q: usize = 19;
 const WORKGROUP: u32 = 64;
 /// Bytes of one opening as the shader reads it (`Opening` in flow.wgsl).
 const OPENING_BYTES: usize = 32;
+/// Bytes of one wall link as the shader reads it (after the cells in `solid`, flow.wgsl).
+const WALL_BYTES: usize = 16;
 /// Steps recorded into one submission: keeps each submission short, so a large grid's batch
 /// stays well under the driver's watchdog.
 #[cfg(not(target_arch = "wasm32"))]
@@ -62,6 +64,24 @@ fn pack_openings(lattice: &Lattice) -> Result<Vec<u8>> {
     Ok(packed)
 }
 
+/// The wall links as the shader reads them, with the cell each reads upstream. A link with no
+/// fluid upstream stays half-way, as on the CPU, so it is left out.
+fn pack_walls(lattice: &Lattice) -> (Vec<u8>, u32) {
+    let mut packed = Vec::with_capacity(lattice.walls().len().max(1) * WALL_BYTES);
+    let mut count = 0u32;
+    for l in lattice.walls() {
+        let WallLink { cell, q, frac } = *l;
+        let Some(up) = lattice.upstream(l) else { continue };
+        let (Ok(cell), Ok(q), Ok(up)) = (u32::try_from(cell), u32::try_from(q), u32::try_from(up)) else { continue };
+        packed.extend_from_slice(&cell.to_le_bytes());
+        packed.extend_from_slice(&q.to_le_bytes());
+        packed.extend_from_slice(&(frac as f32).to_le_bytes());
+        packed.extend_from_slice(&up.to_le_bytes());
+        count += 1;
+    }
+    (packed, count)
+}
+
 /// The compute pipelines, ready to step lattices on one device.
 pub struct FlowGpu {
     adapter: String,
@@ -69,6 +89,7 @@ pub struct FlowGpu {
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
     collide: wgpu::ComputePipeline,
+    walls: wgpu::ComputePipeline,
     openings: wgpu::ComputePipeline,
 }
 
@@ -93,11 +114,11 @@ impl FlowGpu {
         if let Some(e) = failed {
             return Err(GpuError::Pipeline(e));
         }
-        let (layout, collide, openings) = built;
-        Ok(FlowGpu { adapter: adapter.into(), device, queue, layout, collide, openings })
+        let (layout, collide, walls, openings) = built;
+        Ok(FlowGpu { adapter: adapter.into(), device, queue, layout, collide, walls, openings })
     }
 
-    fn build(device: &wgpu::Device, shader: &str) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline, wgpu::ComputePipeline) {
+    fn build(device: &wgpu::Device, shader: &str) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::ComputePipeline) {
         let module = device
             .create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("solidcraft flow"), source: wgpu::ShaderSource::Wgsl(shader.into()) });
         let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
@@ -133,8 +154,9 @@ impl FlowGpu {
             })
         };
         let collide = pipeline("collide_stream");
+        let walls = pipeline("apply_walls");
         let openings = pipeline("apply_openings");
-        (layout, collide, openings)
+        (layout, collide, walls, openings)
     }
 
     /// A device of its own, without a window (native only), opened with the adapter's largest
@@ -175,6 +197,7 @@ impl FlowGpu {
         let openings = lattice.openings();
         let packed = pack_openings(lattice)?;
         let opening_count = u32::try_from(openings.len()).map_err(|_| GpuError::FlowTooLarge { cells, max })?;
+        let (walls, wall_count) = pack_walls(lattice);
 
         // Dispatch rows: as many workgroups across as the device allows, then further rows.
         let groups = n.div_ceil(WORKGROUP).max(1);
@@ -185,6 +208,11 @@ impl FlowGpu {
         }
         let opening_groups = opening_count.div_ceil(WORKGROUP);
         let opening_dispatch = (opening_groups.min(across), opening_groups.div_ceil(across));
+        let wall_groups = wall_count.div_ceil(WORKGROUP);
+        let wall_dispatch = (wall_groups.min(across), wall_groups.div_ceil(across));
+        if wall_dispatch.1 > limits.max_compute_workgroups_per_dimension {
+            return Err(GpuError::FlowTooLarge { cells, max });
+        }
 
         let mut params = Vec::with_capacity(80);
         let [nx, ny, nz] = lattice.dims;
@@ -202,7 +230,7 @@ impl FlowGpu {
         }
         params.extend_from_slice(&sponge_tau.to_le_bytes());
         params.extend_from_slice(&(lattice.bulk().unwrap_or(0.0) as f32).to_le_bytes());
-        for w in [0u32; 2] {
+        for w in [wall_count, 0] {
             params.extend_from_slice(&w.to_le_bytes());
         }
 
@@ -221,7 +249,7 @@ impl FlowGpu {
             }
         }
         let damping = lattice.damping();
-        let solid_words: Vec<u8> = solid
+        let mut solid_words: Vec<u8> = solid
             .iter()
             .enumerate()
             .flat_map(|(i, s)| {
@@ -229,6 +257,10 @@ impl FlowGpu {
                 (u32::from(*s) | (u32::from(g) << 16)).to_le_bytes()
             })
             .collect();
+        solid_words.extend_from_slice(&walls);
+        if u64::try_from(solid_words.len()).map_or(true, |b| b > max) {
+            return Err(GpuError::FlowTooLarge { cells, max });
+        }
 
         let scope = d.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
@@ -258,11 +290,13 @@ impl FlowGpu {
             device: self.device.clone(),
             queue: self.queue.clone(),
             collide: self.collide.clone(),
+            walls: self.walls.clone(),
             openings: self.openings.clone(),
             cells,
             opening_count: openings.len(),
             bytes,
             dispatch: (across, rows),
+            wall_dispatch,
             opening_dispatch,
             pops,
             binds,
@@ -278,11 +312,13 @@ pub struct GpuLattice {
     device: wgpu::Device,
     queue: wgpu::Queue,
     collide: wgpu::ComputePipeline,
+    walls: wgpu::ComputePipeline,
     openings: wgpu::ComputePipeline,
     cells: usize,
     opening_count: usize,
     bytes: u64,
     dispatch: (u32, u32),
+    wall_dispatch: (u32, u32),
     opening_dispatch: (u32, u32),
     /// The two population buffers; `current` holds the latest step.
     pops: [wgpu::Buffer; 2],
@@ -301,6 +337,10 @@ impl GpuLattice {
             pass.set_bind_group(0, &self.binds[self.current], &[]);
             pass.set_pipeline(&self.collide);
             pass.dispatch_workgroups(self.dispatch.0, self.dispatch.1, 1);
+            if self.wall_dispatch.0 > 0 {
+                pass.set_pipeline(&self.walls);
+                pass.dispatch_workgroups(self.wall_dispatch.0, self.wall_dispatch.1, 1);
+            }
             if self.opening_dispatch.0 > 0 {
                 pass.set_pipeline(&self.openings);
                 pass.dispatch_workgroups(self.opening_dispatch.0, self.opening_dispatch.1, 1);

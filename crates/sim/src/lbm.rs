@@ -3,7 +3,10 @@
 //! oracle the GPU kernels are checked against, so it favours plain code and `f64` over speed.
 //! Openings (a velocity inlet, a pressure outlet) use Guo's non-equilibrium extrapolation from
 //! the cell just inside. Turbulence: the Smagorinsky model raises each cell's relaxation time with
-//! its local shear, read from the non-equilibrium momentum flux (Hou et al. 1996).
+//! its local shear, read from the non-equilibrium momentum flux (Hou et al. 1996). Walls are
+//! where the voxels say, half a cell past the last fluid cell, unless their true place is given
+//! ([`WallLink`]): then the bounce-back is interpolated to it (Bouzidi, Firdaouss & Lallemand
+//! 2001), so a curved or slanted wall is smooth rather than a staircase.
 
 use crate::{Cell, Grid, Result, SimError};
 
@@ -68,6 +71,18 @@ pub struct Lattice {
     next: Vec<f64>,
     /// Opening cells: (cell, the fluid cell just inside it, what is imposed there).
     openings: Vec<(usize, usize, Opening)>,
+    /// Links from fluid cells into walls whose true place is known (see [`WallLink`]).
+    walls: Vec<WallLink>,
+}
+
+/// A link from fluid cell `cell` along direction `q` into a solid cell, and where along it the
+/// wall really is: `frac` of the way to the solid cell's centre (0 < frac ≤ 1; ½ is where
+/// half-way bounce-back puts it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WallLink {
+    pub cell: usize,
+    pub q: usize,
+    pub frac: f64,
 }
 
 /// What an opening imposes on the flow.
@@ -136,7 +151,69 @@ impl Lattice {
             sponge: None,
             bulk: None,
             damping: None,
+            walls: Vec::new(),
         })
+    }
+
+    /// Put the walls where `links` say (see [`WallLink`]). Each must lead from a fluid cell along
+    /// a direction other than rest into a solid cell, with a fraction in (0, 1].
+    pub fn with_walls(mut self, links: Vec<WallLink>) -> Result<Lattice> {
+        for l in &links {
+            let solid = |c: usize| self.solid.get(c).copied().unwrap_or(true);
+            let at = self.coords(l.cell);
+            let ok = !solid(l.cell)
+                && (1..Q).contains(&l.q)
+                && l.frac.is_finite()
+                && l.frac > 0.0
+                && l.frac <= 1.0
+                && at.is_some_and(|a| self.neighbour(a, C[l.q]).is_some_and(solid));
+            if !ok {
+                return Err(SimError::BadOpening);
+            }
+        }
+        self.walls = links;
+        Ok(self)
+    }
+
+    /// The fluid cell a wall link's interpolation reads from: one step back from the wall, if
+    /// that is fluid (else the link stays half-way).
+    pub fn upstream(&self, link: &WallLink) -> Option<usize> {
+        let at = self.coords(link.cell)?;
+        self.neighbour(at, C[OPP.get(link.q).copied()?]).filter(|u| !self.solid.get(*u).copied().unwrap_or(true))
+    }
+
+    /// The wall links (see [`Lattice::with_walls`]).
+    pub fn walls(&self) -> &[WallLink] {
+        &self.walls
+    }
+
+    fn coords(&self, cell: usize) -> Option<[usize; 3]> {
+        let [nx, ny, nz] = self.dims;
+        (cell < nx * ny * nz).then(|| [cell % nx, (cell / nx) % ny, cell / (nx * ny)])
+    }
+
+    /// After streaming: each wall link's bounced population, interpolated to where the wall is.
+    /// Half-way bounce-back left f*_q(x) in slot opp(q) of x. With the wall nearer than half way
+    /// (frac < ½) it is mixed with f*_q of the cell upstream, which streamed into slot q of x;
+    /// further (frac > ½), with f*_opp(q) of x, which streamed into slot opp(q) of the cell
+    /// upstream. With no fluid upstream it stays half-way. Every slot read here is one no link
+    /// writes, so the order does not matter (the GPU runs them at once).
+    fn apply_walls(&mut self) {
+        for l in &self.walls {
+            let opp = OPP[l.q];
+            let Some(up) = self.upstream(l) else { continue };
+            let a = self.f.get(l.cell * Q + opp).copied().unwrap_or(0.0);
+            let value = if l.frac < 0.5 {
+                let b = self.f.get(l.cell * Q + l.q).copied().unwrap_or(a);
+                2.0 * l.frac * a + (1.0 - 2.0 * l.frac) * b
+            } else {
+                let c = self.f.get(up * Q + opp).copied().unwrap_or(a);
+                a / (2.0 * l.frac) + (1.0 - 1.0 / (2.0 * l.frac)) * c
+            };
+            if let Some(slot) = self.f.get_mut(l.cell * Q + opp) {
+                *slot = value;
+            }
+        }
     }
 
     /// Model turbulence with the Smagorinsky constant `cs` (0 turns it off).
@@ -466,6 +543,7 @@ impl Lattice {
             }
         }
         std::mem::swap(&mut self.f, &mut self.next);
+        self.apply_walls();
         self.apply_openings();
     }
 }
@@ -505,6 +583,52 @@ mod tests {
             worst = worst.max((u[0] - exact).abs() / (g * h * h / (8.0 * nu)));
         }
         assert!(worst < 5e-3, "worst error {worst} of the peak speed");
+    }
+
+    /// The same channel with its plates off the half-way places: the lower one 0.3 of a link from
+    /// the first fluid cell, the upper one 0.8 (both interpolation branches). Given as wall links,
+    /// the parabola between the true plates comes out; half-way bounce-back would put each plate
+    /// half a cell out, 20 % and 30 % of a cell wrong.
+    #[test]
+    fn plane_poiseuille_between_off_grid_walls_matches_the_parabola() {
+        let nz = 18usize;
+        let bounds = Aabb3 { min: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, max: Vec3 { x: 1.0, y: 1.0, z: nz as f64 } };
+        let mut grid = Grid::around(bounds, 1.0, 0, 1_000).unwrap();
+        for k in [0, nz - 1] {
+            let idx = grid.index(0, 0, k).unwrap();
+            grid.cells[idx] = Cell::Solid;
+        }
+        let (low, high) = (0.3, 0.8);
+        let (z0, z1) = (1.0 - low, (nz - 2) as f64 + high);
+        let g = 1e-6;
+        let lattice = Lattice::new(&grid, 0.8, [g, 0.0, 0.0], [true, true, false]).unwrap();
+        let (bottom, top) = (lattice.index(0, 0, 1).unwrap(), lattice.index(0, 0, nz - 2).unwrap());
+        let links = (1..19)
+            .filter_map(|q| match C[q][2] {
+                -1 => Some(WallLink { cell: bottom, q, frac: low }),
+                1 => Some(WallLink { cell: top, q, frac: high }),
+                _ => None,
+            })
+            .collect();
+        let mut lattice = lattice.with_walls(links).unwrap();
+        assert_eq!(lattice.walls().len(), 10);
+        for _ in 0..20_000 {
+            lattice.step();
+        }
+        let nu = lattice.viscosity();
+        let h = z1 - z0;
+        let mut worst = 0.0f64;
+        for k in 1..nz - 1 {
+            let z = k as f64;
+            let exact = g / (2.0 * nu) * (z - z0) * (z1 - z);
+            let (rho, u) = lattice.moments(0, 0, k).unwrap();
+            assert!((rho - 1.0).abs() < 1e-6, "mass is kept: {rho}");
+            worst = worst.max((u[0] - exact).abs() / (g * h * h / (8.0 * nu)));
+        }
+        assert!(worst < 1e-2, "worst error {worst} of the peak speed");
+        // A link that doesn't lead into a wall is refused.
+        let bad = Lattice::new(&grid, 0.8, [g, 0.0, 0.0], [true, true, false]).unwrap().with_walls(vec![WallLink { cell: bottom, q: 5, frac: 0.5 }]);
+        assert!(C[5][2] == 1 && bad.is_err());
     }
 
     /// The whole path: a square duct as a closed mesh, voxelized, then driven along its bore.

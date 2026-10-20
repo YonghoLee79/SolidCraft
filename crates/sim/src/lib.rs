@@ -16,10 +16,10 @@ mod voxelize;
 
 pub use fluid::{Region, fluid_region};
 pub use grid::{Cell, Grid};
-pub use lbm::{Lattice, Opening};
+pub use lbm::{Lattice, Opening, WallLink};
 pub use run::{Backend, Cpu, Fields, Limits, Quantity, Run, Sample, State, Stepper};
 pub use study::{AIR, Air, FanCurve, FlowSetup, Inlet, Outlet, Patch, Prepared, Source, Through, Units, Warning, prepare, prepare_paced};
-pub use voxelize::voxelize;
+pub use voxelize::{voxelize, wall_links};
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum SimError {

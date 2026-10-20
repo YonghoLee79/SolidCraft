@@ -2,8 +2,9 @@
 //! centres cross the surface an even number of times, and cells whose centres lie between an
 //! odd crossing and the next one are inside the body.
 
-use solidcraft_geom::Mesh;
+use solidcraft_geom::{Mesh, Vec3};
 
+use crate::lbm::{C, WallLink};
 use crate::{Cell, Grid, Result, SimError};
 
 /// Ray offsets in cell sizes. Cell centres often lie exactly on a triangle edge (a box's
@@ -73,7 +74,164 @@ pub fn voxelize(mesh: &Mesh, grid: &mut Grid) -> Result<()> {
             }
         }
     }
+    seal(mesh, grid)
+}
+
+/// Close the walls the cell centres missed. A wall thinner than a cell can fall between two
+/// rows of centres and leave no solid cell, and the air would stream straight through it. So
+/// any link between two fluid cells that passes through material (between a pair of its
+/// crossings, for more than a sliver: a link grazing an edge passes through none) gets the cell
+/// nearer that material made solid: every wall is then at least a cell thick on the lattice.
+fn seal(mesh: &Mesh, grid: &mut Grid) -> Result<()> {
+    let [nx, ny, nz] = grid.dims;
+    let s = grid.spacing;
+    let centre = |i: usize, j: usize, k: usize| {
+        Vec3::new(grid.origin.x + (i as f64 + 0.5) * s, grid.origin.y + (j as f64 + 0.5) * s, grid.origin.z + (k as f64 + 0.5) * s)
+    };
+    let origin = grid.origin;
+    // Crossings per link (the cell it starts from, the direction), as fractions along it.
+    let mut crossings: std::collections::HashMap<(usize, usize), Vec<f64>> = std::collections::HashMap::new();
+    for t in &mesh.triangles {
+        let [a, b, c] = mesh.tri(t).ok_or(SimError::BadMesh)?;
+        let span = |lo: f64, hi: f64, o: f64, n: usize| {
+            let first = ((lo - o) / s - 1.5).floor().max(0.0);
+            let last = ((hi - o) / s + 0.5).ceil().min(n as f64 - 1.0);
+            (first as usize, last.max(-1.0) as i64)
+        };
+        let (i0, i1) = span(a.x.min(b.x).min(c.x), a.x.max(b.x).max(c.x), origin.x, nx);
+        let (j0, j1) = span(a.y.min(b.y).min(c.y), a.y.max(b.y).max(c.y), origin.y, ny);
+        let (k0, k1) = span(a.z.min(b.z).min(c.z), a.z.max(b.z).max(c.z), origin.z, nz);
+        if i1 < 0 || j1 < 0 || k1 < 0 {
+            continue;
+        }
+        for k in k0..=k1 as usize {
+            for j in j0..=j1 as usize {
+                for i in i0..=i1 as usize {
+                    let Some(here) = grid.index(i, j, k) else { continue };
+                    if grid.cells.get(here) != Some(&Cell::Fluid) {
+                        continue;
+                    }
+                    // One of each pair of opposite directions: each link once.
+                    for (q, e) in C.iter().enumerate().skip(1).step_by(2) {
+                        let (u, v, w) = (i as i64 + i64::from(e[0]), j as i64 + i64::from(e[1]), k as i64 + i64::from(e[2]));
+                        if u < 0 || v < 0 || w < 0 {
+                            continue;
+                        }
+                        let Some(there) = grid.index(u as usize, v as usize, w as usize) else { continue };
+                        if grid.cells.get(there) != Some(&Cell::Fluid) {
+                            continue;
+                        }
+                        let dir = Vec3::new(f64::from(e[0]) * s, f64::from(e[1]) * s, f64::from(e[2]) * s);
+                        if let Some(t) = crossing(centre(i, j, k), dir, [a, b, c]) {
+                            crossings.entry((here, q)).or_default().push(t);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut fill = Vec::new();
+    for ((here, q), mut ts) in crossings {
+        ts.sort_by(f64::total_cmp);
+        // A crossing two triangles share (on their common edge) counts once.
+        ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        // Both ends are air, so the crossings come in pairs: in, then out.
+        let Some((t0, t1)) = ts.chunks_exact(2).map(|p| (p[0], p[1])).find(|(t0, t1)| t1 - t0 > 1e-3) else { continue };
+        let Some(e) = C.get(q) else { continue };
+        let there = grid.coords(here);
+        let (u, v, w) = (there[0] as i64 + i64::from(e[0]), there[1] as i64 + i64::from(e[1]), there[2] as i64 + i64::from(e[2]));
+        let Some(there) = (u >= 0 && v >= 0 && w >= 0).then(|| grid.index(u as usize, v as usize, w as usize)).flatten() else { continue };
+        fill.push(if (t0 + t1) * 0.5 < 0.5 { here } else { there });
+    }
+    for cell in fill {
+        if let Some(c) = grid.cells.get_mut(cell) {
+            *c = Cell::Solid;
+        }
+    }
     Ok(())
+}
+
+/// Where `meshes` really cross the links from fluid cells into solid ones: for each such link
+/// that a triangle crosses, how far along it (from the fluid cell's centre towards the solid
+/// one's) the nearest crossing lies. Links into cells made solid for other reasons (the box's
+/// edges, inlet caps) cross no triangle and are left out, so they keep half-way bounce-back.
+pub fn wall_links(meshes: &[&Mesh], grid: &Grid) -> Result<Vec<WallLink>> {
+    let [nx, ny, nz] = grid.dims;
+    let s = grid.spacing;
+    let solid = |i: i64, j: i64, k: i64| -> bool {
+        // Past the box is not a wall: the lattice doesn't stream there.
+        if i < 0 || j < 0 || k < 0 {
+            return false;
+        }
+        grid.index(i as usize, j as usize, k as usize).and_then(|c| grid.cells.get(c)).is_some_and(|c| *c == Cell::Solid)
+    };
+    let centre = |i: usize, j: usize, k: usize| {
+        Vec3::new(grid.origin.x + (i as f64 + 0.5) * s, grid.origin.y + (j as f64 + 0.5) * s, grid.origin.z + (k as f64 + 0.5) * s)
+    };
+    let mut nearest: std::collections::HashMap<(usize, usize), f64> = std::collections::HashMap::new();
+    for mesh in meshes {
+        for t in &mesh.triangles {
+            let [a, b, c] = mesh.tri(t).ok_or(SimError::BadMesh)?;
+            // The cells whose links (one cell long) can reach this triangle.
+            let span = |lo: f64, hi: f64, o: f64, n: usize| {
+                let first = ((lo - o) / s - 1.5).floor().max(0.0);
+                let last = ((hi - o) / s + 0.5).ceil().min(n as f64 - 1.0);
+                (first as usize, last.max(-1.0) as i64)
+            };
+            let (i0, i1) = span(a.x.min(b.x).min(c.x), a.x.max(b.x).max(c.x), grid.origin.x, nx);
+            let (j0, j1) = span(a.y.min(b.y).min(c.y), a.y.max(b.y).max(c.y), grid.origin.y, ny);
+            let (k0, k1) = span(a.z.min(b.z).min(c.z), a.z.max(b.z).max(c.z), grid.origin.z, nz);
+            if i1 < 0 || j1 < 0 || k1 < 0 {
+                continue;
+            }
+            for k in k0..=k1 as usize {
+                for j in j0..=j1 as usize {
+                    for i in i0..=i1 as usize {
+                        let Some(cell) = grid.index(i, j, k) else { continue };
+                        if grid.cells.get(cell) != Some(&Cell::Fluid) {
+                            continue;
+                        }
+                        let from = centre(i, j, k);
+                        for (q, e) in C.iter().enumerate().skip(1) {
+                            if !solid(i as i64 + i64::from(e[0]), j as i64 + i64::from(e[1]), k as i64 + i64::from(e[2])) {
+                                continue;
+                            }
+                            let dir = Vec3::new(f64::from(e[0]) * s, f64::from(e[1]) * s, f64::from(e[2]) * s);
+                            if let Some(frac) = crossing(from, dir, [a, b, c]) {
+                                let slot = nearest.entry((cell, q)).or_insert(frac);
+                                *slot = slot.min(frac);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut links: Vec<WallLink> = nearest.into_iter().map(|((cell, q), frac)| WallLink { cell, q, frac: frac.clamp(1e-3, 1.0) }).collect();
+    links.sort_by_key(|l| (l.cell, l.q));
+    Ok(links)
+}
+
+/// Where along `from + t·dir` (0 ≤ t ≤ 1) the ray meets the triangle (Möller & Trumbore 1997).
+fn crossing(from: Vec3, dir: Vec3, [a, b, c]: [Vec3; 3]) -> Option<f64> {
+    let (e1, e2) = (b - a, c - a);
+    let p = dir.cross(e2);
+    let det = e1.dot(p);
+    if !det.is_finite() || det.abs() < 1e-18 {
+        return None;
+    }
+    let to = from - a;
+    let u = to.dot(p) / det;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let qv = to.cross(e1);
+    let v = dir.dot(qv) / det;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = e2.dot(qv) / det;
+    (t.is_finite() && (0.0..=1.0).contains(&t)).then_some(t)
 }
 
 #[cfg(test)]
@@ -137,6 +295,28 @@ pub(crate) mod tests {
         };
         assert_eq!(mid(20.0, 10.0, 10.0), Some(Cell::Fluid), "the bore");
         assert_eq!(mid(20.0, 2.0, 10.0), Some(Cell::Solid), "a side wall");
+    }
+
+    /// A closed box with walls a quarter of a cell thick: no cell centre lies in them, but the
+    /// air inside still never meets the air outside, along any of the lattice's links.
+    #[test]
+    fn walls_thinner_than_a_cell_still_close() {
+        let (o, w) = (20.0, 0.5);
+        let mut m = Mesh::default();
+        add_box(&mut m, [0.0, 0.0, 0.0], [o, o, w]);
+        add_box(&mut m, [0.0, 0.0, o - w], [o, o, o]);
+        add_box(&mut m, [0.0, 0.0, w], [o, w, o - w]);
+        add_box(&mut m, [0.0, o - w, w], [o, o, o - w]);
+        add_box(&mut m, [0.0, w, w], [w, o - w, o - w]);
+        add_box(&mut m, [o - w, w, w], [o, o - w, o - w]);
+        let mut g = Grid::around(bounds(&m), 2.0, 2, 1_000_000).unwrap();
+        voxelize(&m, &mut g).unwrap();
+        let c = |v: f64, origin: f64| ((v - origin) / 2.0).floor() as usize;
+        let inside = [c(10.0, g.origin.x), c(10.0, g.origin.y), c(10.0, g.origin.z)];
+        assert_eq!(g.get(inside[0], inside[1], inside[2]), Some(Cell::Fluid));
+        let region = crate::fluid_region(&g, inside, |_, _, _| false).unwrap();
+        assert!(!region.touches_edge, "the inside leaks out");
+        assert!(region.count >= 512, "the inside stays air: {}", region.count);
     }
 
     #[test]
