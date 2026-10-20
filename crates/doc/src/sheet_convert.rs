@@ -50,7 +50,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use solidcraft_geom::{Loop2, Mesh, Plane, Region2, Ring, Seg2, UnitVec3, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Mesh, Plane, Ray, Region2, Ring, Seg2, UnitVec3, Vec2, Vec3};
 use solidcraft_kernel::{Body, FaceSurface, face_surface};
 
 use super::{FlatWork, ReliefOverride, RuleValues, SheetBody, SheetFlange, base_flange, polys_cross, signed_area, snap};
@@ -300,7 +300,11 @@ fn behind(b: &Body, mesh: &Mesh, f: usize) -> Option<(usize, f64)> {
     for tri in tris.iter().take(8) {
         let middle = (tri[0] + tri[1] + tri[2]) * (1.0 / 3.0);
         for from in std::iter::once(middle).chain(tri.iter().map(|v| (middle + *v) * 0.5)) {
-            let Some(g) = mesh.raycast(from, n * -1.0).and_then(|(_, hit)| mesh.tri_face.get(hit)).map(|g| *g as usize) else { continue };
+            let Some(g) =
+                Ray::towards(from, n * -1.0).and_then(|r| mesh.raycast(&r)).and_then(|(_, hit)| mesh.tri_face.get(hit)).map(|g| *g as usize)
+            else {
+                continue;
+            };
             match seen.iter_mut().find(|(h, _)| *h == g) {
                 Some(entry) => entry.1 += area(tri),
                 None => seen.push((g, area(tri))),

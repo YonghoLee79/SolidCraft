@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::Vec3;
+use crate::{Ray, Vec3};
 
 /// Axis-aligned bounding box.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -20,6 +20,40 @@ impl Aabb3 {
         min: Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
         max: Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
     };
+
+    /// Where the line along `ray` enters and leaves the box grown by `pad`: distances along it,
+    /// negative behind its origin. `None` when it misses.
+    pub fn ray_span(&self, ray: &Ray, pad: f64) -> Option<(f64, f64)> {
+        self.ray_span_inv(ray, Vec3::new(1.0 / ray.dir.x, 1.0 / ray.dir.y, 1.0 / ray.dir.z), pad)
+    }
+
+    /// [`Aabb3::ray_span`] with `inv`, 1 / the ray's direction per axis, worked out once for many
+    /// boxes.
+    pub(crate) fn ray_span_inv(&self, ray: &Ray, inv: Vec3, pad: f64) -> Option<(f64, f64)> {
+        let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+        let axes = [
+            (ray.origin.x, ray.dir.x, inv.x, self.min.x, self.max.x),
+            (ray.origin.y, ray.dir.y, inv.y, self.min.y, self.max.y),
+            (ray.origin.z, ray.dir.z, inv.z, self.min.z, self.max.z),
+        ];
+        for (o, d, inv, lo, hi) in axes {
+            let (lo, hi) = (lo - pad, hi + pad);
+            if d == 0.0 || !inv.is_finite() {
+                if o < lo || o > hi {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = ((lo - o) * inv, (hi - o) * inv);
+            let (a, b) = if a <= b { (a, b) } else { (b, a) };
+            t0 = t0.max(a);
+            t1 = t1.min(b);
+            if t0 > t1 {
+                return None;
+            }
+        }
+        Some((t0, t1))
+    }
     pub fn is_empty(&self) -> bool {
         !(self.min.x <= self.max.x && self.min.y <= self.max.y && self.min.z <= self.max.z)
     }
@@ -560,24 +594,24 @@ impl Mesh {
     }
 
     /// Number of triangles a ray crosses (for inside/outside tests on closed meshes).
-    pub fn ray_crossings(&self, o: Vec3, dir: Vec3) -> usize {
+    pub fn ray_crossings(&self, ray: &Ray) -> usize {
         let mut n = 0;
         for t in &self.triangles {
             let Some([a, b, c]) = self.tri(t) else { continue };
             let (e1, e2) = (b - a, c - a);
-            let p = dir.cross(e2);
+            let p = ray.dir.cross(e2);
             let det = e1.dot(p);
             if det.abs() < 1e-14 {
                 continue;
             }
             let inv = 1.0 / det;
-            let s = o - a;
+            let s = ray.origin - a;
             let u = s.dot(p) * inv;
             if !(0.0..1.0).contains(&u) {
                 continue;
             }
             let q = s.cross(e1);
-            let v = dir.dot(q) * inv;
+            let v = ray.dir.dot(q) * inv;
             if v < 0.0 || u + v >= 1.0 {
                 continue;
             }
@@ -591,7 +625,7 @@ impl Mesh {
     /// Point inside a closed mesh (majority vote of three skewed rays).
     pub fn contains(&self, p: Vec3) -> bool {
         let dirs = [Vec3::new(0.5773, 0.5774, 0.5776), Vec3::new(-0.6123, 0.3141, 0.7254), Vec3::new(0.2718, -0.8414, 0.4673)];
-        dirs.iter().filter(|d| self.ray_crossings(p, **d) % 2 == 1).count() >= 2
+        dirs.iter().filter_map(|d| Ray::towards(p, *d)).filter(|r| self.ray_crossings(r) % 2 == 1).count() >= 2
     }
 
     /// Whether the surfaces of two meshes pass through each other by more than `tol`: some
@@ -644,15 +678,15 @@ impl Mesh {
         .unwrap_or(false)
     }
 
-    /// Closest intersection of a ray with the mesh: (distance along `dir`, triangle index).
+    /// Closest intersection of a ray with the mesh: (distance along it, triangle index).
     ///
     /// Watertight (Woop, Benthin & Wald, "Watertight Ray/Triangle Intersection", JCGT 2(1),
     /// 2013): the vertices are moved into a frame where the ray runs along +z through the
     /// origin, and each edge's side test is computed from those per-vertex values alone, so the
     /// two triangles that share an edge get exactly opposite values there. A ray through a
     /// shared edge or vertex hits at least one of them; it never slips between them.
-    pub fn raycast(&self, o: Vec3, dir: Vec3) -> Option<(f64, usize)> {
-        let frame = RayFrame::new(o, dir)?;
+    pub fn raycast(&self, ray: &Ray) -> Option<(f64, usize)> {
+        let frame = RayFrame::new(ray);
         let mut best: Option<(f64, usize)> = None;
         for (i, t) in self.triangles.iter().enumerate() {
             let Some(p) = self.tri(t) else { continue };
@@ -683,9 +717,8 @@ fn comp(v: Vec3, k: usize) -> f64 {
 }
 
 impl RayFrame {
-    /// `None` for a direction that is zero or not finite.
-    pub(crate) fn new(o: Vec3, dir: Vec3) -> Option<RayFrame> {
-        let a = [dir.x.abs(), dir.y.abs(), dir.z.abs()];
+    pub(crate) fn new(ray: &Ray) -> RayFrame {
+        let a = [ray.dir.x.abs(), ray.dir.y.abs(), ray.dir.z.abs()];
         let kz = if a[0] >= a[1] && a[0] >= a[2] {
             0
         } else if a[1] >= a[2] {
@@ -693,15 +726,13 @@ impl RayFrame {
         } else {
             2
         };
-        let dz = comp(dir, kz);
-        if !(dz.is_finite() && dz != 0.0) {
-            return None;
-        }
+        // At least 1/√3: a unit direction's largest component.
+        let dz = comp(*ray.dir, kz);
         let (mut kx, mut ky) = ((kz + 1) % 3, (kz + 2) % 3);
         if dz < 0.0 {
             std::mem::swap(&mut kx, &mut ky);
         }
-        Some(RayFrame { o, k: [kx, ky, kz], s: [comp(dir, kx) / dz, comp(dir, ky) / dz, 1.0 / dz] })
+        RayFrame { o: ray.origin, k: [kx, ky, kz], s: [comp(*ray.dir, kx) / dz, comp(*ray.dir, ky) / dz, 1.0 / dz] }
     }
 
     /// A vertex in the ray's frame: (x, y) across the ray, z scaled along it.

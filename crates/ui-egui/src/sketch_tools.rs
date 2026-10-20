@@ -99,8 +99,7 @@ const TRIM_STEP_PX: f32 = 4.0;
 fn on_sketch_plane(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<Vec2> {
     let st = app.session.world_state();
     let ss = st.sketch(active_sketch(app)?)?;
-    let (o, d) = proj.ray(pos);
-    ss.plane.intersect_ray(o, d).map(|w| ss.plane.to_local(w))
+    ss.plane.intersect_ray(&proj.ray(pos)).map(|w| ss.plane.to_local(w))
 }
 
 /// A press and drag with Trim draws a path from `press`; true when it started one. Each piece
@@ -810,8 +809,7 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
             let target = target.or_else(|| {
                 let st = app.session.world_state();
                 let ss = st.sketch(app.session.active_sketch?)?;
-                let (o, d) = proj.ray(pos);
-                let w = ss.plane.intersect_ray(o, d)?;
+                let w = ss.plane.intersect_ray(&proj.ray(pos))?;
                 let pl = &ss.plane;
                 Some((
                     json!({"origin": [pl.origin.x, pl.origin.y, pl.origin.z], "x_dir": [pl.x.x, pl.x.y, pl.x.z], "y_dir": [pl.y.x, pl.y.y, pl.y.z]}),

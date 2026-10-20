@@ -4,7 +4,7 @@
 use std::f64::consts::PI;
 
 use serde_json::Value;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::{Ray, UnitVec3, Vec3};
 use solidcraft_engine::{Session, io, kernel};
 
 fn assert_two_through_holes(session: &Session, stage: &str) {
@@ -28,20 +28,20 @@ fn assert_two_through_holes(session: &Session, stage: &str) {
 
     let before_mesh = uncut.tessellate(0.01).unwrap();
     let after_mesh = bracket.tessellate(0.01).unwrap();
-    let down = Vec3::new(0.0, 0.0, -1.0);
+    let down = |p: Vec3| Ray::new(p, -UnitVec3::Z);
     for y in [-15.0, -45.0] {
         let center = Vec3::new(25.0, y, 1.0);
-        assert_eq!(before_mesh.ray_crossings(center, down), 2, "{stage}: hole at y={y} starts over the solid base");
+        assert_eq!(before_mesh.ray_crossings(&down(center)), 2, "{stage}: hole at y={y} starts over the solid base");
         // Rays through each opening must miss the entire bracket, including its top and
         // bottom caps. Points away from the centre guard against a narrow slit or shifted cut.
         for (dx, dy) in [(0.0, 0.0), (3.0, 0.0), (-3.0, 0.0), (0.0, 3.0), (0.0, -3.0)] {
-            let ray = center + Vec3::new(dx, dy, 0.0);
-            assert_eq!(after_mesh.ray_crossings(ray, down), 0, "{stage}: the hole at y={y} is open through both caps at ({dx}, {dy})");
+            let at = center + Vec3::new(dx, dy, 0.0);
+            assert_eq!(after_mesh.ray_crossings(&down(at)), 0, "{stage}: the hole at y={y} is open through both caps at ({dx}, {dy})");
         }
         // Material just outside each radius remains, so neither opening is an edge notch.
         for (dx, dy) in [(5.0, 0.0), (-5.0, 0.0), (0.0, 5.0), (0.0, -5.0)] {
-            let ray = center + Vec3::new(dx, dy, 0.0);
-            assert_eq!(after_mesh.ray_crossings(ray, down), 2, "{stage}: material remains around the hole at y={y}, offset ({dx}, {dy})");
+            let at = center + Vec3::new(dx, dy, 0.0);
+            assert_eq!(after_mesh.ray_crossings(&down(at)), 2, "{stage}: material remains around the hole at y={y}, offset ({dx}, {dy})");
         }
     }
 }

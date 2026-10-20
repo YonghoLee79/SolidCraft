@@ -3,7 +3,7 @@
 //! the box centres, a few items per leaf) and only read afterwards. [`MeshIndex`] holds one over
 //! a mesh's triangles and one over its edge segments, for picking.
 
-use crate::{Aabb3, Mesh, Vec3};
+use crate::{Aabb3, Mesh, Ray, Vec3};
 
 /// Most items in a leaf.
 const LEAF: usize = 4;
@@ -103,17 +103,16 @@ impl Bvh {
         }
     }
 
-    /// The nearest item along the ray from `o` along `d`: `hit` gives an item's distance along
-    /// `d` (`None`: missed). Equal distances go to the lowest item, as a scan in item order
+    /// The nearest item along `ray`: `hit` gives an item's distance along it (`None`: missed). Equal distances go to the lowest item, as a scan in item order
     /// keeping strictly nearer hits would answer. Boxes are entered nearest first, and one that
     /// starts past the best hit so far is skipped.
-    pub fn nearest(&self, o: Vec3, d: Vec3, mut hit: impl FnMut(u32) -> Option<f64>) -> Option<(f64, u32)> {
-        if ![o.x, o.y, o.z, d.x, d.y, d.z].iter().all(|v| v.is_finite()) {
+    pub fn nearest(&self, ray: &Ray, mut hit: impl FnMut(u32) -> Option<f64>) -> Option<(f64, u32)> {
+        if !ray.is_finite() {
             return None;
         }
-        let inv = Vec3::new(1.0 / d.x, 1.0 / d.y, 1.0 / d.z);
+        let inv = Vec3::new(1.0 / ray.dir.x, 1.0 / ray.dir.y, 1.0 / ray.dir.z);
         let mut best: Option<(f64, u32)> = None;
-        let root = self.nodes.first().and_then(|n| ray_box(o, d, inv, &n.bounds, 0.0))?;
+        let root = self.nodes.first().and_then(|n| ray_box(ray, inv, &n.bounds, 0.0))?;
         let mut stack = vec![(0usize, root)];
         while let Some((n, t0)) = stack.pop() {
             if best.is_some_and(|(bt, _)| t0 > bt) {
@@ -132,8 +131,8 @@ impl Bvh {
                 continue;
             }
             let (l, r) = (node.first as usize, node.first as usize + 1);
-            let tl = self.nodes.get(l).and_then(|c| ray_box(o, d, inv, &c.bounds, 0.0));
-            let tr = self.nodes.get(r).and_then(|c| ray_box(o, d, inv, &c.bounds, 0.0));
+            let tl = self.nodes.get(l).and_then(|c| ray_box(ray, inv, &c.bounds, 0.0));
+            let tr = self.nodes.get(r).and_then(|c| ray_box(ray, inv, &c.bounds, 0.0));
             // The nearer child is popped first.
             match (tl, tr) {
                 (Some(a), Some(b)) if a <= b => stack.extend([(r, b), (l, a)]),
@@ -198,33 +197,21 @@ fn finite(b: &Aabb3) -> bool {
     [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].iter().all(|v| v.is_finite())
 }
 
-/// Where the ray from `o` along `d` (`inv` = 1 / `d` per axis) enters box `b` grown by `pad`,
-/// from 0 on; `None` when it misses or the box lies behind.
-fn ray_box(o: Vec3, d: Vec3, inv: Vec3, b: &Aabb3, pad: f64) -> Option<f64> {
-    let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
-    for (o, d, inv, lo, hi) in [(o.x, d.x, inv.x, b.min.x, b.max.x), (o.y, d.y, inv.y, b.min.y, b.max.y), (o.z, d.z, inv.z, b.min.z, b.max.z)] {
-        let (lo, hi) = (lo - pad, hi + pad);
-        if d == 0.0 || !inv.is_finite() {
-            if o < lo || o > hi {
-                return None;
-            }
-            continue;
-        }
-        let (a, b) = ((lo - o) * inv, (hi - o) * inv);
-        let (a, b) = if a <= b { (a, b) } else { (b, a) };
-        t0 = t0.max(a);
-        t1 = t1.min(b);
-        if t0 > t1 {
-            return None;
-        }
-    }
-    (t0 <= t1).then_some(t0)
+/// Where `ray` (`inv` = 1 / its direction per axis) enters box `b` grown by `pad`, from its origin
+/// on; `None` when it misses or the box lies behind.
+fn ray_box(ray: &Ray, inv: Vec3, b: &Aabb3, pad: f64) -> Option<f64> {
+    b.ray_span_inv(ray, inv, pad).filter(|(_, t1)| *t1 >= 0.0).map(|(t0, _)| t0.max(0.0))
 }
 
-/// The farthest any corner of `b` lies along `d` from `o` (0 when the box is behind).
-fn farthest_along(o: Vec3, d: Vec3, b: &Aabb3) -> f64 {
+/// The farthest any corner of `b` lies along `ray` (0 when the box is behind).
+fn farthest_along(ray: &Ray, b: &Aabb3) -> f64 {
     let along = |lo: f64, hi: f64, o: f64, d: f64| if d >= 0.0 { (hi - o) * d } else { (lo - o) * d };
-    (along(b.min.x, b.max.x, o.x, d.x) + along(b.min.y, b.max.y, o.y, d.y) + along(b.min.z, b.max.z, o.z, d.z)).max(0.0)
+    let (x, y, z) = (
+        along(b.min.x, b.max.x, ray.origin.x, ray.dir.x),
+        along(b.min.y, b.max.y, ray.origin.y, ray.dir.y),
+        along(b.min.z, b.max.z, ray.origin.z, ray.dir.z),
+    );
+    (x + y + z).max(0.0)
 }
 
 /// A mesh's triangles and edge segments in hierarchies, for picking: the nearest triangle along
@@ -280,28 +267,28 @@ impl MeshIndex {
 
     /// [`Mesh::raycast`] through the index: the same answer, including which triangle wins a tie.
     /// For a mesh other than the one indexed, the plain scan answers.
-    pub fn raycast(&self, mesh: &Mesh, o: Vec3, dir: Vec3) -> Option<(f64, usize)> {
+    pub fn raycast(&self, mesh: &Mesh, ray: &Ray) -> Option<(f64, usize)> {
         if mesh.triangles.len() != self.triangle_count {
-            return mesh.raycast(o, dir);
+            return mesh.raycast(ray);
         }
-        let frame = crate::mesh::RayFrame::new(o, dir)?;
+        let frame = crate::mesh::RayFrame::new(ray);
         self.triangles
-            .nearest(o, dir, |i| mesh.triangles.get(i as usize).and_then(|t| mesh.tri(t)).and_then(|p| frame.hit(p)))
+            .nearest(ray, |i| mesh.triangles.get(i as usize).and_then(|t| mesh.tri(t)).and_then(|p| frame.hit(p)))
             .map(|(t, i)| (t, i as usize))
     }
 
-    /// Calls `f(edge, first point)` for every edge segment that may come within `a + b·t` of the
-    /// ray from `o` along unit `d`, `t` being the distance along it (each at most once). A
-    /// constant `a` suits an orthographic view; a perspective view widens with `b`.
-    pub fn segments_near(&self, o: Vec3, d: Vec3, a: f64, b: f64, mut f: impl FnMut(usize, usize)) {
-        if ![a, b, o.x, o.y, o.z, d.x, d.y, d.z].iter().all(|v| v.is_finite()) {
+    /// Calls `f(edge, first point)` for every edge segment that may come within `a + b·t` of
+    /// `ray`, `t` being the distance along it (each at most once). A constant `a` suits an
+    /// orthographic view; a perspective view widens with `b`.
+    pub fn segments_near(&self, ray: &Ray, a: f64, b: f64, mut f: impl FnMut(usize, usize)) {
+        if !(a.is_finite() && b.is_finite() && ray.is_finite()) {
             return;
         }
-        let inv = Vec3::new(1.0 / d.x, 1.0 / d.y, 1.0 / d.z);
+        let inv = Vec3::new(1.0 / ray.dir.x, 1.0 / ray.dir.y, 1.0 / ray.dir.z);
         self.segments.visit(
             |bx| {
-                let reach = a.max(0.0) + b.max(0.0) * farthest_along(o, d, bx);
-                ray_box(o, d, inv, bx, reach).is_some()
+                let reach = a.max(0.0) + b.max(0.0) * farthest_along(ray, bx);
+                ray_box(ray, inv, bx, reach).is_some()
             },
             |i| {
                 if let Some((e, s)) = self.segment_of.get(i as usize) {

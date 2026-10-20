@@ -54,9 +54,9 @@ fn cube_measure() {
 #[test]
 fn raycast_hits_front_face() {
     let m = cube_mesh(2.0);
-    let (t, _) = m.raycast(Vec3::new(1.0, 1.0, 10.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    let (t, _) = m.raycast(&Ray::new(Vec3::new(1.0, 1.0, 10.0), -UnitVec3::Z)).unwrap();
     assert!((t - 8.0).abs() < 1e-9);
-    assert!(m.raycast(Vec3::new(5.0, 5.0, 10.0), Vec3::new(0.0, 0.0, -1.0)).is_none());
+    assert!(m.raycast(&Ray::new(Vec3::new(5.0, 5.0, 10.0), -UnitVec3::Z)).is_none());
 }
 
 /// A ray through a vertex or edge that triangles share never slips between them: a grid of
@@ -84,10 +84,10 @@ fn raycast_never_slips_between_triangles() {
             targets.push(Vec3::new(f64::from(i) * 20.0 / 6.0 + 100.0, f64::from(j) * 2.5, 20.0));
         }
     }
-    for d in dirs {
+    for d in dirs.iter().filter_map(|d| d.unit()) {
         for p in &targets {
             let o = *p - d * 50.0;
-            let hit = m.raycast(o, d);
+            let hit = m.raycast(&Ray::new(o, d));
             assert!(hit.is_some_and(|(t, _)| (t - 50.0).abs() < 1e-6), "{p:?} along {d:?}: {hit:?}");
         }
     }
@@ -101,7 +101,7 @@ fn planes() {
     let p = Plane::XZ.to_world(Vec2::new(3.0, 4.0));
     assert_eq!(p, Vec3::new(3.0, 0.0, -4.0));
     assert_eq!(Plane::XZ.to_local(p), Vec2::new(3.0, 4.0));
-    let hit = Plane::XY.offset(5.0).intersect_ray(Vec3::new(1.0, 2.0, 10.0), Vec3::new(0.0, 0.0, -2.0)).unwrap();
+    let hit = Plane::XY.offset(5.0).intersect_ray(&Ray::new(Vec3::new(1.0, 2.0, 10.0), -UnitVec3::Z)).unwrap();
     assert!(hit.dist(Vec3::new(1.0, 2.0, 5.0)) < 1e-12);
     assert!(Plane::new(Vec3::ZERO, Vec3::X, Vec3::X).is_none());
     let f = Plane::from_normal(Vec3::ZERO, Vec3::new(0.0, 0.0, 3.0)).unwrap();

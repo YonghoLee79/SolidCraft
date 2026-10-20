@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Vec2, Vec3};
+use crate::{Ray, Vec2, Vec3};
 
 /// A sketch plane: an origin and two orthonormal in-plane axes. The normal is `x × y`.
 ///
@@ -76,14 +76,14 @@ impl Plane {
     pub fn offset(&self, d: f64) -> Plane {
         Plane { origin: self.origin + self.normal() * d, ..*self }
     }
-    /// Intersection of the ray `o + t·dir` with the plane (t may be negative).
-    pub fn intersect_ray(&self, o: Vec3, dir: Vec3) -> Option<Vec3> {
+    /// Where the line along `ray` meets the plane (behind its origin too).
+    pub fn intersect_ray(&self, ray: &Ray) -> Option<Vec3> {
         let n = self.normal();
-        let den = dir.dot(n);
+        let den = ray.dir.dot(n);
         if den.abs() < 1e-12 {
             return None;
         }
-        let t = (self.origin - o).dot(n) / den;
-        t.is_finite().then(|| o + dir * t)
+        let t = (self.origin - ray.origin).dot(n) / den;
+        t.is_finite().then(|| ray.at(t))
     }
 }

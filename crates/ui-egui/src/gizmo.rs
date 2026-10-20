@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 
 use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, vec2};
-use solidcraft_engine::geom::{Ring, Vec3};
+use solidcraft_engine::geom::{Plane, Ring, Vec3};
 
 use crate::theme::Tokens;
 use crate::viewport::{Proj, projected_polygon};
@@ -142,19 +142,15 @@ fn in_quad(p: Pos2, q: &Ring<Pos2>) -> bool {
 
 /// Where the view ray through `pos` meets the plane through `o` with normal `n`.
 fn on_plane(proj: &Proj, pos: Pos2, o: Vec3, n: Vec3) -> Option<Vec3> {
-    let (ro, rd) = proj.ray(pos);
-    let den = rd.dot(n);
-    if den.abs() < 1e-9 {
-        return None;
-    }
-    Some(ro + rd * ((o - ro).dot(n) / den))
+    Plane::from_normal(o, n)?.intersect_ray(&proj.ray(pos))
 }
 
-/// Parameter along the line `o + d t` closest to the view ray through `pos`.
-fn along(proj: &Proj, pos: Pos2, o: Vec3, d: Vec3) -> Option<f64> {
-    let (ro, r) = proj.ray(pos);
-    let w0 = o - ro;
-    let (b, dd, e) = (d.dot(r), d.dot(w0), r.dot(w0));
+/// Parameter along the line `o + d t` (`d` of length 1) closest to the view ray through `pos`;
+/// `None` looking straight along it.
+pub(crate) fn along(proj: &Proj, pos: Pos2, o: Vec3, d: Vec3) -> Option<f64> {
+    let ray = proj.ray(pos);
+    let w0 = o - ray.origin;
+    let (b, dd, e) = (d.dot(ray.dir), d.dot(w0), ray.dir.dot(w0));
     let den = 1.0 - b * b;
     if den.abs() < 1e-6 {
         return None;
@@ -221,7 +217,7 @@ fn hit(s: &Shapes, p: Pos2) -> Option<Handle> {
 
 /// Millimetres per screen pixel at a point.
 fn mm_per_px(proj: &Proj, c: Vec3) -> Option<f64> {
-    let (_, view) = proj.ray(proj.to_screen(c)?);
+    let view = proj.ray(proj.to_screen(c)?).dir;
     let u = view.any_perp().normalized()?;
     let (a, b) = (proj.to_screen(c)?, proj.to_screen(c + u)?);
     let px = f64::from(a.distance(b));
@@ -281,10 +277,10 @@ pub fn show(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, id: egui::I
     if state.is_some() || r.dragged() || r.drag_started() {
         crate::tool_modifiers::set_manipulator_dragging(true);
     }
-    let view = proj.ray(sh.ball).1;
+    let view = proj.ray(sh.ball).dir;
     let plane_normal = |h: Handle| match h {
         Handle::Plane(i) | Handle::Ring(i) => DIRS[i],
-        _ => view,
+        _ => view.vec(),
     };
     let mut started = false;
     let mut st = match state {

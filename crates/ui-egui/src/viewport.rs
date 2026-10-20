@@ -5,7 +5,8 @@ use crate::fonts::RichTextExt as _;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 use serde_json::json;
 use solidcraft_engine::Sel;
-use solidcraft_engine::geom::{Vec2, Vec3};
+use solidcraft_engine::geom::mesh_distance::closest_on_segment_to_ray;
+use solidcraft_engine::geom::{Ray, Vec2, Vec3};
 use solidcraft_engine::render::{Camera, Mat4, Rgb};
 use solidcraft_engine::sketch::CurveKind;
 use solidcraft_engine::view::{GridPlane, colors, grid_plane, grid_step, sketch_lines_with_sampler};
@@ -229,7 +230,7 @@ impl Proj {
             self.rect.top() + ((1.0 - y) * 0.5 * self.rect.height() as f64) as f32,
         ))
     }
-    pub fn ray(&self, p: Pos2) -> (Vec3, Vec3) {
+    pub fn ray(&self, p: Pos2) -> Ray {
         self.cam.ray((p.x - self.rect.left()) as f64, (p.y - self.rect.top()) as f64, self.rect.width() as f64, self.rect.height() as f64)
     }
 }
@@ -1107,41 +1108,6 @@ pub fn model_bounds(app: &SolveApp) -> solidcraft_engine::geom::Aabb3 {
     b
 }
 
-/// Where a ray enters a box (None: it misses).
-fn ray_box(o: Vec3, d: Vec3, b: &solidcraft_engine::geom::Aabb3, pad: f64) -> Option<f64> {
-    let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
-    for (oo, dd, lo, hi) in [(o.x, d.x, b.min.x, b.max.x), (o.y, d.y, b.min.y, b.max.y), (o.z, d.z, b.min.z, b.max.z)] {
-        let (lo, hi) = (lo - pad, hi + pad);
-        if dd.abs() < 1e-15 {
-            if oo < lo || oo > hi {
-                return None;
-            }
-        } else {
-            let (a, c) = ((lo - oo) / dd, (hi - oo) / dd);
-            t0 = t0.max(a.min(c));
-            t1 = t1.min(a.max(c));
-        }
-    }
-    (t0 <= t1).then_some(t0)
-}
-
-/// The point of segment `a`–`b` nearest the ray from `o` along `d`.
-fn ray_segment_closest(o: Vec3, d: Vec3, a: Vec3, b: Vec3) -> Vec3 {
-    let u = b - a;
-    let w = a - o;
-    let (dd, du, uu) = (d.dot(d), d.dot(u), u.dot(u));
-    let den = dd * uu - du * du;
-    // Parallel or degenerate: every point is as near, so the start stands for the segment.
-    if !(den.is_finite() && den > 1e-12 * dd * uu) {
-        return a;
-    }
-    let s = (du * d.dot(w) - dd * u.dot(w)) / den;
-    if !s.is_finite() {
-        return a;
-    }
-    a + u * s.clamp(0.0, 1.0)
-}
-
 /// A box's outline on screen, grown by `px` (None: behind the eye).
 fn screen_box(proj: &Proj, b: &solidcraft_engine::geom::Aabb3, px: f32) -> Option<Rect> {
     let mut r = Rect::NOTHING;
@@ -1266,7 +1232,7 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
     let st = crate::open_meshing::shown_world(app);
     let bounds = body_bounds(app, &st);
     let mut hits = Vec::new();
-    let (o, d) = proj.ray(pos);
+    let ray = proj.ray(pos);
     // Sketch points of the active sketch (of every shown sketch while a command takes points,
     // while idle or projecting, and while 3D drawing snaps to points on other visible sketches).
     let wants_points = app.dialog.as_ref().and_then(|d| d.active_input()).is_some_and(|i| i.accept & crate::selection::POINTS != 0);
@@ -1338,16 +1304,16 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
         // Bodies whose box the ray misses (or enters behind the best hit so far) are skipped.
         if let Some((_, bb)) = bounds.get(i) {
             let pad = bb.diagonal() * 1e-6 + 1e-9;
-            match ray_box(o, d, bb, pad) {
+            match bb.ray_span(&ray, pad).map(|(t0, _)| t0) {
                 None => continue,
                 Some(t0) if !all && bestf.as_ref().is_some_and(|(bt, _)| t0 > *bt) => continue,
                 _ => {}
             }
         }
         let m = b.mesh();
-        if let Some((t, ti)) = crate::pick_index::raycast(app.viewport.pick_index.of(&m).as_deref(), &m, o, d) {
+        if let Some((t, ti)) = crate::pick_index::raycast(app.viewport.pick_index.of(&m).as_deref(), &m, &ray) {
             let fi = m.tri_face.get(ti).copied().unwrap_or(0) as usize;
-            let hit = Hit::Face { body: b.name.clone(), index: fi, point: o + d * t };
+            let hit = Hit::Face { body: b.name.clone(), index: fi, point: ray.at(t) };
             if bestf.as_ref().is_none_or(|(bt, _)| t < *bt) {
                 bestf = Some((t, hit.clone()));
             }
@@ -1359,7 +1325,7 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
     let slack = scene_radius(app) * 0.02;
     // Wireframe draws no faces, so nothing hides an edge or a vertex.
     let wireframe = app.ui.visual_style == 2;
-    let visible = |p: Vec3| wireframe || bestf.as_ref().is_none_or(|(t, _)| (p - o).dot(d) <= *t + slack);
+    let visible = |p: Vec3| wireframe || bestf.as_ref().is_none_or(|(t, _)| (p - ray.origin).dot(ray.dir) <= *t + slack);
     // Vertices (edge end points) and edges, within 7 and 6 points of the cursor.
     let reach = crate::pick_index::reach(proj, pos, 8.0);
     // The edges seen near the cursor, when the GPU pick buffer has them for this view (Select
@@ -1383,7 +1349,7 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
         // them, so ties go the same way.
         let near = match &seen {
             Some(seen) => seen.segments(i, &m),
-            None => crate::pick_index::segments_near(app.viewport.pick_index.of(&m).as_deref(), &m, o, d, reach),
+            None => crate::pick_index::segments_near(app.viewport.pick_index.of(&m).as_deref(), &m, &ray, reach),
         };
         let mut last_edge = None;
         for (ei, si) in near {
@@ -1407,7 +1373,7 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
             let dd = seg_dist(pos, a, c);
             // Visible where the cursor is: the edge's point under the cursor, not an end or
             // the middle, which can lie deeper than the face the cursor is on.
-            if dd < 6.0 && beste.wants(dd) && visible(ray_segment_closest(o, d, *p0, *p1)) {
+            if dd < 6.0 && beste.wants(dd) && visible(closest_on_segment_to_ray(*p0, *p1, &ray)) {
                 beste.offer(dd, Hit::Edge { body: b.name.clone(), index: ei, mid: polyline_mid(e) });
             }
         }
@@ -1442,15 +1408,15 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
     for sid in visible_sketches(app) {
         let Some(ss) = st.sketch(sid) else { continue };
         let n = ss.plane.normal();
-        let den = n.dot(d);
+        let den = n.dot(ray.dir);
         if den.abs() < 1e-12 {
             continue;
         }
-        let t = n.dot(ss.plane.origin - o) / den;
+        let t = n.dot(ss.plane.origin - ray.origin) / den;
         if t < 0.0 {
             continue;
         }
-        let lp = ss.plane.to_local(o + d * t);
+        let lp = ss.plane.to_local(ray.at(t));
         // Show Profile off: the sketch being edited offers no profiles.
         let profiles = if ss.sketch.view.hide_profile && s.active_sketch == Some(sid) { &[][..] } else { &ss.profiles[..] };
         for (pi, p) in profiles.iter().enumerate() {
@@ -1476,13 +1442,13 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
     }
     // Planes give way to a face or profile at the same depth (a floor on the XZ plane).
     for (name, _, q) in origin_planes(app) {
-        if let Some(t) = ray_quad(o, d, &q) {
-            surf.push((t + slack, Hit::Plane { name: name.into(), point: o + d * t }));
+        if let Some(t) = ray_quad(&ray, &q) {
+            surf.push((t + slack, Hit::Plane { name: name.into(), point: ray.at(t) }));
         }
     }
     for (name, _, q) in construction_quads(app) {
-        if let Some(t) = ray_quad(o, d, &q) {
-            surf.push((t + slack, Hit::Plane { name, point: o + d * t }));
+        if let Some(t) = ray_quad(&ray, &q) {
+            surf.push((t + slack, Hit::Plane { name, point: ray.at(t) }));
         }
     }
     surf.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -2316,8 +2282,7 @@ pub fn sketch_point_at(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<(Vec2, 
             return Some((at, Some(id)));
         }
     }
-    let (o, d) = proj.ray(pos);
-    let w = ss.plane.intersect_ray(o, d)?;
+    let w = ss.plane.intersect_ray(&proj.ray(pos))?;
     let lp = ss.plane.to_local(w);
     if crate::drag_snap::suppressed() {
         return Some((lp, None));
@@ -2630,11 +2595,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     dialog_pick(app, &hit, sel);
                 } else if let Some(mut dialog) = app.dialog.take() {
                     let state = crate::open_meshing::shown_world(app);
-                    if let Some(sketch) = app.session.active_sketch.and_then(|id| state.sketch(id)) {
-                        let (origin, direction) = proj.ray(p);
-                        if let Some(point) = sketch.plane.intersect_ray(origin, direction) {
-                            crate::sketch_modify_ui::pick_position(&mut dialog, &app.session, point);
-                        }
+                    if let Some(sketch) = app.session.active_sketch.and_then(|id| state.sketch(id))
+                        && let Some(point) = sketch.plane.intersect_ray(&proj.ray(p))
+                    {
+                        crate::sketch_modify_ui::pick_position(&mut dialog, &app.session, point);
                     }
                     app.dialog = Some(dialog);
                 }
@@ -2727,8 +2691,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     if app.tool.is_none() && app.dialog.is_none() && primary_nav.is_none() && mode.is_none() && app.session.active_sketch.is_some() && !held {
         let on_plane = |app: &SolveApp, p: Pos2| {
             let ss = app.session.active_sketch.and_then(|sid| crate::open_meshing::shown_world(app).sketch(sid).cloned())?;
-            let (o, d) = proj.ray(p);
-            ss.plane.intersect_ray(o, d).map(|w| ss.plane.to_local(w))
+            ss.plane.intersect_ray(&proj.ray(p)).map(|w| ss.plane.to_local(w))
         };
         // What a drag starts on: the 3D triad, then a dimension's text, then sketch geometry
         // (before the dimension's lines, which end on the geometry they measure), as for clicks.
@@ -4563,20 +4526,6 @@ mod tests {
         assert!(bounds.min.x >= 29.99 && bounds.max.x <= 32.01 && bounds.max.y >= 41.99, "{bounds:?}");
     }
 
-    #[test]
-    fn ray_segment_closest_takes_the_point_under_the_ray() {
-        let (o, d) = (Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0));
-        let x = |a: Vec3, b: Vec3| ray_segment_closest(o, d, a, b);
-        assert!(x(Vec3::new(-5.0, 0.0, 0.0), Vec3::new(5.0, 0.0, -4.0)).dist(Vec3::new(0.0, 0.0, -2.0)) < 1e-9);
-        // Beyond an end: the end.
-        assert!(x(Vec3::new(1.0, 0.0, 0.0), Vec3::new(3.0, 0.0, 0.0)).dist(Vec3::new(1.0, 0.0, 0.0)) < 1e-9);
-        // Parallel, degenerate and non-finite input: the start, no panic.
-        assert_eq!(x(Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 5.0)), Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(x(Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)), Vec3::new(2.0, 0.0, 0.0));
-        let nan = Vec3::new(f64::NAN, 0.0, 0.0);
-        let _ = x(nan, Vec3::ZERO);
-    }
-
     /// Hovering anywhere along a visible edge between two faces picks that edge, not a face
     /// (the edge used to pick only where its start or middle was as near as the face).
     #[test]
@@ -4601,10 +4550,10 @@ mod tests {
                 for k in 1..10 {
                     let p = a.lerp(b, k as f64 / 10.0);
                     let Some(sp) = proj.to_screen(p) else { continue };
-                    let (o, d) = proj.ray(sp);
+                    let ray = proj.ray(sp);
                     // Only edges in front at that point (shaded); every edge in wireframe.
-                    let depth = (p - o).dot(d);
-                    if style != 2 && m.raycast(o, d).is_some_and(|(t, _)| t < depth - 1e-3) {
+                    let depth = (p - ray.origin).dot(ray.dir);
+                    if style != 2 && m.raycast(&ray).is_some_and(|(t, _)| t < depth - 1e-3) {
                         continue;
                     }
                     let hits = pick(&app, &proj, sp);

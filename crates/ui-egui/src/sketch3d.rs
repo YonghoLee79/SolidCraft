@@ -9,7 +9,8 @@ use std::cell::RefCell;
 
 use egui::{Pos2, Rect, Shape, Stroke, vec2};
 use serde_json::{Value, json};
-use solidcraft_engine::geom::{Vec2, Vec3};
+use solidcraft_engine::geom::mesh_distance::closest_on_segment_to_ray;
+use solidcraft_engine::geom::{Plane, Vec2, Vec3};
 
 use crate::SolveApp;
 use crate::theme::Tokens;
@@ -52,17 +53,6 @@ fn drawn_points(app: &SolveApp) -> Vec<(String, usize, Vec3)> {
     ss.sketch.wires.iter().flat_map(|w| w.fit.iter().enumerate().map(|(i, p)| (w.id.clone(), i, *p))).collect()
 }
 
-/// Closest point of segment a–b to the ray (o, d).
-fn seg_ray_closest(a: Vec3, b: Vec3, o: Vec3, d: Vec3) -> Vec3 {
-    let u = b - a;
-    let w0 = a - o;
-    let (aa, bb, cc) = (u.dot(u), u.dot(d), d.dot(d));
-    let (dd, ee) = (u.dot(w0), d.dot(w0));
-    let den = aa * cc - bb * bb;
-    let s = if den.abs() < 1e-12 { 0.0 } else { ((bb * ee - cc * dd) / den).clamp(0.0, 1.0) };
-    a + u * s
-}
-
 /// The 3D point under the cursor and what it snapped to: a drawn 3D point, a model vertex, a
 /// point on a model edge or face, a sketch point, or the sketch plane.
 pub fn point_at(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<(Vec3, &'static str)> {
@@ -73,7 +63,7 @@ pub fn point_at(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<(Vec3, &'stati
     }
     let st = app.session.world_state();
     let ss = app.session.active_sketch.and_then(|s| st.sketch(s))?;
-    let (o, d) = proj.ray(pos);
+    let ray = proj.ray(pos);
     for h in pick_3d(app, proj, pos) {
         match h {
             Hit::SketchPoint { sketch, at, .. } => {
@@ -88,15 +78,15 @@ pub fn point_at(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<(Vec3, &'stati
                 let e = m.edges.get(index)?;
                 let best = e
                     .windows(2)
-                    .map(|w| seg_ray_closest(w[0], w[1], o, d))
-                    .min_by(|p, q| (*p - o).cross(d).len().total_cmp(&(*q - o).cross(d).len()))?;
+                    .map(|w| closest_on_segment_to_ray(w[0], w[1], &ray))
+                    .min_by(|p, q| (*p - ray.origin).cross(ray.dir).len().total_cmp(&(*q - ray.origin).cross(ray.dir).len()))?;
                 return Some((best, "Edge"));
             }
             Hit::Face { point, .. } => return Some((point, "Face")),
             _ => {}
         }
     }
-    ss.plane.intersect_ray(o, d).map(|w| (w, "Plane"))
+    ss.plane.intersect_ray(&ray).map(|w| (w, "Plane"))
 }
 
 /// The sketch-plane coordinates of `p` when it lies on the plane.
@@ -313,22 +303,22 @@ pub fn drag_start(app: &SolveApp, proj: &Proj, press: Pos2) -> bool {
 /// Where the pointer puts the point: along `axis` through `p`, or in the plane through `p`
 /// parallel to the sketch plane.
 fn target(app: &SolveApp, proj: &Proj, pos: Pos2, axis: Option<Vec3>, p: Vec3) -> Option<Vec3> {
-    let (o, d) = proj.ray(pos);
+    let ray = proj.ray(pos);
     match axis {
         Some(u) => {
-            let w0 = p - o;
-            let (a, b, c) = (u.dot(u), u.dot(d), d.dot(d));
-            let den = a * c - b * b;
+            let w0 = p - ray.origin;
+            // The ray's direction has length 1.
+            let (a, b) = (u.dot(u), u.dot(ray.dir));
+            let den = a - b * b;
             if den.abs() < 1e-12 {
                 return None;
             }
-            Some(p + u * ((b * d.dot(w0) - c * u.dot(w0)) / den))
+            Some(p + u * ((b * ray.dir.dot(w0) - u.dot(w0)) / den))
         }
         None => {
             let st = app.session.world_state();
-            let n = app.session.active_sketch.and_then(|s| st.sketch(s))?.plane.normal();
-            let den = d.dot(n);
-            (den.abs() > 1e-12).then(|| o + d * ((p - o).dot(n) / den))
+            let plane = app.session.active_sketch.and_then(|s| st.sketch(s))?.plane;
+            Plane { origin: p, ..plane }.intersect_ray(&ray)
         }
     }
 }

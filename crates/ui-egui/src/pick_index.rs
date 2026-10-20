@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use egui::{Pos2, vec2};
-use solidcraft_engine::geom::{Mesh, MeshIndex, Vec3};
+use solidcraft_engine::geom::{Mesh, MeshIndex, Ray};
 
 use crate::viewport::Proj;
 
@@ -74,12 +74,12 @@ impl PickIndexes {
 /// screen: `a + b·t` at distance `t` along the ray (constant for an orthographic view, widening
 /// with depth in perspective), with room to spare.
 pub(crate) fn reach(proj: &Proj, pos: Pos2, px: f32) -> (f64, f64) {
-    let (o, d) = proj.ray(pos);
+    let ray = proj.ray(pos);
     let (mut a, mut b) = (0.0f64, 0.0f64);
     for step in [vec2(px, 0.0), vec2(0.0, px), vec2(-px, 0.0), vec2(0.0, -px)] {
-        let (o2, d2) = proj.ray(pos + step);
-        a = a.max(o2.dist(o));
-        b = b.max(d2.dist(d));
+        let other = proj.ray(pos + step);
+        a = a.max(other.origin.dist(ray.origin));
+        b = b.max(other.dir.dist(*ray.dir));
     }
     // A screen offset of `px` along a diagonal, and rounding: half again.
     (a * 1.5, b * 1.5)
@@ -87,7 +87,7 @@ pub(crate) fn reach(proj: &Proj, pos: Pos2, px: f32) -> (f64, f64) {
 
 /// The edge segments of `index` that may come within reach of the ray, as (edge, first point),
 /// in edge order and then along each edge: the order a scan of every edge would meet them in.
-pub(crate) fn segments_near(index: Option<&MeshIndex>, mesh: &Mesh, o: Vec3, d: Vec3, (a, b): (f64, f64)) -> Vec<(usize, usize)> {
+pub(crate) fn segments_near(index: Option<&MeshIndex>, mesh: &Mesh, ray: &Ray, (a, b): (f64, f64)) -> Vec<(usize, usize)> {
     let mut v = Vec::new();
     let Some(index) = index.filter(|_| !scanning()) else {
         for (ei, e) in mesh.edges.iter().enumerate() {
@@ -95,16 +95,16 @@ pub(crate) fn segments_near(index: Option<&MeshIndex>, mesh: &Mesh, o: Vec3, d: 
         }
         return v;
     };
-    index.segments_near(o, d, a, b, |e, s| v.push((e, s)));
+    index.segments_near(ray, a, b, |e, s| v.push((e, s)));
     v.sort_unstable();
     v
 }
 
 /// The nearest triangle of `mesh` along the ray, through its index.
-pub(crate) fn raycast(index: Option<&MeshIndex>, mesh: &Mesh, o: Vec3, d: Vec3) -> Option<(f64, usize)> {
+pub(crate) fn raycast(index: Option<&MeshIndex>, mesh: &Mesh, ray: &Ray) -> Option<(f64, usize)> {
     match index.filter(|_| !scanning()) {
-        Some(index) => index.raycast(mesh, o, d),
-        None => mesh.raycast(o, d),
+        Some(index) => index.raycast(mesh, ray),
+        None => mesh.raycast(ray),
     }
 }
 
