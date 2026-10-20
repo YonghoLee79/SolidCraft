@@ -2,14 +2,18 @@
 //! the engine's in-memory files (`solidcraft_engine::io::vfs`) at start, written back whenever a
 //! command writes one. Files come in from the computer through a file picker (the File System
 //! Access API where the browser has it, an `<input type=file>` otherwise) or a drop on the page,
-//! and go out as downloads (exports, and "Download design"). An autosave of unsaved work is kept
-//! in OPFS too and offered again after a reload or a crash.
+//! and go out as downloads (exports, and "Download design"). Where the File System Access API
+//! exists a design also lives on the computer's disk, saved and opened through the browser's file
+//! dialogs (`disk.rs`). An autosave of unsaved work is kept in OPFS and offered again after a
+//! reload or a crash.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use js_sys::{Array, Function, Object, Reflect, Uint8Array};
 use solidcraft_engine::io::vfs;
+
+use crate::disk;
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemGetFileOptions, FileSystemWritableFileStream};
@@ -51,6 +55,10 @@ pub struct Files {
     pub entries: RefCell<Vec<Entry>>,
     /// Files read from the computer: (name, bytes, what to do).
     pub incoming: RefCell<Vec<(String, Vec<u8>, Intent)>>,
+    /// Designs opened from the computer's disk: their paths in the engine's files.
+    pub opened: RefCell<Vec<String>>,
+    /// Disk designs whose last write failed: they are not saved.
+    pub unsaved: RefCell<Vec<String>>,
     /// Messages for the status line (errors and confirmations).
     pub messages: RefCell<Vec<(String, bool)>>,
     /// The stored designs are loaded (the app may open them).
@@ -64,9 +72,15 @@ pub struct Files {
 }
 
 impl Files {
-    fn say(&self, text: impl Into<String>, error: bool) {
+    pub fn say(&self, text: impl Into<String>, error: bool) {
         self.messages.borrow_mut().push((text.into(), error));
         self.wake();
+    }
+
+    /// Writing the design at disk `path` failed: say so, and take its "saved" back.
+    pub fn failed_disk(&self, path: &str, error: &str) {
+        self.unsaved.borrow_mut().push(path.to_string());
+        self.say(format!("Not saved to your computer: {error}"), true);
     }
 
     /// A file arrived from the computer.
@@ -127,7 +141,7 @@ pub fn local_only() -> bool {
     LOCAL.with(Cell::get)
 }
 
-fn err(e: JsValue) -> String {
+pub(crate) fn err(e: JsValue) -> String {
     e.as_string().or_else(|| Reflect::get(&e, &"message".into()).ok().and_then(|m| m.as_string())).unwrap_or_else(|| format!("{e:?}"))
 }
 
@@ -150,7 +164,7 @@ async fn root() -> Result<FileSystemDirectoryHandle, String> {
     dir.dyn_into::<FileSystemDirectoryHandle>().map_err(|_| "this browser has no private file storage (OPFS)".to_string())
 }
 
-async fn read_handle(h: &FileSystemFileHandle) -> Result<Vec<u8>, String> {
+pub(crate) async fn read_handle(h: &FileSystemFileHandle) -> Result<Vec<u8>, String> {
     let file: web_sys::File = JsFuture::from(h.get_file()).await.map_err(err)?.dyn_into().map_err(|_| "not a file".to_string())?;
     blob_bytes(&file).await
 }
@@ -311,6 +325,8 @@ pub fn flush(files: &Rc<Files>) {
                     files.say(format!("{name}: {e}"), true);
                 }
             });
+        } else if crate::disk::is_disk(&path) {
+            disk::enqueue(files, &path, bytes);
         } else if let Some(name) = path.strip_prefix(DOWNLOADS)
             && let Err(e) = download(name, &bytes)
         {
@@ -427,8 +443,15 @@ pub fn pick_from_disk(files: &Rc<Files>, intent: Intent) {
     let picker = Reflect::get(&window, &"showOpenFilePicker".into()).ok().and_then(|f| f.dyn_into::<Function>().ok());
     match picker {
         Some(f) => {
-            let opts = Object::new();
-            let _ = Reflect::set(&opts, &"multiple".into(), &JsValue::FALSE);
+            // A design from the computer's disk keeps its file, so Save writes back to it.
+            let on_disk = intent == Intent::Open && disk::supported();
+            let opts = if on_disk {
+                disk::open_options()
+            } else {
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"multiple".into(), &JsValue::FALSE);
+                opts
+            };
             let promise = f.call1(&window, &opts);
             let files = files.clone();
             spawn_local(async move {
@@ -438,7 +461,13 @@ pub fn pick_from_disk(files: &Rc<Files>, intent: Intent) {
                     for h in handles.iter() {
                         let h: FileSystemFileHandle = h.dyn_into().map_err(|_| "not a file".to_string())?;
                         let bytes = read_handle(&h).await?;
-                        files.arrive(h.name(), bytes, intent);
+                        if on_disk && solidcraft_engine::io::is_design_path(&h.name()) {
+                            let path = disk::arrive(&h, bytes);
+                            files.opened.borrow_mut().push(path);
+                            files.wake();
+                        } else {
+                            files.arrive(h.name(), bytes, intent);
+                        }
                     }
                     Ok::<(), String>(())
                 };
