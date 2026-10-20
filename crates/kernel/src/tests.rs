@@ -2964,6 +2964,53 @@ fn loft_pairs_the_vertices_of_matching_non_convex_sections() {
     assert!(m.centroid.x.abs() < 0.05, "centre of mass x {}", m.centroid.x);
 }
 
+/// #2570: a circle lofted to a C-shaped outline. Seen from its centroid the C's vertices turn
+/// back on themselves; the circle was still split at those directions, forced to increase by
+/// whole turns, so it wound round several times (a closing arc of negative sweep), the walls
+/// crossed and the mesh grew huge. The circle is now split once round, in both section orders
+/// and from a plane facing the other way.
+#[test]
+fn loft_circle_to_non_star_profile_splits_circle_once() {
+    let c = Loop2::polygon(&[
+        Vec2::new(0.0, 0.0),
+        Vec2::new(30.0, 0.0),
+        Vec2::new(30.0, 8.0),
+        Vec2::new(8.0, 8.0),
+        Vec2::new(8.0, 22.0),
+        Vec2::new(30.0, 22.0),
+        Vec2::new(30.0, 30.0),
+        Vec2::new(0.0, 30.0),
+    ]);
+    let circle = (Plane::XY, Loop2::circle(Vec2::ZERO, 20.0));
+    let up = (Plane::XY.offset(48.0), c.clone());
+    let down = (Plane::new(Vec3::new(0.0, 0.0, 48.0), Vec3::Y, Vec3::X).unwrap(), c);
+    for secs in [vec![circle.clone(), up.clone()], vec![up, circle.clone()], vec![circle, down]] {
+        let numbered: Vec<(Plane, crate::numbered::NumberedLoop)> =
+            secs.iter().map(|(p, _)| *p).zip(crate::numbered::number_loops(secs.iter().map(|(_, l)| l))).collect();
+        for reversed in [false, true] {
+            let loops = crate::build::loft_section_loops(&numbered, reversed).unwrap();
+            let arcs: Vec<f64> = loops
+                .iter()
+                .flat_map(|(_, r)| r.lp.segs.iter())
+                .filter_map(|s| match s {
+                    Seg2::Arc { sweep, .. } => Some(*sweep),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(arcs.len(), 8, "{arcs:?}");
+            assert!(arcs.iter().all(|w| w.is_finite() && w.abs() > 1e-9), "{arcs:?}");
+            // One way round: every arc the same way, one turn in all.
+            assert!(arcs.iter().all(|w| w.signum() == arcs[0].signum()), "{arcs:?}");
+            let total: f64 = arcs.iter().sum();
+            assert!((total.abs() - std::f64::consts::TAU).abs() < 1e-9, "{total} {arcs:?}");
+        }
+        let body = loft(&secs).unwrap();
+        assert!(measure(&body).unwrap().volume > 0.0);
+        let mesh = body.tessellate(0.05).unwrap();
+        assert!(mesh.triangles.len() < 4000, "{} triangles", mesh.triangles.len());
+    }
+}
+
 /// Two cylinders crossing at right angles need the kernel's own intersection: with no tries
 /// left the boolean fails at once, a budget inside another uses the outer one's up, and none
 /// lingers after.
