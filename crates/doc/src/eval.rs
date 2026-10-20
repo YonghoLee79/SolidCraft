@@ -57,6 +57,9 @@ pub struct ModelBody {
     bytes: usize,
     /// In a world state: the [`ModelBody::geometry_key`] of the model body this one places (0: none).
     source_key: u64,
+    /// [`Body::outline_bounds`] of `body` (with the body it was measured on), worked out once
+    /// and shared by clones.
+    outline: Arc<OnceLock<(Body, solidcraft_geom::Aabb3)>>,
 }
 
 impl ModelBody {
@@ -79,6 +82,16 @@ impl ModelBody {
             imported: None,
             bytes: 0,
             source_key: 0,
+            outline: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// A box around the body without meshing it ([`Body::outline_bounds`]), worked out once.
+    pub fn outline_bounds(&self) -> solidcraft_geom::Aabb3 {
+        match self.outline.get_or_init(|| (self.body.clone(), self.body.outline_bounds())) {
+            (measured, b) if measured.same(&self.body) => *b,
+            // The body was replaced in this cell's holder since: measure it again.
+            _ => self.body.outline_bounds(),
         }
     }
 

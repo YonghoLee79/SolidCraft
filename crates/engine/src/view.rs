@@ -110,10 +110,21 @@ pub fn bounds(s: &Session) -> Aabb3 {
 
 /// [`bounds`], with the browser's Sketches folder shown (`sketches`) or hidden.
 pub fn visible_bounds(s: &Session, sketches: bool) -> Aabb3 {
+    bounds_by(s, sketches, |body| body.mesh().bounds())
+}
+
+/// [`visible_bounds`] without meshing anything: a body not meshed yet counts with its outline
+/// ([`solidcraft_kernel::Body::outline_bounds`]), which a face curving out past all of its edges
+/// can exceed. Frames a design whose bodies are still being meshed.
+pub fn unmeshed_bounds(s: &Session, sketches: bool) -> Aabb3 {
+    bounds_by(s, sketches, |body| body.cached_mesh().map(|m| m.bounds()).unwrap_or_else(|| body.outline_bounds()))
+}
+
+fn bounds_by(s: &Session, sketches: bool, of: impl Fn(&solidcraft_doc::ModelBody) -> Aabb3) -> Aabb3 {
     let st = s.world_state();
     let mut b = Aabb3::EMPTY;
     for body in st.bodies.iter().filter(|x| s.body_visible(&x.name)) {
-        b = b.union(&body.mesh().bounds());
+        b = b.union(&of(body));
     }
     for ss in st.sketches.iter().filter(|x| sketch_drawn(s, x.feature, sketches)) {
         // All four corners: on a tilted plane two opposite ones don't span the rectangle.

@@ -2320,6 +2320,25 @@ impl SheetBody {
                 return Err(DocError::Invalid("pick an edge of the sheet's top or bottom face".into()));
             }
             let d = (b - a).normalized().ok_or_else(|| DocError::Invalid("edge".into()))?;
+            // A bend line is no free edge: the base's or the parent panel's edge where a flange
+            // starts, or the flange panel's edge where its bend ends.
+            let outward = Vec2::new(d.y, -d.x);
+            let on_bend = self.flanges.iter().enumerate().any(|(i, f)| {
+                let (at, facing) = if panel == f.parent {
+                    (f.p, 1.0)
+                } else if panel == Some(i) {
+                    (f.p + f.n * self.allowance(f), -1.0)
+                } else {
+                    return false;
+                };
+                let along = |p: Vec2| p.dot(f.d);
+                outward.dot(f.n) * facing > 0.99
+                    && (a - at).dot(f.n).abs() < 1e-6
+                    && along(a).max(along(b)).min(along(f.p) + f.len) - along(a).min(along(b)).max(along(f.p)) > 1e-6
+            });
+            if on_bend {
+                return Err(DocError::Invalid(format!("{}that edge is the bend line of a flange; pick a free edge of the sheet", on(k))));
+            }
             let (s0, s1) = self
                 .edge_left(panel, a, b, e.pick, &cuts)
                 .ok_or_else(|| DocError::Invalid(format!("{}a cut-out has taken that edge away; pick an edge the sheet still has", on(k))))?;

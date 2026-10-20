@@ -23,7 +23,7 @@ use crate::union_find::{find, union};
 
 #[path = "cursor.rs"]
 mod cursor;
-pub use cursor::move_point_towards;
+pub use cursor::{move_line_towards, move_point_towards};
 
 #[path = "redundancy.rs"]
 mod redundancy;
@@ -2036,7 +2036,7 @@ fn solve_inner(
             // start (the seeded one is where the pinned solve failed), or to its own start when
             // the seed did not move it.
             let reseeded = unseeded.as_ref().filter(|plain| vars.iter().any(|v| plain.get(*v).is_some_and(Option::is_some)));
-            if !solved && !(pinned_failed && reseeded.is_some()) {
+            if !(solved || pinned_failed && reseeded.is_some()) {
                 let (its, r) = lm(sk, &lay, &sub, vars, &mut x, &col);
                 iterations += its;
                 residual = r;

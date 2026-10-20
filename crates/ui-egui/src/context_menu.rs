@@ -129,7 +129,7 @@ impl Item {
     pub fn on_if(self, enabled: bool) -> Item {
         self.on(enabled)
     }
-    fn on(mut self, enabled: bool) -> Item {
+    pub(crate) fn on(mut self, enabled: bool) -> Item {
         self.enabled &= enabled;
         self
     }
@@ -140,7 +140,7 @@ impl Item {
 }
 
 /// A command entry: label, icon, shortcut and enablement come from the registry.
-fn cmd(app: &SolveApp, id: &str, label: &str) -> Item {
+pub(crate) fn cmd(app: &SolveApp, id: &str, label: &str) -> Item {
     let info = solidcraft_engine::find_command(id).map(|c| c.info(&app.session));
     let shortcut = match id {
         "edit.undo" => "Ctrl+Z".to_string(),
@@ -158,7 +158,7 @@ fn cmd(app: &SolveApp, id: &str, label: &str) -> Item {
 }
 
 /// A view action (`ui.*`).
-fn act(id: &str, label: &str, icon: &str) -> Item {
+pub(crate) fn act(id: &str, label: &str, icon: &str) -> Item {
     Item { id: id.into(), label: label.into(), shortcut: String::new(), enabled: true, icon: icon.into(), params: None }
 }
 
@@ -1604,7 +1604,7 @@ fn slot_rect(c: Pos2, k: usize, size: Vec2) -> Rect {
 /// Press-and-hold of the right button in the viewport opens the menu; releasing over a
 /// direction picks it.
 fn track_hold(app: &mut SolveApp, ctx: &egui::Context) {
-    if !app.preferences.radial_context_menu {
+    if !app.preferences.radial_context_menu || crate::mouse_gesture::active(app) {
         app.menu.press = None;
         app.menu.flick = false;
         app.menu.radial = false;
