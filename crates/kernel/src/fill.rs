@@ -352,7 +352,7 @@ pub(crate) fn face_tolerance(body: &Body) -> f64 {
 #[cfg(test)]
 mod tests {
     use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface};
-    use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
+    use solidcraft_geom::{Loop2, Plane, Region2, Ring, Vec2, Vec3};
     use truck_modeling as mt;
 
     use crate::body::{Body, from_p3, p3};
@@ -373,11 +373,10 @@ mod tests {
         let prism = extrude(&Plane::XY, &[Region2 { outer: Loop2::polygon(corners), holes: vec![] }], 0.0, 20.0).unwrap().pop().unwrap();
         let tool = cylinder(Vec3::new(0.0, -60.0, 50.0), Vec3::Y, 40.0, 120.0).unwrap();
         let solid = boolean(&prism, &tool, BoolOp::Cut).unwrap().unwrap();
-        let n = corners.len();
         let mut keep = vec![inside.extend(0.0)];
         let mut rim = Vec::new();
-        for k in 0..n {
-            let m = corners[k].lerp(corners[(k + 1) % n], 0.5);
+        for (a, b) in Ring::new(corners.to_vec()).edges() {
+            let m = a.lerp(*b, 0.5);
             keep.push(m.extend(5.0));
             rim.push(m.extend(cut_height(m.x)));
         }

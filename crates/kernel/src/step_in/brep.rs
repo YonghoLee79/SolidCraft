@@ -11,6 +11,7 @@ use super::Ctx;
 use super::geom::{self, R, entity};
 use super::p21::Param;
 use crate::guard;
+use solidcraft_geom::Ring;
 
 /// Most faces in one body.
 const MAX_FACES: usize = 500_000;
@@ -183,13 +184,12 @@ impl Builder {
             }
         }
         let mut out = Vec::with_capacity(n);
-        for i in 0..n {
-            let (Some(&a), Some(&b)) = (pts.get(i), pts.get((i + 1) % n)) else { continue };
+        let (ids, verts) = (Ring::new(pts.to_vec()), Ring::new(verts));
+        for ((&a, &b), (va, vb)) in ids.edges().zip(verts.edges()) {
             if let Some(e) = self.poly_edges.get(&(b, a)) {
                 out.push(e.inverse());
                 continue;
             }
-            let (Some(va), Some(vb)) = (verts.get(i), verts.get((i + 1) % n)) else { continue };
             if va.point().distance(vb.point()) < 1e-12 {
                 return Err("polygon loop with repeated points".into());
             }
