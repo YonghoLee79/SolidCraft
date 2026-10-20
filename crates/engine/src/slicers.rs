@@ -332,7 +332,13 @@ pub fn detect_in(env: &Env) -> Vec<Slicer> {
             slicer.prusa_major = prusa_major(env, &slicer.command, origin);
         }
         if several {
-            let slug = normalize(&origin.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            let mut slug = install_slug(origin);
+            // Two versions of one AppImage side by side in a folder would have the same id: their file
+            // names, which differ, tell them apart, and only while there is more than one.
+            let side_by_side = |(o, _, og): &&(Slicer, String, PathBuf)| o.id == s.id && is_appimage(og) && og.parent() == origin.parent();
+            if is_appimage(origin) && found.iter().filter(side_by_side).count() > 1 {
+                slug = format!("{slug}-{}", normalize(&origin.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+            }
             let mut id = format!("{}#{slug}", s.id);
             let mut n = 2;
             while out.iter().any(|o| o.id == id) {
@@ -408,6 +414,25 @@ fn release_major(xml: &str) -> Option<u32> {
     let version = &release[release.find("version=\"")? + "version=\"".len()..];
     let digits: String = version.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+fn is_appimage(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("appimage"))
+}
+
+/// What tells this install's id apart from another install of the same slicer: the name of the file
+/// it was found through (the desktop entry, the program), or for an AppImage the folder it is in. An
+/// AppImage's file name carries its version, which changes with every upgrade and would make the
+/// remembered choice miss; its folder, and the fact that it is an AppImage, do not.
+fn install_slug(origin: &Path) -> String {
+    match origin.parent().filter(|_| is_appimage(origin)) {
+        Some(folder) => {
+            // FNV-1a: the same on every release, unlike `DefaultHasher`.
+            let hash = folder.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+            format!("appimage-{:08x}", hash as u32)
+        }
+        None => normalize(&origin.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+    }
 }
 
 fn known_by_id(id: &str) -> Option<&'static Target> {
@@ -1874,6 +1899,62 @@ mod tests {
         // A program nobody listed or chose is refused, executable or not.
         assert_eq!(spec(&other), None);
         assert_eq!(spec(std::path::Path::new("/bin/sh")), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_appimage_keeps_its_id_through_an_upgrade_and_has_its_own_per_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("appimage-ids");
+        let exe = |p: &std::path::Path| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // A second install of PrusaSlicer, so that each one is told apart by an id of its own.
+        let bin = root.join("bin");
+        exe(&bin.join("prusa-slicer"));
+        let ids = |folder: &str, file: &str| {
+            let apps = root.join(folder);
+            exe(&apps.join(file));
+            let found = detect_in(&Env { path_dirs: vec![bin.clone()], program_dirs: vec![apps.clone()], ..Env::default() });
+            let image = found.iter().find(|s| s.command == [apps.join(file).to_string_lossy().into_owned()]).unwrap();
+            std::fs::remove_file(apps.join(file)).unwrap();
+            (image.id.clone(), found.iter().find(|s| s.id != image.id).map(|s| s.id.clone()).unwrap())
+        };
+        let (v29, path_install) = ids("Apps", "PrusaSlicer-2.9.0.AppImage");
+        let (v210, _) = ids("Apps", "PrusaSlicer-2.10.1.AppImage");
+        let (elsewhere, _) = ids("Other", "PrusaSlicer-2.9.0.AppImage");
+        assert!(v29.starts_with("prusa#appimage-"), "{v29}");
+        assert_eq!(v29, v210, "an upgrade in the same folder keeps the id");
+        assert_ne!(v29, elsewhere, "another folder is another install");
+        assert_eq!(path_install, "prusa#prusaslicer", "installs that are not AppImages are told apart as before");
+        // Two versions side by side in one folder are two installs, told apart by their file names.
+        let apps = root.join("Apps");
+        exe(&apps.join("PrusaSlicer-2.9.0.AppImage"));
+        exe(&apps.join("PrusaSlicer-2.10.1.AppImage"));
+        let both = detect_in(&Env { path_dirs: vec![bin.clone()], program_dirs: vec![apps.clone()], ..Env::default() });
+        let mut images: Vec<&str> = both.iter().filter(|s| s.command[0].ends_with(".AppImage")).map(|s| s.id.as_str()).collect();
+        images.sort_unstable();
+        assert_eq!(images.len(), 2);
+        assert!(images.iter().all(|id| id.starts_with(&format!("{v29}-"))), "{images:?} from {v29}");
+        assert_ne!(images[0], images[1]);
+        // Each resolves to its own file; the id from when there was only one names neither.
+        for id in &images {
+            let hit = resolve_in(both.clone(), &[], id).unwrap();
+            assert_eq!(&hit.id, id);
+        }
+        assert_eq!(resolve_in(both.clone(), &[], &v29), None, "an id that is now two installs is not either of them");
+        // After the old one is gone, the new one alone has the plain AppImage id again.
+        std::fs::remove_file(apps.join("PrusaSlicer-2.9.0.AppImage")).unwrap();
+        let after = detect_in(&Env { path_dirs: vec![bin.clone()], program_dirs: vec![apps], ..Env::default() });
+        assert!(after.iter().any(|s| s.id == v29 && s.command[0].ends_with("2.10.1.AppImage")), "{after:?}");
+        // An id from before this (made of the file name) no longer names an install, here; the picker falls
+        // back to the first install of the same slicer for it (`SlicerMenu::key_for`), and the plain `prusa` still resolves.
+        let found = detect_in(&Env { path_dirs: vec![bin.clone()], ..Env::default() });
+        assert_eq!(resolve_in(found.clone(), &[], "prusa#prusa29"), None);
+        assert!(resolve_in(found, &[], "prusa").is_some());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

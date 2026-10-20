@@ -71,14 +71,22 @@ impl SlicerMenu {
     }
 
     /// The list key for a remembered one: itself; or, for one remembered under another install
-    /// of the same slicer (`prusa` before it had several, `prusa#x` after an uninstall), the first
-    /// install of that slicer.
+    /// of the same slicer (`prusa` before it had several, `prusa#x` after an uninstall), the one
+    /// install of that slicer when there is exactly one; else none.
     fn key_for(&self, key: &str) -> Option<String> {
         let entries = self.entries();
-        // `prusa#x` remembered while there were two installs, and one left: the plain `prusa`.
+        if let Some(e) = entries.iter().find(|e| e.key == key) {
+            return Some(e.key.clone());
+        }
+        // `prusa#x` remembered while there were two installs, and one left: the plain `prusa`. Only
+        // when it is exactly one: with several, nothing says which was meant, and another is not
+        // picked in its place (the choice then starts from the first, as when nothing was remembered).
         let base = key.split('#').next().unwrap_or(key);
-        let hit = entries.iter().find(|e| e.key == key).or_else(|| entries.iter().find(|e| !e.user && e.slicer.base_id() == base));
-        hit.map(|e| e.key.clone())
+        let mut same = entries.iter().filter(|e| !e.user && e.slicer.base_id() == base);
+        match (same.next(), same.next()) {
+            (Some(only), None) => Some(only.key.clone()),
+            _ => None,
+        }
     }
 
     fn entries(&self) -> Vec<Entry> {
@@ -759,10 +767,15 @@ mod tests {
         let lone = menu(vec![orca.clone(), prusa("prusa")]);
         assert_eq!(lone.key_for("prusa#prusaslicer").as_deref(), Some("prusa"));
         assert_eq!(lone.key_for("prusa").as_deref(), Some("prusa"));
-        // Remembered plain, now two: the first of them; an exact key is itself.
+        // Remembered plain, now two: which of them was meant is not known, so none is taken; an exact key is itself.
         let two = menu(vec![prusa("prusa#a"), prusa("prusa#b")]);
-        assert_eq!(two.key_for("prusa").as_deref(), Some("prusa#a"));
+        assert_eq!(two.key_for("prusa"), None);
         assert_eq!(two.key_for("prusa#b").as_deref(), Some("prusa#b"));
+        // An AppImage remembered when it was alone, now two versions side by side: not remembered.
+        let side_by_side = menu(vec![prusa("prusa#appimage-1f-prusaslicer29"), prusa("prusa#appimage-1f-prusaslicer210")]);
+        assert_eq!(side_by_side.key_for("prusa#appimage-1f"), None);
+        // And after an upgrade, the id is the same and is found.
+        assert_eq!(menu(vec![prusa("prusa#appimage-1f")]).key_for("prusa#appimage-1f").as_deref(), Some("prusa#appimage-1f"));
         // A different slicer is never picked for it.
         assert_eq!(menu(vec![orca]).key_for("prusa#x"), None);
     }
