@@ -218,6 +218,23 @@ fn opening_a_mesh_as_a_solid_holds_a_solid_body() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// A bare tolerance means the design's unit, as it does for any command: an inch design stores
+/// the conversion's tolerance in inches.
+#[test]
+fn an_inch_design_stores_the_conversions_tolerance_in_its_units() {
+    let path = stepped_block_stl("inch");
+    let mut s = Session::default();
+    s.doc_mut().units = "in".into();
+    run(&mut s, "file.insert_mesh", json!({"path": path, "as_solid": true, "tolerance": "0.01"}));
+    let tolerance = s.doc.features.iter().find_map(|f| match &f.kind {
+        FeatureKind::MeshConvert { tolerance, .. } => Some(tolerance.as_str().to_string()),
+        _ => None,
+    });
+    assert_eq!(tolerance.as_deref(), Some("0.01 in"), "the bare length took the design's unit");
+    assert!(!s.model.state().bodies.is_empty() && !s.model.state().bodies[0].body.is_mesh());
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn a_mesh_the_conversion_cannot_take_is_still_imported_as_a_mesh_body() {
     let path = std::env::temp_dir().join(format!("solidcraft-open-mesh-{}.stl", std::process::id()));
