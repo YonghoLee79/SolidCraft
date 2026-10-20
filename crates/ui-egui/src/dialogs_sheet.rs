@@ -71,6 +71,7 @@ pub enum Sm {
         relief: usize,
         relief_size: String,
         corners: Vec<FlangeCornerChoice>,
+        corners_initialized: bool,
     },
     CornerJoin {
         kind: usize,
@@ -162,6 +163,7 @@ fn new_flange(ty: usize) -> Sm {
         relief: 0,
         relief_size: String::new(),
         corners: Vec::new(),
+        corners_initialized: false,
     }
 }
 
@@ -229,9 +231,13 @@ fn flange_type(inputs: &[SelInput]) -> usize {
 /// The dialog's own rows (after the selection inputs); true when Enter was pressed in a value.
 pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [SelInput]) -> bool {
     let t = Tokens::get();
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(egui::Id::new("sheet_corner_hover"), Vec::<Vec3>::new());
+        data.insert_temp(egui::Id::new("sheet_corner_marker"), None::<[Vec3; 2]>);
+    });
     let mut enter = false;
     match k {
-        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, corners } => {
+        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, corners, corners_initialized } => {
             *ty = flange_type(inputs);
             row_label(ui, "Type");
             ui.label(FLANGE_TYPES.get(*ty).copied().unwrap_or(""));
@@ -247,71 +253,63 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     row_label(ui, "Bend Position");
                     combo(ui, "sm_pos", &POSITION_LABELS, position);
                     ui.end_row();
-                    row_label(ui, "Bend Radius");
-                    let r = ui.add(egui::TextEdit::singleline(radius).hint_text(crate::i18n::tr_label("from the rule")));
-                    crate::params_dialog::complete(ui, &r, radius);
-                    enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.end_row();
-                    // The relief at the corners these flanges make: the rule's unless set here.
-                    row_label(ui, "Corner Relief Shape");
-                    combo(ui, "sm_flange_relief", &FLANGE_RELIEF_LABELS, relief);
-                    ui.end_row();
-                    row_label(ui, "Corner Relief");
-                    let r = ui.add(egui::TextEdit::singleline(relief_size).hint_text(crate::i18n::tr_label("from the rule")));
-                    crate::params_dialog::complete(ui, &r, relief_size);
-                    enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.end_row();
                     // With several edges, a row for each: an angle and a height of its own, left
                     // empty for the values above (shown as the hints).
                     let points = edge_point_list(inputs);
-                    update_corner_choices(app, &points, corners);
-                    for corner in corners.iter_mut() {
-                        let Some(first) = points.iter().position(|point| point.dist(corner.first) < 1e-6) else { continue };
-                        let Some(second) = points.iter().position(|point| point.dist(corner.second) < 1e-6) else { continue };
-                        let label = format!("{} / {}", first + 1, second + 1);
-                        row_label(ui, &format!("Corner {label}"));
-                        combo(ui, &format!("sm_corner_type_{first}_{second}"), &CORNER_LABELS, &mut corner.kind);
-                        ui.end_row();
-                        if corner.kind > 0 {
-                            let names = [format!("Edge {}", first + 1), format!("Edge {}", second + 1)];
-                            let mut covering = usize::from(corner.cover_second);
-                            row_label(ui, &format!("Covering {label}"));
-                            combo(ui, &format!("sm_corner_cover_{first}_{second}"), &[names[0].as_str(), names[1].as_str()], &mut covering);
-                            corner.cover_second = covering == 1;
-                            ui.end_row();
-                        }
-                        if corner.kind == 1 {
-                            row_label(ui, &format!("Overlap {label}"));
-                            ui.push_id(("sm_corner_overlap", first, second), |ui| enter |= field(ui, &mut corner.overlap));
-                            ui.end_row();
-                        }
-                    }
+                    update_corner_choices(app, &points, corners, *corners_initialized);
+                    *corners_initialized = true;
+                    enter |= flange_corner_rows(app, ui, &points, corners);
                     if points.len() > 1 || own.iter().any(|o| !(o.1.trim().is_empty() && o.2.trim().is_empty())) {
-                        row_label(ui, "Per Edge");
-                        ui.label(RichText::new(crate::i18n::tr_label("angle, height")).weak())
-                            .on_hover_text("An edge's own angle and height. Empty: the values above.");
-                        ui.end_row();
-                        let w = ((ui.spacing().text_edit_width - ui.spacing().item_spacing.x) / 2.0).max(40.0);
-                        for (n, p) in points.iter().enumerate() {
-                            let slot = own_slot(own, *p);
-                            let Some((_, a, h)) = own.get_mut(slot) else { continue };
-                            row_label(ui, &format!("Edge {}", n + 1));
-                            ui.horizontal(|ui| {
-                                for (text, hint, what, id) in
-                                    [(a, angle.as_str(), "angle", "sm_edge_angle"), (h, height.as_str(), "height", "sm_edge_height")]
-                                {
-                                    let r = ui
-                                        .add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(w).id_salt((id, n)))
-                                        .on_hover_text(format!("The {what} of the edge picked at ({:.1}, {:.1}, {:.1})", p.x, p.y, p.z));
-                                    // For scenarios and the control channel: `dialog:Edge 2 angle`.
-                                    crate::scenario::publish_handle(&format!("dialog:Edge {} {what}", n + 1), r.rect.center());
-                                    crate::params_dialog::complete(ui, &r, text);
-                                    enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        ui.label("");
+                        let walls = rectangle_walls(app, &points);
+                        let section = egui::CollapsingHeader::new(crate::i18n::tr_label("Per Edge")).default_open(false).show(ui, |ui| {
+                            egui::Grid::new("sm_edge_overrides").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                                let w = ((ui.spacing().text_edit_width - ui.spacing().item_spacing.x) / 2.0).max(40.0);
+                                for (n, p) in points.iter().enumerate() {
+                                    let slot = own_slot(own, *p);
+                                    let Some((_, a, h)) = own.get_mut(slot) else { continue };
+                                    row_label(ui, &wall_name(&walls, n));
+                                    let control = ui.horizontal(|ui| {
+                                        for (text, hint, what, id) in
+                                            [(a, angle.as_str(), "angle", "sm_edge_angle"), (h, height.as_str(), "height", "sm_edge_height")]
+                                        {
+                                            let r = ui
+                                                .add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(w).id_salt((id, n)))
+                                                .on_hover_text(format!("The {what} of the edge picked at ({:.1}, {:.1}, {:.1})", p.x, p.y, p.z));
+                                            // For scenarios and the control channel: `dialog:Edge 2 angle`.
+                                            crate::scenario::publish_handle(&format!("dialog:Edge {} {what}", n + 1), r.rect.center());
+                                            crate::params_dialog::complete(ui, &r, text);
+                                            enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                        }
+                                    });
+                                    hover_walls(ui, &control.response, &[*p]);
+                                    ui.end_row();
                                 }
                             });
-                            ui.end_row();
-                        }
+                        });
+                        crate::scenario::publish_handle("dialog:Per Edge", section.header_response.rect.center());
+                        ui.end_row();
                     }
+                    ui.label("");
+                    let section = egui::CollapsingHeader::new(crate::i18n::tr_label("Bend settings")).default_open(false).show(ui, |ui| {
+                        egui::Grid::new("sm_bend_settings").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                            row_label(ui, "Bend Radius");
+                            let response = ui.add(egui::TextEdit::singleline(radius).hint_text(crate::i18n::tr_label("from the rule")));
+                            crate::params_dialog::complete(ui, &response, radius);
+                            enter |= response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            ui.end_row();
+                            row_label(ui, "Corner Relief Shape");
+                            combo(ui, "sm_flange_relief", &FLANGE_RELIEF_LABELS, relief);
+                            ui.end_row();
+                            row_label(ui, "Corner Relief");
+                            let response = ui.add(egui::TextEdit::singleline(relief_size).hint_text(crate::i18n::tr_label("from the rule")));
+                            crate::params_dialog::complete(ui, &response, relief_size);
+                            enter |= response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            ui.end_row();
+                        });
+                    });
+                    crate::scenario::publish_handle("dialog:Bend settings", section.header_response.rect.center());
+                    ui.end_row();
                 }
                 2 => {
                     row_label(ui, "Distance");
@@ -587,8 +585,17 @@ fn edge_point_list(inputs: &[SelInput]) -> Vec<Vec3> {
     items(inputs, 0).iter().filter_map(|x| if let Sel::Edge { point, .. } = x { Some(*point) } else { None }).collect()
 }
 
-fn update_corner_choices(app: &SolveApp, points: &[Vec3], choices: &mut Vec<FlangeCornerChoice>) {
+fn update_corner_choices(app: &SolveApp, points: &[Vec3], choices: &mut Vec<FlangeCornerChoice>, inherit: bool) {
     choices.retain(|choice| [choice.first, choice.second].iter().all(|edge| points.iter().any(|point| point.dist(*edge) < 1e-6)));
+    let common = choices
+        .first()
+        .filter(|first| inherit && choices.iter().all(|choice| choice.kind == first.kind && choice.overlap == first.overlap))
+        .map(|choice| (choice.kind, choice.overlap.clone()));
+    let walls = rectangle_walls(app, points);
+    let group = choices
+        .first()
+        .and_then(|choice| covering_group(choice, points, &walls))
+        .filter(|group| inherit && choices.iter().all(|choice| covering_group(choice, points, &walls) == Some(*group)));
     let state = app.session.world_state();
     for sheet in &state.sheets {
         for (first, second) in sheet.flange_corner_pairs(points) {
@@ -599,9 +606,224 @@ fn update_corner_choices(app: &SolveApp, points: &[Vec3], choices: &mut Vec<Flan
             }) {
                 continue;
             }
-            choices.push(FlangeCornerChoice { first: *first, second: *second, kind: 0, cover_second: false, overlap: "1 mm".into() });
+            let cover_second = group.is_some_and(|group| {
+                points
+                    .iter()
+                    .position(|point| point.dist(*second) < 1e-6)
+                    .and_then(|index| walls.get(index).copied().flatten())
+                    .is_some_and(|side| usize::from(side >= 2) == group)
+            });
+            choices.push(FlangeCornerChoice {
+                first: *first,
+                second: *second,
+                kind: common.as_ref().map_or(0, |choice| choice.0),
+                cover_second,
+                overlap: common.as_ref().map_or_else(|| "1 mm".into(), |choice| choice.1.clone()),
+            });
         }
     }
+}
+
+const WALL_NAMES: [&str; 4] = ["Front", "Rear", "Left", "Right"];
+
+fn rectangle_walls(app: &SolveApp, points: &[Vec3]) -> Vec<Option<usize>> {
+    let state = app.session.world_state();
+    let Some(sheet) = state.sheets.iter().find(|sheet| !sheet.flange_corner_pairs(points).is_empty()) else { return vec![None; points.len()] };
+    let outline = sheet.base.outer.polyline(1e-3);
+    let low = outline.iter().fold((f64::INFINITY, f64::INFINITY), |bounds, point| (bounds.0.min(point.x), bounds.1.min(point.y)));
+    let high = outline.iter().fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |bounds, point| (bounds.0.max(point.x), bounds.1.max(point.y)));
+    if sheet.base.outer.segs.len() != 4
+        || outline.iter().any(|point| {
+            !((point.x - low.0).abs() < 1e-6 || (point.x - high.0).abs() < 1e-6)
+                || !((point.y - low.1).abs() < 1e-6 || (point.y - high.1).abs() < 1e-6)
+        })
+    {
+        return vec![None; points.len()];
+    }
+    points
+        .iter()
+        .map(|point| {
+            let offset = *point - sheet.frame.origin;
+            let (local_x, local_y) = (offset.dot(sheet.frame.x), offset.dot(sheet.frame.y));
+            let distances = [(local_y - low.1).abs(), (local_y - high.1).abs(), (local_x - low.0).abs(), (local_x - high.0).abs()];
+            let tolerance = sheet.t * 2.0 + 1e-3;
+            let mut sides = distances.iter().enumerate().filter(|(_, distance)| **distance <= tolerance);
+            let side = sides.next().map(|(index, _)| index);
+            if sides.next().is_none() { side } else { None }
+        })
+        .collect()
+}
+
+fn wall_name(walls: &[Option<usize>], index: usize) -> String {
+    walls
+        .get(index)
+        .copied()
+        .flatten()
+        .and_then(|side| WALL_NAMES.get(side))
+        .map(|name| crate::i18n::tr_label(name).to_owned())
+        .unwrap_or_else(|| format!("{} {}", crate::i18n::tr_label("Wall"), index + 1))
+}
+
+fn hover_walls(ui: &egui::Ui, response: &egui::Response, points: &[Vec3]) -> bool {
+    let focused = ui.ctx().memory(|memory| memory.focused()).and_then(|id| ui.ctx().read_response(id));
+    let active = response.contains_pointer() || response.has_focus() || focused.is_some_and(|focused| response.rect.contains_rect(focused.rect));
+    if active {
+        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("sheet_corner_hover"), points.to_vec()));
+    }
+    active
+}
+
+fn hover_corner(ui: &egui::Ui, response: &egui::Response, corner: &FlangeCornerChoice, walls: &[Vec3]) {
+    if hover_walls(ui, response, walls) {
+        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("sheet_corner_marker"), Some([corner.first, corner.second])));
+    }
+}
+
+fn covering_group(corner: &FlangeCornerChoice, points: &[Vec3], walls: &[Option<usize>]) -> Option<usize> {
+    let selected = if corner.cover_second { corner.second } else { corner.first };
+    let index = points.iter().position(|point| point.dist(selected) < 1e-6)?;
+    Some(usize::from(walls.get(index).copied().flatten()? >= 2))
+}
+
+fn set_covering_group(corners: &mut [FlangeCornerChoice], points: &[Vec3], walls: &[Option<usize>], group: usize) {
+    for corner in corners {
+        if let Some(index) = points.iter().position(|point| point.dist(corner.second) < 1e-6) {
+            corner.cover_second = walls.get(index).copied().flatten().is_some_and(|side| usize::from(side >= 2) == group);
+        }
+    }
+}
+
+fn flange_corner_rows(app: &SolveApp, ui: &mut egui::Ui, points: &[Vec3], corners: &mut [FlangeCornerChoice]) -> bool {
+    if corners.is_empty() {
+        return false;
+    }
+    let mut enter = false;
+    let walls = rectangle_walls(app, points);
+    let paired = corners.iter().all(|corner| {
+        let sides: Vec<_> = [corner.first, corner.second]
+            .iter()
+            .filter_map(|edge| {
+                let index = points.iter().position(|point| point.dist(*edge) < 1e-6)?;
+                walls.get(index).copied().flatten()
+            })
+            .collect();
+        matches!(sides.as_slice(), [first, second] if (*first < 2) != (*second < 2))
+    });
+    let common = corners.first().map(|corner| corner.kind).filter(|kind| corners.iter().all(|corner| corner.kind == *kind));
+    row_label(ui, "Corner Type");
+    let (picture_rect, _) = ui.allocate_exact_size(vec2(222.0, 76.0), egui::Sense::hover());
+    for (kind, label) in CORNER_LABELS.iter().enumerate() {
+        let button_rect = Rect::from_min_size(picture_rect.min + vec2(kind as f32 * 76.0, 0.0), vec2(70.0, 76.0));
+        let response = ui.put(button_rect, egui::Button::new("").selected(common == Some(kind))).on_hover_text(crate::i18n::tr_label(label));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), crate::i18n::tr_label(label)));
+        let icon = ["sheet_corner_butt", "sheet_corner_partial", "sheet_corner_full"].get(kind).copied().unwrap_or("sheet_corner_butt");
+        let icon_rect = Rect::from_center_size(pos2(response.rect.center().x, response.rect.top() + 25.0), vec2(40.0, 40.0));
+        crate::icons::paint_icon(ui.painter(), icon_rect, icon, 1.0);
+        let title = crate::i18n::tr_label(label).replace(' ', "\n");
+        ui.painter().text(
+            pos2(response.rect.center().x, response.rect.top() + 60.0),
+            Align2::CENTER_CENTER,
+            title,
+            FontId::proportional(11.0),
+            ui.visuals().text_color(),
+        );
+        crate::scenario::publish_handle(&format!("dialog:All Corners:{label}"), response.rect.center());
+        if response.clicked() {
+            for corner in corners.iter_mut() {
+                corner.kind = kind;
+            }
+            if common == Some(0) && paired {
+                set_covering_group(corners, points, &walls, 0);
+            }
+        }
+        hover_walls(ui, &response, points);
+    }
+    ui.end_row();
+    if paired && corners.iter().any(|corner| corner.kind > 0) {
+        let group = corners
+            .first()
+            .and_then(|corner| covering_group(corner, points, &walls))
+            .filter(|group| corners.iter().all(|corner| covering_group(corner, points, &walls) == Some(*group)));
+        let names = ["Front and rear walls", "Left and right walls"];
+        row_label(ui, "Covering");
+        let control = egui::ComboBox::from_id_salt("sm_common_covering")
+            .selected_text(crate::i18n::tr_label(group.and_then(|index| names.get(index).copied()).unwrap_or("Custom")))
+            .show_ui(ui, |ui| {
+                for (index, name) in names.iter().enumerate() {
+                    let response = ui.selectable_label(group == Some(index), crate::i18n::tr_label(name));
+                    crate::scenario::publish_handle(&format!("dialog:Covering:{name}"), response.rect.center());
+                    if response.clicked() {
+                        set_covering_group(corners, points, &walls, index);
+                    }
+                    let selected: Vec<_> = points
+                        .iter()
+                        .zip(&walls)
+                        .filter_map(|(point, side)| side.filter(|side| usize::from(*side >= 2) == index).map(|_| *point))
+                        .collect();
+                    hover_walls(ui, &response, &selected);
+                }
+            });
+        crate::scenario::publish_handle("dialog:Covering", control.response.rect.center());
+        if let Some(group) = group {
+            let selected: Vec<_> =
+                points.iter().zip(&walls).filter_map(|(point, side)| side.filter(|side| usize::from(*side >= 2) == group).map(|_| *point)).collect();
+            hover_walls(ui, &control.response, &selected);
+        }
+        ui.end_row();
+    }
+    if common.is_none() {
+        row_label(ui, "Corners");
+        ui.label(crate::i18n::tr_label("Custom"));
+        ui.end_row();
+    }
+    if corners.iter().all(|corner| corner.kind == 1) {
+        let mut overlap = corners.first().map(|corner| corner.overlap.clone()).unwrap_or_default();
+        if corners.iter().any(|corner| corner.overlap != overlap) {
+            overlap.clear();
+        }
+        let before = overlap.clone();
+        row_label(ui, "Overlap");
+        enter |= field(ui, &mut overlap);
+        if overlap != before {
+            for corner in corners.iter_mut() {
+                corner.overlap.clone_from(&overlap);
+            }
+        }
+        ui.end_row();
+    }
+    ui.label("");
+    let section = egui::CollapsingHeader::new(crate::i18n::tr_label("Customize each corner")).default_open(false).show(ui, |ui| {
+        egui::Grid::new("sm_corner_overrides").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+            for corner in corners.iter_mut() {
+                let Some(first) = points.iter().position(|point| point.dist(corner.first) < 1e-6) else { continue };
+                let Some(second) = points.iter().position(|point| point.dist(corner.second) < 1e-6) else { continue };
+                let label = format!("{} / {}", wall_name(&walls, first), wall_name(&walls, second));
+                row_label(ui, &format!("Corner {label}"));
+                let control = ui.scope(|ui| combo(ui, &format!("sm_corner_type_{first}_{second}"), &CORNER_LABELS, &mut corner.kind));
+                hover_corner(ui, &control.response, corner, &[corner.first, corner.second]);
+                ui.end_row();
+                if corner.kind > 0 {
+                    let names = [wall_name(&walls, first), wall_name(&walls, second)];
+                    let mut covering = usize::from(corner.cover_second);
+                    row_label(ui, &format!("Covering {label}"));
+                    let control = ui
+                        .scope(|ui| combo(ui, &format!("sm_corner_cover_{first}_{second}"), &[names[0].as_str(), names[1].as_str()], &mut covering));
+                    hover_corner(ui, &control.response, corner, &[if covering == 1 { corner.second } else { corner.first }]);
+                    corner.cover_second = covering == 1;
+                    ui.end_row();
+                }
+                if corner.kind == 1 {
+                    row_label(ui, &format!("Overlap {label}"));
+                    let control = ui.push_id(("sm_corner_overlap", first, second), |ui| enter |= field(ui, &mut corner.overlap));
+                    hover_corner(ui, &control.response, corner, &[corner.first, corner.second]);
+                    ui.end_row();
+                }
+            }
+        });
+    });
+    crate::scenario::publish_handle("dialog:Customize each corner", section.header_response.rect.center());
+    ui.end_row();
+    enter
 }
 
 /// Where the own angle and height of the edge picked at `p` are kept (an empty entry on first use).
@@ -854,6 +1076,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
                     .and_then(|name| RELIEF_SHAPES.iter().position(|s| s.eq_ignore_ascii_case(name.trim())))
                     .map_or(0, |i| i + 1),
                 relief_size: corner_relief.as_deref().map(str::to_string).unwrap_or_default(),
+                corners_initialized: false,
                 corners: corners
                     .iter()
                     .map(|corner| FlangeCornerChoice {
@@ -955,6 +1178,62 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
 }
 
 // ---- view ----
+
+fn preview_wall(walls: &[crate::preview::SheetWallPreview], point: Vec3) -> Option<&crate::preview::SheetWallPreview> {
+    walls
+        .iter()
+        .filter_map(|wall| {
+            let direction = wall.edge[1] - wall.edge[0];
+            let length_squared = direction.dot(direction);
+            if length_squared <= 1e-12 {
+                return None;
+            }
+            let along = ((point - wall.edge[0]).dot(direction) / length_squared).clamp(0.0, 1.0);
+            Some((wall, point.dist(wall.edge[0] + direction * along)))
+        })
+        .min_by(|first, second| first.1.total_cmp(&second.1))
+        .filter(|(wall, distance)| *distance <= wall.tolerance)
+        .map(|(wall, _)| wall)
+}
+
+fn corner_marker(walls: &[crate::preview::SheetWallPreview], points: [Vec3; 2]) -> Option<Vec3> {
+    let first = preview_wall(walls, points[0])?;
+    let second = preview_wall(walls, points[1])?;
+    first
+        .edge
+        .iter()
+        .flat_map(|first| second.edge.iter().map(move |second| (*first, *second)))
+        .min_by(|first, second| first.0.dist(first.1).total_cmp(&second.0.dist(second.1)))
+        .map(|(first, second)| (first + second) * 0.5)
+}
+
+pub(crate) fn corner_overlay(app: &SolveApp, painter: &egui::Painter, proj: &crate::viewport::Proj, dialog: &Dialog) {
+    if dialog.collapsed
+        || !matches!(dialog.kind, Kind::Sheet(Sm::Flange { ty: 1, .. }))
+        || !app.preview.draw_active()
+        || app.preview.busy
+        || app.preview.error.is_some()
+    {
+        return;
+    }
+    let hovered = painter.ctx().data(|data| data.get_temp::<Vec<Vec3>>(egui::Id::new("sheet_corner_hover"))).unwrap_or_default();
+    let painter = painter.with_clip_rect(proj.rect);
+    let tokens = Tokens::get();
+    let stroke = Stroke::new(3.0, tokens.hover_edge_halo.to_opaque());
+    let halo = Stroke::new(6.0, tokens.hover_edge.to_opaque());
+    for point in hovered {
+        let Some(wall) = preview_wall(&app.preview.sheet_walls, point) else { continue };
+        let Some(outline) = wall.outline.iter().map(|point| proj.to_screen(*point)).collect::<Option<Vec<_>>>() else { continue };
+        painter.add(egui::Shape::closed_line(outline.clone(), halo));
+        painter.add(egui::Shape::closed_line(outline, stroke));
+    }
+    let corner = painter.ctx().data(|data| data.get_temp::<Option<[Vec3; 2]>>(egui::Id::new("sheet_corner_marker"))).flatten();
+    if let Some(point) = corner.and_then(|points| corner_marker(&app.preview.sheet_walls, points)).and_then(|point| proj.to_screen(point)) {
+        painter.circle_stroke(point, 9.0, halo);
+        painter.circle_stroke(point, 9.0, stroke);
+        painter.circle_filled(point, 2.5, stroke.color);
+    }
+}
 
 /// The direction an edge flange or hem grows from its first edge: out of the sheet's larger
 /// neighbouring face (flipped with Flip).

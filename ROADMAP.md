@@ -71,6 +71,10 @@ ends agree in the folded part, flat pattern and DXF. See [sheet metal](docs/book
 for the API and current overlap limits. A separate Corner Join timeline feature also joins
 neighbouring base flanges made in different operations, using persistent flange references,
 with live preview and editing. Torn flanges, returns and removed corners remain unsupported.
+The Flange dialog has common picture choices for all selected corners, front/rear or left/right
+covering presets on rectangular bases, and individual overrides under Customize each corner.
+Wall names follow the sheet's coordinates; hovering or focusing a corner choice outlines its
+walls. Per-edge and bend settings stay collapsed by default, leaving the action buttons visible.
 
 M6 navigation preferences include **Touchpad**: Shift + pointer movement pans, Alt/Option +
 pointer movement orbits without a mouse button, and vertical scrolling zooms. Other presets

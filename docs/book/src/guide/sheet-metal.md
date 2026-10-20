@@ -71,7 +71,7 @@ leave the second one out, with a warning.
 The rule's shape and size are the default. An edge flange feature can choose its own for the
 corners its flanges make: `corner_relief_shape` (`notch`, `round`, `rectangular` or `tear`) and
 `corner_relief` (the size across, a length or an expression) in `sheet.flange`, or Corner Relief
-Shape and Corner Relief in the Flange dialog. In the dialog, Rule as the shape and an empty size
+Shape and Corner Relief under **Bend settings** in the Flange dialog. In the dialog, Rule as the shape and an empty size
 take the rule's; either one left out follows the rule while the other is the feature's. Corners are
 relieved only between the flanges of one feature, so a feature's choice never meets another's at a
 corner, and two edge flange features of one part can have different reliefs under one rule. A
@@ -94,11 +94,20 @@ opposite ways, ends that would overlap in the flat pattern) stays open, and the 
 reports a warning saying where. A flange added by a later feature leaves the corner as it was:
 the earlier flange keeps its length and the new one ends at its bend.
 
-For neighbouring base edges selected in the same feature, the Flange dialog also offers a
-join for each **Corner**. **Butt** keeps the existing mitred join. **Partial Overlap** extends
+For neighbouring base edges selected in the same feature, the Flange dialog offers pictured
+**Corner Type** choices for all selected corners. **Butt** keeps the existing mitred join. **Partial Overlap** extends
 the **Covering** flange across part of the other wall's thickness; **Overlap** is a length
 expression greater than zero and less than the sheet thickness. **Full Overlap** covers the
-whole thickness and follows changes to the rule's thickness. Choose either edge as Covering.
+whole thickness and follows changes to the rule's thickness. For a rectangular base aligned
+with its sheet frame, **Covering** chooses **Front and rear walls** or **Left and right walls**
+for all corners. Front is the low-Y edge, rear the high-Y edge, left low-X and right high-X
+in the sheet's local frame; rotating the camera does not rename the walls. The first common
+overlap choice covers with the front and rear walls.
+
+Expand **Customize each corner** for independent corner types and covering walls. Mixed
+settings remain unchanged until a common choice is explicitly selected. Nonrectangular bases
+retain individual wall choices without a front/rear preset. Hovering or focusing a corner or
+covering control outlines its walls in the computed preview without changing the selection.
 For these overlapping joins the rule's **Flange Gap** is the clearance between the covered
 wall's end and the covering wall's face, not a distance along the corner's bisector.
 
@@ -157,8 +166,8 @@ so parameters work, and each is a feature input of its own (`Edge angle`, `Edge 
 the ends run toward each other the rule's gap apart, either side of the plane halfway between
 the two flanges, and a taller flange's end keeps that line up to its own tip. This is how to
 close a corner between flanges at different angles in one feature; separate features need
-a later Corner Join. In the Flange dialog, picking more than one edge shows a row
-per edge with an angle and a height box; an empty box takes the value above.
+a later Corner Join. In the Flange dialog, expand **Per Edge** for a row per selected wall
+with an angle and a height box; an empty box takes the value above.
 
 ```json
 {"command":"sheet.flange","params":{"edges":[[60,0,2],{"point":[120,45,2],"angle":"90 deg"},
