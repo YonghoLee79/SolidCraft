@@ -227,7 +227,7 @@ fn scale_and_mirror_are_baked_and_the_tree_kept() {
     assert!(close(volume(&ms[1]), 1000.0), "{}", volume(&ms[1]));
     // Placed, it lies on the other side of the origin.
     let place = &g.plan.places[2].transform;
-    let xs: Vec<f64> = ms[1].positions.as_chunks::<3>().0.iter().map(|p| solidcraft_doc::apply_point(place, Vec3::new(p[0], p[1], p[2])).x).collect();
+    let xs: Vec<f64> = ms[1].positions.as_chunks::<3>().0.iter().map(|p| place.point(Vec3::new(p[0], p[1], p[2])).x).collect();
     assert!(
         close(xs.iter().copied().fold(f64::INFINITY, f64::min), -10.0) && close(xs.iter().copied().fold(f64::NEG_INFINITY, f64::max), 0.0),
         "{xs:?}"

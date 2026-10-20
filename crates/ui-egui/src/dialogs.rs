@@ -11,7 +11,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::doc::{AxisRef, Direction, FeatureKind, FilletStyle, HoleKind, Operation, PatternKind, PlaneRef, ProfileSel, ThinSide};
-use solidcraft_engine::geom::{Aabb3, Vec3};
+use solidcraft_engine::geom::{Aabb3, Transform, Vec3};
 
 use crate::SolveApp;
 use crate::selection::{
@@ -2733,11 +2733,7 @@ fn plane_by_name(app: &SolveApp, name: &str) -> Option<solidcraft_engine::geom::
     if let Some(p) = solidcraft_engine::geom::Plane::named(name) {
         // In an active component its origin planes are the component's.
         let m = app.session.active_component_frame();
-        let (o, x, y) = (
-            solidcraft_engine::doc::apply_point(&m, p.origin),
-            solidcraft_engine::doc::apply_vector(&m, p.x),
-            solidcraft_engine::doc::apply_vector(&m, p.y),
-        );
+        let (o, x, y) = (m.point(p.origin), m.vector(p.x), m.vector(p.y));
         return solidcraft_engine::geom::Plane::new(o, x, y);
     }
     let st = app.session.world_state();
@@ -2839,7 +2835,7 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
 }
 
 /// Placement used to edit a definition in the selected authoring occurrence.
-pub(crate) fn feature_frame(s: &Session, component: u64) -> solidcraft_engine::doc::Mat {
+pub(crate) fn feature_frame(s: &Session, component: u64) -> Transform {
     if component == s.active_component { s.active_component_frame() } else { s.placed_document().component_transform(component) }
 }
 
@@ -2908,13 +2904,9 @@ pub(crate) fn emboss_profile_plane(app: &SolveApp, sketch: u64) -> Result<Option
     let owner = app.session.doc.feature(sketch.feature).map(|feature| feature.component).unwrap_or(0);
     let plane = sketch.plane;
     let frame = face.sketch_frame(&app.session.doc, feature.component, owner, body).map_err(|error| error.to_string())?;
-    solidcraft_engine::geom::Plane::new(
-        solidcraft_engine::doc::apply_point(&frame, plane.origin),
-        solidcraft_engine::doc::apply_vector(&frame, plane.x),
-        solidcraft_engine::doc::apply_vector(&frame, plane.y),
-    )
-    .map(Some)
-    .ok_or_else(|| "the Emboss author frame is degenerate".into())
+    solidcraft_engine::geom::Plane::new(frame.point(plane.origin), frame.vector(plane.x), frame.vector(plane.y))
+        .map(Some)
+        .ok_or_else(|| "the Emboss author frame is degenerate".into())
 }
 
 /// The commands (id, parameters) a dialog's OK runs.
@@ -3776,12 +3768,12 @@ impl Drop for Refill {
 /// A point stored in a feature, as it shows on world body `body`: features keep their picks in
 /// the frame of the body they were on, so each body's placement takes the point to the world
 /// (a moved component, a pasted instance). Other points are the world already.
-fn stored_on(frames: &Option<Vec<(String, solidcraft_engine::doc::Mat)>>, body: &str, p: Vec3) -> Vec3 {
-    frames.as_ref().and_then(|f| f.iter().find(|(n, _)| n == body)).map(|(_, m)| solidcraft_engine::doc::apply_point(m, p)).unwrap_or(p)
+fn stored_on(frames: &Option<Vec<(String, Transform)>>, body: &str, p: Vec3) -> Vec3 {
+    frames.as_ref().and_then(|f| f.iter().find(|(n, _)| n == body)).map(|(_, m)| m.point(p)).unwrap_or(p)
 }
 
 /// Body placements while filling a dialog from a feature (when anything is placed).
-fn stored_frames(s: &Session) -> Option<Vec<(String, solidcraft_engine::doc::Mat)>> {
+fn stored_frames(s: &Session) -> Option<Vec<(String, Transform)>> {
     if !REFILL.with(std::cell::Cell::get) || !solidcraft_engine::frames::placed(s) {
         return None;
     }
@@ -3847,7 +3839,7 @@ fn emboss_face_sel(s: &Session, component: u64, face: &solidcraft_engine::doc::E
     let owner = s.doc.model_body_component(body);
     let world_name = s.doc.world_body_name(&source, &face.body, owner, &face.path);
     let author = solidcraft_engine::doc::EmbossFace::component_frame(&s.doc, component, &face.author_path).ok()?;
-    let point = solidcraft_engine::doc::apply_point(&author, face.at.0);
+    let point = author.point(face.at.0);
     s.world_state().body(&world_name)?;
     Some(Sel::Face { body: world_name, index, point })
 }
@@ -4029,7 +4021,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                 if let Some(point) = point {
                     set_object(&mut d.inputs, &mut d.active, label, true);
                     if let Some(input) = d.inputs.iter_mut().find(|i| i.label == label) {
-                        input.items = vec![Sel::Vertex { body: String::new(), point: solidcraft_engine::doc::apply_point(&frame, point.0) }];
+                        input.items = vec![Sel::Vertex { body: String::new(), point: frame.point(point.0) }];
                     }
                 }
             }
@@ -4054,8 +4046,8 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             let frame = feature_frame(s, f.component);
             let stored_axis = match axis {
                 AxisRef::Line { origin, dir } => Some(json!({
-                    "origin": pt(solidcraft_engine::doc::apply_point(&frame, origin.0)),
-                    "dir": pt(solidcraft_engine::doc::apply_vector(&frame, dir.0))
+                    "origin": pt(frame.point(origin.0)),
+                    "dir": pt(frame.vector(dir.0))
                 })),
                 _ => None,
             };
@@ -4070,7 +4062,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             if let Some(point) = to {
                 set_to_object(&mut d.inputs, &mut d.active, true);
                 if let Some(input) = d.inputs.iter_mut().find(|i| i.label == TO_OBJECT) {
-                    input.items = vec![Sel::Vertex { body: String::new(), point: solidcraft_engine::doc::apply_point(&frame, point.0) }];
+                    input.items = vec![Sel::Vertex { body: String::new(), point: frame.point(point.0) }];
                 }
             }
             let items = st.sketch(sketch.0).map(|ss| profile_indices(ss, profiles)).unwrap_or_default();

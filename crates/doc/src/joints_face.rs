@@ -6,12 +6,12 @@
 
 use std::collections::BTreeMap;
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 use solidcraft_kernel::CylinderFace;
 
 use super::{Snap, XRef, component_bodies};
 use crate::history_names::Match;
-use crate::{DocError, Document, IDENTITY, Mat, ModelBody, ModelState, Result, apply_point, apply_vector, mat_inverse};
+use crate::{DocError, Document, ModelBody, ModelState, Result};
 
 /// Rim points sampled to find the face across a cylinder's rim.
 const RIM_SAMPLES: usize = 16;
@@ -23,7 +23,7 @@ pub(super) struct NamedFace<'a> {
     pub body: &'a ModelBody,
     pub face: usize,
     pub point: Vec3,
-    pub offset: Mat,
+    pub offset: Transform,
 }
 
 fn gone(name: &str) -> DocError {
@@ -36,20 +36,20 @@ pub(super) fn named_face<'a>(doc: &Document, st: &'a ModelState, pick: Vec3, nam
     let hit = crate::name_lookup::locate_face(st, name, pick).ok_or_else(|| gone(name))?;
     let body = st.bodies.get(hit.body).ok_or_else(|| gone(name))?;
     let Some(offset) = doc.model_body_offset(body).copied() else {
-        return Ok(NamedFace { body, face: hit.face, point: hit.point, offset: IDENTITY });
+        return Ok(NamedFace { body, face: hit.face, point: hit.point, offset: Transform::IDENTITY });
     };
-    let inv = mat_inverse(&offset).ok_or_else(|| gone(name))?;
-    let (face, at, _) = crate::naming::face_on_body(body, name, apply_point(&inv, pick)).ok_or_else(|| gone(name))?;
-    Ok(NamedFace { body, face, point: apply_point(&offset, at), offset })
+    let inv = offset.inverse().ok_or_else(|| gone(name))?;
+    let (face, at, _) = crate::naming::face_on_body(body, name, inv.point(pick)).ok_or_else(|| gone(name))?;
+    Ok(NamedFace { body, face, point: offset.point(at), offset })
 }
 
 impl NamedFace<'_> {
     /// A point of the component's coordinates in the body's own.
     fn local(&self, p: Vec3) -> Vec3 {
-        if self.offset == IDENTITY {
+        if self.offset == Transform::IDENTITY {
             return p;
         }
-        mat_inverse(&self.offset).map_or(p, |inv| apply_point(&inv, p))
+        self.offset.inverse().map_or(p, |inv| inv.point(p))
     }
 
     /// The face as a cylinder, in the body's own coordinates (`None`: not a cylinder).
@@ -66,13 +66,13 @@ impl NamedFace<'_> {
     pub fn plane(&self) -> Result<Option<(Vec3, Vec3)>> {
         let tol = (self.body.body.size() * 2e-3).max(1e-3);
         let faces = self.body.body.faces(tol)?;
-        Ok(faces.get(self.face).and_then(|f| f.plane_normal.map(|n| (apply_point(&self.offset, f.centroid), apply_vector(&self.offset, n)))))
+        Ok(faces.get(self.face).and_then(|f| f.plane_normal.map(|n| (self.offset.point(f.centroid), self.offset.vector(n)))))
     }
 }
 
 /// A cylinder of a body's own coordinates placed by the body's (rigid) offset.
-pub(super) fn placed(m: &Mat, c: CylinderFace) -> CylinderFace {
-    CylinderFace { axis_point: apply_point(m, c.axis_point), axis: apply_vector(m, *c.axis).unit().unwrap_or(c.axis), ..c }
+pub(super) fn placed(m: &Transform, c: CylinderFace) -> CylinderFace {
+    CylinderFace { axis_point: m.point(c.axis_point), axis: m.vector(*c.axis).unit().unwrap_or(c.axis), ..c }
 }
 
 /// The face across the rim at the `at` end (along the axis) of cylinder `c`, face `face` of `b`
@@ -227,8 +227,8 @@ pub fn face_name_at(doc: &Document, st: &ModelState, component: u64, pick: Vec3,
         if b.body.is_mesh() {
             continue;
         }
-        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
-        let p = apply_point(&mat_inverse(&offset)?, pick);
+        let offset = doc.model_body_offset(b).copied().unwrap_or(Transform::IDENTITY);
+        let p = offset.inverse()?.point(pick);
         let mesh = b.mesh();
         let tol = (b.body.size() * 1e-3).max(1e-3).max(b.display_tol());
         let mut near: BTreeMap<usize, f64> = BTreeMap::new();
@@ -268,8 +268,8 @@ pub fn round_end_at(doc: &Document, st: &ModelState, component: u64, centre: Vec
         if b.body.is_mesh() {
             continue;
         }
-        let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
-        let p = apply_point(&mat_inverse(&offset)?, centre);
+        let offset = doc.model_body_offset(b).copied().unwrap_or(Transform::IDENTITY);
+        let p = offset.inverse()?.point(centre);
         let mesh = b.mesh();
         let tol = (b.body.size() * 1e-3).max(1e-3);
         for f in 0..b.body.face_count() {
@@ -323,6 +323,6 @@ pub fn named_face_spot(doc: &Document, st: &ModelState, body: Option<&str>, name
     let hit = crate::name_lookup::locate_one(st, body, name)?;
     let b = st.bodies.get(hit.body).ok_or_else(|| format!("no face is named `{name}`"))?;
     let spot = crate::naming::face_spot(b, hit.face).ok_or_else(|| format!("face `{name}` has no surface to pick"))?;
-    let offset = doc.model_body_offset(b).copied().unwrap_or(IDENTITY);
-    Ok((doc.model_body_component(b), apply_point(&offset, spot.point)))
+    let offset = doc.model_body_offset(b).copied().unwrap_or(Transform::IDENTITY);
+    Ok((doc.model_body_component(b), offset.point(spot.point)))
 }

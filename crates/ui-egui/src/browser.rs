@@ -34,6 +34,7 @@ use egui::{Color32, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::doc::FeatureKind;
+use solidcraft_engine::geom::Transform;
 
 use crate::context_menu::{Item, Target};
 use crate::theme::Tokens;
@@ -110,7 +111,7 @@ pub struct OccMove {
     /// Exact assembly placement used for world-space movement and the pivot.
     pub path: Vec<u64>,
     /// Effective local placement at dialog opening, including its pre-existing pending move.
-    pub baseline: Option<solidcraft_engine::doc::Mat>,
+    pub baseline: Option<Transform>,
     pub had_pending: bool,
     /// Distances along X, Y, Z (mm) and turns about X, Y, Z (degrees) from where it was.
     pub translate: [f64; 3],
@@ -2227,7 +2228,7 @@ pub(crate) fn occurrence_origin(app: &SolveApp, occurrence: u64) -> Option<solid
     let o = app.session.doc.occurrences.iter().find(|o| o.id == occurrence)?;
     let parent = app.session.doc.component_transform(o.parent);
     let own = app.session.pending_moves.get(&occurrence).copied().unwrap_or(o.transform);
-    Some(solidcraft_engine::doc::apply_point(&solidcraft_engine::doc::mat_mul(&parent, &own), solidcraft_engine::geom::Vec3::ZERO))
+    Some((parent * own).point(solidcraft_engine::geom::Vec3::ZERO))
 }
 
 /// The names the Bodies folder lists at the top level, for tests.

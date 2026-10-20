@@ -1,6 +1,7 @@
 // Exact occurrence workflows through the same commands used by the Browser.
 use crate::Session;
 use serde_json::{Value, json};
+use solidcraft_geom::Transform;
 
 fn run(s: &mut Session, command: &str, p: Value) -> Value {
     s.execute(command, &p).unwrap()
@@ -206,8 +207,8 @@ fn duplicate_nested_labels_use_full_path_and_reopen_undo_preserve_placements() {
     let (parent_component, parent) = created(&mut s, "Parent");
     let (_, child) = created(&mut s, "Child");
     run(&mut s, "solid.box", json!({"length":1,"width":1,"height":1}));
-    let parent2 = s.doc_mut().add_occurrence(parent_component, 0, solidcraft_doc::IDENTITY).unwrap();
-    let parent3 = s.doc_mut().add_occurrence(parent_component, 0, solidcraft_doc::IDENTITY).unwrap();
+    let parent2 = s.doc_mut().add_occurrence(parent_component, 0, Transform::IDENTITY).unwrap();
+    let parent3 = s.doc_mut().add_occurrence(parent_component, 0, Transform::IDENTITY).unwrap();
     for o in s.doc_mut().occurrences.iter_mut().filter(|o| o.id == parent2 || o.id == parent3) {
         o.name = "Same".into();
     }
@@ -234,7 +235,7 @@ fn compact_duplicated_assembly_exact_resolution_and_expansion_limit() {
         let component = s.doc_mut().add_component(Some(&format!("Level{i}")), parent).unwrap();
         let occurrence = s.doc.occurrence_of(component).unwrap().id;
         path.push(occurrence);
-        s.doc_mut().add_occurrence(component, parent, solidcraft_doc::IDENTITY).unwrap();
+        s.doc_mut().add_occurrence(component, parent, Transform::IDENTITY).unwrap();
         parent = component;
     }
     assert!(s.occurrence_placement(&path).is_ok());
@@ -342,7 +343,7 @@ fn isolate_nested_child_hides_ancestor_material_and_sibling() {
         .add_occurrence(
             child_component,
             parent_component,
-            solidcraft_doc::rigid(crate::geom::Vec3::new(20.0, 0.0, 0.0), crate::geom::Vec3::ZERO, crate::geom::Vec3::Z, 0.0),
+            Transform::rigid(crate::geom::Vec3::new(20.0, 0.0, 0.0), crate::geom::Vec3::ZERO, crate::geom::Vec3::Z, 0.0),
         )
         .unwrap();
     s.refresh();
@@ -626,7 +627,7 @@ fn matrix_move_orthonormalises_rounding_and_refuses_what_is_not_rigid() {
     let e = 3e-10;
     let nearly = json!([cos + e, -sin, 0, 5, sin, cos - e, e, 0, 0, -e, 1.0 + e, 0]);
     let r = run(&mut s, "occurrence.move", json!({"occurrence": occ, "matrix": nearly, "space": "world"}));
-    let m: solidcraft_doc::Mat = serde_json::from_value(r["transform"].clone()).unwrap();
+    let m: Transform = serde_json::from_value(r["transform"].clone()).unwrap();
     for i in 0..3 {
         for j in 0..3 {
             let dot: f64 = (0..3).map(|k| m[i][k] * m[j][k]).sum();

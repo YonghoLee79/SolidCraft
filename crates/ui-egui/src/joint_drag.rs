@@ -4,7 +4,7 @@
 
 use egui::Pos2;
 use serde_json::json;
-use solidcraft_engine::doc::{apply_point, joints, mat_inverse};
+use solidcraft_engine::doc::joints;
 use solidcraft_engine::geom::Vec3;
 
 use crate::SolveApp;
@@ -46,7 +46,7 @@ pub fn start(app: &mut SolveApp, proj: &Proj, p: Pos2) -> bool {
     if !sol.world.contains_key(&occurrence) || sol.dof.get(&occurrence).is_none_or(|d| *d == 0) {
         return false;
     }
-    let Some(local) = mat_inverse(&joints::occurrence_world(&s.doc, occurrence)).map(|inv| apply_point(&inv, at)) else { return false };
+    let Some(local) = joints::occurrence_world(&s.doc, occurrence).inverse().map(|inv| inv.point(at)) else { return false };
     let normal = proj.ray(p).1;
     app.viewport.joint_drag = Some(Drag { occurrence, local, origin: at, normal, pushed: false });
     true
@@ -68,7 +68,7 @@ pub fn to(app: &mut SolveApp, proj: &Proj, p: Pos2) {
     if !target.is_finite() {
         return;
     }
-    let at = apply_point(&joints::occurrence_world(&app.session.doc, d.occurrence), d.local);
+    let at = joints::occurrence_world(&app.session.doc, d.occurrence).point(d.local);
     let params =
         json!({"occurrence": d.occurrence, "at": [at.x, at.y, at.z], "point": [target.x, target.y, target.z], "quiet": true, "continuous": true});
     // One undo step for the whole drag: the first frame's, kept on top while the others run (not
@@ -101,7 +101,7 @@ pub fn end(app: &mut SolveApp) {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
-    use solidcraft_engine::doc::{apply_point, joints};
+    use solidcraft_engine::doc::joints;
     use solidcraft_engine::geom::Vec3;
 
     use crate::scenario::Harness;
@@ -121,7 +121,7 @@ mod tests {
         let s = &h.app.session;
         let c = s.doc.find_component("Arm").unwrap_or(0);
         let o = s.doc.occurrence_of(c).map(|o| o.id).unwrap_or(0);
-        apply_point(&joints::occurrence_world(&s.doc, o), local)
+        joints::occurrence_world(&s.doc, o).point(local)
     }
 
     /// An arm hinged about +Z on a grounded base (seen from the top): its far end, and the screen

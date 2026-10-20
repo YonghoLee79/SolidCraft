@@ -98,7 +98,7 @@ pub(super) fn cut(target: &Body, tool: &Body) -> Option<Body> {
 mod tests {
     use super::*;
     use crate::transform_matrix;
-    use solidcraft_geom::{Loop2, Plane, Region2, Vec2};
+    use solidcraft_geom::{Loop2, Plane, Region2, Transform, Vec2};
 
     fn drill(angle: f64) -> Body {
         let profile =
@@ -116,7 +116,7 @@ mod tests {
         assert!((crate::measure(&placed).unwrap().volume - crate::measure(&turned).unwrap().volume).abs() < 1e-6);
         // A partial turn's radial caps would move; an affine scale can make the bore elliptic.
         assert!(axis(&drill(std::f64::consts::PI)).is_none());
-        let scaled = transform_matrix(&tool, [[2., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]]).unwrap();
+        let scaled = transform_matrix(&tool, Transform([[2., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]])).unwrap();
         assert!(axis(&scaled).is_none());
         let block = crate::box_solid(Vec3::ZERO, Vec3::new(10., 20., 30.)).unwrap();
         assert!(axis(&block).is_none());

@@ -39,7 +39,7 @@ fn top(s: &mut Session) -> Value {
 /// How far the bar's long axis is turned from Y, the plate's axis of tilt (degrees, 0…90).
 fn bar_from_tilt_axis(s: &Session) -> f64 {
     let m = solidcraft_doc::joints::occurrence_world(&s.doc, occ(s, "Bar"));
-    let x = solidcraft_doc::apply_vector(&m, Vec3::X);
+    let x = m.vector(Vec3::X);
     x.dot(Vec3::Y).abs().min(1.0).acos().to_degrees()
 }
 

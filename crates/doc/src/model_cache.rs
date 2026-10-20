@@ -66,7 +66,7 @@ struct BodyKey {
 impl BodyKey {
     fn of(b: &ModelBody) -> Self {
         let mut source_transform = [0; 16];
-        for (bits, v) in source_transform.iter_mut().zip(b.source_transform.iter().flatten()) {
+        for (bits, v) in source_transform.iter_mut().zip(b.source_transform.entries()) {
             *bits = v.to_bits();
         }
         BodyKey {
@@ -141,7 +141,7 @@ impl Writer {
         if let Some(source) = &b.source_name {
             r["source_name"] = json!(source);
         }
-        if b.source_transform != crate::IDENTITY {
+        if b.source_transform != solidcraft_geom::Transform::IDENTITY {
             r["source_transform"] = json!(b.source_transform);
         }
         if b.transferred {
@@ -274,8 +274,8 @@ impl SavedModel {
             );
             b.source_name = r.get("source_name").map(|s| text(Some(s))).transpose()?;
             if let Some(m) = r.get("source_transform") {
-                let m: crate::Mat = serde_json::from_value(m.clone()).map_err(|_| bad("saved model: transform"))?;
-                if m.iter().flatten().any(|x| !x.is_finite()) {
+                let m: solidcraft_geom::Transform = serde_json::from_value(m.clone()).map_err(|_| bad("saved model: transform"))?;
+                if m.entries().any(|x| !x.is_finite()) {
                     return Err(bad("saved model: transform"));
                 }
                 b.source_transform = m;

@@ -3,9 +3,8 @@
 
 use super::*;
 use crate::EmbossFace;
-use crate::apply_point;
 use crate::sheet;
-use solidcraft_geom::{Aabb3, Loop2, Ring, Seg2};
+use solidcraft_geom::{Aabb3, Loop2, Ring, Seg2, Transform};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState) -> Result<()> {
     match &f.kind {
@@ -24,18 +23,15 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                     st.bodies.iter().position(|b| b.name == face.body).ok_or_else(|| DocError::Unknown(format!("emboss body `{}`", face.body)))?;
                 let mb = st.bodies.get(i).cloned().ok_or_else(|| DocError::Invalid("emboss body".into()))?;
                 let body_frame = face.body_frame(doc, &mb)?;
-                let inverse = crate::mat_inverse(&body_frame).ok_or_else(|| DocError::Invalid("invalid cylinder body frame".into()))?;
+                let inverse = body_frame.inverse().ok_or_else(|| DocError::Invalid("invalid cylinder body frame".into()))?;
                 let sketch_owner = doc.feature(ss.feature).map(|f| f.component).unwrap_or(0);
                 let author_frame = EmbossFace::component_frame(doc, f.component, &face.author_path)?;
                 let sketch_frame = face.sketch_frame(doc, f.component, sketch_owner, &mb)?;
-                let sketch_transform = crate::mat_mul(&inverse, &sketch_frame);
-                let plane = Plane::new(
-                    crate::apply_point(&sketch_transform, ss.plane.origin),
-                    crate::apply_vector(&sketch_transform, ss.plane.x),
-                    crate::apply_vector(&sketch_transform, ss.plane.y),
-                )
-                .ok_or_else(|| DocError::Invalid("invalid cylinder sketch frame".into()))?;
-                let mut at = crate::apply_point(&crate::mat_mul(&inverse, &author_frame), face.at.0);
+                let sketch_transform = inverse * sketch_frame;
+                let plane =
+                    Plane::new(sketch_transform.point(ss.plane.origin), sketch_transform.vector(ss.plane.x), sketch_transform.vector(ss.plane.y))
+                        .ok_or_else(|| DocError::Invalid("invalid cylinder sketch frame".into()))?;
+                let mut at = (inverse * author_frame).point(face.at.0);
                 let name = f
                     .face_names
                     .first()
@@ -117,7 +113,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             Ok(())
         }
         FeatureKind::Align { bodies, from, to, from_normal, to_normal, flip } => {
-            let mut m = translation(Vec3::ZERO);
+            let mut m = Transform::translation(Vec3::ZERO);
             if let (Some(a), Some(b)) = (from_normal.and_then(|n| n.normalized()), to_normal.and_then(|n| n.normalized())) {
                 // Turn `a` onto −b (faces meet) or b (flipped), about the `from` point.
                 let want = if *flip { b } else { b * -1.0 };
@@ -125,7 +121,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 let ang = axis.len().atan2(a.dot(want));
                 let axis = axis.normalized().unwrap_or_else(|| a.any_perp());
                 if ang.abs() > 1e-12 {
-                    m = rotation(from.0, axis, ang);
+                    m = Transform::rotation(from.0, axis, ang);
                 }
             }
             let d = to.0 - from.0;
@@ -1196,23 +1192,23 @@ fn sheet_prism_cut(
         let mut labels = Vec::new();
         for (pi, panel) in candidates {
             let w = if sh.flat { sh.world(None) } else { sh.world(pi) };
-            let zorigin = (apply_point(&w, Vec3::ZERO) - plane.origin).dot(n);
-            let sign = crate::apply_vector(&w, Vec3::Z).dot(n);
+            let zorigin = (w.point(Vec3::ZERO) - plane.origin).dot(n);
+            let sign = w.vector(Vec3::Z).dot(n);
             if sign.abs() < 1e-6 {
                 continue;
             }
             let (a, b) = ((span.0 - zorigin) / sign, (span.1 - zorigin) / sign);
             let roundoff = (cap_roundoff
-                + 128.0 * f64::EPSILON * (apply_point(&w, Vec3::ZERO).len() + plane.origin.len() + span.0.abs() + span.1.abs() + sh.t).max(1.0))
+                + 128.0 * f64::EPSILON * (w.point(Vec3::ZERO).len() + plane.origin.len() + span.0.abs() + span.1.abs() + sh.t).max(1.0))
                 / sign.abs();
-            let nominal_depth = if apply_point(&w, Vec3::ZERO) == plane.origin
+            let nominal_depth = if w.point(Vec3::ZERO) == plane.origin
                 && let Some((lo, hi)) = nominal
                 && (span.0 - lo).abs() <= roundoff
                 && (span.1 - hi).abs() <= roundoff
             {
                 // Equality of the two frame origins proves zero origin displacement;
                 // use authored distances, never an inferred endpoint coincidence.
-                let normal = crate::apply_vector(&w, Vec3::X).cross(crate::apply_vector(&w, Vec3::Y));
+                let normal = w.vector(Vec3::X).cross(w.vector(Vec3::Y));
                 let exact_sign = if normal == n {
                     1.0
                 } else if normal == -n {

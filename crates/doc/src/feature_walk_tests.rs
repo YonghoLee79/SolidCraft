@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 
 use fixtures::{changed, fixtures, with_points, with_refs};
 
+use solidcraft_geom::Transform;
+
 use crate::FeatureKind;
 
 /// Per fixture: its inputs, one per line (`label = expression (kind)`), then every expression.
@@ -82,7 +84,7 @@ fn ref_record() -> String {
 /// faces, the profile selections with their sketches, and a primitive's placement point.
 fn geometry_record() -> String {
     // x → y → z → x, then (1, 2, 3): every point and every direction of the fixtures changes.
-    let m = [[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0, 1.0]];
+    let m = Transform([[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0, 1.0]]);
     let mut out = String::new();
     for (name, v) in fixtures() {
         let kind: FeatureKind = serde_json::from_value(with_points(name, with_refs(name, v))).unwrap_or_else(|e| panic!("{name}: {e}"));

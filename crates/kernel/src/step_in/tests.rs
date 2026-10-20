@@ -1,4 +1,4 @@
-use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Plane, Region2, Transform, Vec2, Vec3};
 
 use super::*;
 use crate::{BoolOp, boolean, box_solid, cylinder, extrude, fillet, measure, revolve, sphere, step_export, torus};
@@ -1007,7 +1007,8 @@ fn mirrored_revolved_faces_round_trip() {
         let mut tool = revolve(&pl, &[prof], Vec2::ZERO, Vec2::Y, std::f64::consts::TAU).unwrap().pop().unwrap();
         if mirror {
             tool =
-                crate::transform_matrix(&tool, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 16.0, 1.0]]).unwrap();
+                crate::transform_matrix(&tool, Transform([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 16.0, 1.0]]))
+                    .unwrap();
         }
         let plate = box_solid(Vec3::ZERO, Vec3::new(40.0, 30.0, 10.0)).unwrap();
         round_trip(&boolean(&plate, &tool, BoolOp::Cut).unwrap().unwrap());
@@ -1156,7 +1157,8 @@ fn glued_halves_export_as_whole_faces() {
         holes: vec![Loop2::circle(Vec2::new(15.0, 20.0), 4.0).reversed()],
     };
     let right = extrude(&Plane::XY, &[half], 0.0, 10.0).unwrap().pop().unwrap();
-    let left = crate::transform_matrix(&right, [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]).unwrap();
+    let left = crate::transform_matrix(&right, Transform([[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]))
+        .unwrap();
     let b = boolean(&right, &left, BoolOp::Union).unwrap().unwrap();
     let text = step_export(&[&b], "t").unwrap();
     assert!(!text.contains("B_SPLINE_SURFACE"), "{text}");
@@ -1445,7 +1447,7 @@ fn three_quarter_ring() -> Body {
 }
 
 fn scaled(b: &Body, x: f64, y: f64, z: f64) -> Body {
-    crate::transform_matrix(b, [[x, 0.0, 0.0, 0.0], [0.0, y, 0.0, 0.0], [0.0, 0.0, z, 0.0], [0.0, 0.0, 0.0, 1.0]]).unwrap()
+    crate::transform_matrix(b, Transform([[x, 0.0, 0.0, 0.0], [0.0, y, 0.0, 0.0], [0.0, 0.0, z, 0.0], [0.0, 0.0, 0.0, 1.0]])).unwrap()
 }
 
 /// A scale across the revolution axis that differs from the scale along it (how a shell or an

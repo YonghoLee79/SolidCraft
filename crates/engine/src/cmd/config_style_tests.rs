@@ -150,7 +150,7 @@ fn face_occurrence_pick_uses_definition_identity_and_coordinates() {
     let world = s.world_state();
     let placed = world.bodies.iter().find(|body| body.name != body.definition_name()).unwrap();
     let placed_name = placed.name.clone();
-    let point = solidcraft_doc::apply_point(&placed.source_transform, solidcraft_geom::Vec3::new(5., 5., 10.));
+    let point = placed.source_transform.point(solidcraft_geom::Vec3::new(5., 5., 10.));
     let key = face_column(&mut s, &placed_name, json!(point));
     let Column::FaceAppearance(target) = &s.doc.configs.columns[0] else { panic!() };
     assert_eq!(target.body, body);

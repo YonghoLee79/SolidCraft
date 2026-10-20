@@ -1,10 +1,10 @@
 //! World-frame metadata at a timeline body ownership boundary.
-use solidcraft_geom::Plane;
+use solidcraft_geom::{Plane, Transform};
 
-use crate::{DocError, Mat, ModelState, Result, apply_point, apply_vector};
+use crate::{DocError, ModelState, Result};
 
-pub(crate) fn remap_sheet_metadata(st: &mut ModelState, names: &[String], transform: &Mat) -> Result<()> {
-    if names.len() > 1000 || st.sheets.len().saturating_add(st.threads.len()) > 100_000 || !transform.iter().flatten().all(|v| v.is_finite()) {
+pub(crate) fn remap_sheet_metadata(st: &mut ModelState, names: &[String], transform: &Transform) -> Result<()> {
+    if names.len() > 1000 || st.sheets.len().saturating_add(st.threads.len()) > 100_000 || !transform.is_finite() {
         return Err(DocError::Invalid("body transfer metadata exceeds its finite processing budget".into()));
     }
     let names: std::collections::BTreeSet<&str> = names.iter().map(String::as_str).collect();
@@ -20,7 +20,7 @@ pub(crate) fn remap_sheet_metadata(st: &mut ModelState, names: &[String], transf
         .enumerate()
         .filter(|(_, s)| names.contains(s.body.as_str()))
         .map(|(i, s)| {
-            let frame = Plane::new(apply_point(transform, s.frame.origin), apply_vector(transform, s.frame.x), apply_vector(transform, s.frame.y))
+            let frame = Plane::new(transform.point(s.frame.origin), transform.vector(s.frame.x), transform.vector(s.frame.y))
                 .ok_or_else(|| DocError::Invalid("invalid transferred sheet frame".into()))?;
             Ok((i, frame))
         })
@@ -31,8 +31,8 @@ pub(crate) fn remap_sheet_metadata(st: &mut ModelState, names: &[String], transf
         .enumerate()
         .filter(|(_, t)| names.contains(t.body.as_str()))
         .map(|(i, t)| {
-            let point = apply_point(transform, t.axis_point);
-            let axis = apply_vector(transform, *t.axis).unit().ok_or_else(|| DocError::Invalid("invalid transferred thread axis".into()))?;
+            let point = transform.point(t.axis_point);
+            let axis = transform.vector(*t.axis).unit().ok_or_else(|| DocError::Invalid("invalid transferred thread axis".into()))?;
             if !point.is_finite() {
                 return Err(DocError::Invalid("invalid transferred thread placement".into()));
             }

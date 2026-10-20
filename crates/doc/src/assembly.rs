@@ -9,100 +9,9 @@
 //! and the engine maps a new feature's geometry into the active component's frame.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::{Plane, Vec3};
+use solidcraft_geom::{Transform, Vec3};
 
 use crate::{DocError, Document, FeatureKind, PlaneRef, Result};
-
-/// Column-major 4×4 affine transform (`m[col][row]`).
-pub type Mat = [[f64; 4]; 4];
-
-pub const IDENTITY: Mat = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
-
-pub fn mat_mul(a: &Mat, b: &Mat) -> Mat {
-    let mut r = [[0.0; 4]; 4];
-    for (c, col) in r.iter_mut().enumerate() {
-        for (row, cell) in col.iter_mut().enumerate() {
-            *cell = (0..4).map(|k| a[k][row] * b[c][k]).sum();
-        }
-    }
-    r
-}
-
-pub fn apply_point(m: &Mat, p: Vec3) -> Vec3 {
-    Vec3::new(
-        m[0][0] * p.x + m[1][0] * p.y + m[2][0] * p.z + m[3][0],
-        m[0][1] * p.x + m[1][1] * p.y + m[2][1] * p.z + m[3][1],
-        m[0][2] * p.x + m[1][2] * p.y + m[2][2] * p.z + m[3][2],
-    )
-}
-
-pub fn apply_vector(m: &Mat, v: Vec3) -> Vec3 {
-    Vec3::new(
-        m[0][0] * v.x + m[1][0] * v.y + m[2][0] * v.z,
-        m[0][1] * v.x + m[1][1] * v.y + m[2][1] * v.z,
-        m[0][2] * v.x + m[1][2] * v.y + m[2][2] * v.z,
-    )
-}
-
-pub fn is_identity(m: &Mat) -> bool {
-    m.iter().flatten().zip(IDENTITY.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-12)
-}
-
-/// Inverse of an affine transform.
-pub fn mat_inverse(m: &Mat) -> Option<Mat> {
-    let a = |r: usize, c: usize| m[c][r];
-    let det = a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) - a(0, 1) * (a(1, 0) * a(2, 2) - a(1, 2) * a(2, 0))
-        + a(0, 2) * (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0));
-    if det.abs() < 1e-14 || !det.is_finite() {
-        return None;
-    }
-    let inv = |r: usize, c: usize| -> f64 {
-        // Cofactor of (c, r) / det.
-        let (r0, r1) = match c {
-            0 => (1, 2),
-            1 => (0, 2),
-            _ => (0, 1),
-        };
-        let (c0, c1) = match r {
-            0 => (1, 2),
-            1 => (0, 2),
-            _ => (0, 1),
-        };
-        let minor = a(r0, c0) * a(r1, c1) - a(r0, c1) * a(r1, c0);
-        let sign = if (r + c).is_multiple_of(2) { 1.0 } else { -1.0 };
-        sign * minor / det
-    };
-    let mut out = IDENTITY;
-    for (c, col) in out.iter_mut().enumerate().take(3) {
-        for (r, cell) in col.iter_mut().enumerate().take(3) {
-            *cell = inv(r, c);
-        }
-    }
-    let t = Vec3::new(m[3][0], m[3][1], m[3][2]);
-    let it = apply_vector(&out, t);
-    out[3] = [-it.x, -it.y, -it.z, 1.0];
-    Some(out)
-}
-
-/// A rigid transform: rotation by `angle` about `axis` through `origin`, then a translation.
-pub fn rigid(translate: Vec3, origin: Vec3, axis: Vec3, angle: f64) -> Mat {
-    let k = axis.normalized().unwrap_or(Vec3::Z);
-    let (s, c) = angle.sin_cos();
-    let t = 1.0 - c;
-    let r = [
-        [t * k.x * k.x + c, t * k.x * k.y + s * k.z, t * k.x * k.z - s * k.y],
-        [t * k.x * k.y - s * k.z, t * k.y * k.y + c, t * k.y * k.z + s * k.x],
-        [t * k.x * k.z + s * k.y, t * k.y * k.z - s * k.x, t * k.z * k.z + c],
-    ];
-    let mut m = IDENTITY;
-    for (mc, rc) in m.iter_mut().zip(r) {
-        mc[..3].copy_from_slice(&rc);
-    }
-    let ro = apply_vector(&m, origin);
-    let tr = origin - ro + translate;
-    m[3] = [tr.x, tr.y, tr.z, 1.0];
-    m
-}
 
 /// A placement of a component inside a parent component.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -113,48 +22,39 @@ pub struct Occurrence {
     #[serde(default)]
     pub parent: u64,
     pub name: String,
-    #[serde(default = "identity")]
-    pub transform: Mat,
+    #[serde(default)]
+    pub transform: Transform,
     /// Grounded occurrences don't move.
     #[serde(default)]
     pub grounded: bool,
-}
-
-fn identity() -> Mat {
-    IDENTITY
 }
 
 /// How deep and how many placements [`Document::placements`] walks.
 pub const MAX_PLACEMENT_DEPTH: usize = 64;
 pub const MAX_PLACEMENTS: usize = 100_000;
 
-fn map_plane(m: &Mat, p: &Plane) -> Plane {
-    let (o, x, y) = (apply_point(m, p.origin), apply_vector(m, p.x), apply_vector(m, p.y));
-    Plane::new(o, x, y).unwrap_or(*p)
-}
-
-fn map_plane_ref(m: &Mat, p: &mut PlaneRef) {
+fn map_plane_ref(m: &Transform, p: &mut PlaneRef) {
     match p {
-        PlaneRef::Custom { plane } => *plane = map_plane(m, plane),
+        PlaneRef::Custom { plane } => *plane = m.plane(plane),
         PlaneRef::Placed { origin, x_dir, y_dir } => {
             map_point_expr(m, origin);
-            *x_dir = apply_vector(m, *x_dir);
-            *y_dir = apply_vector(m, *y_dir);
+            *x_dir = m.vector(*x_dir);
+            *y_dir = m.vector(*y_dir);
         }
         PlaneRef::Face { plane, at, .. } => {
-            *plane = map_plane(m, plane);
-            *at = apply_point(m, *at);
+            *plane = m.plane(plane);
+            *at = m.point(*at);
         }
         PlaneRef::Offset { base, .. } | PlaneRef::Flipped { base, .. } => map_plane_ref(m, base),
         PlaneRef::AtAngle { base, axis_origin, axis_dir, .. } => {
             map_plane_ref(m, base);
-            *axis_origin = apply_point(m, *axis_origin);
-            *axis_dir = apply_vector(m, *axis_dir);
+            *axis_origin = m.point(*axis_origin);
+            *axis_dir = m.vector(*axis_dir);
         }
         // Named origin planes and construction planes are the component's own.
         PlaneRef::Origin { .. } | PlaneRef::Construction { .. } => {}
         PlaneRef::Tangent { face, at } => {
-            *at = apply_point(m, *at);
+            *at = m.point(*at);
             map_geo_ref(m, face);
         }
         PlaneRef::Midplane { .. }
@@ -169,16 +69,16 @@ fn map_plane_ref(m: &Mat, p: &mut PlaneRef) {
     }
 }
 
-fn map_geo_ref(m: &Mat, g: &mut crate::construct::GeoRef) {
-    g.map_points(&mut |p: &mut Vec3| *p = apply_point(m, *p), &mut |pl: &mut PlaneRef| map_plane_ref(m, pl));
+fn map_geo_ref(m: &Transform, g: &mut crate::construct::GeoRef) {
+    g.map_points(&mut |p: &mut Vec3| *p = m.point(*p), &mut |pl: &mut PlaneRef| map_plane_ref(m, pl));
 }
 
 /// Map a point given as expressions by `m`: numbers stay numbers; a coordinate that is an
 /// expression stays one (`m · (x, y, z) + t`, written out), so it still follows its parameters.
-pub fn map_point_expr(m: &Mat, p: &mut crate::PointExpr) {
+pub fn map_point_expr(m: &Transform, p: &mut crate::PointExpr) {
     let num = |e: &crate::Expr| e.trim().parse::<f64>().ok().filter(|v| v.is_finite());
     if let [Some(x), Some(y), Some(z)] = [num(&p[0]), num(&p[1]), num(&p[2])] {
-        *p = crate::point_expr(apply_point(m, Vec3::new(x, y, z)));
+        *p = crate::point_expr(m.point(Vec3::new(x, y, z)));
         return;
     }
     let old = p.clone();
@@ -208,12 +108,12 @@ pub fn map_point_expr(m: &Mat, p: &mut crate::PointExpr) {
 
 impl FeatureKind {
     /// Map the feature's world geometry (points, directions, explicit planes) by `m`.
-    pub fn transform_geometry(&mut self, m: &Mat) {
+    pub fn transform_geometry(&mut self, m: &Transform) {
         use crate::feature_geometry::Geo;
         use crate::walk::Walk;
         self.walk_geometry_mut(&mut |g| match g {
-            Geo::Pick(p) | Geo::Pos(p) => *p = apply_point(m, *p),
-            Geo::Dir(v) => *v = apply_vector(m, *v),
+            Geo::Pick(p) | Geo::Pos(p) => *p = m.point(*p),
+            Geo::Dir(v) => *v = m.vector(*v),
             Geo::Plane(p) => map_plane_ref(m, p),
             Geo::Construct(r) => map_geo_ref(m, r),
             Geo::Placement(e) => map_point_expr(m, e),
@@ -230,15 +130,15 @@ impl Document {
     }
 
     /// World transform of a component's frame (through its first occurrence and its parents').
-    pub fn component_transform(&self, component: u64) -> Mat {
-        let mut m = IDENTITY;
+    pub fn component_transform(&self, component: u64) -> Transform {
+        let mut m = Transform::IDENTITY;
         let mut c = component;
         for _ in 0..1000 {
             if c == 0 {
                 break;
             }
             let Some(o) = self.occurrence_of(c) else { break };
-            m = mat_mul(&o.transform, &m);
+            m = o.transform * m;
             c = o.parent;
         }
         m
@@ -246,14 +146,14 @@ impl Document {
 
     /// World transform of one placement of `component`: the occurrence `path` from the root
     /// (empty for the root itself). `None` when the path no longer leads to that component.
-    pub fn path_transform(&self, component: u64, path: &[u64]) -> Option<Mat> {
+    pub fn path_transform(&self, component: u64, path: &[u64]) -> Option<Transform> {
         if path.len() > MAX_PLACEMENT_DEPTH + 1 {
             return None;
         }
-        let (mut m, mut c) = (IDENTITY, 0);
+        let (mut m, mut c) = (Transform::IDENTITY, 0);
         for id in path {
             let o = self.occurrences.iter().find(|o| o.id == *id && o.parent == c)?;
-            m = mat_mul(&m, &o.transform);
+            m = m * o.transform;
             c = o.component;
         }
         (c == component).then_some(m)
@@ -261,9 +161,9 @@ impl Document {
 
     /// Every placement of each component: (component, occurrence path ids, world transform).
     /// A branch stops past [`MAX_PLACEMENT_DEPTH`] levels, the walk past [`MAX_PLACEMENTS`] placements.
-    pub fn placements(&self) -> Vec<(u64, Vec<u64>, Mat)> {
-        let mut out = vec![(0, Vec::new(), IDENTITY)];
-        let mut stack: Vec<(u64, Vec<u64>, Mat)> = vec![(0, Vec::new(), IDENTITY)];
+    pub fn placements(&self) -> Vec<(u64, Vec<u64>, Transform)> {
+        let mut out = vec![(0, Vec::new(), Transform::IDENTITY)];
+        let mut stack: Vec<(u64, Vec<u64>, Transform)> = vec![(0, Vec::new(), Transform::IDENTITY)];
         while let Some((comp, path, m)) = stack.pop() {
             if out.len() > MAX_PLACEMENTS {
                 break;
@@ -275,7 +175,7 @@ impl Document {
             for o in self.occurrences.iter().filter(|o| o.parent == comp) {
                 let mut p = path.clone();
                 p.push(o.id);
-                let w = mat_mul(&m, &o.transform);
+                let w = m * o.transform;
                 out.push((o.component, p.clone(), w));
                 stack.push((o.component, p, w));
             }
@@ -286,18 +186,18 @@ impl Document {
     /// Every body as the world shows it: its world name ("Body1", or "Body1 (Occ:2)" for a
     /// further instance), its component, the occurrence path, and the transform from the frame
     /// its geometry is in to the world.
-    pub fn body_frames(&self, st: &crate::ModelState) -> Vec<(String, u64, Vec<u64>, Mat)> {
+    pub fn body_frames(&self, st: &crate::ModelState) -> Vec<(String, u64, Vec<u64>, Transform)> {
         self.body_frames_with_source(st).into_iter().map(|(world, _, component, path, matrix)| (world, component, path, matrix)).collect()
     }
 
     /// Body frames with explicit definition names; callers must not infer them from labels.
-    pub fn body_frames_with_source(&self, st: &crate::ModelState) -> Vec<(String, String, u64, Vec<u64>, Mat)> {
+    pub fn body_frames_with_source(&self, st: &crate::ModelState) -> Vec<(String, String, u64, Vec<u64>, Transform)> {
         let mut out = Vec::new();
         for (comp, path, m) in self.placements() {
             for b in st.bodies.iter().filter(|b| self.model_body_component(b) == comp) {
                 let name = self.world_body_name(st, &b.name, comp, &path);
                 let w = match self.model_body_offset(b) {
-                    Some(o) => mat_mul(&m, o),
+                    Some(o) => m * o,
                     None => m,
                 };
                 out.push((name, b.definition_name().to_string(), comp, path.clone(), w));
@@ -376,7 +276,7 @@ impl Document {
     }
 
     /// Add an occurrence of an existing component into `parent`.
-    pub fn add_occurrence(&mut self, component: u64, parent: u64, transform: Mat) -> Result<u64> {
+    pub fn add_occurrence(&mut self, component: u64, parent: u64, transform: Transform) -> Result<u64> {
         if component == 0 || !self.components.iter().any(|c| c.id == component) {
             return Err(DocError::Unknown(format!("component {component}")));
         }

@@ -12,7 +12,7 @@ use super::{
     Assembly, Held, MAX_LOOP_VALUES, MAX_LOOP_WORK, MAX_LOOPS, Solution, Tree, Values, apply_links, build, close_within, closure_gaps, jacobian,
     joint_values, largest, least_squares, limit_bounds, link_chains, loop_groups, loop_scale, loose_gap, unknowns,
 };
-use crate::{Document, ModelState, apply_point, apply_vector, mat_mul};
+use crate::{Document, ModelState};
 
 /// How close counts as reached: mm for the point, degrees for the axis.
 pub const REACH_TOL: f64 = 1e-4;
@@ -129,12 +129,12 @@ pub fn reach(doc: &Document, st: &ModelState, r: &Reach) -> Result<Reached, Stri
     // A distance steps by a share of the chain's size, of the way to the target or of the point's
     // reach from its joints, whichever is longest (one slider on its own has no size, and a part
     // turning about a joint far from its point moves that far).
-    let point = tree.world(r.occurrence, &vals).map(|t| apply_point(&t, r.point));
+    let point = tree.world(r.occurrence, &vals).map(|t| t.point(r.point));
     let lever = path
         .iter()
         .filter_map(|id| {
             let (j, (fa, _)) = (tree.joints.get(id)?, tree.frames.get(id)?);
-            Some(apply_point(&mat_mul(&tree.world(j.a.occurrence, &vals)?, fa), Vec3::ZERO).dist(point?))
+            Some((tree.world(j.a.occurrence, &vals)? * fa).point(Vec3::ZERO).dist(point?))
         })
         .fold(0.0, f64::max);
     let span = point.map_or(scale, |p| scale.max(p.dist(r.to)).max(lever));
@@ -281,10 +281,10 @@ fn misses(
 /// The target's misses for these values: the point's (mm), then the axis's (as mm across `scale`).
 fn target(tree: &Tree, r: &Reach, scale: f64, vals: &Values) -> Option<Vec<f64>> {
     let t = tree.world(r.occurrence, vals)?;
-    let d = apply_point(&t, r.point) - r.to;
+    let d = t.point(r.point) - r.to;
     let mut out = vec![d.x, d.y, d.z];
     if let Some((a, z)) = r.axis {
-        let w = (apply_vector(&t, a) - z) * scale;
+        let w = (t.vector(a) - z) * scale;
         out.extend([w.x, w.y, w.z]);
     }
     Some(out)

@@ -2797,7 +2797,11 @@ mod tests {
         let body = crate::extrude(&Plane::XY, &[region], 0.0, 20.0).unwrap().pop().unwrap();
         // z -> z + 0.3x + 0.4y tilts both caps while leaving the vertical edge
         // and its side planes unchanged. This shear preserves volume.
-        let body = crate::transform_matrix(&body, [[1.0, 0.0, 0.3, 0.0], [0.0, 1.0, 0.4, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]).unwrap();
+        let body = crate::transform_matrix(
+            &body,
+            solidcraft_geom::Transform([[1.0, 0.0, 0.3, 0.0], [0.0, 1.0, 0.4, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]),
+        )
+        .unwrap();
         let out = fillet_g2(&body, &[Vec3::new(10.0, 10.0, 17.0)], 2.0).unwrap();
         assert!(out.validity().is_empty(), "{:?}", out.validity());
         assert_eq!(out.crossed_face_loops().unwrap(), 0);

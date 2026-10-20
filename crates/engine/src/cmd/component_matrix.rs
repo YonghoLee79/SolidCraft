@@ -4,7 +4,7 @@
 //! `solid.mirror`'s, not a placement's).
 
 use serde_json::Value;
-use solidcraft_doc::{IDENTITY, Mat};
+use solidcraft_geom::Transform;
 
 use crate::Result;
 use crate::params::bad;
@@ -28,7 +28,7 @@ pub fn tolerance(p: &Value, cmd: &str) -> Result<f64> {
 /// Read `matrix` as a rigid transform. It is row-major: 12 numbers (three rows of rotation
 /// and translation, `[r00, r01, r02, tx, r10, …, tz]`) or 16 (a fourth row `0, 0, 0, 1`), flat
 /// or as rows.
-pub fn rigid(v: &Value, tolerance: f64, cmd: &str) -> Result<Mat> {
+pub fn rigid(v: &Value, tolerance: f64, cmd: &str) -> Result<Transform> {
     let numbers = numbers(v).ok_or_else(|| bad(cmd, "matrix must be 12 numbers (3x4, row by row) or 16 (4x4), flat or as rows"))?;
     if numbers.iter().any(|x| !x.is_finite()) {
         return Err(bad(cmd, "matrix must contain finite numbers"));
@@ -64,8 +64,8 @@ pub fn rigid(v: &Value, tolerance: f64, cmd: &str) -> Result<Mat> {
         ));
     }
     let rot = orthonormal(r);
-    let mut m = IDENTITY;
-    for (col, column) in m.iter_mut().enumerate().take(3) {
+    let mut m = Transform::IDENTITY;
+    for (col, column) in m.0.iter_mut().enumerate().take(3) {
         for (row, cell) in column.iter_mut().enumerate().take(3) {
             *cell = rot[row][col];
         }

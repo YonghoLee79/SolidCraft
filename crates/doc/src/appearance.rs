@@ -210,7 +210,7 @@ impl Document {
             },
         };
         for f in self.appearances.faces.iter().filter(|f| f.body == b.definition_name()) {
-            let (p, look) = (crate::apply_point(&b.source_transform, f.point), f.look.clone());
+            let (p, look) = (b.source_transform.point(f.point), f.look.clone());
             if f.strict_name {
                 let Some(name) = f.name.as_ref() else { continue };
                 let Some(origin_feature) = name.strip_prefix('F').and_then(|name| name.split_once(':')).and_then(|(id, _)| id.parse().ok()) else {

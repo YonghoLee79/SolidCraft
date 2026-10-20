@@ -534,7 +534,7 @@ pub fn step_assembly(doc: &Document, local: &ModelState, name: &str) -> Result<V
         .bodies
         .iter()
         .map(|b| match doc.model_body_offset(b) {
-            Some(offset) if !solidcraft_doc::is_identity(offset) => solidcraft_kernel::transform_matrix(&b.body, *offset).map(Some),
+            Some(offset) if !offset.is_identity() => solidcraft_kernel::transform_matrix(&b.body, *offset).map(Some),
             _ => Ok(None),
         })
         .collect::<std::result::Result<_, _>>()?;
@@ -546,7 +546,7 @@ pub fn step_assembly(doc: &Document, local: &ModelState, name: &str) -> Result<V
     for o in &doc.occurrences {
         let (Some(&parent), Some(&child)) = (index.get(&o.parent), index.get(&o.component)) else { continue };
         if let Some(p) = products.get_mut(parent) {
-            p.children.push((child, o.transform, o.name.clone()));
+            p.children.push((child, o.transform.0, o.name.clone()));
         }
     }
     Ok(solidcraft_kernel::step_export_products(&products, 0, &step_header(format!("{name}.step"), &doc.metadata))?.into_bytes())

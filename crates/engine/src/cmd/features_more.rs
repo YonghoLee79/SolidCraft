@@ -163,7 +163,7 @@ fn emboss(s: &mut Session, p: &Value) -> Result<Value> {
     let mut targets = string_list(p, "targets");
     let face = if let Some(value) = p.get("face") {
         let local = vec3(value).ok_or_else(|| bad(cmd, "`face` must be a finite point [x,y,z]"))?;
-        let at = solidcraft_doc::apply_point(&s.active_component_frame(), local);
+        let at = s.active_component_frame().point(local);
         let state = s.world_state();
         let mut candidates = Vec::new();
         // The nearest face off the point: (distance, body), for the error when none holds it.
@@ -268,8 +268,8 @@ fn emboss_selection(s: &Session, selected: &solidcraft_doc::ModelBody, at: Vec3)
     if path.len() > 64 || author_path.len() > 64 {
         return Err(bad(cmd, "cylinder placement is too deep"));
     }
-    let inverse = solidcraft_doc::mat_inverse(&s.active_component_frame()).ok_or_else(|| bad(cmd, "invalid active frame"))?;
-    Ok(solidcraft_doc::EmbossFace { body: name.into(), at: FacePick(solidcraft_doc::apply_point(&inverse, at)), path, author_path })
+    let inverse = s.active_component_frame().inverse().ok_or_else(|| bad(cmd, "invalid active frame"))?;
+    Ok(solidcraft_doc::EmbossFace { body: name.into(), at: FacePick(inverse.point(at)), path, author_path })
 }
 
 fn check_emboss_positions(s: &Session, sketch: u64, body: &solidcraft_doc::ModelBody, face: &solidcraft_doc::EmbossFace) -> Result<()> {
@@ -322,21 +322,18 @@ fn infer_emboss_selection(
         }
         let mut face = emboss_selection(s, selected, Vec3::ZERO)?;
         let body_frame = face.body_frame(&placed, raw).map_err(|e| bad(cmd, e.to_string()))?;
-        let inverse = solidcraft_doc::mat_inverse(&body_frame).ok_or_else(|| bad(cmd, "invalid cylinder body frame"))?;
+        let inverse = body_frame.inverse().ok_or_else(|| bad(cmd, "invalid cylinder body frame"))?;
         let displayed = world.sketch(sketch).ok_or_else(|| bad(cmd, "the profile sketch is not displayed"))?;
-        let plane = solidcraft_geom::Plane::new(
-            solidcraft_doc::apply_point(&inverse, displayed.plane.origin),
-            solidcraft_doc::apply_vector(&inverse, displayed.plane.x),
-            solidcraft_doc::apply_vector(&inverse, displayed.plane.y),
-        )
-        .ok_or_else(|| bad(cmd, "invalid cylinder sketch frame"))?;
+        let plane =
+            solidcraft_geom::Plane::new(inverse.point(displayed.plane.origin), inverse.vector(displayed.plane.x), inverse.vector(displayed.plane.y))
+                .ok_or_else(|| bad(cmd, "invalid cylinder sketch frame"))?;
         if let Some((_, at)) =
             solidcraft_kernel::infer_cylinder_emboss(&raw.body, &plane, &regions, if deboss { -d } else { d }).map_err(|e| bad(cmd, e.to_string()))?
         {
             face.sketch_frame(&placed, s.active_component, sketch_owner, raw).map_err(|e| bad(cmd, e.to_string()))?;
             check_emboss_positions(s, sketch, selected, &face)?;
-            let author_inverse = solidcraft_doc::mat_inverse(&s.active_component_frame()).ok_or_else(|| bad(cmd, "invalid author frame"))?;
-            face.at = FacePick(solidcraft_doc::apply_point(&solidcraft_doc::mat_mul(&author_inverse, &body_frame), at));
+            let author_inverse = s.active_component_frame().inverse().ok_or_else(|| bad(cmd, "invalid author frame"))?;
+            face.at = FacePick((author_inverse * body_frame).point(at));
             if chosen.is_some() {
                 return Err(bad(cmd, "multiple tangent cylinders match the selected profiles; select a target face or body"));
             }

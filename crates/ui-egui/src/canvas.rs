@@ -187,11 +187,7 @@ pub(crate) fn profile_plane(app: &SolveApp, sketch: u64) -> Option<solidcraft_en
     let state = app.session.model.state();
     let plane = state.sketch(sketch)?.plane;
     let frame = crate::dialogs::feature_frame(&app.session, component);
-    solidcraft_engine::geom::Plane::new(
-        solidcraft_engine::doc::apply_point(&frame, plane.origin),
-        solidcraft_engine::doc::apply_vector(&frame, plane.x),
-        solidcraft_engine::doc::apply_vector(&frame, plane.y),
-    )
+    solidcraft_engine::geom::Plane::new(frame.point(plane.origin), frame.vector(plane.x), frame.vector(plane.y))
 }
 
 fn reference_height(app: &SolveApp, d: &Dialog, label: &str, plane: &solidcraft_engine::geom::Plane, centre: Vec3) -> Option<f64> {
@@ -1041,7 +1037,7 @@ pub(crate) fn revolve_axis(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Vec3)> {
                 "Y" => Vec3::Y,
                 _ => Vec3::Z,
             };
-            return Some((solidcraft_engine::doc::apply_point(&frame, Vec3::ZERO), solidcraft_engine::doc::apply_vector(&frame, dir)));
+            return Some((frame.point(Vec3::ZERO), frame.vector(dir)));
         }
         if let Sel::Axis { name } = selected
             && matches!(name.as_str(), "x" | "y")

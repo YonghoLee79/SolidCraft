@@ -6,7 +6,7 @@
 use serde_json::{Value, json};
 use solidcraft_doc::project::resolve;
 use solidcraft_doc::{Document, FeatureKind};
-use solidcraft_geom::{Plane, Vec3};
+use solidcraft_geom::{Plane, Transform, Vec3};
 use solidcraft_sketch::{ConstraintKind, LinkKind, LinkSource, Sketch};
 
 use super::{CommandSpec, in_sketch};
@@ -162,7 +162,7 @@ fn placed_candidate<'a>(s: &Session, doc: &'a Document) -> std::borrow::Cow<'a, 
     std::borrow::Cow::Owned(placed)
 }
 
-fn owner_frame(s: &Session, doc: &Document, comp: u64) -> solidcraft_doc::Mat {
+fn owner_frame(s: &Session, doc: &Document, comp: u64) -> Transform {
     if comp == s.active_component { s.active_component_frame() } else { doc.component_transform(comp) }
 }
 

@@ -2,7 +2,7 @@
 use crate::params::{bad, vec3};
 use crate::{Result, Session};
 use serde_json::Value;
-use solidcraft_doc::{EmbossFace, PlaneRef, apply_point, apply_vector, mat_inverse, mat_mul};
+use solidcraft_doc::{EmbossFace, PlaneRef};
 use solidcraft_geom::Plane;
 
 pub(in crate::cmd) fn is_face(p: &Value) -> bool {
@@ -33,7 +33,7 @@ fn capture_impl(s: &Session, value: &Value, cmd: &str, internal: bool) -> Result
     let doc = s.placed_document();
     let author_path = s.active_occurrence_path.clone().unwrap_or_else(|| doc.first_path(s.active_component));
     let author_frame = EmbossFace::component_frame(&doc, s.active_component, &author_path)?;
-    let author_inverse = mat_inverse(&author_frame).ok_or_else(|| bad(cmd, "invalid sketch author frame"))?;
+    let author_inverse = author_frame.inverse().ok_or_else(|| bad(cmd, "invalid sketch author frame"))?;
     let requested_body = match value.get("body") {
         None => None,
         Some(Value::String(body)) if !body.is_empty() => Some(body.as_str()),
@@ -101,9 +101,9 @@ fn capture_impl(s: &Session, value: &Value, cmd: &str, internal: bool) -> Result
                     continue;
                 }
             }
-            let frame = doc.model_body_offset(body).map(|offset| mat_mul(&placement, offset)).unwrap_or(placement);
-            let inverse = mat_inverse(&frame).ok_or_else(|| bad(cmd, "invalid selected face frame"))?;
-            let local_point = apply_point(&inverse, point);
+            let frame = doc.model_body_offset(body).map(|offset| placement * offset).unwrap_or(placement);
+            let inverse = frame.inverse().ok_or_else(|| bad(cmd, "invalid selected face frame"))?;
+            let local_point = inverse.point(point);
             let tolerance = (body.body.size() * 1e-4).max(1e-5);
             // A flat face of a sheet metal body attaches to its panel (or a panel's rim): the
             // exact plane comes from the panel's flat region and fold, and the sketch keeps the
@@ -115,8 +115,8 @@ fn capture_impl(s: &Session, value: &Value, cmd: &str, internal: bool) -> Result
                 if chosen.is_some() || sheet_face.is_some() {
                     return Err(bad(cmd, "face point is ambiguous; pick an exact body and face index"));
                 }
-                let relative = mat_mul(&author_inverse, &frame);
-                let plane = Plane::new(apply_point(&relative, plane.origin), apply_vector(&relative, plane.x), apply_vector(&relative, plane.y))
+                let relative = author_inverse * frame;
+                let plane = Plane::new(relative.point(plane.origin), relative.vector(plane.x), relative.vector(plane.y))
                     .ok_or_else(|| bad(cmd, "invalid sheet face plane"))?;
                 sheet_face = Some((solidcraft_doc::sheet::sheet_face_name(&body.name, &face), plane));
                 continue;
@@ -147,9 +147,9 @@ fn capture_impl(s: &Session, value: &Value, cmd: &str, internal: bool) -> Result
                 if chosen.is_some() {
                     return Err(bad(cmd, "face point is ambiguous; pick an exact body and face index"));
                 }
-                let relative = mat_mul(&author_inverse, &frame);
-                let normal = apply_vector(&relative, normal).normalized().ok_or_else(|| bad(cmd, "invalid planar face normal"))?;
-                let centroid = apply_point(&relative, face.centroid);
+                let relative = author_inverse * frame;
+                let normal = relative.vector(normal).normalized().ok_or_else(|| bad(cmd, "invalid planar face normal"))?;
+                let centroid = relative.point(face.centroid);
                 let picked = Plane::from_normal(normal * centroid.dot(normal), normal).ok_or_else(|| bad(cmd, "invalid selected planar face"))?;
                 chosen = Some((body, face.index, path.clone(), picked));
             }
@@ -159,14 +159,14 @@ fn capture_impl(s: &Session, value: &Value, cmd: &str, internal: bool) -> Result
         if chosen.is_some() {
             return Err(bad(cmd, "face point is ambiguous; pick an exact body and face index"));
         }
-        return Ok(PlaneRef::Face { plane, at: apply_point(&author_inverse, point), name: Some(name), anchor: None });
+        return Ok(PlaneRef::Face { plane, at: author_inverse.point(point), name: Some(name), anchor: None });
     }
     let (body, index, path, plane) =
         chosen.ok_or_else(|| bad(cmd, "the selected planar face no longer exists; choose another face or an explicit fixed plane"))?;
     if fixed {
         return Ok(PlaneRef::Custom { plane });
     }
-    let at = apply_point(&author_inverse, point);
+    let at = author_inverse.point(point);
     let name = solidcraft_doc::naming::face_names(body).get(index).cloned();
     let anchor = match doc.capture_face_anchor(body, index, &plane, &path, s.active_component, &author_path) {
         Ok(anchor) => Some(Box::new(anchor)),

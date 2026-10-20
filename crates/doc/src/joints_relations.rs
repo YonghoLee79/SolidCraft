@@ -8,7 +8,9 @@
 //! moves no further than the relation needs.
 
 use super::{Joint, component_bodies, component_of, least_squares, link_of, occurrence_world, resolve_origin};
-use crate::{Document, IDENTITY, Mat, ModelState, mat_inverse, mat_mul};
+use solidcraft_geom::Transform;
+
+use crate::{Document, ModelState};
 
 /// Starting turns tried for each angle value: the nearest values may lie a half turn away.
 const TURNS: [f64; 4] = [0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI, -std::f64::consts::FRAC_PI_2];
@@ -24,20 +26,20 @@ pub fn relation_values(doc: &Document, st: &ModelState, j: &Joint) -> Option<Vec
     if !j.kind.is_relation() {
         return None;
     }
-    let world = |occ: u64| if occ == 0 { IDENTITY } else { occurrence_world(doc, occ) };
-    let fa = mat_mul(&world(j.a.occurrence), &resolve_origin(doc, st, &j.a).ok()?);
-    let fb = mat_mul(&world(j.b.occurrence), &resolve_origin(doc, st, &j.b).ok()?);
+    let world = |occ: u64| if occ == 0 { Transform::IDENTITY } else { occurrence_world(doc, occ) };
+    let fa = world(j.a.occurrence) * resolve_origin(doc, st, &j.a).ok()?;
+    let fb = world(j.b.occurrence) * resolve_origin(doc, st, &j.b).ok()?;
     // B's joint frame in A's as it is.
-    let now = mat_mul(&mat_inverse(&fa)?, &fb);
+    let now = fa.inverse()? * fb;
     // A turn weighs as far as it moves a point B's size away.
     let size = component_of(doc, j.b.occurrence).map(|c| component_bodies(doc, st, c).iter().map(|b| b.body.size()).fold(0.0, f64::max));
     let scale = size.unwrap_or(0.0).clamp(1.0, 1e5);
     let n = j.kind.dofs().len();
     let angles: Vec<usize> = (0..n).filter(|i| j.kind.is_angle(*i)).collect();
     let mut gaps = |q: &[f64]| -> Option<Vec<f64>> {
-        let m: Mat = link_of(j, q);
+        let m: Transform = link_of(j, q);
         let mut out = Vec::with_capacity(12);
-        for (k, (row, want)) in m.iter().zip(&now).enumerate() {
+        for (k, (row, want)) in m.0.iter().zip(&now.0).enumerate() {
             let w = if k == 3 { 1.0 } else { scale };
             out.extend(row.iter().zip(want).take(3).map(|(a, b)| (a - b) * w));
         }
@@ -79,7 +81,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::joints::{JointKind, JointOrigin, Snap};
-    use solidcraft_geom::Vec3;
+    use solidcraft_geom::{Transform, Vec3};
 
     fn joint(kind: JointKind) -> Joint {
         let at = |occurrence| JointOrigin { occurrence, snap: Snap::Point { point: Vec3::ZERO, z: None, x: None } };
@@ -99,7 +101,7 @@ mod tests {
         }
     }
 
-    fn z_of(m: &Mat) -> Vec3 {
+    fn z_of(m: &Transform) -> Vec3 {
         Vec3::new(m[2][0], m[2][1], m[2][2])
     }
 

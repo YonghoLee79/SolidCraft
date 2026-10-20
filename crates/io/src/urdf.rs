@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use solidcraft_doc::joints::{self, Joint, JointKind};
-use solidcraft_doc::{Document, IDENTITY, MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS, Mat, ModelState, Occurrence, apply_point, mat_inverse, mat_mul};
-use solidcraft_geom::{Mesh, Vec3};
+use solidcraft_doc::{Document, MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS, ModelState, Occurrence};
+use solidcraft_geom::{Mesh, Transform, Vec3};
 
 use crate::{IoError, Result, export_mesh, stl_binary, weld, weld_eps};
 
@@ -58,7 +58,7 @@ pub struct Link {
     /// `base_link` and a chain's virtual links.
     pub path: Vec<u64>,
     /// Mesh coordinates (the component's frame) to the link frame.
-    pub mesh_origin: Mat,
+    pub mesh_origin: Transform,
     pub visual: Option<String>,
     pub collision: Option<String>,
     /// sRGB and opacity, 0..1.
@@ -87,7 +87,7 @@ pub struct UrdfJoint {
     pub parent: usize,
     pub child: usize,
     /// Parent link frame to this joint's frame (mm).
-    pub origin: Mat,
+    pub origin: Transform,
     pub step: Step,
     pub axis: Vec3,
     /// (lower, upper): radians or mm; `None` for a revolute without limit (`continuous`).
@@ -98,8 +98,8 @@ pub struct UrdfJoint {
 
 impl UrdfModel {
     /// Every link's world frame (mm) for the given value of each step.
-    pub fn link_frames(&self, value: impl Fn(&UrdfJoint) -> f64) -> Vec<Mat> {
-        let mut frames = vec![IDENTITY; self.links.len()];
+    pub fn link_frames(&self, value: impl Fn(&UrdfJoint) -> f64) -> Vec<Transform> {
+        let mut frames = vec![Transform::IDENTITY; self.links.len()];
         let mut done = vec![false; self.links.len()];
         if let Some(d) = done.get_mut(0) {
             *d = true;
@@ -109,12 +109,12 @@ impl UrdfModel {
             let (Some(parent), true) = (frames.get(j.parent).copied(), done.get(j.parent).copied().unwrap_or(false)) else { continue };
             let q = value(j);
             let m = match j.step {
-                Step::Fixed => IDENTITY,
+                Step::Fixed => Transform::IDENTITY,
                 Step::Revolute => rotation(j.axis, q),
                 Step::Prismatic => translation(j.axis * q),
             };
             if let (Some(f), Some(d)) = (frames.get_mut(j.child), done.get_mut(j.child)) {
-                *f = mat_mul(&mat_mul(&parent, &j.origin), &m);
+                *f = parent * j.origin * m;
                 *d = true;
             }
         }
@@ -122,14 +122,14 @@ impl UrdfModel {
     }
 }
 
-fn translation(v: Vec3) -> Mat {
-    let mut m = IDENTITY;
+fn translation(v: Vec3) -> Transform {
+    let mut m = Transform::IDENTITY;
     m[3] = [v.x, v.y, v.z, 1.0];
     m
 }
 
-/// Rotation by `a` about the unit axis `u` (Rodrigues), column-major like `Mat`.
-fn rotation(u: Vec3, a: f64) -> Mat {
+/// Rotation by `a` about the unit axis `u` (Rodrigues), column-major like `Transform`.
+fn rotation(u: Vec3, a: f64) -> Transform {
     let (s, c) = a.sin_cos();
     let t = 1.0 - c;
     let r = [
@@ -138,7 +138,7 @@ fn rotation(u: Vec3, a: f64) -> Mat {
         [t * u.x * u.z - s * u.y, t * u.y * u.z + s * u.x, t * u.z * u.z + c],
     ];
     // r[row][col] -> m[col][row]
-    let mut m = IDENTITY;
+    let mut m = Transform::IDENTITY;
     for (row, cols) in r.iter().enumerate() {
         for (col, v) in cols.iter().enumerate() {
             m[col][row] = *v;
@@ -227,7 +227,7 @@ fn parts(doc: &Document, st: &ModelState, stem: &str, names: &mut Names, out: &m
             let mut m = export_mesh(&b.body)?;
             if let Some(o) = doc.model_body_offset(b) {
                 for p in &mut m.positions {
-                    *p = apply_point(o, *p);
+                    *p = o.point(*p);
                 }
             }
             let (positions, triangles) = weld(&m.positions, &m.triangles, weld_eps(&b.body));
@@ -291,14 +291,14 @@ struct Tree<'a> {
     model: UrdfModel,
     warnings: Vec<String>,
     /// Occurrence to its link and the link's world frame (0: `base_link`).
-    placed: BTreeMap<u64, (usize, Mat)>,
+    placed: BTreeMap<u64, (usize, Transform)>,
     /// Each usable joint's name, taken before any link's so it keeps the name the user gave.
     joint_names: BTreeMap<u64, String>,
 }
 
 impl<'a> Tree<'a> {
-    fn world(&self, occ: u64) -> Mat {
-        if occ == 0 { IDENTITY } else { joints::occurrence_world(self.doc, occ) }
+    fn world(&self, occ: u64) -> Transform {
+        if occ == 0 { Transform::IDENTITY } else { joints::occurrence_world(self.doc, occ) }
     }
 
     fn occurrence(&self, occ: u64) -> Option<&'a Occurrence> {
@@ -308,8 +308,8 @@ impl<'a> Tree<'a> {
 
     /// A link for placement `path` of `o`: its frame is `frame`, its component's meshes sit at
     /// `at` (both world). Named after the component when it is placed once, else the occurrence.
-    fn link(&mut self, o: &Occurrence, path: Vec<u64>, frame: &Mat, at: &Mat) -> Option<usize> {
-        let mesh_origin = mat_mul(&mat_inverse(frame)?, at);
+    fn link(&mut self, o: &Occurrence, path: Vec<u64>, frame: &Transform, at: &Transform) -> Option<usize> {
+        let mesh_origin = frame.inverse()? * at;
         let doc = self.doc;
         let single = doc.occurrences.iter().filter(|x| x.component == o.component).count() == 1;
         let raw = match doc.components.iter().find(|c| c.id == o.component) {
@@ -331,7 +331,7 @@ impl<'a> Tree<'a> {
     }
 
     /// `child` hangs on `parent` where it is (`origin`: parent link frame to child link frame).
-    fn fixed(&mut self, parent: usize, child: usize, origin: Mat) {
+    fn fixed(&mut self, parent: usize, child: usize, origin: Transform) {
         let n = self.model.links.get(child).map(|l| format!("{}_fixed", l.name)).unwrap_or_default();
         let name = self.names.take(&n);
         self.model.joints.push(UrdfJoint { name, parent, child, origin, step: Step::Fixed, axis: Vec3::Z, limit: None, source: None });
@@ -339,9 +339,9 @@ impl<'a> Tree<'a> {
 
     /// The link an occurrence fixed in place hangs on, and its frame: `base_link` for the top
     /// level (or `to_base`), else its parent occurrence's link once that is in the tree.
-    fn parent_link(&self, o: &Occurrence, to_base: bool) -> Option<(usize, Mat)> {
+    fn parent_link(&self, o: &Occurrence, to_base: bool) -> Option<(usize, Transform)> {
         if to_base || o.parent == 0 {
-            return Some((0, IDENTITY));
+            return Some((0, Transform::IDENTITY));
         }
         let p = self.doc.occurrence_of(o.parent)?;
         self.placed.get(&p.id).copied()
@@ -352,7 +352,7 @@ impl<'a> Tree<'a> {
         let o = self.occurrence(occ)?;
         let (parent, parent_frame) = self.parent_link(o, to_base)?;
         let w = self.world(occ);
-        let origin = mat_mul(&mat_inverse(&parent_frame)?, &w);
+        let origin = parent_frame.inverse()? * w;
         let i = self.link(o, canonical(self.doc, occ), &w, &w)?;
         self.fixed(parent, i, origin);
         self.placed.insert(occ, (i, w));
@@ -360,7 +360,7 @@ impl<'a> Tree<'a> {
     }
 
     /// Breadth-first over the usable joints from the occurrences in `queue`.
-    fn traverse(&mut self, queue: &mut VecDeque<u64>, usable: &[(&Joint, Mat)], taken: &mut HashSet<u64>) {
+    fn traverse(&mut self, queue: &mut VecDeque<u64>, usable: &[(&Joint, Transform)], taken: &mut HashSet<u64>) {
         let values = joints::joint_values(&self.doc.assembly);
         while let Some(p) = queue.pop_front() {
             for (j, fa) in usable {
@@ -381,26 +381,26 @@ impl<'a> Tree<'a> {
     }
 
     /// `child` on joint `j` from `p` (already in the tree): the joint's chain and the child's link.
-    fn attach(&mut self, j: &Joint, fa: &Mat, p: u64, child: u64, q: &[f64]) -> Option<()> {
+    fn attach(&mut self, j: &Joint, fa: &Transform, p: u64, child: u64, q: &[f64]) -> Option<()> {
         // A relation URDF can't write is fixed where it is: the child link's frame is the joint's.
         let (chain, m) = match steps(j.kind) {
             Some(chain) => (chain, joints::motion(j.kind, q)),
             None => {
                 self.warnings.push(format!("joint `{}` is a {:?} relation, which URDF has no joint for: written fixed as it is", j.name, j.kind));
-                (Vec::new(), IDENTITY)
+                (Vec::new(), Transform::IDENTITY)
             }
         };
         let child_on_b = j.a.occurrence == p;
         // (parent-side joint frame, child link frame) in the world.
         let (jf, lf) = if child_on_b {
-            let jf = mat_mul(&self.world(p), fa);
-            (jf, mat_mul(&jf, &m))
+            let jf = self.world(p) * fa;
+            (jf, jf * m)
         } else {
-            let lf = mat_mul(&self.world(child), fa);
-            (mat_mul(&lf, &m), lf)
+            let lf = self.world(child) * fa;
+            (lf * m, lf)
         };
         let (parent_index, parent_frame) = self.placed.get(&p).copied()?;
-        let origin = mat_mul(&mat_inverse(&parent_frame)?, &jf);
+        let origin = parent_frame.inverse()? * jf;
         let mut chain = chain;
         if !child_on_b {
             chain.reverse();
@@ -436,7 +436,7 @@ impl<'a> Tree<'a> {
                 self.model.links.push(Link {
                     name,
                     path: Vec::new(),
-                    mesh_origin: IDENTITY,
+                    mesh_origin: Transform::IDENTITY,
                     visual: None,
                     collision: None,
                     color: None,
@@ -459,7 +459,7 @@ impl<'a> Tree<'a> {
                 name,
                 parent: from,
                 child: to,
-                origin: if k == 0 { origin } else { IDENTITY },
+                origin: if k == 0 { origin } else { Transform::IDENTITY },
                 step,
                 axis,
                 limit,
@@ -473,7 +473,7 @@ impl<'a> Tree<'a> {
     /// Every other placement of a nested occurrence (its parent component is placed several
     /// times): a copy fixed to its parent placement's link.
     fn copies(&mut self, jointed: &HashSet<u64>) {
-        let mut copies: BTreeMap<Vec<u64>, (usize, Mat)> = BTreeMap::new();
+        let mut copies: BTreeMap<Vec<u64>, (usize, Transform)> = BTreeMap::new();
         let placements = self.doc.placements();
         if placements.len() > MAX_PLACEMENTS || placements.iter().any(|p| p.1.len() > MAX_PLACEMENT_DEPTH) {
             self.warnings.push(format!(
@@ -486,12 +486,12 @@ impl<'a> Tree<'a> {
                 continue;
             }
             let parent = match parent_path.last() {
-                None => Some((0, IDENTITY)),
+                None => Some((0, Transform::IDENTITY)),
                 Some(&p) if parent_path == canonical(self.doc, p).as_slice() => self.placed.get(&p).copied(),
                 Some(_) => copies.get(parent_path).copied(),
             };
             let (Some((pi, pf)), Some(o)) = (parent, self.occurrence(occ)) else { continue };
-            let Some(origin) = mat_inverse(&pf).map(|inv| mat_mul(&inv, &w)) else { continue };
+            let Some(origin) = pf.inverse().map(|inv| inv * w) else { continue };
             let Some(i) = self.link(o, path.clone(), &w, &w) else { continue };
             self.fixed(pi, i, origin);
             copies.insert(path, (i, w));
@@ -530,25 +530,25 @@ pub fn urdf(doc: &Document, st: &ModelState, stem: &str, options: &UrdfOptions) 
         names,
         model: UrdfModel::default(),
         warnings: std::mem::take(&mut out.warnings),
-        placed: BTreeMap::from([(0, (0, IDENTITY))]),
+        placed: BTreeMap::from([(0, (0, Transform::IDENTITY))]),
         joint_names: BTreeMap::new(),
     };
     let root = tree.parts.get(&0);
     let base_link = Link {
         name: base,
         path: Vec::new(),
-        mesh_origin: IDENTITY,
+        mesh_origin: Transform::IDENTITY,
         visual: root.and_then(|p| p.visual.clone()),
         collision: root.and_then(|p| p.collision.clone()),
         color: root.and_then(|p| p.color),
-        inertial: root.and_then(|p| inertial(&p.masses, &IDENTITY)),
+        inertial: root.and_then(|p| inertial(&p.masses, &Transform::IDENTITY)),
     };
     tree.model.links.push(base_link);
 
     // Usable joints: unsuppressed (as many as the solver reads), both ends placed and distinct,
     // both origins resolving.
     let exists = |occ: u64| occ == 0 || doc.occurrences.iter().any(|o| o.id == occ);
-    let mut usable: Vec<(&Joint, Mat)> = Vec::new();
+    let mut usable: Vec<(&Joint, Transform)> = Vec::new();
     for j in doc.assembly.joints.iter().filter(|j| !j.suppressed).take(joints::MAX_JOINTS) {
         let fa = joints::resolve_origin(doc, st, &j.a).ok().filter(|_| joints::resolve_origin(doc, st, &j.b).is_ok());
         match fa {
@@ -620,17 +620,17 @@ fn token() -> Inertial {
 }
 
 /// Bodies' masses (component frame) combined in the link frame (`to_link`: component to link).
-fn inertial(masses: &[BodyMass], to_link: &Mat) -> Option<Inertial> {
+fn inertial(masses: &[BodyMass], to_link: &Transform) -> Option<Inertial> {
     let mass: f64 = masses.iter().map(|m| m.0).sum();
     if !(mass > 0.0) {
         return None;
     }
-    let com = masses.iter().fold(Vec3::ZERO, |acc, m| acc + apply_point(to_link, m.1) * m.0) * (1.0 / mass);
-    let r = |i: usize, j: usize| to_link.get(j).and_then(|c| c.get(i)).copied().unwrap_or(0.0);
+    let com = masses.iter().fold(Vec3::ZERO, |acc, m| acc + to_link.point(m.1) * m.0) * (1.0 / mass);
+    let r = |i: usize, j: usize| to_link.0.get(j).and_then(|c| c.get(i)).copied().unwrap_or(0.0);
     let mut total = [[0.0f64; 3]; 3];
     for (m, c, inertia) in masses {
         // R I Rᵀ, then the parallel-axis term about the link's centre of mass.
-        let d = apply_point(to_link, *c) - com;
+        let d = to_link.point(*c) - com;
         let dv = [d.x, d.y, d.z];
         let d2 = d.dot(d);
         for (i, (row_out, di)) in total.iter_mut().zip(dv).enumerate() {
@@ -662,8 +662,8 @@ fn metres(m: &Mesh) -> Mesh {
 }
 
 /// `xyz` (m) and `rpy` (rad, fixed axes: R = Rz(yaw) Ry(pitch) Rx(roll)) of a frame.
-fn xyz_rpy(m: &Mat) -> (Vec3, Vec3) {
-    let r = |row: usize, col: usize| m.get(col).and_then(|c| c.get(row)).copied().unwrap_or(0.0);
+fn xyz_rpy(m: &Transform) -> (Vec3, Vec3) {
+    let r = |row: usize, col: usize| m.0.get(col).and_then(|c| c.get(row)).copied().unwrap_or(0.0);
     // atan2 over hypot keeps pitch precise next to +-90 degrees, where asin would not.
     let cos_pitch = r(0, 0).hypot(r(1, 0));
     let pitch = (-r(2, 0)).atan2(cos_pitch);
@@ -673,7 +673,7 @@ fn xyz_rpy(m: &Mat) -> (Vec3, Vec3) {
         // Gimbal lock: yaw carries the whole turn about z.
         (0.0, (-r(0, 1)).atan2(r(1, 1)))
     };
-    let t = apply_point(m, Vec3::ZERO) * 1e-3;
+    let t = m.point(Vec3::ZERO) * 1e-3;
     (t, Vec3::new(roll, pitch, yaw))
 }
 
@@ -697,7 +697,7 @@ fn triple(v: Vec3) -> String {
     format!("{} {} {}", num(v.x), num(v.y), num(v.z))
 }
 
-fn origin_xml(m: &Mat) -> String {
+fn origin_xml(m: &Transform) -> String {
     let (xyz, rpy) = xyz_rpy(m);
     format!("<origin xyz=\"{}\" rpy=\"{}\"/>", triple(xyz), triple(rpy))
 }
@@ -794,24 +794,24 @@ mod tests {
 
     /// Rotations that stress the decomposition: general ones, gimbal lock (pitch ±90°, which a
     /// hinge whose axis lies along x gives) and next to it.
-    fn hard_rotations() -> Vec<Mat> {
+    fn hard_rotations() -> Vec<Transform> {
         let r = |axis: Vec3, a: f64| rotation(axis.normalized().unwrap_or(Vec3::Z), a);
         let mut out = vec![r(Vec3::X, 0.3), r(Vec3::Y, -1.1), r(Vec3::Z, 2.5), r(Vec3::new(1.0, 2.0, 3.0), 0.7)];
         for pitch in [FRAC_PI_2, -FRAC_PI_2, FRAC_PI_2 - 1e-7, -FRAC_PI_2 + 1e-9] {
             for (yaw, roll) in [(0.0, 0.0), (0.7, 0.3), (-2.0, 1.4)] {
-                out.push(mat_mul(&mat_mul(&r(Vec3::Z, yaw), &r(Vec3::Y, pitch)), &r(Vec3::X, roll)));
+                out.push(r(Vec3::Z, yaw) * r(Vec3::Y, pitch) * r(Vec3::X, roll));
             }
         }
         out
     }
 
     /// The frame an `<origin xyz rpy>` stands for (xyz in m, the frame in mm).
-    fn compose(xyz: Vec3, rpy: Vec3) -> Mat {
-        mat_mul(&mat_mul(&mat_mul(&translation(xyz * 1e3), &rotation(Vec3::Z, rpy.z)), &rotation(Vec3::Y, rpy.y)), &rotation(Vec3::X, rpy.x))
+    fn compose(xyz: Vec3, rpy: Vec3) -> Transform {
+        translation(xyz * 1e3) * rotation(Vec3::Z, rpy.z) * rotation(Vec3::Y, rpy.y) * rotation(Vec3::X, rpy.x)
     }
 
-    fn close(a: &Mat, b: &Mat) -> bool {
-        a.iter().flatten().zip(b.iter().flatten()).all(|(x, y)| (x - y).abs() < 1e-9)
+    fn close(a: &Transform, b: &Transform) -> bool {
+        a.entries().zip(b.entries()).all(|(x, y)| (x - y).abs() < 1e-9)
     }
 
     #[test]
@@ -827,7 +827,7 @@ mod tests {
     /// the engine tests check on [`UrdfModel`] are the ones a URDF reader gets.
     #[test]
     fn written_origins_parse_back_to_the_model() {
-        let link = |name: String, mesh_origin: Mat| Link {
+        let link = |name: String, mesh_origin: Transform| Link {
             name,
             path: Vec::new(),
             mesh_origin,
@@ -836,7 +836,7 @@ mod tests {
             color: None,
             inertial: None,
         };
-        let mut model = UrdfModel { links: vec![link("base_link".into(), IDENTITY)], joints: Vec::new() };
+        let mut model = UrdfModel { links: vec![link("base_link".into(), Transform::IDENTITY)], joints: Vec::new() };
         for (k, mut m) in hard_rotations().into_iter().enumerate() {
             m[3] = [k as f64, 2.0, -3.5, 1.0];
             model.links.push(link(format!("l{k}"), m));
@@ -879,7 +879,8 @@ mod tests {
             }
         }
         // Each link writes its visual's and collision's origin, then each joint its own.
-        let want: Vec<Mat> = model.links.iter().flat_map(|l| [l.mesh_origin, l.mesh_origin]).chain(model.joints.iter().map(|j| j.origin)).collect();
+        let want: Vec<Transform> =
+            model.links.iter().flat_map(|l| [l.mesh_origin, l.mesh_origin]).chain(model.joints.iter().map(|j| j.origin)).collect();
         assert_eq!(origins.len(), want.len());
         for (k, (got, want)) in origins.iter().zip(&want).enumerate() {
             assert!(close(got, want), "origin {k}: {got:?} vs {want:?}");

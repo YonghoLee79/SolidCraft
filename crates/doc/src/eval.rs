@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::tess::TessPlan;
-use solidcraft_geom::{Mesh, Plane, Region2, UnitVec3, Vec2, Vec3, regions_apart};
+use solidcraft_geom::{Mesh, Plane, Region2, Transform, UnitVec3, Vec2, Vec3, regions_apart};
 use solidcraft_kernel::{self as kernel, Body, BoolOp};
 use solidcraft_sketch::{CurveKind, Profile, SolveReport, find_profiles};
 
@@ -24,7 +24,7 @@ pub struct ModelBody {
     /// Definition identity for a computed placement; never parsed from its display name.
     pub source_name: Option<String>,
     /// Definition geometry coordinates to this computed body's frame.
-    pub source_transform: crate::Mat,
+    pub source_transform: Transform,
     pub body: Body,
     /// Feature that created it.
     pub feature: u64,
@@ -67,7 +67,7 @@ impl ModelBody {
         ModelBody {
             name,
             source_name: None,
-            source_transform: crate::IDENTITY,
+            source_transform: Transform::IDENTITY,
             body,
             feature,
             mesh: Arc::new(OnceLock::new()),
@@ -106,7 +106,7 @@ impl ModelBody {
         }
         let mut h = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut h);
-        self.source_transform.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
+        self.source_transform.entries().for_each(|v| v.to_bits().hash(&mut h));
         Some(h.finish())
     }
     pub fn definition_name(&self) -> &str {
@@ -647,7 +647,7 @@ impl ModelState {
     /// After a feature evaluated to this state from `before` with cache key `key`: bodies it
     /// made or changed take that key, sketches it made a digest of their solved geometry (see
     /// [`quantize`]); the rest keep theirs.
-    fn stamp(&mut self, before: &Arc<ModelState>, f: &Feature, key: u64, mats: Vec<Mat>) {
+    fn stamp(&mut self, before: &Arc<ModelState>, f: &Feature, key: u64, mats: Vec<Transform>) {
         let feature = f.id;
         let depth = before.bodies.iter().filter_map(|b| b.names.depth()).max().unwrap_or(0) + 1;
         let sheets = if f.kind.is_sheet() { self.sheets.clone() } else { Vec::new() };
@@ -1128,7 +1128,7 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         let owner = path.and_then(|path| doc.feature(path.0)).map(|feature| feature.component).unwrap_or(0);
         for frame in [doc.component_transform(f.component), doc.component_transform(owner)] {
-            frame.iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
+            frame.entries().for_each(|value| value.to_bits().hash(&mut hash));
         }
         // A sweep's profile and the rails' components place them too.
         let profile = match &f.kind {
@@ -1137,7 +1137,7 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
         };
         for sketch in profile.into_iter().chain(rails.iter().map(|r| &r.sketch)) {
             let owner = doc.feature(sketch.0).map(|feature| feature.component).unwrap_or(0);
-            doc.component_transform(owner).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
+            doc.component_transform(owner).entries().for_each(|value| value.to_bits().hash(&mut hash));
         }
         return hash.finish();
     }
@@ -1147,10 +1147,10 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
         let sketches: Vec<crate::SketchId> = u.iter().chain(v).filter_map(|c| c.sketch).collect();
         if sketches.iter().any(wired) {
             let mut hash = std::collections::hash_map::DefaultHasher::new();
-            doc.component_transform(f.component).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
+            doc.component_transform(f.component).entries().for_each(|value| value.to_bits().hash(&mut hash));
             for sketch in &sketches {
                 let owner = doc.feature(sketch.0).map(|feature| feature.component).unwrap_or(0);
-                doc.component_transform(owner).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
+                doc.component_transform(owner).entries().for_each(|value| value.to_bits().hash(&mut hash));
             }
             return hash.finish();
         }
@@ -1181,7 +1181,7 @@ fn placements_hash(doc: &Document) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for o in &doc.occurrences {
         o.id.hash(&mut h);
-        o.transform.iter().flatten().for_each(|x| x.to_bits().hash(&mut h));
+        o.transform.entries().for_each(|x| x.to_bits().hash(&mut h));
     }
     serde_json::to_string(&doc.body_offsets).unwrap_or_default().hash(&mut h);
     h.finish()
@@ -1474,7 +1474,7 @@ impl Model {
                     let mats = match &f.kind {
                         FeatureKind::Pattern { pattern, .. } => pattern_transforms(doc, &vals, &state, f.component, pattern).unwrap_or_default(),
                         FeatureKind::Mirror { plane, .. } => {
-                            doc.resolve_plane_in(&vals, plane, 0, Some(&state)).map(|pl| vec![mirror_matrix(&pl)]).unwrap_or_default()
+                            doc.resolve_plane_in(&vals, plane, 0, Some(&state)).map(|pl| vec![Transform::reflection(&pl)]).unwrap_or_default()
                         }
                         _ => Vec::new(),
                     };
@@ -3413,12 +3413,12 @@ fn centered_extrude(plane: &Plane, region: &Region2, start: f64, end: f64, sketc
         return Ok(bodies.into_iter().map(|body| roles.tool(body, None)).collect());
     }
     let n = plane.normal();
-    let m = [
+    let m = Transform([
         [plane.x.x, plane.x.y, plane.x.z, 0.0],
         [plane.y.x, plane.y.y, plane.y.z, 0.0],
         [n.x, n.y, n.z, 0.0],
         [plane.origin.x, plane.origin.y, plane.origin.z, 1.0],
-    ];
+    ]);
     bodies
         .into_iter()
         .map(|body| {
@@ -3943,7 +3943,7 @@ fn feature_tools_with_constructor(
                         continue;
                     }
                     let bodies = revolve(&ss.plane, std::slice::from_ref(region), o, d, region_extent.sweep)?;
-                    let m = crate::rigid(Vec3::ZERO, origin_w, rotation_axis, region_extent.start);
+                    let m = Transform::rigid(Vec3::ZERO, origin_w, rotation_axis, region_extent.start);
                     for body in bodies {
                         out.push(if region_extent.start.abs() < 1e-12 {
                             tool(region, body, None)
@@ -3959,7 +3959,7 @@ fn feature_tools_with_constructor(
                 return Ok(regions.iter().zip(bodies).map(|(r, body)| tool(r, body, None)).collect());
             }
             // Turned back to start before the profile.
-            let m = crate::rigid(Vec3::ZERO, origin_w, axis_w, -start);
+            let m = Transform::rigid(Vec3::ZERO, origin_w, axis_w, -start);
             regions.iter().zip(bodies).map(|(r, body)| Ok(tool(r, kernel::transform_matrix(&body, m)?, Some(&body)))).collect()
         }
         FeatureKind::Loft { sections, rails, .. } if sections.iter().any(|s| s.point.is_some()) => {
@@ -4211,9 +4211,9 @@ fn pipe_region(vals: &BTreeMap<String, Value>, r: f64, wall: &Option<crate::Expr
     Ok(Region2 { outer: solidcraft_geom::Loop2::circle(Vec2::ZERO, r), holes })
 }
 
-fn map_wire(wire: &mut solidcraft_sketch::Wire, matrix: &Mat) {
+fn map_wire(wire: &mut solidcraft_sketch::Wire, matrix: &Transform) {
     for point in wire.pts.iter_mut().chain(&mut wire.fit) {
-        *point = crate::apply_point(matrix, *point);
+        *point = matrix.point(*point);
     }
 }
 
@@ -4230,16 +4230,11 @@ fn sketch_in_feature_frame(doc: &Document, sketch: &SolvedSketch, consumer: u64)
 
 fn profile_in_frame(doc: &Document, sketch: &SolvedSketch, consumer: u64) -> Result<SolvedSketch> {
     let owner = doc.feature(sketch.feature).map(|feature| feature.component).unwrap_or(0);
-    let inverse =
-        crate::mat_inverse(&doc.component_transform(consumer)).ok_or_else(|| DocError::Invalid("profile consumer frame is invalid".into()))?;
-    let relative = crate::mat_mul(&inverse, &doc.component_transform(owner));
+    let inverse = doc.component_transform(consumer).inverse().ok_or_else(|| DocError::Invalid("profile consumer frame is invalid".into()))?;
+    let relative = inverse * doc.component_transform(owner);
     let mut mapped = sketch.clone();
-    mapped.plane = Plane::new(
-        crate::apply_point(&relative, sketch.plane.origin),
-        crate::apply_vector(&relative, sketch.plane.x),
-        crate::apply_vector(&relative, sketch.plane.y),
-    )
-    .ok_or_else(|| DocError::Invalid("profile sketch frame is invalid".into()))?;
+    mapped.plane = Plane::new(relative.point(sketch.plane.origin), relative.vector(sketch.plane.x), relative.vector(sketch.plane.y))
+        .ok_or_else(|| DocError::Invalid("profile sketch frame is invalid".into()))?;
     Ok(mapped)
 }
 
@@ -4250,16 +4245,11 @@ fn path_in_frame<'a>(doc: &Document, sketch: &'a SolvedSketch, consumer: u64) ->
         return Ok(Cow::Borrowed(sketch));
     }
     let owner = doc.feature(sketch.feature).map(|f| f.component).unwrap_or(0);
-    let inverse =
-        crate::mat_inverse(&doc.component_transform(consumer)).ok_or_else(|| DocError::Invalid("path consumer frame is not invertible".into()))?;
-    let relative = crate::mat_mul(&inverse, &doc.component_transform(owner));
+    let inverse = doc.component_transform(consumer).inverse().ok_or_else(|| DocError::Invalid("path consumer frame is not invertible".into()))?;
+    let relative = inverse * doc.component_transform(owner);
     let mut mapped = sketch.clone();
-    mapped.plane = Plane::new(
-        crate::apply_point(&relative, sketch.plane.origin),
-        crate::apply_vector(&relative, sketch.plane.x),
-        crate::apply_vector(&relative, sketch.plane.y),
-    )
-    .ok_or_else(|| DocError::Invalid("path sketch frame is invalid".into()))?;
+    mapped.plane = Plane::new(relative.point(sketch.plane.origin), relative.vector(sketch.plane.x), relative.vector(sketch.plane.y))
+        .ok_or_else(|| DocError::Invalid("path sketch frame is invalid".into()))?;
     for wire in &mut mapped.sketch.wires {
         let matrix = if wire.space == solidcraft_sketch::WireSpace::Component { &relative } else { &inverse };
         map_wire(wire, matrix);
@@ -4423,72 +4413,35 @@ fn feature_op(f: &Feature) -> (Operation, Vec<String>) {
     }
 }
 
-type Mat = [[f64; 4]; 4];
-
-fn translation(t: Vec3) -> Mat {
-    [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [t.x, t.y, t.z, 1.0]]
-}
-
-/// Rotation by `ang` about the line through `o` with direction `a` (column-major).
-fn rotation(o: Vec3, a: Vec3, ang: f64) -> Mat {
-    let a = a.normalized().unwrap_or(Vec3::Z);
-    let (c, s) = (ang.cos(), ang.sin());
-    let t = 1.0 - c;
-    let r = [
-        [t * a.x * a.x + c, t * a.x * a.y + s * a.z, t * a.x * a.z - s * a.y],
-        [t * a.x * a.y - s * a.z, t * a.y * a.y + c, t * a.y * a.z + s * a.x],
-        [t * a.x * a.z + s * a.y, t * a.y * a.z - s * a.x, t * a.z * a.z + c],
-    ];
-    // p' = R (p - o) + o
-    let ro = Vec3::new(
-        r[0][0] * o.x + r[1][0] * o.y + r[2][0] * o.z,
-        r[0][1] * o.x + r[1][1] * o.y + r[2][1] * o.z,
-        r[0][2] * o.x + r[1][2] * o.y + r[2][2] * o.z,
-    );
-    let tr = o - ro;
-    [[r[0][0], r[0][1], r[0][2], 0.0], [r[1][0], r[1][1], r[1][2], 0.0], [r[2][0], r[2][1], r[2][2], 0.0], [tr.x, tr.y, tr.z, 1.0]]
-}
-
-/// Reflection in a plane (column-major).
-fn mirror_matrix(pl: &Plane) -> Mat {
-    let n = pl.normal();
-    let d = pl.origin.dot(n);
-    let m = |i: usize, j: usize| {
-        let (ni, nj) = ([n.x, n.y, n.z][i], [n.x, n.y, n.z][j]);
-        (if i == j { 1.0 } else { 0.0 }) - 2.0 * ni * nj
-    };
-    // p' = p - 2 (p·n - d) n
-    [
-        [m(0, 0), m(0, 1), m(0, 2), 0.0],
-        [m(1, 0), m(1, 1), m(1, 2), 0.0],
-        [m(2, 0), m(2, 1), m(2, 2), 0.0],
-        [2.0 * d * n.x, 2.0 * d * n.y, 2.0 * d * n.z, 1.0],
-    ]
-}
-
 const MAX_INSTANCES: usize = 1000;
 
 /// Where a mirrored body is, in the frame of the mirror's component: through the placement it
 /// was picked at and the feature's component frame. `None` when that is the body's own frame
 /// (and in older designs, which saved no placement).
-fn mirrored_placement(doc: &Document, f: &Feature, mb: &ModelBody, path: Option<&[u64]>) -> Result<Option<Mat>> {
+fn mirrored_placement(doc: &Document, f: &Feature, mb: &ModelBody, path: Option<&[u64]>) -> Result<Option<Transform>> {
     let Some(path) = path else { return Ok(None) };
     let owner = doc.model_body_component(mb);
     let lost = || DocError::Invalid(format!("the placement `{}` was mirrored at no longer exists", mb.name));
     let world = doc.path_transform(owner, path).ok_or_else(lost)?;
-    let world = doc.model_body_offset(mb).map(|offset| crate::mat_mul(&world, offset)).unwrap_or(world);
-    let inverse = crate::mat_inverse(&doc.component_transform(f.component)).ok_or_else(lost)?;
-    let rel = crate::mat_mul(&inverse, &world);
-    Ok((!crate::is_identity(&rel)).then_some(rel))
+    let world = doc.model_body_offset(mb).map(|offset| world * offset).unwrap_or(world);
+    let inverse = doc.component_transform(f.component).inverse().ok_or_else(lost)?;
+    let rel = inverse * world;
+    Ok((!rel.is_identity()).then_some(rel))
 }
 
 /// The placements (column-major matrices) of a pattern's copies, the original excluded.
-pub fn pattern_matrices(doc: &Document, st: &ModelState, p: &crate::PatternKind) -> Result<Vec<[[f64; 4]; 4]>> {
+pub fn pattern_matrices(doc: &Document, st: &ModelState, p: &crate::PatternKind) -> Result<Vec<Transform>> {
     let (vals, _) = doc.param_values();
     pattern_transforms(doc, &vals, st, 0, p)
 }
 
-fn pattern_transforms(doc: &Document, vals: &BTreeMap<String, Value>, st: &ModelState, component: u64, p: &crate::PatternKind) -> Result<Vec<Mat>> {
+fn pattern_transforms(
+    doc: &Document,
+    vals: &BTreeMap<String, Value>,
+    st: &ModelState,
+    component: u64,
+    p: &crate::PatternKind,
+) -> Result<Vec<Transform>> {
     let count = |e: &str| -> Result<usize> {
         let n = val(vals, e, Kind::Unitless)?.round();
         if !(1.0..=MAX_INSTANCES as f64).contains(&n) {
@@ -4515,7 +4468,9 @@ fn pattern_transforms(doc: &Document, vals: &BTreeMap<String, Value>, st: &Model
                     if i == 0 && j == 0 {
                         continue;
                     }
-                    out.push(translation(d1 * (s1 * alignment.multiplier(i, *reversed)) + d2 * (s2 * alignment2.multiplier(j, *reversed2))));
+                    out.push(Transform::translation(
+                        d1 * (s1 * alignment.multiplier(i, *reversed)) + d2 * (s2 * alignment2.multiplier(j, *reversed2)),
+                    ));
                 }
             }
         }
@@ -4541,9 +4496,9 @@ fn pattern_transforms(doc: &Document, vals: &BTreeMap<String, Value>, st: &Model
                 let mut m = if *orient {
                     // Signed turn of the tangent about the sketch normal.
                     let ang = t0.cross(tk).dot(normal).atan2(t0.dot(tk));
-                    rotation(p0, normal, ang)
+                    Transform::rotation(p0, normal, ang)
                 } else {
-                    translation(Vec3::ZERO)
+                    Transform::translation(Vec3::ZERO)
                 };
                 let dv = pk - p0;
                 m[3][0] += dv.x;
@@ -4564,7 +4519,7 @@ fn pattern_transforms(doc: &Document, vals: &BTreeMap<String, Value>, st: &Model
                 0.0
             };
             for i in 1..n {
-                out.push(rotation(origin.0, axis.0, step * alignment.multiplier(i, *reversed)));
+                out.push(Transform::rotation(origin.0, axis.0, step * alignment.multiplier(i, *reversed)));
             }
         }
     }
@@ -4632,7 +4587,7 @@ fn replay(
     f: &Feature,
     st: &mut ModelState,
     features: &[String],
-    mats: &[Mat],
+    mats: &[Transform],
     warning: &mut Option<String>,
 ) -> Result<()> {
     if features.is_empty() {
@@ -4663,7 +4618,7 @@ fn replay(
             // its picked points.
             let found = st.blend_edges.get(&src.id).cloned().unwrap_or_else(|| crate::plain(edges));
             for m in mats {
-                let moved: Vec<Vec3> = found.iter().map(|p| crate::apply_point(m, *p)).collect();
+                let moved: Vec<Vec3> = found.iter().map(|p| m.point(*p)).collect();
                 let ti = blend_target(st, &None, &moved)?;
                 let Some(mb) = st.bodies.get(ti).cloned() else { continue };
                 let nb = match &src.kind {
@@ -4696,10 +4651,10 @@ fn replay(
             // original hole under the original spot.
             let (spots, dir) = hole_spots_raw(vals, st, src)?;
             for (k, m) in mats.iter().enumerate() {
-                let d = crate::apply_vector(m, dir).normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
+                let d = m.vector(dir).normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
                 for p in &spots {
-                    let at = hole_on_surface(st, crate::apply_point(m, *p), d);
-                    let to = to.map(|t| crate::apply_point(m, t.0));
+                    let at = hole_on_surface(st, m.point(*p), d);
+                    let to = to.map(|t| m.point(t.0));
                     let depth = hole_depth_to(st, &at, d, &to, depth)?;
                     // Each copy's faces are named as the hole's, with the instance.
                     copies.extend(
@@ -4926,10 +4881,10 @@ pub(crate) fn sheet_face_plane_in_frame(doc: &Document, st: &ModelState, comp: u
             }
             // The body's own coordinates into the component's frame, as `state_in_frame` places its bodies.
             let source = st.body(&body).ok_or_else(lost)?;
-            let inverse = crate::mat_inverse(&doc.component_transform(comp)).ok_or_else(lost)?;
-            let m = crate::mat_mul(&inverse, &doc.component_transform(doc.model_body_component(source)));
-            let m = doc.model_body_offset(source).map(|offset| crate::mat_mul(&m, offset)).unwrap_or(m);
-            let placed = Plane::new(crate::apply_point(&m, face.origin), crate::apply_vector(&m, face.x), crate::apply_vector(&m, face.y));
+            let inverse = doc.component_transform(comp).inverse().ok_or_else(lost)?;
+            let m = inverse * doc.component_transform(doc.model_body_component(source));
+            let m = doc.model_body_offset(source).map(|offset| m * offset).unwrap_or(m);
+            let placed = Plane::new(m.point(face.origin), m.vector(face.x), m.vector(face.y));
             PlaneRef::Custom { plane: placed.ok_or_else(lost)? }
         }
         PlaneRef::Offset { base, distance } => {
@@ -5426,9 +5381,9 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
         FeatureKind::Mirror { features, plane, bodies, combine, placements } => {
             let pl = doc.resolve_plane_in(vals, plane, 0, Some(st))?;
             if bodies.is_empty() {
-                return replay(doc, vals, f, st, &crate::plain(features), &[mirror_matrix(&pl)], warning);
+                return replay(doc, vals, f, st, &crate::plain(features), &[Transform::reflection(&pl)], warning);
             }
-            let m = mirror_matrix(&pl);
+            let m = Transform::reflection(&pl);
             let mut output = 0;
             for (k, n) in bodies.iter().enumerate() {
                 let i = st.bodies.iter().position(|b| &b.name == n).ok_or_else(|| DocError::Unknown(format!("body `{n}`")))?;
@@ -5438,9 +5393,9 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 let placed = mirrored_placement(doc, f, &mb, placements.get(k).map(Vec::as_slice))?;
                 let (copy, own) = match placed {
                     Some(rel) => {
-                        let inverse = crate::mat_inverse(&rel).ok_or_else(|| DocError::Invalid(format!("the placement of `{n}` is singular")))?;
-                        let copy = crate::mat_mul(&m, &rel);
-                        (copy, crate::mat_mul(&inverse, &copy))
+                        let inverse = rel.inverse().ok_or_else(|| DocError::Invalid(format!("the placement of `{n}` is singular")))?;
+                        let copy = m * rel;
+                        (copy, inverse * copy)
                     }
                     None => (m, m),
                 };
@@ -5660,12 +5615,12 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             }
             let o = *origin;
             // Column-major: scale about the origin.
-            let m = [
+            let m = Transform([
                 [k[0], 0.0, 0.0, 0.0],
                 [0.0, k[1], 0.0, 0.0],
                 [0.0, 0.0, k[2], 0.0],
                 [o.x * (1.0 - k[0]), o.y * (1.0 - k[1]), o.z * (1.0 - k[2]), 1.0],
-            ];
+            ]);
             for n in bodies {
                 let i = st.bodies.iter().position(|b| &b.name == n).ok_or_else(|| DocError::Unknown(format!("body `{n}`")))?;
                 if let Some(mb) = st.bodies.get_mut(i) {
@@ -5945,37 +5900,37 @@ pub fn face_point_names(doc: &Document, st: &ModelState, kind: &FeatureKind, com
 }
 
 /// As `state_in_frame`, using the exact active placement for its shared source geometry.
-pub fn state_in_frame_at<'a>(doc: &Document, st: &'a ModelState, comp: u64, frame: Mat) -> std::borrow::Cow<'a, ModelState> {
+pub fn state_in_frame_at<'a>(doc: &Document, st: &'a ModelState, comp: u64, frame: Transform) -> std::borrow::Cow<'a, ModelState> {
     use std::borrow::Cow;
     if doc.occurrences.is_empty() && doc.body_offsets.is_empty() {
         return Cow::Borrowed(st);
     }
-    let Some(inv) = crate::mat_inverse(&frame) else { return Cow::Borrowed(st) };
+    let Some(inv) = frame.inverse() else { return Cow::Borrowed(st) };
     let comp_of_feature = |id: u64| doc.feature(id).map(|f| f.component).unwrap_or(0);
     let rel = |c: u64, body: Option<&str>| {
-        let m = crate::mat_mul(&inv, &if c == comp { frame } else { doc.component_transform(c) });
+        let m = inv * (if c == comp { frame } else { doc.component_transform(c) });
         match body.and_then(|b| doc.body_offsets.get(b)) {
-            Some(o) => crate::mat_mul(&m, o),
+            Some(o) => m * o,
             None => m,
         }
     };
-    let body_m: Vec<Mat> = st
+    let body_m: Vec<Transform> = st
         .bodies
         .iter()
         .map(|b| {
             let m = rel(doc.model_body_component(b), None);
-            doc.model_body_offset(b).map(|offset| crate::mat_mul(&m, offset)).unwrap_or(m)
+            doc.model_body_offset(b).map(|offset| m * offset).unwrap_or(m)
         })
         .collect();
-    let sketch_m: Vec<Mat> = st.sketches.iter().map(|s| rel(comp_of_feature(s.feature), None)).collect();
-    let world_wires_need_mapping = !crate::is_identity(&inv)
+    let sketch_m: Vec<Transform> = st.sketches.iter().map(|s| rel(comp_of_feature(s.feature), None)).collect();
+    let world_wires_need_mapping = !inv.is_identity()
         && st.sketches.iter().any(|sketch| sketch.sketch.wires.iter().any(|wire| wire.space == solidcraft_sketch::WireSpace::World));
-    if body_m.iter().chain(&sketch_m).all(crate::is_identity) && !world_wires_need_mapping {
+    if body_m.iter().chain(&sketch_m).all(Transform::is_identity) && !world_wires_need_mapping {
         return Cow::Borrowed(st);
     }
     let mut out = st.clone();
     for (b, m) in out.bodies.iter_mut().zip(&body_m) {
-        if !crate::is_identity(m)
+        if !m.is_identity()
             && let Ok(t) = kernel::transform_matrix(&b.body, *m)
         {
             #[cfg(test)]
@@ -5986,7 +5941,7 @@ pub fn state_in_frame_at<'a>(doc: &Document, st: &'a ModelState, comp: u64, fram
             nb.component = b.component;
             nb.transferred = b.transferred;
             nb.source_name = b.source_name.clone();
-            nb.source_transform = crate::mat_mul(m, &b.source_transform);
+            nb.source_transform = m * b.source_transform;
             nb.imported = b.imported.clone();
             nb.names = names;
             *b = nb;
@@ -5994,13 +5949,13 @@ pub fn state_in_frame_at<'a>(doc: &Document, st: &'a ModelState, comp: u64, fram
     }
     for (s, m) in out.sketches.iter_mut().zip(&sketch_m) {
         // Only a sketch the frame moves is copied.
-        let maps_wire = |w: &solidcraft_sketch::Wire| !crate::is_identity(if w.space == solidcraft_sketch::WireSpace::Component { m } else { &inv });
-        if crate::is_identity(m) && !s.sketch.wires.iter().any(maps_wire) {
+        let maps_wire = |w: &solidcraft_sketch::Wire| !(if w.space == solidcraft_sketch::WireSpace::Component { m } else { &inv }).is_identity();
+        if m.is_identity() && !s.sketch.wires.iter().any(maps_wire) {
             continue;
         }
         let s = Arc::make_mut(s);
-        if !crate::is_identity(m)
-            && let Some(np) = Plane::new(crate::apply_point(m, s.plane.origin), crate::apply_vector(m, s.plane.x), crate::apply_vector(m, s.plane.y))
+        if !m.is_identity()
+            && let Some(np) = Plane::new(m.point(s.plane.origin), m.vector(s.plane.x), m.vector(s.plane.y))
         {
             s.plane = np;
         }
@@ -6031,7 +5986,7 @@ pub struct PlacedBodies {
 
 impl PlacedBodies {
     /// The body `b` placed by `m`, from an earlier call when `b` is the same body as then.
-    fn placed(&self, b: &ModelBody, m: &crate::Mat, name: String) -> ModelBody {
+    fn placed(&self, b: &ModelBody, m: &Transform, name: String) -> ModelBody {
         let reused = self.by_source.get(&placed_key(b, m)).filter(|(source, _)| {
             Arc::ptr_eq(&source.mesh, &b.mesh)
                 && source.body.same(&b.body)
@@ -6064,9 +6019,9 @@ impl PlacedBodies {
     }
 }
 
-fn placed_key(b: &ModelBody, m: &crate::Mat) -> (usize, [u64; 16]) {
+fn placed_key(b: &ModelBody, m: &Transform) -> (usize, [u64; 16]) {
     let mut bits = [0u64; 16];
-    for (slot, v) in bits.iter_mut().zip(m.iter().flatten()) {
+    for (slot, v) in bits.iter_mut().zip(m.entries()) {
         *slot = v.to_bits();
     }
     (Arc::as_ptr(&b.mesh) as usize, bits)
@@ -6096,14 +6051,14 @@ pub fn world_state_reusing(doc: &Document, st: &ModelState, placed_before: &mut 
     let mut out = ModelState { body_counter: st.body_counter, ..Default::default() };
     let placements = doc.placements();
     // A body moved in from another component keeps its place (its offset).
-    let body_matrix = |b: &ModelBody, m: &crate::Mat| doc.model_body_offset(b).map(|o| crate::mat_mul(m, o)).unwrap_or(*m);
+    let body_matrix = |b: &ModelBody, m: &Transform| doc.model_body_offset(b).map(|o| m * o).unwrap_or(*m);
     // Every body placed elsewhere than its definition, placed on all cores: a large assembly
     // places hundreds of parts, each a B-rep transform.
     let mut jobs = Vec::new();
     for (comp, path, m) in &placements {
         for b in st.bodies.iter().filter(|b| doc.model_body_component(b) == *comp) {
             let bm = body_matrix(b, m);
-            if !crate::is_identity(&bm) {
+            if !bm.is_identity() {
                 jobs.push((b, bm, doc.world_body_name(st, &b.name, *comp, path)));
             }
         }
@@ -6111,12 +6066,12 @@ pub fn world_state_reusing(doc: &Document, st: &ModelState, placed_before: &mut 
     let mut moved = kernel::map_on_threads(&jobs, 16, |(b, bm, name)| placed_before.placed(b, bm, name.clone())).into_iter().zip(&jobs);
     for (comp, path, m) in placements {
         let primary = path == first_path(comp);
-        let ident = crate::is_identity(&m);
+        let ident = m.is_identity();
         for b in st.bodies.iter().filter(|b| doc.model_body_component(b) == comp) {
             let bm = body_matrix(b, &m);
             // Identical geometry also shares its display mesh cell with the definition.
             // A changed placement keeps a distinct mesh, at that placement's coordinates.
-            let mut placed = if crate::is_identity(&bm) {
+            let mut placed = if bm.is_identity() {
                 let mut placed = b.clone();
                 placed.name = doc.world_body_name(st, &b.name, comp, &path);
                 placed
@@ -6135,7 +6090,7 @@ pub fn world_state_reusing(doc: &Document, st: &ModelState, placed_before: &mut 
             // With the model body's own frame, so its place is told apart from the placement's.
             placed.source_key = b.geometry_key().unwrap_or(0);
             placed.source_name = Some(b.definition_name().to_string());
-            placed.source_transform = crate::mat_mul(&bm, &b.source_transform);
+            placed.source_transform = bm * b.source_transform;
             placed.component = comp;
             placed.transferred = b.transferred;
             placed.imported = b.imported.clone();
@@ -6154,7 +6109,7 @@ pub fn world_state_reusing(doc: &Document, st: &ModelState, placed_before: &mut 
                 let mut s2 = SolvedSketch::clone(s);
                 if !ident {
                     let p = &s.plane;
-                    if let Some(np) = Plane::new(crate::apply_point(&m, p.origin), crate::apply_vector(&m, p.x), crate::apply_vector(&m, p.y)) {
+                    if let Some(np) = Plane::new(m.point(p.origin), m.vector(p.x), m.vector(p.y)) {
                         s2.plane = np;
                     }
                 }
@@ -6171,9 +6126,9 @@ pub fn world_state_reusing(doc: &Document, st: &ModelState, placed_before: &mut 
                 .filter(|t| st.body(&t.body).map(|body| doc.model_body_component(body)).unwrap_or_else(|| comp_of_feature(t.feature)) == comp)
             {
                 let mut t2 = t.clone();
-                let frame = st.body(&t.body).and_then(|body| doc.model_body_offset(body)).map(|offset| crate::mat_mul(&m, offset)).unwrap_or(m);
-                t2.axis_point = crate::apply_point(&frame, t.axis_point);
-                t2.axis = crate::apply_vector(&frame, *t.axis).unit().unwrap_or(t.axis);
+                let frame = st.body(&t.body).and_then(|body| doc.model_body_offset(body)).map(|offset| m * offset).unwrap_or(m);
+                t2.axis_point = frame.point(t.axis_point);
+                t2.axis = frame.vector(*t.axis).unit().unwrap_or(t.axis);
                 out.threads.push(t2);
             }
         }
@@ -6203,7 +6158,7 @@ mod world_placement_cache_tests {
             )
             .unwrap();
         doc.feature_mut(feature).unwrap().component = component;
-        let matrix = crate::rigid(Vec3::new(15., -2., 8.), Vec3::ZERO, Vec3::X, 0.7);
+        let matrix = Transform::rigid(Vec3::new(15., -2., 8.), Vec3::ZERO, Vec3::X, 0.7);
         doc.occurrences.iter_mut().find(|o| o.component == component).unwrap().transform = matrix;
         let mut model = Model::default();
         model.evaluate(&doc);
@@ -6218,7 +6173,7 @@ mod world_placement_cache_tests {
         let local = source.mesh();
         let placed = world.bodies[0].mesh();
         assert_eq!(local.tri_face, placed.tri_face);
-        let mapped: Vec<_> = local.positions.iter().map(|p| crate::apply_point(&matrix, *p)).collect();
+        let mapped: Vec<_> = local.positions.iter().map(|p| matrix.point(*p)).collect();
         assert!(mapped.iter().all(|p| placed.positions.iter().any(|q| p.dist(*q) < 1e-8)));
         assert!(placed.positions.iter().all(|p| mapped.iter().any(|q| p.dist(*q) < 1e-8)));
     }
@@ -6228,7 +6183,7 @@ mod world_placement_cache_tests {
         let mut doc = Document::new("placements");
         let component = doc.add_component(Some("Part"), 0).unwrap();
         doc.body_components.insert("Block".into(), component);
-        let matrix = crate::rigid(Vec3::new(10., 20., 0.), Vec3::ZERO, Vec3::Z, std::f64::consts::FRAC_PI_2);
+        let matrix = Transform::rigid(Vec3::new(10., 20., 0.), Vec3::ZERO, Vec3::Z, std::f64::consts::FRAC_PI_2);
         let second = doc.add_occurrence(component, 0, matrix).unwrap();
         let mut state = ModelState::default();
         state.bodies.push(ModelBody::new("Block".into(), kernel::box_solid(Vec3::ZERO, Vec3::new(2., 3., 4.)).unwrap(), 1));

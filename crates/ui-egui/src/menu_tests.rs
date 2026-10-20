@@ -4,6 +4,7 @@ use crate::test_support::sample_app;
 use egui::pos2;
 use serde_json::json;
 use solidcraft_engine::Session;
+use solidcraft_engine::geom::Transform;
 
 use crate::context_menu::{self, Item, Target};
 use crate::{Services, SolveApp};
@@ -572,7 +573,7 @@ fn an_uncaptured_move_asks_before_the_next_command() {
     crate::browser::answer_capture(&mut app, "revert").unwrap();
     assert!(app.session.pending_moves.is_empty());
     assert!(app.dialog.is_some(), "Create Sketch started");
-    assert_eq!(app.session.doc.occurrences[0].transform, solidcraft_engine::doc::IDENTITY);
+    assert_eq!(app.session.doc.occurrences[0].transform, Transform::IDENTITY);
     // Capture keeps the move.
     app.dialog = None;
     app.run("occurrence.move", json!({"occurrence": occ, "translate": [10, 0, 0], "capture": false})).unwrap();
@@ -607,15 +608,15 @@ fn occurrence_moves_turn_about_their_origin_then_move() {
     crate::browser::apply_occurrence_move(&mut app, &m);
     let t = *app.session.pending_moves.get(&occ).unwrap();
     // The pivot lands 10 mm along X; X turns into Y.
-    let p = solidcraft_engine::doc::apply_point(&t, solidcraft_engine::geom::Vec3::new(5.0, 0.0, 0.0));
-    let x = solidcraft_engine::doc::apply_vector(&t, solidcraft_engine::geom::Vec3::X);
+    let p = t.point(solidcraft_engine::geom::Vec3::new(5.0, 0.0, 0.0));
+    let x = t.vector(solidcraft_engine::geom::Vec3::X);
     assert!((p.x - 15.0).abs() < 1e-9 && p.y.abs() < 1e-9, "{p:?}");
     assert!((x.y - 1.0).abs() < 1e-9, "{x:?}");
     // Changing the values again starts from where it was, not from the last move.
     m.translate = [0.0, 0.0, 0.0];
     m.angles = [0.0; 3];
     crate::browser::apply_occurrence_move(&mut app, &m);
-    assert_eq!(*app.session.pending_moves.get(&occ).unwrap(), solidcraft_engine::doc::IDENTITY);
+    assert_eq!(*app.session.pending_moves.get(&occ).unwrap(), Transform::IDENTITY);
 }
 
 #[test]

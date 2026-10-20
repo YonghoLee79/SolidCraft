@@ -31,7 +31,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solidcraft_doc::{Document, Model, ModelState};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 
 pub use cmd::{CommandInfo, CommandSpec, auto_operation, command_specs, extrude_reach, find_command};
 pub use solidcraft_doc as doc;
@@ -163,7 +163,7 @@ pub struct Snapshot {
     pub label: String,
     pub doc: Arc<Document>,
     pub active_sketch: Option<u64>,
-    pub pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
+    pub pending_moves: std::collections::BTreeMap<u64, Transform>,
 }
 
 /// A copy of a session that evaluates commands ahead of it ([`Session::ahead`]).
@@ -201,7 +201,7 @@ pub struct Preview {
 struct WorldCache {
     doc: Arc<Document>,
     model: Arc<solidcraft_doc::ModelState>,
-    pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
+    pending_moves: std::collections::BTreeMap<u64, Transform>,
     active_component: u64,
     active_occurrence_path: Option<Vec<u64>>,
     world: Arc<solidcraft_doc::ModelState>,
@@ -247,7 +247,7 @@ pub struct Session {
     /// The placement used when authoring shared component geometry.
     pub active_occurrence_path: Option<Vec<u64>>,
     /// Occurrence moves not captured yet (Capture Position keeps them, a recompute drops them).
-    pub pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
+    pub pending_moves: std::collections::BTreeMap<u64, Transform>,
     world_cache: std::sync::Mutex<Option<WorldCache>>,
     occurrence_visibility_cache: std::sync::Mutex<Option<occurrences::VisibilityCache>>,
     removed_later_cache: std::sync::Mutex<Option<occurrences::RemovedLaterCache>>,
@@ -308,7 +308,7 @@ pub(crate) struct Checkpoint {
     pub id: u64,
     pub doc: Arc<Document>,
     pub active_sketch: Option<u64>,
-    pub pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
+    pub pending_moves: std::collections::BTreeMap<u64, Transform>,
     pub undo: Vec<Snapshot>,
     pub redo: Vec<Snapshot>,
 }
@@ -575,23 +575,19 @@ impl Session {
         }
         // Sketch definitions are displayed once, at the placement currently being authored.
         if self.active_occurrence_path.is_some() && self.active_component != 0 {
-            let first = self.occurrence_placement(&self.doc.first_path(self.active_component)).map(|p| p.world).unwrap_or(solidcraft_doc::IDENTITY);
-            if let Some(inverse) = solidcraft_doc::mat_inverse(&first) {
-                let delta = solidcraft_doc::mat_mul(&self.active_component_frame(), &inverse);
+            let first = self.occurrence_placement(&self.doc.first_path(self.active_component)).map(|p| p.world).unwrap_or(Transform::IDENTITY);
+            if let Some(inverse) = first.inverse() {
+                let delta = self.active_component_frame() * inverse;
                 for sketch in w.sketches.iter_mut().filter(|sk| self.doc.feature(sk.feature).is_some_and(|f| f.component == self.active_component)) {
                     let sketch = Arc::make_mut(sketch);
                     let plane = sketch.plane;
-                    if let Some(mapped) = solidcraft_geom::Plane::new(
-                        solidcraft_doc::apply_point(&delta, plane.origin),
-                        solidcraft_doc::apply_vector(&delta, plane.x),
-                        solidcraft_doc::apply_vector(&delta, plane.y),
-                    ) {
+                    if let Some(mapped) = solidcraft_geom::Plane::new(delta.point(plane.origin), delta.vector(plane.x), delta.vector(plane.y)) {
                         sketch.plane = mapped;
                     }
                     for wire in &mut sketch.sketch.wires {
                         if wire.space == solidcraft_doc::sketch::WireSpace::Component {
                             for point in wire.pts.iter_mut().chain(&mut wire.fit) {
-                                *point = solidcraft_doc::apply_point(&delta, *point);
+                                *point = delta.point(*point);
                             }
                         }
                     }

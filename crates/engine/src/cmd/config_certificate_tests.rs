@@ -21,11 +21,11 @@ fn painted_radius(session: &Session, name: &str, radius: f64) -> usize {
         state.body(name).unwrap_or_else(|| panic!("missing {name}; bodies {:?}", state.bodies.iter().map(|body| &body.name).collect::<Vec<_>>()));
     let painted = session.doc.face_colors(body);
     let mesh = body.body.tessellate(0.001).unwrap();
-    let inverse = solidcraft_doc::mat_inverse(&body.source_transform).unwrap();
+    let inverse = body.source_transform.inverse().unwrap();
     for (triangle, face) in mesh.triangles.iter().zip(&mesh.tri_face) {
         if painted.iter().any(|(index, _)| *index == *face as usize) {
             for vertex in mesh.tri(triangle).unwrap() {
-                let vertex = solidcraft_doc::apply_point(&inverse, vertex);
+                let vertex = inverse.point(vertex);
                 assert!((vertex.x.hypot(vertex.y) - radius).abs() < 1e-7, "{name}: {vertex:?}");
             }
         }

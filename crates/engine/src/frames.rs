@@ -10,8 +10,8 @@
 //! without moved components).
 
 use serde_json::{Map, Value};
-use solidcraft_doc::{Mat, apply_point, apply_vector, is_identity, map_point_expr, mat_inverse};
-use solidcraft_geom::Vec3;
+use solidcraft_doc::map_point_expr;
+use solidcraft_geom::{Transform, Vec3};
 
 use crate::Session;
 
@@ -92,10 +92,10 @@ fn table(id: &str) -> &'static [(&'static str, K)] {
 
 /// The world placement of bodies (name → frame), with moves not captured yet.
 struct Frames {
-    bodies: Vec<(String, String, Mat)>,
-    active: Mat,
+    bodies: Vec<(String, String, Transform)>,
+    active: Transform,
     /// The frame of the sketch being edited (its component), else the active component's.
-    sketch: Mat,
+    sketch: Transform,
 }
 
 fn frames(s: &Session) -> Frames {
@@ -113,7 +113,7 @@ pub fn placed(s: &Session) -> bool {
     let mut components = std::collections::BTreeSet::new();
     !s.pending_moves.is_empty()
         || !s.doc.body_offsets.is_empty()
-        || s.doc.occurrences.iter().any(|o| !is_identity(&o.transform) || !components.insert(o.component))
+        || s.doc.occurrences.iter().any(|o| !o.transform.is_identity() || !components.insert(o.component))
 }
 
 fn vec3(v: &Value) -> Option<Vec3> {
@@ -130,14 +130,14 @@ fn pt(p: Vec3) -> Value {
 }
 
 /// The frame of the body a world point lies on (the nearest), or of the named body.
-fn frame_at(s: &Session, f: &Frames, p: Vec3, body: Option<&str>) -> Option<Mat> {
+fn frame_at(s: &Session, f: &Frames, p: Vec3, body: Option<&str>) -> Option<Transform> {
     if let Some(b) = body
         && let Some((_, _, m)) = f.bodies.iter().find(|(w, _, _)| w == b)
     {
         return Some(*m);
     }
     let world = s.world_state();
-    let mut best: Option<(f64, Mat)> = None;
+    let mut best: Option<(f64, Transform)> = None;
     for wb in &world.bodies {
         let Some((_, _, m)) = f.bodies.iter().find(|(w, _, _)| *w == wb.name) else { continue };
         let mesh = wb.mesh();
@@ -173,7 +173,7 @@ struct Mapper<'a> {
     s: &'a Session,
     f: Frames,
     /// The frame of the command's first pick (its directions turn with it).
-    first: Option<Mat>,
+    first: Option<Transform>,
     changed: bool,
     /// Picks go into the sketch's frame (`Here`), not the frame of the body under them.
     here: bool,
@@ -187,13 +187,13 @@ impl Mapper<'_> {
         self.local_point(&m, p)
     }
 
-    fn local_point(&mut self, m: &Mat, p: Vec3) -> Option<Value> {
-        if is_identity(m) {
+    fn local_point(&mut self, m: &Transform, p: Vec3) -> Option<Value> {
+        if m.is_identity() {
             return None;
         }
-        let inv = mat_inverse(m)?;
+        let inv = m.inverse()?;
         self.changed = true;
-        Some(pt(apply_point(&inv, p)))
+        Some(pt(inv.point(p)))
     }
 
     fn make(&mut self, v: &Value) -> Option<Value> {
@@ -203,7 +203,7 @@ impl Mapper<'_> {
     }
 
     /// A point with expression coordinates (`["w / 2", 0, 0]`): mapped as expressions.
-    fn make_expr(&mut self, m: &Mat, v: &Value) -> Option<Value> {
+    fn make_expr(&mut self, m: &Transform, v: &Value) -> Option<Value> {
         let a = v.as_array().filter(|a| a.len() == 3)?;
         let c = |i: usize| match a.get(i)? {
             Value::Number(n) => n.as_f64().filter(|x| x.is_finite()).map(|x| solidcraft_doc::Expr::new(format!("{x}"))),
@@ -211,10 +211,10 @@ impl Mapper<'_> {
             _ => None,
         };
         let mut p = [c(0)?, c(1)?, c(2)?];
-        if is_identity(m) {
+        if m.is_identity() {
             return None;
         }
-        let inv = mat_inverse(m)?;
+        let inv = m.inverse()?;
         map_point_expr(&inv, &mut p);
         self.changed = true;
         Some(serde_json::json!(p))
@@ -223,12 +223,12 @@ impl Mapper<'_> {
     fn dir(&mut self, v: &Value) -> Option<Value> {
         let d = vec3(v)?;
         let m = self.first.unwrap_or(self.f.active);
-        if is_identity(&m) {
+        if m.is_identity() {
             return None;
         }
-        let inv = mat_inverse(&m)?;
+        let inv = m.inverse()?;
         self.changed = true;
-        Some(pt(apply_vector(&inv, d)))
+        Some(pt(inv.vector(d)))
     }
 
     /// A list of picks (points, or objects holding one).
@@ -369,7 +369,7 @@ pub fn to_local(s: &Session, id: &str, params: &Value) -> Option<Value> {
             && let solidcraft_doc::FeatureKind::Revolve { axis: solidcraft_doc::AxisRef::Line { origin, dir }, .. } = &feature.kind
         {
             let frame = context.active_component_frame();
-            let displayed = serde_json::json!({"origin":pt(apply_point(&frame,origin.0)),"dir":pt(apply_vector(&frame,dir.0))});
+            let displayed = serde_json::json!({"origin":pt(frame.point(origin.0)),"dir":pt(frame.vector(dir.0))});
             if params.get("params").and_then(|p| p.get("axis")) == Some(&displayed) {
                 inner["axis"] = serde_json::json!({"origin":pt(origin.0),"dir":pt(dir.0)});
             }
@@ -381,7 +381,7 @@ pub fn to_local(s: &Session, id: &str, params: &Value) -> Option<Value> {
         };
         for (key, point) in points {
             if let Some(point) = point {
-                let displayed = pt(apply_point(&context.active_component_frame(), point.0));
+                let displayed = pt(context.active_component_frame().point(point.0));
                 if params.get("params").and_then(|p| p.get(key)) == Some(&displayed) {
                     inner[key] = pt(point.0);
                 }
@@ -432,10 +432,10 @@ pub fn to_local(s: &Session, id: &str, params: &Value) -> Option<Value> {
                             axis.insert("origin".into(), origin);
                         }
                         if let Some(dir) = axis.get("dir").and_then(vec3)
-                            && !is_identity(&m.f.active)
-                            && let Some(inv) = mat_inverse(&m.f.active)
+                            && !m.f.active.is_identity()
+                            && let Some(inv) = m.f.active.inverse()
                         {
-                            axis.insert("dir".into(), pt(apply_vector(&inv, dir)));
+                            axis.insert("dir".into(), pt(inv.vector(dir)));
                             m.changed = true;
                         }
                         Some(Value::Object(axis))

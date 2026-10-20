@@ -1,6 +1,7 @@
 //! Exact placement identity and session view/authoring state.
 use crate::{EngineError, Result, Sel, Session};
-use solidcraft_doc::{FeatureKind, IDENTITY, Mat, PlaneRef, mat_mul};
+use solidcraft_doc::{FeatureKind, PlaneRef};
+use solidcraft_geom::Transform;
 
 #[derive(Clone, Debug)]
 pub struct OccurrenceBody {
@@ -14,9 +15,9 @@ pub struct OccurrencePlacement {
     pub component: u64,
     pub path: Vec<u64>,
     pub name: String,
-    pub world: Mat,
-    pub local: Mat,
-    pub parent_world: Mat,
+    pub world: Transform,
+    pub local: Transform,
+    pub parent_world: Transform,
     pub grounded: bool,
     pub bodies: Vec<OccurrenceBody>,
 }
@@ -60,8 +61,8 @@ impl Session {
             return Err(invalid("occurrence path must contain 1..64 ids"));
         }
         let mut component = 0;
-        let mut world = IDENTITY;
-        let mut parent_world = IDENTITY;
+        let mut world = Transform::IDENTITY;
+        let mut parent_world = Transform::IDENTITY;
         let mut seen = std::collections::BTreeSet::new();
         for id in path {
             if !seen.insert(*id) {
@@ -77,8 +78,8 @@ impl Session {
                 return Err(invalid("occurrence path has a missing component"));
             }
             parent_world = world;
-            world = mat_mul(&world, self.pending_moves.get(id).unwrap_or(&o.transform));
-            if world.iter().flatten().any(|x| !x.is_finite()) {
+            world = world * self.pending_moves.get(id).unwrap_or(&o.transform);
+            if world.entries().any(|x| !x.is_finite()) {
                 return Err(invalid("occurrence path has a non-finite transform"));
             }
             component = o.component;
@@ -138,7 +139,7 @@ impl Session {
     }
 
     /// Selected authoring placement, or the compatible first-placement frame.
-    pub fn active_component_frame(&self) -> Mat {
+    pub fn active_component_frame(&self) -> Transform {
         if let Some(path) = &self.active_occurrence_path
             && let Ok(p) = self.occurrence_placement(path)
             && p.component == self.active_component
@@ -146,7 +147,7 @@ impl Session {
             return p.world;
         }
         let path = self.doc.first_path(self.active_component);
-        self.occurrence_placement(&path).map(|p| p.world).unwrap_or(IDENTITY)
+        self.occurrence_placement(&path).map(|p| p.world).unwrap_or(Transform::IDENTITY)
     }
 
     pub fn occurrence_visible(&self, path: &[u64]) -> bool {

@@ -4,8 +4,8 @@
 //! share contents, "paste new" copies them) and can be grounded and moved.
 
 use serde_json::{Value, json};
-use solidcraft_doc::{FeatureKind, Mat, Occurrence};
-use solidcraft_geom::Vec3;
+use solidcraft_doc::{FeatureKind, Occurrence};
+use solidcraft_geom::{Transform, Vec3};
 
 use super::CommandSpec;
 use crate::params::{bad, bool_, str_, string_list, vec3};
@@ -78,8 +78,8 @@ fn occurrence(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
     s.doc.occurrences.iter().find(|o| o.id.to_string() == kk || o.name == kk).map(|o| o.id).ok_or_else(|| bad(cmd, format!("no occurrence `{kk}`")))
 }
 
-fn translation(t: Vec3) -> Mat {
-    solidcraft_doc::rigid(t, Vec3::ZERO, Vec3::Z, 0.0)
+fn translation(t: Vec3) -> Transform {
+    Transform::rigid(t, Vec3::ZERO, Vec3::Z, 0.0)
 }
 
 fn move_vector(p: &Value, key: &str, default: Vec3, coordinate: bool, cmd: &str) -> Result<Vec3> {
@@ -93,18 +93,8 @@ fn move_vector(p: &Value, key: &str, default: Vec3, coordinate: bool, cmd: &str)
     Ok(v)
 }
 
-pub(super) fn valid_position(m: &Mat) -> bool {
-    let column = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
-    let (x, y, z) = (column(0), column(1), column(2));
-    m.iter().flatten().all(|x| x.is_finite())
-        && m[3][..3].iter().all(|x| x.abs() <= 1e9)
-        && [x, y, z].iter().all(|axis| (axis.dot(*axis) - 1.0).abs() < 1e-6)
-        && x.dot(y).abs() < 1e-6
-        && x.dot(z).abs() < 1e-6
-        && y.dot(z).abs() < 1e-6
-        && x.cross(y).dot(z) > 0.0
-        && [m[0][3], m[1][3], m[2][3]].iter().all(|x| x.abs() < 1e-9)
-        && (m[3][3] - 1.0).abs() < 1e-9
+pub(super) fn valid_position(m: &Transform) -> bool {
+    m.is_rigid(1e-6) && m[3][..3].iter().all(|x| x.abs() <= 1e9)
 }
 
 pub(super) fn new_component(s: &mut Session, p: &Value) -> Result<Value> {
@@ -177,7 +167,7 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
             return json!(o);
         }
         let mut v = json!({"id": o.id, "name": o.name, "parent": o.parent, "grounded": o.grounded});
-        if o.transform.iter().flatten().zip(solidcraft_doc::IDENTITY.iter().flatten()).any(|(a, b)| (a - b).abs() > 1e-12) {
+        if o.transform.entries().zip(Transform::IDENTITY.entries()).any(|(a, b)| (a - b).abs() > 1e-12) {
             v["transform"] = json!(o.transform);
         }
         v
@@ -334,7 +324,7 @@ pub(super) fn copy_occurrence(s: &mut Session, p: &Value) -> Result<Value> {
     let parent = if p.get("parent").is_some() { component(s, p, "parent", cmd)? } else { src.parent };
     let t = move_vector(p, "translate", Vec3::ZERO, true, cmd)?;
     let base = s.pending_moves.get(&src.id).unwrap_or(&src.transform);
-    let m = solidcraft_doc::mat_mul(&translation(t), base);
+    let m = translation(t) * base;
     if !valid_position(&m) {
         return Err(bad(cmd, "copy transform exceeds supported numeric range"));
     }
@@ -363,8 +353,8 @@ fn paste_new(s: &mut Session, p: &Value) -> Result<Value> {
         s.doc.occurrence_of(comp).cloned()
     };
     let t = move_vector(p, "translate", Vec3::ZERO, true, cmd)?;
-    let base = occ.as_ref().map(|o| s.pending_moves.get(&o.id).copied().unwrap_or(o.transform)).unwrap_or(solidcraft_doc::IDENTITY);
-    let transform = solidcraft_doc::mat_mul(&translation(t), &base);
+    let base = occ.as_ref().map(|o| s.pending_moves.get(&o.id).copied().unwrap_or(o.transform)).unwrap_or(Transform::IDENTITY);
+    let transform = translation(t) * base;
     if !valid_position(&transform) {
         return Err(bad(cmd, "copy transform exceeds supported numeric range"));
     }
@@ -438,7 +428,7 @@ fn move_occurrence(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(cmd, "rotation axis must have a finite nonzero length"));
         }
         let origin = move_vector(p, "origin", Vec3::ZERO, true, cmd)?;
-        solidcraft_doc::rigid(t, origin, axis, angle)
+        Transform::rigid(t, origin, axis, angle)
     };
     let space = match p.get("space") {
         None => "local",
@@ -451,19 +441,19 @@ fn move_occurrence(s: &mut Session, p: &Value) -> Result<Value> {
     let path = if p.get("path").is_some() || space == "world" { Some(occurrence_path(s, p, id, cmd)?) } else { None };
     let delta = if space == "world" {
         let placement = s.occurrence_placement(path.as_deref().unwrap_or(&[]))?;
-        let inverse = solidcraft_doc::mat_inverse(&placement.parent_world).ok_or_else(|| bad(cmd, "parent frame is singular"))?;
-        solidcraft_doc::mat_mul(&solidcraft_doc::mat_mul(&inverse, &delta), &placement.parent_world)
+        let inverse = placement.parent_world.inverse().ok_or_else(|| bad(cmd, "parent frame is singular"))?;
+        inverse * delta * placement.parent_world
     } else {
         delta
     };
     let cur = if let Some(value) = p.get("base_transform") {
-        let base: Mat = serde_json::from_value(value.clone()).map_err(|_| bad(cmd, "base_transform must be a 4x4 affine matrix"))?;
+        let base: Transform = serde_json::from_value(value.clone()).map_err(|_| bad(cmd, "base_transform must be a 4x4 affine matrix"))?;
         if !valid_position(&base)
             || base[0][3].abs() > 1e-12
             || base[1][3].abs() > 1e-12
             || base[2][3].abs() > 1e-12
             || (base[3][3] - 1.0).abs() > 1e-12
-            || solidcraft_doc::mat_inverse(&base).is_none()
+            || base.inverse().is_none()
         {
             return Err(bad(cmd, "base_transform must be finite, affine and invertible"));
         }
@@ -471,7 +461,7 @@ fn move_occurrence(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         s.pending_moves.get(&id).copied().unwrap_or(o.transform)
     };
-    let next = solidcraft_doc::mat_mul(&delta, &cur);
+    let next = delta * cur;
     if !valid_position(&next) {
         return Err(bad(cmd, "move transform exceeds supported numeric range"));
     }
@@ -541,10 +531,10 @@ pub fn to_active_frame(s: &Session, kind: &mut FeatureKind) {
         return;
     }
     let m = s.active_component_frame();
-    if solidcraft_doc::is_identity(&m) {
+    if m.is_identity() {
         return;
     }
-    if let Some(inv) = solidcraft_doc::mat_inverse(&m) {
+    if let Some(inv) = m.inverse() {
         kind.transform_geometry(&inv);
     }
 }

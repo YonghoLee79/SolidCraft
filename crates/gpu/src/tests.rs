@@ -1,4 +1,4 @@
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 use solidcraft_kernel::{Body, BoolOp};
 
 use super::*;
@@ -116,7 +116,10 @@ fn bodies() -> Vec<(&'static str, Body)> {
         ("fillets", ok(solidcraft_kernel::fillet(&bx, &edges, 1.5))),
         (
             "mirrored",
-            ok(solidcraft_kernel::transform_matrix(&pin, [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [3.0, 0.0, 1.0, 1.0]])),
+            ok(solidcraft_kernel::transform_matrix(
+                &pin,
+                Transform([[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [3.0, 0.0, 1.0, 1.0]]),
+            )),
         ),
     ]
 }

@@ -375,7 +375,9 @@ mod tests {
                     assert!(same_support(&cup.face_plane(i).unwrap(), &cup.planar_face(i).unwrap()));
                 }
             }
-            let moved = transform_matrix(&cup, [[0., 1., 0., 0.], [-1., 0., 0., 0.], [0., 0., 1., 0.], [100., 200., 300., 1.]]).unwrap();
+            let moved =
+                transform_matrix(&cup, solidcraft_geom::Transform([[0., 1., 0., 0.], [-1., 0., 0., 0.], [0., 0., 1., 0.], [100., 200., 300., 1.]]))
+                    .unwrap();
             assert!((moved.face_plane(floor).unwrap().origin.z - (300. + thickness)).abs() < 1e-9);
             assert!(matches!(moved.face_sources().unwrap().get(right), Some(Some(FaceSource::ShellPlanar { producer: Some(9), inner: false, .. }))));
             assert!(moved.face_plane(right).unwrap().normal().dot(Vec3::Y) > 0.999999);

@@ -2,6 +2,7 @@
 //! their own dimension parameters, feature inputs their own names, and references inside the
 //! copied set point at the copies.
 
+use solidcraft_geom::Transform;
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
@@ -145,7 +146,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
             if let FeatureKind::Sketch { plane, .. } | FeatureKind::ConstructionPlane { plane } = &mut kind {
                 explicit_planes(plane);
             }
-            let mut m = solidcraft_doc::IDENTITY;
+            let mut m = Transform::IDENTITY;
             m[3][0] = t.x;
             m[3][1] = t.y;
             m[3][2] = t.z;

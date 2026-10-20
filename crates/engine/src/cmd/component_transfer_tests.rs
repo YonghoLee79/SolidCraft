@@ -1,4 +1,5 @@
 use super::*;
+use solidcraft_geom::Transform;
 
 fn run(s: &mut Session, command: &str, params: Value) -> Value {
     s.execute(command, &params).unwrap()
@@ -107,7 +108,7 @@ fn ownership_only_boundary_invalidates_old_boolean_cache() {
     let c = s.doc_mut().add_component(Some("Destination"), 0).unwrap();
     let id = s
         .doc_mut()
-        .add_feature(FeatureKind::BodyTransfer { bodies: vec!["Block".into()], from: 0, to: c, transform: solidcraft_doc::IDENTITY }, None)
+        .add_feature(FeatureKind::BodyTransfer { bodies: vec!["Block".into()], from: 0, to: c, transform: Transform::IDENTITY }, None)
         .unwrap();
     let index = s.doc.feature_index(id).unwrap();
     let transfer = s.doc_mut().features.remove(index);
@@ -128,7 +129,7 @@ fn failed_transfer_cannot_change_evaluated_world_owner() {
     let c = s.doc_mut().add_component(Some("Destination"), 0).unwrap();
     let id = s
         .doc_mut()
-        .add_feature(FeatureKind::BodyTransfer { bodies: vec!["Block".into()], from: c, to: c, transform: solidcraft_doc::IDENTITY }, None)
+        .add_feature(FeatureKind::BodyTransfer { bodies: vec!["Block".into()], from: c, to: c, transform: Transform::IDENTITY }, None)
         .unwrap();
     s.refresh();
     assert!(s.model.result(id).unwrap().error.is_some());
@@ -172,7 +173,7 @@ fn inherited_component_appearance_and_legacy_assignment_survive_transfer() {
     run(&mut legacy, "solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Old"}));
     let c = legacy.doc_mut().add_component(Some("Legacy"), 0).unwrap();
     legacy.doc_mut().body_components.insert("Old".into(), c);
-    legacy.doc_mut().body_offsets.insert("Old".into(), solidcraft_doc::rigid(Vec3::new(7.0, 0.0, 0.0), Vec3::ZERO, Vec3::Z, 0.0));
+    legacy.doc_mut().body_offsets.insert("Old".into(), Transform::rigid(Vec3::new(7.0, 0.0, 0.0), Vec3::ZERO, Vec3::Z, 0.0));
     legacy.refresh();
     assert!(!legacy.model.state().body("Old").unwrap().transferred);
     run(&mut legacy, "component.move_bodies", json!({"component":0,"bodies":["Old"]}));

@@ -1,4 +1,5 @@
 //! Straight extrusion feedback from existing display triangles, without a scratch design.
+use solidcraft_engine::geom::Transform;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -51,7 +52,7 @@ impl StraightPreview {
             let placed = app.session.occurrence_placement(path).ok()?;
             if path.len() != 1
                 || placed.component != app.session.active_component
-                || placed.world != solidcraft_engine::doc::IDENTITY
+                || placed.world != Transform::IDENTITY
                 || app.session.doc.occurrences.iter().filter(|o| o.component == placed.component).count() != 1
             {
                 return None;

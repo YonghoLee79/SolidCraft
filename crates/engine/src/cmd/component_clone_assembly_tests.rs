@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 use super::*;
+use solidcraft_doc::Occurrence;
 use solidcraft_doc::joints::{Coupling, Joint, JointKind, MotionLink, NamedOrigin, Size, Snap, XRef};
 use solidcraft_doc::motion::{ContactSet, ExplodedView, MotionStudy, StudyKey};
-use solidcraft_doc::{IDENTITY, Occurrence};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 
 fn at(occurrence: u64) -> JointOrigin {
     JointOrigin { occurrence, snap: Snap::Point { point: Vec3::ZERO, z: None, x: None } }
@@ -27,7 +27,7 @@ fn joint(id: u64, a: u64, b: u64) -> Joint {
 }
 
 fn occurrence(id: u64) -> Occurrence {
-    Occurrence { id, component: id, parent: 0, name: format!("Occurrence{id}"), transform: IDENTITY, grounded: false }
+    Occurrence { id, component: id, parent: 0, name: format!("Occurrence{id}"), transform: Transform::IDENTITY, grounded: false }
 }
 
 fn documents() -> (Document, Document) {

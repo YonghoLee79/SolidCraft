@@ -249,7 +249,7 @@ fn contribution_linked_paste_uses_the_pointer_and_pending_numeric_move() {
     assert!(super::paste(&mut h.app, Some(at)));
     h.frames(3);
     let path = h.app.tree.occurrence_move.as_ref().unwrap().path.clone();
-    let initial = solidcraft_engine::doc::apply_point(&h.app.session.occurrence_placement(&path).unwrap().world, Vec3::ZERO);
+    let initial = h.app.session.occurrence_placement(&path).unwrap().world.point(Vec3::ZERO);
     assert!((initial - pointed).len() < 1e-5, "{initial:?}");
     assert_eq!(h.app.session.undo.len(), undo + 1);
     let camera = h.app.cam;
@@ -260,7 +260,7 @@ fn contribution_linked_paste_uses_the_pointer_and_pending_numeric_move() {
     h.step(&json!({"text":"12"})).unwrap();
     h.step(&json!({"key":"Enter"})).unwrap();
     h.frames(3);
-    let moved = solidcraft_engine::doc::apply_point(&h.app.session.occurrence_placement(&path).unwrap().world, Vec3::ZERO);
+    let moved = h.app.session.occurrence_placement(&path).unwrap().world.point(Vec3::ZERO);
     assert!(moved.x > initial.x + 10., "numeric move must retain the pasted occurrence: {initial:?} -> {moved:?}");
     assert_eq!(h.app.cam, camera, "numeric editing does not move the camera");
     let movement = h.app.tree.occurrence_move.as_ref().unwrap();
@@ -276,7 +276,7 @@ fn contribution_linked_paste_uses_the_pointer_and_pending_numeric_move() {
 
 #[test]
 fn contribution_paste_pointer_uses_parent_coordinates_and_safe_fallbacks() {
-    use solidcraft_engine::{doc, geom::Vec3};
+    use solidcraft_engine::geom::Vec3;
     let mut h = crate::scenario::Harness::new();
     let parent = h.app.run("component.create", json!({"name":"Parent"})).unwrap();
     h.app
@@ -290,7 +290,7 @@ fn contribution_paste_pointer_uses_parent_coordinates_and_safe_fallbacks() {
     assert_eq!(zero, [0.; 3]);
     assert_eq!(super::paste_placement(&h.app, Some(egui::pos2(-100., -100.))).1, [0.; 3]);
     let frame = h.app.session.occurrence_placement(&path).unwrap().world;
-    let target = doc::apply_point(&frame, Vec3::new(5., 7., 0.));
+    let target = frame.point(Vec3::new(5., 7., 0.));
     h.app.cam.target = target;
     h.app.cam.distance = 100.;
     h.frames(2);

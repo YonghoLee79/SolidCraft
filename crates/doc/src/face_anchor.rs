@@ -4,7 +4,7 @@ use crate::config::ConfigFaceTarget;
 use crate::{DocError, Document, EmbossFace, FeatureKind, Model, ModelBody, ModelState, PlaneRef, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use solidcraft_geom::Plane;
+use solidcraft_geom::{Plane, Transform};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,7 +55,7 @@ impl FaceAnchor {
         }
         Ok(())
     }
-    pub fn author_frame(&self, doc: &Document, author: u64) -> Result<crate::Mat> {
+    pub fn author_frame(&self, doc: &Document, author: u64) -> Result<Transform> {
         if author != 0 && self.author_path.is_empty() {
             return Err(DocError::Invalid(
                 "attached sketch requires an explicit author occurrence path; activate a placement or choose a fixed plane".into(),
@@ -63,20 +63,19 @@ impl FaceAnchor {
         }
         EmbossFace::component_frame(doc, author, &self.author_path)
     }
-    pub fn source_to_author(&self, doc: &Document, author: u64, body: &ModelBody) -> Result<crate::Mat> {
+    pub fn source_to_author(&self, doc: &Document, author: u64, body: &ModelBody) -> Result<Transform> {
         self.validate()?;
         if doc.model_body_component(body) != self.component {
             return Err(DocError::Invalid("attached face's component ownership changed; reattach explicitly".into()));
         }
-        let inverse = crate::mat_inverse(&self.author_frame(doc, author)?)
-            .ok_or_else(|| DocError::Invalid("attached sketch author frame is invalid".into()))?;
+        let inverse = self.author_frame(doc, author)?.inverse().ok_or_else(|| DocError::Invalid("attached sketch author frame is invalid".into()))?;
         let source = EmbossFace {
             body: self.target.body.clone().into(),
             at: crate::FacePick(self.target.point),
             path: self.path.clone(),
             author_path: self.author_path.clone(),
         };
-        Ok(crate::mat_mul(&inverse, &source.body_frame(doc, body)?))
+        Ok(inverse * source.body_frame(doc, body)?)
     }
 }
 
@@ -151,8 +150,8 @@ pub enum FaceAttachmentStatus {
     Lost { message: String, repair_plane: Option<Plane> },
 }
 
-fn map_plane(matrix: &crate::Mat, plane: &Plane) -> Result<Plane> {
-    Plane::new(crate::apply_point(matrix, plane.origin), crate::apply_vector(matrix, plane.x), crate::apply_vector(matrix, plane.y))
+fn map_plane(matrix: &Transform, plane: &Plane) -> Result<Plane> {
+    Plane::new(matrix.point(plane.origin), matrix.vector(plane.x), matrix.vector(plane.y))
         .ok_or_else(|| DocError::Invalid("attached plane transform is degenerate".into()))
 }
 
@@ -676,7 +675,7 @@ mod tests {
         warm.evaluate(&doc);
         let initial = warm.state();
         let before = initial.bodies.iter().find(|body| body.feature == boss).unwrap().mesh().bounds();
-        let mut offset = crate::IDENTITY;
+        let mut offset = Transform::IDENTITY;
         offset[3][0] = 5.;
         offset[3][2] = 3.;
         doc.body_offsets.insert(source_name, offset);

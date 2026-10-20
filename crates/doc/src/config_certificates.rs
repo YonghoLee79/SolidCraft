@@ -594,12 +594,12 @@ impl Document {
         } else if !name.starts_with(&format!("F{origin}:")) {
             name = format!("F{origin}:face:{index}");
         }
-        let inverse = crate::mat_inverse(&body.source_transform).ok_or_else(|| DocError::Invalid("invalid definition placement".into()))?;
+        let inverse = body.source_transform.inverse().ok_or_else(|| DocError::Invalid("invalid definition placement".into()))?;
         Ok(crate::config::ConfigFaceTarget {
             body: body.definition_name().into(),
             origin_feature: origin,
             name,
-            point: crate::apply_point(&inverse, point),
+            point: inverse.point(point),
             certificate,
         })
     }
@@ -677,8 +677,8 @@ pub fn lineage_frame(body: &ModelBody, plane: &solidcraft_geom::Plane) -> Option
     use solidcraft_geom::Vec3;
     let n = plane.normal();
     let m = &body.source_transform;
-    let origin = crate::apply_point(m, Vec3::ZERO);
-    let axis = [Vec3::X, Vec3::Y, Vec3::Z].into_iter().filter_map(|a| crate::apply_vector(m, a).normalized()).find(|a| a.dot(n).abs() < 0.6)?;
+    let origin = m.point(Vec3::ZERO);
+    let axis = [Vec3::X, Vec3::Y, Vec3::Z].into_iter().filter_map(|a| m.vector(a).normalized()).find(|a| a.dot(n).abs() < 0.6)?;
     let x = axis - n * axis.dot(n);
     let origin = origin - n * (origin - plane.origin).dot(n);
     solidcraft_geom::Plane::new(origin, x, n.cross(x))
@@ -726,7 +726,7 @@ impl Document {
         let full = names.faces.get(index)?;
         let stem = crate::naming::strip_piece(full);
         let origin = stem.strip_prefix('F')?.split_once(':')?.0.parse::<u64>().ok()?;
-        let inverse = crate::mat_inverse(&body.source_transform)?;
+        let inverse = body.source_transform.inverse()?;
         let mut candidates = vec![stem];
         if full != stem {
             candidates.push(full);
@@ -736,7 +736,7 @@ impl Document {
                 body: body.definition_name().into(),
                 origin_feature: origin,
                 name: name.to_string(),
-                point: crate::apply_point(&inverse, point),
+                point: inverse.point(point),
                 certificate: Some(FaceCertificate::Lineage),
             };
             self.configuration_face_indices(body, &target).ok()?.contains(&index).then_some(target)

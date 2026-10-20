@@ -8,7 +8,7 @@
 use solidcraft_geom::{Vec2, Vec3};
 
 use super::SheetBody;
-use crate::{ModelBody, ModelState, apply_point, mat_inverse};
+use crate::{ModelBody, ModelState};
 
 /// The share of a face's sample points that must agree on a name for the face to take it.
 const AGREE: f64 = 0.8;
@@ -31,8 +31,8 @@ impl SheetBody {
         for (pi, region) in self.panels() {
             let Some(i) = pi else { continue };
             let Some(f) = self.flanges.get(i) else { continue };
-            let Some(inverse) = mat_inverse(&self.world(pi)) else { continue };
-            let q = apply_point(&inverse, p);
+            let Some(inverse) = self.world(pi).inverse() else { continue };
+            let q = inverse.point(p);
             if q.z < -tol || q.z > self.t + tol {
                 continue;
             }
@@ -65,8 +65,8 @@ impl SheetBody {
         let tol = tol.min(self.t * 0.25);
         for (i, f) in self.flanges.iter().enumerate() {
             let Some((world, o, d, start, toward)) = self.bend_frame(f) else { continue };
-            let Some(inverse) = mat_inverse(&world) else { continue };
-            let q = apply_point(&inverse, p) - o;
+            let Some(inverse) = world.inverse() else { continue };
+            let q = inverse.point(p) - o;
             let u = q.dot(d);
             let (u0, u1) = self.zone_span(f);
             if u < u0 - tol || u > u1 + tol {

@@ -52,10 +52,7 @@ pub mod render_settings;
 pub use project3d::iso_grid;
 pub mod sheet;
 
-pub use assembly::{
-    IDENTITY, MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS, Mat, Occurrence, apply_point, apply_vector, is_identity, map_point_expr, mat_inverse, mat_mul,
-    rigid,
-};
+pub use assembly::{MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS, Occurrence, map_point_expr};
 pub use document::*;
 pub use eval::{
     EdgeRef, FeatureResult, Model, ModelBody, ModelState, PlacedBodies, RevolveExtent, SavedModel, SolvedSketch, ThreadInfo, curve_pick_error,

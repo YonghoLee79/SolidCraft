@@ -247,7 +247,7 @@ fn actual_nested_second_placement_face_pick_keeps_target_and_author_paths() {
 
 #[test]
 fn nested_anchor_saved_fixed_conversion_preserves_rotated_second_author_plane() {
-    use solidcraft_engine::doc::{EmbossFace, apply_point, apply_vector};
+    use solidcraft_engine::doc::EmbossFace;
     use solidcraft_engine::geom::Plane;
     use solidcraft_engine::geom::Vec3;
     let mut h = Harness::new();
@@ -309,8 +309,7 @@ fn nested_anchor_saved_fixed_conversion_preserves_rotated_second_author_plane() 
     // first placement. Verify that local plane at the specifically chosen
     // second placement, rather than treating the primary entry as that path.
     let frame = EmbossFace::component_frame(&h.app.session.placed_document(), component, &[second]).unwrap();
-    let selected_plane =
-        |local: Plane| Plane::new(apply_point(&frame, local.origin), apply_vector(&frame, local.x), apply_vector(&frame, local.y)).unwrap();
+    let selected_plane = |local: Plane| Plane::new(frame.point(local.origin), frame.vector(local.x), frame.vector(local.y)).unwrap();
     let shown = selected_plane(preview.after.sketch(id).unwrap().plane);
     assert!(
         shown.origin.dist(expected.origin) < 1e-7,

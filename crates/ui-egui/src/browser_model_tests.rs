@@ -29,7 +29,7 @@ fn pending_and_reverted_moves_replace_cached_transforms() {
     h.app.run("occurrence.move", json!({"occurrence":occurrence,"translate":[20,0,0],"capture":false})).unwrap();
     let moved = super::model_placement(&mut h.app, &[occurrence]).unwrap();
     assert!(!Arc::ptr_eq(&first, &moved));
-    assert!((solidcraft_engine::doc::apply_point(&moved.world, solidcraft_engine::geom::Vec3::ZERO).x - 20.0).abs() < 1e-9);
+    assert!((moved.world.point(solidcraft_engine::geom::Vec3::ZERO).x - 20.0).abs() < 1e-9);
     h.app.run("component.revert_position", json!({"occurrences":[occurrence]})).unwrap();
     let reverted = super::model_placement(&mut h.app, &[occurrence]).unwrap();
     assert!(!Arc::ptr_eq(&moved, &reverted));

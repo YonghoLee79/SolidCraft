@@ -4,9 +4,9 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
+use solidcraft_doc::Document;
 use solidcraft_doc::joints;
-use solidcraft_doc::{Document, IDENTITY, Mat, apply_point, mat_mul};
-use solidcraft_geom::{Aabb3, Bvh, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Bvh, Mesh, Transform, Vec3};
 
 use crate::params::bad;
 use crate::{Result, Session};
@@ -24,7 +24,7 @@ fn limit(message: &str) -> crate::EngineError {
 #[derive(Clone)]
 struct CachedBody {
     path: Vec<u64>,
-    offset: Mat,
+    offset: Transform,
     mesh: Arc<Mesh>,
     size: f64,
     /// How far its mesh may stray from its faces: 0 when every face is flat (the mesh is the
@@ -134,7 +134,7 @@ impl ContactGeometry {
                 };
                 out.bodies.push(CachedBody {
                     path: path.clone(),
-                    offset: s.doc.model_body_offset(body).copied().unwrap_or(IDENTITY),
+                    offset: s.doc.model_body_offset(body).copied().unwrap_or(Transform::IDENTITY),
                     mesh,
                     size: body.body.size(),
                     chord,
@@ -185,17 +185,17 @@ impl ContactGeometry {
         self.pairs.iter().map(|(_, _, a, b)| (a.0.min(b.0), a.0.max(b.0))).collect::<BTreeSet<_>>().len()
     }
 
-    fn frame(body: &CachedBody, s: &Session) -> Result<Mat> {
+    fn frame(body: &CachedBody, s: &Session) -> Result<Transform> {
         Self::frame_in(body, &s.doc)
     }
 
-    fn frame_in(body: &CachedBody, doc: &Document) -> Result<Mat> {
-        let mut frame = IDENTITY;
+    fn frame_in(body: &CachedBody, doc: &Document) -> Result<Transform> {
+        let mut frame = Transform::IDENTITY;
         for id in &body.path {
             let occurrence = doc.occurrences.iter().find(|o| o.id == *id).ok_or_else(|| limit("contact occurrence disappeared"))?;
-            frame = mat_mul(&frame, &occurrence.transform);
+            frame = frame * occurrence.transform;
         }
-        Ok(mat_mul(&frame, &body.offset))
+        Ok(frame * body.offset)
     }
 
     fn bounds(&self, s: &Session) -> Result<Aabb3> {
@@ -203,7 +203,7 @@ impl ContactGeometry {
         for body in &self.bodies {
             let frame = Self::frame(body, s)?;
             for point in &body.mesh.positions {
-                bounds.add(apply_point(&frame, *point));
+                bounds.add(frame.point(*point));
             }
         }
         Ok(bounds)
@@ -228,7 +228,7 @@ impl ContactGeometry {
                     for session in [start, end] {
                         for origin in [&joint.a, &joint.b] {
                             let frame = session.doc.origin_world(&state, origin)?;
-                            let pivot = apply_point(&frame, Vec3::ZERO);
+                            let pivot = frame.point(Vec3::ZERO);
                             let far = Vec3::new(
                                 (bounds.min.x - pivot.x).abs().max((bounds.max.x - pivot.x).abs()),
                                 (bounds.min.y - pivot.y).abs().max((bounds.max.y - pivot.y).abs()),
@@ -259,7 +259,7 @@ impl ContactGeometry {
             .iter()
             .map(|body| {
                 let frame = Self::frame(body, s)?;
-                let positions = body.mesh.positions.iter().map(|p| apply_point(&frame, *p)).collect();
+                let positions = body.mesh.positions.iter().map(|p| frame.point(*p)).collect();
                 Ok(Mesh { positions, triangles: body.mesh.triangles.clone(), ..Mesh::default() })
             })
             .collect()
@@ -388,7 +388,7 @@ impl ContactGeometry {
             for c in 0..8 {
                 let pick = |bit: usize, lo: f64, hi: f64| if c & bit == 0 { lo } else { hi };
                 let corner = Vec3::new(pick(1, local.min.x, local.max.x), pick(2, local.min.y, local.max.y), pick(4, local.min.z, local.max.z));
-                most = most.max(apply_point(&fa, corner).dist(apply_point(&fb, corner)));
+                most = most.max(fa.point(corner).dist(fb.point(corner)));
             }
         }
         Ok(most)

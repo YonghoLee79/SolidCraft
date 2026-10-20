@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 use truck_modeling::{self as mt};
 
 use crate::blend::{edge_mid, too_large, unsupported, vtx};
@@ -184,7 +184,7 @@ fn round_vertex(cur: &Body, at: Vec3, r: f64) -> Result<Body> {
     let (g0, g1, g2) = (gen_(m1, m2, m0)? * reach, gen_(m2, m0, m1)? * reach, gen_(m0, m1, m2)? * reach);
     let unit = crate::build::box_solid(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0))?;
     let m = [[g0.x, g0.y, g0.z, 0.0], [g1.x, g1.y, g1.z, 0.0], [g2.x, g2.y, g2.z, 0.0], [ball.c.x, ball.c.y, ball.c.z, 1.0]];
-    let cutter = crate::ops::transform_matrix(&unit, m)?;
+    let cutter = crate::ops::transform_matrix(&unit, Transform(m))?;
     let notched = crate::ops::boolean(cur, &cutter, BoolOp::Cut)?.ok_or_else(|| unsupported("a corner this small"))?;
     // The cut splits a curved face along the trace of its plane (the whole way across, not just
     // where the plane cuts): the pieces are one face again.

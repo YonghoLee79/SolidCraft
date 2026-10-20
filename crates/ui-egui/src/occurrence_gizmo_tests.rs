@@ -4,7 +4,7 @@ use crate::{
     scenario::Harness,
 };
 use serde_json::json;
-use solidcraft_engine::{Sel, doc, geom::Vec3};
+use solidcraft_engine::{Sel, geom::Vec3};
 
 #[test]
 fn occurrence_gizmo_drag_matches_numeric_input_and_preserves_joints_capture_and_undo() {
@@ -22,8 +22,8 @@ fn occurrence_gizmo_drag_matches_numeric_input_and_preserves_joints_capture_and_
         .unwrap();
     let joints = serde_json::to_value(&h.app.session.doc.assembly.joints).unwrap();
     let original = h.app.session.doc.to_json();
-    let initial = doc::apply_point(&h.app.session.occurrence_placement(&[first]).unwrap().world, Vec3::ZERO);
-    let peer = doc::apply_point(&h.app.session.occurrence_placement(&[second]).unwrap().world, Vec3::ZERO);
+    let initial = h.app.session.occurrence_placement(&[first]).unwrap().world.point(Vec3::ZERO);
+    let peer = h.app.session.occurrence_placement(&[second]).unwrap().world.point(Vec3::ZERO);
     h.app.cam.target = initial;
     h.app.cam.distance = 100.;
     h.frames(3);
@@ -36,11 +36,11 @@ fn occurrence_gizmo_drag_matches_numeric_input_and_preserves_joints_capture_and_
     let end = start + Vec3::X * 12.;
     h.step(&json!({"drag":[{"world":[start.x,start.y,start.z]},{"world":[end.x,end.y,end.z]}],"steps":12})).unwrap();
     h.frames(3);
-    let arrow = doc::apply_point(&h.app.session.occurrence_placement(&[first]).unwrap().world, Vec3::ZERO);
+    let arrow = h.app.session.occurrence_placement(&[first]).unwrap().world.point(Vec3::ZERO);
     assert!(arrow.x > initial.x + 1., "visible arrow must actually move this occurrence: {initial:?}->{arrow:?}");
     assert_eq!(h.app.cam, camera);
     assert_eq!(h.app.session.doc.to_json(), original, "drag is a pending position");
-    assert_eq!(doc::apply_point(&h.app.session.occurrence_placement(&[second]).unwrap().world, Vec3::ZERO), peer);
+    assert_eq!(h.app.session.occurrence_placement(&[second]).unwrap().world.point(Vec3::ZERO), peer);
     assert_eq!(serde_json::to_value(&h.app.session.doc.assembly.joints).unwrap(), joints);
     h.app.run("component.revert_position", json!({"occurrences":[first]})).unwrap();
     h.app.tree.occurrence_move.as_mut().unwrap().translate = [0.; 3];
@@ -52,7 +52,7 @@ fn occurrence_gizmo_drag_matches_numeric_input_and_preserves_joints_capture_and_
     h.step(&json!({"text":format!("{}",arrow.x-initial.x)})).unwrap();
     h.step(&json!({"key":"Enter"})).unwrap();
     h.frames(3);
-    let numeric = doc::apply_point(&h.app.session.occurrence_placement(&[first]).unwrap().world, Vec3::ZERO);
+    let numeric = h.app.session.occurrence_placement(&[first]).unwrap().world.point(Vec3::ZERO);
     assert!((numeric - arrow).len() < 1e-6, "numeric and arrow routes must agree: {numeric:?}, {arrow:?}");
     let undo = h.app.session.undo.len();
     h.app.run("component.capture_position", json!({})).unwrap();
@@ -61,7 +61,7 @@ fn occurrence_gizmo_drag_matches_numeric_input_and_preserves_joints_capture_and_
     h.app.run("edit.undo", json!({})).unwrap();
     assert_eq!(h.app.session.doc.to_json(), original);
     h.app.run("edit.redo", json!({})).unwrap();
-    assert!((doc::apply_point(&h.app.session.occurrence_placement(&[first]).unwrap().world, Vec3::ZERO) - numeric).len() < 1e-6);
+    assert!((h.app.session.occurrence_placement(&[first]).unwrap().world.point(Vec3::ZERO) - numeric).len() < 1e-6);
     assert_eq!(serde_json::to_value(&h.app.session.doc.assembly.joints).unwrap(), joints);
     assert!(!h.app.session.selection.contains(&Sel::Occurrence { path: vec![second] }));
 }

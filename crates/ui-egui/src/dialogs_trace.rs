@@ -5,8 +5,8 @@
 use crate::ui_kit::{choice_row, expr_row, text_row};
 use egui::{Pos2, RichText, Stroke};
 use serde_json::{Value, json};
-use solidcraft_engine::doc::{IDENTITY, Mat, apply_point, mat_inverse, mat_mul};
-use solidcraft_engine::geom::Vec3;
+
+use solidcraft_engine::geom::{Transform, Vec3};
 use solidcraft_engine::{Sel, Session};
 
 use super::{Hover, body_of, capital, movable, num, pt, sel_items, snap_of};
@@ -32,7 +32,7 @@ pub struct TraceForm {
     pub shown: Option<(String, Result<Value, String>)>,
     /// The picked part's frame as shown and the inverse of its placement: the traced path (where
     /// the parts are placed) is drawn moved with the part, through the picked point.
-    pub view: Option<(Mat, Mat)>,
+    pub view: Option<(Transform, Transform)>,
 }
 
 /// The dialog on a joint (an index into the design's joints), from its value now over a turn.
@@ -57,13 +57,13 @@ fn path(s: &Session, sel: &Sel) -> Option<Vec<u64>> {
 
 /// The pick: its occurrence path, the point where the part shows, and the part's frame as shown
 /// and as placed (they differ under an exploded view or a move not captured yet).
-pub(super) fn placement(s: &Session, inputs: &[SelInput]) -> Option<(Vec<u64>, Vec3, Mat, Mat)> {
+pub(super) fn placement(s: &Session, inputs: &[SelInput]) -> Option<(Vec<u64>, Vec3, Transform, Transform)> {
     let pick = sel_items(inputs, 0).first()?;
     let (snap, path) = (snap_of(s, pick)?, path(s, pick)?);
     let world = |shown: bool| {
-        path.iter().try_fold(IDENTITY, |m, id| {
+        path.iter().try_fold(Transform::IDENTITY, |m, id| {
             let o = s.doc.occurrences.iter().find(|o| o.id == *id)?;
-            Some(mat_mul(&m, s.pending_moves.get(id).filter(|_| shown).unwrap_or(&o.transform)))
+            Some(m * s.pending_moves.get(id).filter(|_| shown).unwrap_or(&o.transform))
         })
     };
     let (shown, placed) = (world(true)?, world(false)?);
@@ -92,7 +92,7 @@ pub fn params(s: &Session, f: &TraceForm, inputs: &[SelInput]) -> Result<Value, 
 pub fn picked_point(s: &Session, inputs: &[SelInput]) -> Result<Value, String> {
     let (path, at, shown, placed) = placement(s, inputs).ok_or("select a point on a component")?;
     // The point starts where the part is placed, not where it may be shown.
-    let at = mat_inverse(&shown).map(|m| apply_point(&placed, apply_point(&m, at))).ok_or("select a point on a component")?;
+    let at = shown.inverse().map(|m| placed.point(m.point(at))).ok_or("select a point on a component")?;
     let occurrence = if path.is_empty() { json!(0) } else { json!(path) };
     Ok(json!({"occurrence": occurrence, "point": pt(at)}))
 }
@@ -164,7 +164,7 @@ pub fn rows(app: &mut crate::SolveApp, ui: &mut egui::Ui, f: &mut TraceForm, inp
     if f.shown.as_ref().is_none_or(|(k, _)| *k != key) {
         let r = p.and_then(|p| s.scratch().execute("motion.trace", &p).map_err(|e| e.to_string()));
         f.shown = Some((key, r));
-        f.view = placement(s, inputs).and_then(|(_, _, shown, placed)| Some((shown, mat_inverse(&placed)?)));
+        f.view = placement(s, inputs).and_then(|(_, _, shown, placed)| Some((shown, placed.inverse()?)));
     }
     if let Some((_, r)) = &f.shown {
         let (text, colour) = match r {
@@ -185,7 +185,7 @@ pub fn rows(app: &mut crate::SolveApp, ui: &mut egui::Ui, f: &mut TraceForm, inp
 pub fn overlay(painter: &egui::Painter, proj: &Proj, f: &TraceForm) {
     let Some((_, Ok(v))) = &f.shown else { return };
     let at = |p: &Value| p.as_array().and_then(|a| Some(Vec3::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?)));
-    let shown = |p: Vec3| f.view.map_or(p, |(shown, inverse)| apply_point(&shown, apply_point(&inverse, p)));
+    let shown = |p: Vec3| f.view.map_or(p, |(shown, inverse)| shown.point(inverse.point(p)));
     let pts: Vec<Pos2> = v["points"].as_array().into_iter().flatten().filter_map(at).map(shown).filter_map(|p| proj.to_screen(p)).collect();
     let t = Tokens::get();
     if let Some(first) = pts.first() {

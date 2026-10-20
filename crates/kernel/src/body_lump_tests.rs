@@ -1,5 +1,6 @@
 use super::*;
 use crate::{BoolOp, boolean, box_solid, measure, sphere, step_export, step_import};
+use solidcraft_geom::Transform;
 
 fn cube(half: f64) -> Body {
     box_solid(Vec3::new(-half, -half, -half), Vec3::new(half, half, half)).unwrap()
@@ -217,7 +218,7 @@ fn translated_and_scaled_nested_voids_keep_material_membership() {
         let origin = Vec3::new(1234.0, -987.0, 765.0);
         let transformed = crate::transform_matrix(
             &body,
-            [[scale, 0.0, 0.0, 0.0], [0.0, scale, 0.0, 0.0], [0.0, 0.0, scale, 0.0], [origin.x, origin.y, origin.z, 1.0]],
+            Transform([[scale, 0.0, 0.0, 0.0], [0.0, scale, 0.0, 0.0], [0.0, 0.0, scale, 0.0], [origin.x, origin.y, origin.z, 1.0]]),
         )
         .unwrap();
         let lumps = transformed

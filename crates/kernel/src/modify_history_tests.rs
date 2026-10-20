@@ -2,7 +2,7 @@
 //! face and edge origin checked against the geometry of the operands (in tests only: the history
 //! itself is recorded, never sampled), and the exact origins asserted where the outcome is known.
 
-use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Plane, Region2, Transform, Vec2, Vec3};
 
 use crate::body::Body;
 use crate::boolean_record::tests::{self, Reach, changes, to_edge, to_face};
@@ -389,7 +389,7 @@ fn thicken_offsets_the_surface() {
 fn mirrored_copy_keeps_every_face_and_edge() {
     let b = ell();
     let m = [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [100.0, 0.0, 0.0, 1.0]];
-    let r = crate::transform_matrix(&b, m).unwrap();
+    let r = crate::transform_matrix(&b, Transform(m)).unwrap();
     let h = r.history().unwrap();
     h.check(&r, &[&b]).unwrap();
     // Each edge is the mirror image of the one it says it is.

@@ -1,6 +1,7 @@
 use super::*;
 use crate::body::{p3, v3};
 use mt::builder;
+use solidcraft_geom::Transform;
 
 fn assert_topology(source: &Body, placed: &Body, matrix: [[f64; 4]; 4]) {
     use std::collections::HashMap;
@@ -79,7 +80,7 @@ fn periodic_step_seam_survives_identity_rotation_and_translation() {
         [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [10., 10., 0., 1.]],
         [[0., 1., 0., 0.], [-1., 0., 0., 0.], [0., 0., 1., 0.], [10., 10., 30., 1.]],
     ] {
-        let moved = transform_matrix(body, matrix).unwrap();
+        let moved = transform_matrix(body, Transform(matrix)).unwrap();
         assert_topology(body, &moved, matrix);
         assert_eq!(moved.solid.face_iter().count(), source_faces);
         assert_eq!(moved.solid.vertex_iter().count(), source_vertices.len());

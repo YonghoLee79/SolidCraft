@@ -1,6 +1,6 @@
 use crate::Session;
 use serde_json::{Value, json};
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Transform, Vec3};
 use solidcraft_sketch::WireSpace;
 
 fn run(s: &mut Session, cmd: &str, params: Value) -> Value {
@@ -221,11 +221,11 @@ fn wire_frame_wide_owner_graph_has_bounded_indexed_traversal() {
             component: 10_000 + i,
             parent: 0,
             name: format!("Sibling{i}"),
-            transform: solidcraft_doc::IDENTITY,
+            transform: Transform::IDENTITY,
             grounded: false,
         });
     }
-    assert_eq!(super::inverse_owner_frame(&s, &json!({"sketch":target}), "sketch.point3d").unwrap(), solidcraft_doc::IDENTITY);
+    assert_eq!(super::inverse_owner_frame(&s, &json!({"sketch":target}), "sketch.point3d").unwrap(), Transform::IDENTITY);
 }
 
 #[test]
