@@ -46,6 +46,9 @@ pub struct NameCell {
     legacy: Arc<OnceLock<Arc<Vec<String>>>>,
     /// The body this one is a moved copy of (its legacy names are that body's).
     copy_of: Option<Arc<ModelBody>>,
+    /// How deep the chain of features that named it is, for names taken from a saved model
+    /// (which has no origin): see [`NameCell::depth`].
+    saved_depth: Option<usize>,
 }
 
 impl NameCell {
@@ -68,6 +71,19 @@ impl NameCell {
     /// component, a placed instance) does not name every face of every moved body up front.
     pub fn same(body: &ModelBody) -> Self {
         NameCell { copy_of: Some(Arc::new(body.clone())), ..NameCell::default() }
+    }
+    /// Names a saved model kept (worked out when it was saved), at `depth` in the chain of
+    /// features that named them.
+    pub(crate) fn saved(names: Arc<Names>, depth: Option<usize>) -> Self {
+        NameCell { saved_depth: depth, ..Self::shared(names) }
+    }
+    /// How deep the chain of features that named the body is (`None`: not made by a feature).
+    pub(crate) fn depth(&self) -> Option<usize> {
+        self.origin.as_ref().map(|o| o.depth).or(self.saved_depth)
+    }
+    /// Identity of the names: clones of a cell share them.
+    pub(crate) fn id(&self) -> usize {
+        Arc::as_ptr(&self.names) as usize
     }
     fn shared(names: Arc<Names>) -> Self {
         let cell = OnceLock::new();

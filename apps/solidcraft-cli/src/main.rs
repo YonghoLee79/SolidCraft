@@ -13,6 +13,7 @@
 //! solidcraft-cli recipe <recipe.json>                         translate an oracle recipe to a script
 //! solidcraft-cli oracle <case-dir>...                         replay recipes and compare with expected.json
 //! solidcraft-cli mcp [--in design|script] [--connect HOST:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
+//!                    [--param-check off|warn|strict]
 //!                                                             MCP server on stdio (docs/mcp.md)
 //! solidcraft-cli licences                                     SolidCraft's licence and the third-party licences
 //! solidcraft-cli icon --out F.png|F.ico [--size N]             the app icon (packaging; drawn, not a file)
@@ -71,6 +72,7 @@ const USAGE: &str = "usage:
   solidcraft-cli oracle <case-dir>... [--json]
   solidcraft-cli fuzz [--from N] [--count N] [--jobs J] [--timeout S] [--steps N] [--minimise] [--out DIR] [--report FILE]
   solidcraft-cli mcp [--in design.solidcraft|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
+                     [--param-check off|warn|strict]
   solidcraft-cli crashes [list [--json] | show <id> | replay <id> | dir | clear [<id>]]
   solidcraft-cli licences
   solidcraft-cli gpu [--policy auto|hardware|software|cpu]
@@ -154,7 +156,14 @@ pub fn read_json(path: &str) -> Result<Value, String> {
 
 /// A session from a design file, a STEP/3MF/STL file, a command script, or an oracle recipe.
 pub fn load(path: &str) -> Result<Session, String> {
+    load_checked(path, solidcraft_engine::schema::ParamCheck::Off)
+}
+
+/// `load`, with scripts and recipes run at the parameter-check level `check`, which the
+/// session keeps.
+fn load_checked(path: &str, check: solidcraft_engine::schema::ParamCheck) -> Result<Session, String> {
     let mut s = Session::default();
+    s.param_check = check;
     if solidcraft_engine::io::is_step_path(path) || solidcraft_engine::io::is_mesh_path(path) {
         s.execute("doc.open", &json!({"path": path})).map_err(|e| e.to_string())?;
         return Ok(s);
@@ -164,16 +173,22 @@ pub fn load(path: &str) -> Result<Session, String> {
         let doc = solidcraft_engine::io::read_design(&bytes).map_err(|e| format!("{path}: {e}"))?;
         let mut session = Session::new(doc);
         session.path = Some(path.to_owned());
+        session.param_check = check;
         return Ok(session);
     }
     let v: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
     if v.get("format").and_then(Value::as_str).is_some_and(|f| solidcraft_engine::doc::format::version_of(f).is_some()) {
         s.execute("doc.open", &json!({"path": path})).map_err(|e| e.to_string())?;
-    } else if v.get("features").is_some() && v.get("commands").is_none() {
-        let script = recipe::to_script(&v)?;
-        s.run_script(&script).map_err(|e| e.to_string())?;
     } else {
-        s.run_script(&v).map_err(|e| e.to_string())?;
+        let script = if v.get("features").is_some() && v.get("commands").is_none() { recipe::to_script(&v)? } else { v };
+        // Warn level: each step's `param_warnings` as it completes, even when a later step fails
+        // (stderr, so stdout stays the caller's).
+        let mut warn = |step: usize, r: &Value| {
+            for w in r.get("param_warnings").and_then(Value::as_array).into_iter().flatten() {
+                eprintln!("{path}: step {}: {}", step + 1, w.as_str().unwrap_or_default());
+            }
+        };
+        s.run_script_each(&script, &mut warn).map_err(|e| e.to_string())?;
     }
     Ok(s)
 }
@@ -536,6 +551,17 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             eprintln!("solidcraft mcp: the design's folder is left out because {why}; add it with --allow-path if you mean it");
         }
     }
+    // How a headless session treats calls that break a command's parameter contract (docs/mcp.md).
+    let param_check = match flag(args, "--param-check") {
+        None if args.iter().any(|a| a == "--param-check") => return Err("mcp: --param-check wants off, warn or strict".into()),
+        None => solidcraft_engine::schema::ParamCheck::Off,
+        Some(v) => {
+            solidcraft_engine::schema::ParamCheck::parse(v).ok_or_else(|| format!("mcp: --param-check wants off, warn or strict, not `{v}`"))?
+        }
+    };
+    if param_check != solidcraft_engine::schema::ParamCheck::Off && flag(args, "--connect").is_some() {
+        eprintln!("solidcraft mcp: --param-check applies to headless sessions; calls to the app are not checked yet");
+    }
     let backend: Box<dyn solidcraft_mcp::Backend> = match (flag(args, "--connect"), flag(args, "--in")) {
         (Some(_), Some(_)) => return Err("mcp: use either --connect or --in, not both".into()),
         (Some(addr), None) => {
@@ -552,8 +578,12 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             }
             Box::new(remote)
         }
-        (None, Some(path)) => Box::new(solidcraft_mcp::Headless::new(load(path)?)),
-        (None, None) => Box::new(solidcraft_mcp::Headless::default()),
+        (None, Some(path)) => Box::new(solidcraft_mcp::Headless::new(load_checked(path, param_check)?)),
+        (None, None) => {
+            let mut headless = solidcraft_mcp::Headless::default();
+            headless.session.param_check = param_check;
+            Box::new(headless)
+        }
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -624,24 +654,27 @@ pub(crate) fn cmd_bench_open(args: &[String]) -> Result<(), String> {
     let t = std::time::Instant::now();
     // The file as read, held until the timeline has evaluated it (as the import command does).
     let mut read = None;
-    let doc = if step {
+    let (doc, saved) = if step {
         let imported = solidcraft_engine::io::step_import_feature(&bytes, path).map_err(|e| e.to_string())?;
         let mut doc = solidcraft_engine::doc::Document::new(&imported.name);
         doc.add_feature(imported.kind, Some(&imported.name)).map_err(|e| e.to_string())?;
         read = Some(imported.import);
-        doc
+        (doc, None)
     } else {
-        solidcraft_engine::io::read_design(&bytes).map_err(|e| e.to_string())?
+        // As Open reads it: with the model the file keeps.
+        solidcraft_engine::io::read_design_file(path, None::<fn(solidcraft_engine::io::DesignPreview)>).map_err(|e| e.to_string())?
     };
     let parse_ms = t.elapsed().as_secs_f64() * 1000.0;
-    println!("{}", json!({"step": "parse", "ms": parse_ms, "features": doc.features.len()}));
+    println!("{}", json!({"step": "parse", "ms": parse_ms, "features": doc.features.len(), "saved_model": saved.is_some()}));
     if args.iter().any(|a| a == "--parse-only") {
         return Ok(());
     }
     let t = std::time::Instant::now();
-    let s = Session::new(doc);
+    let s = Session::opened(doc, saved.as_ref());
     drop(read);
-    println!("{}", json!({"step": "evaluate", "ms": t.elapsed().as_secs_f64() * 1000.0}));
+    // Taken from the file: nothing evaluated (SOLIDCRAFT_NO_MODEL_CACHE evaluates anyway).
+    let adopted = saved.is_some() && s.model.last_recomputed == 0;
+    println!("{}", json!({"step": "evaluate", "ms": t.elapsed().as_secs_f64() * 1000.0, "adopted": adopted}));
     for r in &s.model.results {
         println!("{}", json!({"step": "feature", "id": r.id, "name": r.name, "ms": r.ms, "error": r.error}));
     }

@@ -86,6 +86,78 @@ thread_local! {
     static ISO: RefCell<Vec<Vec<[Vec3; 2]>>> = const { RefCell::new(Vec::new()) };
     /// Center of Mass has just started: measure everything on the next frame.
     static DEFERRED: Cell<bool> = const { Cell::new(false) };
+    /// A Trim drag: the pieces its path would remove (sketch polylines), and where the path's
+    /// last point is on screen.
+    static TRIM_REMOVED: RefCell<Vec<Vec<Vec2>>> = const { RefCell::new(Vec::new()) };
+    static TRIM_LAST: Cell<Option<Pos2>> = const { Cell::new(None) };
+}
+
+/// Screen distance the pointer moves before a Trim drag's path takes another point.
+const TRIM_STEP_PX: f32 = 4.0;
+
+/// The sketch-plane position under screen position `pos`.
+fn on_sketch_plane(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<Vec2> {
+    let st = app.session.world_state();
+    let ss = st.sketch(active_sketch(app)?)?;
+    let (o, d) = proj.ray(pos);
+    ss.plane.intersect_ray(o, d).map(|w| ss.plane.to_local(w))
+}
+
+/// A press and drag with Trim draws a path from `press`; true when it started one. Each piece
+/// the path crosses is trimmed when it is let go (`sketch.trim.path`).
+pub fn trim_drag_start(app: &mut SolveApp, proj: &Proj, press: Pos2) -> bool {
+    let Some(q) = on_sketch_plane(app, proj, press) else { return false };
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim") else { return false };
+    tool.pts = vec![(q, None)];
+    TRIM_LAST.with(|c| c.set(Some(press)));
+    TRIM_REMOVED.with(|r| r.borrow_mut().clear());
+    true
+}
+
+/// The Trim drag's path reaches `pos`: the pieces it would remove light up (a dry run of the
+/// command the release runs).
+pub fn trim_drag_to(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
+    if TRIM_LAST.with(Cell::get).is_some_and(|last| last.distance(pos) < TRIM_STEP_PX) {
+        return;
+    }
+    let Some(q) = on_sketch_plane(app, proj, pos) else { return };
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim" && !t.pts.is_empty()) else { return };
+    if tool.pts.len() >= TRIM_PATH_MAX {
+        return;
+    }
+    tool.pts.push((q, None));
+    TRIM_LAST.with(|c| c.set(Some(pos)));
+    let points: Vec<[f64; 2]> = tool.pts.iter().map(|p| [p.0.x, p.0.y]).collect();
+    let removed = app
+        .session
+        .execute("sketch.trim.path", &json!({"points": points, "dry_run": true}))
+        .map(|v| {
+            v["removed"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|piece| piece.as_array().into_iter().flatten().filter_map(solidcraft_engine::params::vec2).collect())
+                .collect()
+        })
+        .unwrap_or_default();
+    TRIM_REMOVED.with(|r| *r.borrow_mut() = removed);
+}
+
+/// Most points a Trim drag's path keeps (the command's limit).
+const TRIM_PATH_MAX: usize = 2_000;
+
+/// The Trim drag is let go: trim every piece its path crossed, in one undo step. False when the
+/// path crossed nothing (the caller takes the release as a click).
+pub fn trim_drag_end(app: &mut SolveApp) -> bool {
+    TRIM_LAST.with(|c| c.set(None));
+    let crossed = TRIM_REMOVED.with(|r| !std::mem::take(&mut *r.borrow_mut()).is_empty());
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim") else { return false };
+    let points: Vec<[f64; 2]> = std::mem::take(&mut tool.pts).iter().map(|p| [p.0.x, p.0.y]).collect();
+    if !crossed || points.len() < 2 {
+        return false;
+    }
+    let _ = app.run("sketch.trim.path", json!({"points": points}));
+    true
 }
 
 /// Commands registered on one panel that another panel also lists: the analyses (sketch
@@ -276,7 +348,8 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
         return true;
     }
     let command = id.to_string();
-    app.pick_open(move |app, path| {
+    // Offer the image types first: the default Open filter lists only designs and meshes.
+    app.pick_open_for(&["png", "jpg", "jpeg"], move |app, path| {
         if let Some(path) = path {
             IMAGE.with(|i| *i.borrow_mut() = Some(path));
             app.last_command = solidcraft_engine::find_command(&command).map(|spec| (spec.id.into(), spec.label.into()));
@@ -527,7 +600,7 @@ pub fn hint(id: &str) -> Option<String> {
             "inspect.continuity" => "Continuity: click an edge for its numbers (the button again turns the colours off)",
             "canvas.insert" => "Canvas: click a plane or a planar face where the image's centre goes",
             "canvas.decal" => "Decal: click a planar face where the image's centre goes",
-            "sketch.trim" => "Trim: click the piece of a curve to remove",
+            "sketch.trim" => "Trim: click the piece of a curve to remove, or drag across the pieces to remove",
             "sketch.extend" => "Extend: click a curve near the end to extend",
             "sketch.break" => "Break: click a curve where it should split",
             "sketch.line.midpoint" => "Midpoint line: click the middle, then an end",
@@ -1041,6 +1114,18 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
         crate::tools::paint_sketch_path(&world, 0, painter, proj, Stroke::new(4.5, tk.error));
     }
     let stroke = Stroke::new(1.5, tk.rubber_band);
+    // A Trim drag: the pieces it will remove, then the path drawn so far.
+    if t.cmd == "sketch.trim" && !t.pts.is_empty() {
+        TRIM_REMOVED.with(|r| {
+            for piece in r.borrow().iter() {
+                let line: Vec<Pos2> = piece.iter().filter_map(|p| to(*p)).collect();
+                painter.add(egui::Shape::line(line, Stroke::new(4.0, tk.error.gamma_multiply(0.8))));
+            }
+        });
+        let path: Vec<Pos2> = t.pts.iter().filter_map(|p| to(p.0)).collect();
+        painter.add(egui::Shape::line(path, stroke));
+        return;
+    }
     if let Some((hp, snap)) = &t.hover
         && let Some(sp) = to(*hp)
     {
@@ -1319,3 +1404,7 @@ mod corner_ui_tests;
 #[cfg(test)]
 #[path = "sketch_continuity_tests.rs"]
 mod continuity_tests;
+
+#[cfg(test)]
+#[path = "sketch_trim_drag_ui_tests.rs"]
+mod trim_drag_ui_tests;
