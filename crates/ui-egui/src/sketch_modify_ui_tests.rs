@@ -748,6 +748,32 @@ fn circular_flip_and_center_buttons_apply_and_reopen_the_saved_placement() {
     assert_eq!(params["reversed"], json!(true));
 }
 
+/// Editing a pattern keeps its copies' ids, and a copy turns to its new place. The preview
+/// skipped every curve whose id was already in the sketch, so raising an edited pattern of 5 to
+/// 20 drew 15 of the 19 copies: the 4 that took over the old copies' ids, beside the original,
+/// were missing (#3819).
+#[test]
+fn an_edited_circular_pattern_previews_every_copy_including_the_moved_ones() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.app.run("sketch.circle.center", json!({"center": [-50, 0], "radius": 25, "id": "c1"})).unwrap();
+    let out = h.app.run("sketch.pattern.circular", json!({"entities": ["c1"], "center": "origin", "count": 5})).unwrap();
+    h.settle();
+    assert!(crate::sketch_modify_ui::edit_pattern(&mut h.app, out["pattern"].as_str().unwrap()));
+    for (count, copies) in [("20", 19), ("2", 1), ("7", 6)] {
+        circ(&mut h, count, "360 deg");
+        h.frames(3);
+        let began = std::time::Instant::now();
+        while h.app.preview.busy && began.elapsed() < std::time::Duration::from_secs(60) {
+            h.frames(1);
+        }
+        h.frames(2);
+        assert!(h.app.preview.error.is_none(), "{:?}", h.app.preview.error);
+        let shown: usize = h.app.preview.sketches.iter().map(|s| s.curves.len()).sum();
+        assert_eq!(shown, copies, "quantity {count}: every copy is previewed");
+    }
+}
+
 /// The same lesson as upstream #218: `num` reads a JSON number only, and `sketch.pattern.circular`
 /// falls back to a full turn when `angle` is anything else. An expression has to be evaluated
 /// here or it disappears in silence.

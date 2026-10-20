@@ -16,7 +16,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use serde_json::Value;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::ModelState;
-use solidcraft_engine::geom::{Aabb3, Mesh, Ring, Vec3};
+use solidcraft_engine::geom::{Aabb3, Mesh, Ring, Seg2, Vec2, Vec3};
 
 use crate::SolveApp;
 use crate::gpu::{GpuScene, SceneSlot};
@@ -650,16 +650,24 @@ pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
         .sketches
         .iter()
         .filter_map(|sketch| {
-            let old = before.sketch(sketch.feature);
-            let old_curves = old.into_iter().flat_map(|s| s.sketch.curves.iter().map(|c| c.id.as_str())).collect::<std::collections::HashSet<_>>();
-            let old_points = old.into_iter().flat_map(|s| s.sketch.points.iter().map(|p| p.id.as_str())).collect::<std::collections::HashSet<_>>();
+            let old = before.sketch(sketch.feature).map(|s| &s.sketch);
+            let old_curves = old
+                .into_iter()
+                .flat_map(|s| s.curves.iter().enumerate().map(|(i, c)| (c.id.as_str(), (i, c.construction))))
+                .collect::<std::collections::HashMap<_, _>>();
+            let old_points =
+                old.into_iter().flat_map(|s| s.points.iter().map(|p| (p.id.as_str(), p.pos))).collect::<std::collections::HashMap<_, _>>();
+            // An edit can move a curve or point and keep its id (the copies of an edited
+            // pattern, #3819): only one still where it was is unchanged.
             let indices = sketch
                 .sketch
                 .curves
                 .iter()
                 .enumerate()
                 .filter_map(|(index, curve)| {
-                    let unchanged = old_curves.contains(curve.id.as_str());
+                    let unchanged = old.zip(old_curves.get(curve.id.as_str())).is_some_and(|(old, (i, construction))| {
+                        *construction == curve.construction && same_segs(&old.segs(*i), &sketch.sketch.segs(index))
+                    });
                     if unchanged { None } else { Some(index) }
                 })
                 .collect::<Vec<_>>();
@@ -668,12 +676,22 @@ pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
                 .points
                 .iter()
                 .enumerate()
-                .filter_map(|(i, p)| if old_points.contains(p.id.as_str()) { None } else { Some(i) })
+                .filter_map(|(i, p)| if old_points.get(p.id.as_str()).is_some_and(|old| same_point(*old, p.pos)) { None } else { Some(i) })
                 .collect::<Vec<_>>();
             if indices.is_empty() && points.is_empty() { None } else { Some(SketchPreview { sketch: sketch.clone(), curves: indices, points }) }
         })
         .collect();
     Built { scene: sc, sketches, replaced, error: None, bounds: Aabb3::EMPTY, applied: None, tapered: Vec::new(), stopped: None }
+}
+
+/// The same place, give or take the solver's roundoff (the preview solves the sketch again).
+fn same_point(a: Vec2, b: Vec2) -> bool {
+    a.dist(b) <= 1e-9 * (1.0 + a.len().max(b.len()))
+}
+
+/// The same curve where it was: the segments agree at their ends and along them.
+fn same_segs(a: &[Seg2], b: &[Seg2]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| [0.0, 0.25, 0.5, 0.75, 1.0].iter().all(|t| same_point(a.point_at(*t), b.point_at(*t))))
 }
 
 /// Which of the `nf` faces of `m` are new surface, i.e. not on the old mesh? Each is decided by

@@ -602,8 +602,9 @@ fn fillet_chamfer_corner_preview_draws_curves() {
     h.step(&json!({"click":{"world":[0.0,10.0,0.0]}})).unwrap();
     h.frames(3);
 
-    // The preview should have drawn new curves (fillet arcs at picked corners).
-    h.step(&json!({"until":{"count":{"name":"sketch_preview_curves","value":1}}})).unwrap();
+    // The preview draws the fillet arc and the two lines it trims, which keep their ids but end
+    // at the arc now.
+    h.step(&json!({"until":{"count":{"name":"sketch_preview_curves","value":3}}})).unwrap();
 
     // Verify the sketch itself hasn't been modified yet.
     let sid = h.app.session.active_sketch.unwrap();
@@ -618,8 +619,8 @@ fn fillet_chamfer_corner_preview_draws_curves() {
     h.step(&json!({"click":{"world":[0.0,10.0,0.0]}})).unwrap();
     h.frames(3);
 
-    // Chamfer preview should also produce curves.
-    h.step(&json!({"until":{"count":{"name":"sketch_preview_curves","value":1}}})).unwrap();
+    // Chamfer preview should also produce curves: the chamfer line and the two it trims.
+    h.step(&json!({"until":{"count":{"name":"sketch_preview_curves","value":3}}})).unwrap();
 
     let sk = h.app.session.world_state().sketch(sid).unwrap().sketch.clone();
     assert_eq!(sk.curves.len(), 2, "chamfer preview must not modify the sketch");
