@@ -124,7 +124,7 @@
   "key": "Tab"
  },
  {
-  "widget": "OK"
+  "key": "Enter"
  },
  {
   "expect": {
