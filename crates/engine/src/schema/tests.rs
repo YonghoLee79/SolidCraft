@@ -10,7 +10,7 @@ use super::features::{BoxParams, ExtrudeParams};
 use super::*;
 use crate::Session;
 
-pub(super) fn parse<T: DeserializeOwned>(v: Value) -> Option<T> {
+fn parse<T: DeserializeOwned>(v: Value) -> Option<T> {
     serde_json::from_value(v).ok()
 }
 
@@ -18,7 +18,7 @@ fn box_contract() -> TypedContract<BoxParams> {
     TypedContract::new()
 }
 
-pub(super) fn messages(issues: &[Issue]) -> Vec<String> {
+fn messages(issues: &[Issue]) -> Vec<String> {
     issues.iter().map(|i| i.message.clone()).collect()
 }
 
@@ -445,7 +445,8 @@ fn recorder_lines_have_the_documented_shape() {
 
 /// A contract's input schema lists exactly `fields` (sorted) as its keys, refuses other keys
 /// and declares draft 2020-12. Each module's `schemas_and_the_key_check_agree` calls this for
-/// its contracts, so a new key a handler reads fails there until the contract declares it.
+/// its contracts, so their keys change only on purpose. (Whether the keys are the ones the
+/// handler reads is what the audit run checks.)
 pub(super) fn assert_keys(schema: Schema, fields: &[&str]) {
     let v = schema.as_value();
     assert_eq!(schema_keys(v).into_iter().collect::<Vec<_>>(), fields);
@@ -455,8 +456,10 @@ pub(super) fn assert_keys(schema: Schema, fields: &[&str]) {
 
 /// A call that already fails gets the same error in strict as with the check off, apart from
 /// the missing-key, missing-instead-of-wrong-type, non-object, profile-index, 10,000-item and
-/// over-4-KB messages the report lists. Each module's `strict_keeps_todays_errors` calls this
-/// with its commands' cases; each runs after `sketch_rectangle`.
+/// over-4-KB messages the report lists, and a list of picks where one finds nothing in the
+/// design and a later one is malformed (the handler fails on the first, strict on the second).
+/// Each module's `strict_keeps_todays_errors` calls this with its commands' cases; each runs
+/// after `sketch_rectangle`.
 pub(super) fn assert_strict_keeps_todays_errors(cases: &[(&str, Value)]) {
     for (id, p) in cases {
         let error = |level: ParamCheck| {
@@ -505,4 +508,236 @@ fn long_values_in_handler_messages_are_capped() {
     let r = s.execute("solid.extrude", &json!({"distance": 5, "side": "x".repeat(1_000_000)})).unwrap_or_else(|e| panic!("{e}"));
     let w = r["param_warnings"][0].as_str().unwrap_or_default();
     assert!(w.starts_with("unknown side `xxx") && w.len() <= 4096 + "…".len(), "{} bytes", w.len());
+}
+
+/// The pick types accept what the pick readers accept. (Comparing a type with the helper it
+/// calls only guards against the two drifting apart; the schema comparisons and the handler
+/// tests below are the real checks.)
+#[test]
+fn face_and_edge_refs_match_the_pick_readers() {
+    let long = "f".repeat(513);
+    // 171 three-byte characters are 513 bytes, too long for the reader; the schema's maxLength
+    // counts characters, so it can't say this.
+    let wide = "面".repeat(171);
+    let face_schema = input_schema_for::<FaceRef>();
+    let face_schema = face_schema.as_value();
+    let edge_schema = input_schema_for::<EdgeRef>();
+    let edge_schema = edge_schema.as_value();
+    for v in [
+        json!([1, 2, 3]),
+        json!({"x": 1, "y": 2, "z": 3}),
+        json!({"point": [1, 2, 3]}),
+        json!({"point": {"x": 1, "y": 2, "z": 3}}),
+        json!({"x": "a", "point": [1, 2, 3]}),
+        json!("F3:1"),
+        json!(""),
+        json!(long),
+        json!([1, 2]),
+        json!([1e9, 0, 0]),
+        json!({"point": [1, 2]}),
+        json!({"body": "A", "index": 0}),
+        json!({"body": "A", "index": u64::MAX}),
+        json!({"body": "A", "index": -1}),
+        json!({"body": 5, "index": 0}),
+        json!({"body": "A"}),
+        json!({"point": "x", "body": "A", "index": 2}),
+        json!(null),
+        json!(5),
+        json!(true),
+    ] {
+        let face = crate::cmd::face_ref_form(&v).is_ok();
+        assert_eq!(parse::<FaceRef>(v.clone()).is_some(), face, "{v}");
+        assert_eq!(conforms(face_schema, face_schema, &v), face, "face {v}");
+        let edge = crate::cmd::edge_ref_form(&v).is_ok();
+        assert_eq!(parse::<EdgeRef>(v.clone()).is_some(), edge, "{v}");
+        assert_eq!(conforms(edge_schema, edge_schema, &v), edge, "edge {v}");
+    }
+    // Where the schemas can't follow the readers: a name's cap is in bytes, and an index of
+    // `1.0`, which the reader refuses, is an integer to JSON Schema (`conforms` reads integers
+    // as serde does, so it agrees with the reader here; a standard validator would not).
+    assert!(parse::<FaceRef>(json!(wide)).is_none() && conforms(face_schema, face_schema, &json!(wide)));
+    assert!(parse::<EdgeRef>(json!({"body": "A", "index": 1.0})).is_none());
+    assert_eq!(edge_schema["anyOf"][2]["properties"]["index"]["type"], "integer");
+    assert_eq!(parse::<EdgeRef>(json!({"body": "A", "index": 4})), Some(EdgeRef::Index { body: "A".into(), index: 4 }));
+    assert_eq!(parse::<FaceRef>(json!({"point": [1, 2, 3]})), Some(FaceRef::Point(solidcraft_geom::Vec3::new(1.0, 2.0, 3.0))));
+}
+
+/// The pick lists take 1 to 1000 picks, as `face_points` and `edge_points` do, and so do their
+/// schemas.
+#[test]
+fn pick_lists_match_the_list_readers() {
+    let faces = input_schema_for::<FaceRefs>();
+    let faces = faces.as_value();
+    let edges = input_schema_for::<EdgeRefs>();
+    let edges = edges.as_value();
+    let point = json!([1, 2, 3]);
+    for (v, accepted) in [
+        (json!([point]), true),
+        (json!(vec![point.clone(); 1000]), true),
+        (json!([point, {"point": [4, 5, 6]}]), true),
+        (json!([]), false),
+        (json!(vec![point.clone(); 1001]), false),
+        (json!([point, [1, 2]]), false),
+        (json!(point), false),
+        (json!(null), false),
+        (json!("F1"), false),
+    ] {
+        assert_eq!(parse::<FaceRefs>(v.clone()).is_some(), accepted, "{v}");
+        assert_eq!(conforms(faces, faces, &v), accepted, "faces {v}");
+        assert_eq!(parse::<EdgeRefs>(v.clone()).is_some(), accepted, "{v}");
+        assert_eq!(conforms(edges, edges, &v), accepted, "edges {v}");
+    }
+    // Names are faces, not edges; `{body, index}` is an edge, not a face.
+    let mixed = json!(["F1", {"body": "A", "index": 0}]);
+    assert!(parse::<FaceRefs>(json!(["F1"])).is_some() && parse::<EdgeRefs>(json!(["F1"])).is_none());
+    assert!(parse::<FaceRefs>(mixed.clone()).is_none() && !conforms(faces, faces, &mixed));
+    assert_eq!(parse::<EdgeRefs>(json!([{"body": "A", "index": 0}])).map(|e| e.0.len()), Some(1));
+}
+
+#[test]
+fn sketch_refs_match_sketch_id() {
+    let schema = input_schema_for::<SketchRef>();
+    let schema = schema.as_value();
+    for v in [json!(3), json!(2.5), json!(-1), json!("Profile"), json!(""), json!(null), json!(true), json!([1]), json!({"id": 1})] {
+        let sketch = crate::cmd::sketch_key(Some(&v));
+        assert_eq!(parse::<SketchRef>(v.clone()).map(|s| s.0), sketch, "{v}");
+        assert_eq!(conforms(schema, schema, &v), sketch.is_some(), "{v}");
+    }
+}
+
+/// A contract built from the shared types, as a converted feature command's would be: the pick
+/// keys refuse `null`, as their readers do.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+struct Probe {
+    radius: LengthExpr,
+    #[serde(default, deserialize_with = "present")]
+    #[schemars(with = "FaceRefs")]
+    faces: Option<FaceRefs>,
+    #[serde(default, deserialize_with = "present")]
+    #[schemars(with = "EdgeRefs")]
+    edges: Option<EdgeRefs>,
+    #[serde(default, deserialize_with = "present")]
+    #[schemars(with = "SketchRef")]
+    path_sketch: Option<SketchRef>,
+    #[serde(flatten, deserialize_with = "feature_common")]
+    common: FeatureCommon,
+}
+
+#[test]
+fn feature_common_flattens_into_a_contract() {
+    let c = TypedContract::<Probe>::new();
+    assert_keys(input_schema_for::<Probe>(), &["body_name", "body_names", "edges", "faces", "name", "participants", "path_sketch", "radius"]);
+    let ok = c.check(&json!({"radius": 1, "name": "Round", "body_name": "B", "body_names": ["B", "C"], "participants": "A"}));
+    assert!(ok.is_empty(), "{ok:?}");
+    assert!(c.check(&json!({"radius": 1, "name": null, "participants": null})).is_empty(), "null is absent, as for `str_`");
+    let parsed: Option<Probe> = parse(json!({"radius": 1, "name": "Round", "participants": ["A", "B"]}));
+    assert_eq!(parsed.map(|p| p.common.participants), Some(Some(StringList(vec!["A".into(), "B".into()]))));
+    // Messages and paths name the key, as for the parent's own fields.
+    for (p, path, message) in [
+        (json!({"radius": 1, "name": 5}), "name", "`name` must be text"),
+        (json!({"radius": 1, "body_name": [1]}), "body_name", "`body_name` must be text"),
+        (json!({"radius": 1, "participants": 5}), "participants", "`participants` must be a name or a list of names"),
+        (json!({"radius": 1, "body_names": vec!["x"; 10_001]}), "body_names", "`body_names` must have at most 10000 items"),
+        (json!({"radius": 1, "bodyname": "x"}), "bodyname", "unknown key `bodyname`; did you mean `body_name`?"),
+        (json!({"radius": 1, "faces": null}), "faces", "`faces` must be a list of points or face names"),
+        (json!({"radius": 1, "edges": null}), "edges", "`edges` must be a list"),
+        (json!({"radius": 1, "path_sketch": null}), "path_sketch", "`path_sketch` must be a sketch id or name"),
+        (json!({"name": "x"}), "radius", "`radius` is required"),
+        // The flattened keys are read after the parent's own, whatever their order.
+        (json!({"name": 5}), "radius", "`radius` is required"),
+        (json!({"body_name": 5, "radius": true}), "radius", "`radius` must be a number or an expression"),
+    ] {
+        let issues = c.check(&p);
+        assert_eq!(messages(&issues), vec![message], "{p}");
+        assert_eq!(issues.first().map(|i| i.path.as_str()), Some(path), "{p}");
+    }
+}
+
+/// A flattened `FeatureCommon`'s errors are located below wherever its parent is.
+#[test]
+fn feature_common_errors_keep_their_place() {
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct Outer {
+        options: Probe,
+        #[serde(default)]
+        list: Vec<Probe>,
+    }
+    let c = TypedContract::<Outer>::new();
+    let probe = json!({"radius": 1});
+    for (p, path, message) in [
+        (json!({"options": {"radius": 1, "name": 5}}), "options.name", "`options.name` must be text"),
+        (
+            json!({"options": probe, "list": [probe, {"radius": 1, "participants": 5}]}),
+            "list[1].participants",
+            "`list[1].participants` must be a name or a list of names",
+        ),
+        (json!({"options": probe, "list": [{"radius": 1, "faces": []}]}), "list[0].faces", "select 1…1000 faces"),
+    ] {
+        let issues = c.check(&p);
+        assert_eq!(messages(&issues), vec![message], "{p}");
+        assert_eq!(issues.first().map(|i| i.path.as_str()), Some(path), "{p}");
+    }
+}
+
+/// The pick types refuse what the handlers refuse, with the handlers' messages.
+#[test]
+fn shared_types_keep_the_handlers_messages() {
+    let c = TypedContract::<Probe>::new();
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap_or_else(|e| panic!("{e}"));
+    sketch_rectangle(&mut s);
+    for (id, p, probe) in [
+        ("solid.shell", json!({"thickness": 1, "faces": 5}), json!({"faces": 5})),
+        ("solid.shell", json!({"thickness": 1, "faces": null}), json!({"faces": null})),
+        ("solid.shell", json!({"thickness": 1, "faces": []}), json!({"faces": []})),
+        ("solid.shell", json!({"thickness": 1, "faces": [true]}), json!({"faces": [true]})),
+        ("solid.shell", json!({"thickness": 1, "faces": [""]}), json!({"faces": [""]})),
+        ("solid.fillet", json!({"radius": 1, "edges": {}}), json!({"edges": {}})),
+        ("solid.fillet", json!({"radius": 1, "edges": vec![[0, 0, 0]; 1001]}), json!({"edges": vec![[0, 0, 0]; 1001]})),
+        ("solid.fillet", json!({"radius": 1, "edges": [[1, 2]]}), json!({"edges": [[1, 2]]})),
+        ("solid.fillet", json!({"radius": 1, "edges": [{"body": "Body1", "index": "0"}]}), json!({"edges": [{"body": "Body1", "index": "0"}]})),
+        ("solid.sweep", json!({"path_sketch": true, "path": ["l1"]}), json!({"path_sketch": true})),
+        ("solid.sweep", json!({"path_sketch": null, "path": ["l1"]}), json!({"path_sketch": null})),
+    ] {
+        let mut probe = probe;
+        probe["radius"] = json!(1);
+        let issue = messages(&c.check(&probe)).into_iter().next().unwrap_or_default();
+        let today = s.execute(id, &p).err().map(|e| e.to_string());
+        assert_eq!(today, Some(crate::params::bad(id, issue).to_string()), "{id} {p}");
+    }
+}
+
+/// The lookups that follow the shape checks the pick types share with the handlers: picks
+/// by `{body, index}` and sketches by name still find the design, and still fail in order, one
+/// pick at a time.
+#[test]
+fn picks_are_still_looked_up_one_at_a_time() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap_or_else(|e| panic!("{e}"));
+    let error = |s: &mut Session, id: &str, p: Value| s.execute(id, &p).err().map(|e| e.to_string()).unwrap_or_default();
+    let fillet = |edges: Value| json!({"radius": 1, "edges": edges});
+    assert_eq!(
+        error(&mut s, "solid.fillet", fillet(json!([{"body": "Nope", "index": 0}, [1, 2]]))),
+        "invalid parameters for `solid.fillet`: no body `Nope`"
+    );
+    assert_eq!(
+        error(&mut s, "solid.fillet", fillet(json!([{"body": "Body1", "index": 999}]))),
+        "invalid parameters for `solid.fillet`: Body1 has no edge 999"
+    );
+    let far = error(&mut s, "solid.fillet", fillet(json!([[100, 100, 100], [1, 2]])));
+    assert!(far.starts_with("invalid parameters for `solid.fillet`: no edge at [100, 100, 100]"), "{far}");
+    let unknown = error(&mut s, "solid.shell", json!({"thickness": 1, "faces": ["NoSuchFace"]}));
+    assert!(!unknown.is_empty());
+    assert_eq!(error(&mut s, "solid.shell", json!({"thickness": 1, "faces": ["NoSuchFace", true]})), unknown, "the name is looked up first");
+    sketch_rectangle(&mut s);
+    assert_eq!(
+        error(&mut s, "solid.sweep", json!({"path_sketch": "Nope", "path": ["l1"]})),
+        "invalid parameters for `solid.sweep`: no sketch `Nope`"
+    );
+    assert_eq!(error(&mut s, "solid.extrude", json!({"distance": 5, "sketch": "Nope"})), "invalid parameters for `solid.extrude`: no sketch `Nope`");
+    let r = s.execute("solid.fillet", &fillet(json!([{"body": "Body1", "index": 0}]))).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(r["changed_bodies"], json!(["Body1"]), "{r}");
 }

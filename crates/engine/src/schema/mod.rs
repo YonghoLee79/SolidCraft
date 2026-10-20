@@ -29,9 +29,10 @@
 //!
 //! To convert a command: declare its parameters type in the module for its command file (and
 //! its reply type, for an output schema), creating the module if it is the file's first
-//! contract, from the shared types in [`types`]; give its `CommandSpec` `checked!(…)`,
-//! `.contract(…)` and `.output(…)` as `solid.extrude` does; and add it to that module's
-//! `schemas_and_the_key_check_agree` and, for messages it already gives,
+//! contract, from the shared types in [`types`] (the keys every feature takes come from
+//! [`FeatureCommon`], which `solid.box` and `solid.extrude` predate); give its `CommandSpec`
+//! `checked!(…)`, `.contract(…)` and `.output(…)` as `solid.extrude` does; and add it to that
+//! module's `schemas_and_the_key_check_agree` and, for messages it already gives,
 //! `strict_keeps_todays_errors`. Then run the whole test suite with the audit recorder (see
 //! `record.rs`): a call that succeeds today but breaks the contract is either a form the
 //! contract is missing or a caller's mistake.

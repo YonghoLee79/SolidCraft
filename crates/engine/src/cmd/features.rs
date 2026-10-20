@@ -242,11 +242,7 @@ pub(super) fn operation(p: &Value, cmd: &str) -> Result<Operation> {
 /// The sketch a feature uses: `sketch` param, the active sketch, or the last sketch.
 pub(super) fn feature_sketch(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
     if let Some(v) = p.get("sketch") {
-        let key = match v {
-            Value::Number(n) => n.to_string(),
-            Value::String(x) => x.clone(),
-            _ => return Err(bad(cmd, "`sketch` must be an id or name")),
-        };
+        let key = sketch_key(Some(v)).ok_or_else(|| bad(cmd, "`sketch` must be an id or name"))?;
         let f = s.doc.find_feature(&key).ok_or_else(|| bad(cmd, format!("no sketch `{key}`")))?;
         return match f.kind {
             FeatureKind::Sketch { .. } => Ok(f.id),
@@ -971,43 +967,62 @@ fn edge_points(s: &Session, p: &Value, cmd: &str) -> Result<Vec<Vec3>> {
     let mut candidates: Option<Vec<(f64, Vec<solidcraft_kernel::EdgeInfo>)>> = None;
     let mut out = Vec::new();
     for e in a {
-        if let Some(pt) = vec3(e).or_else(|| e.get("point").and_then(vec3)) {
-            let bodies = candidates.get_or_insert_with(|| {
-                // Mesh bodies have no edges to pick: rounding one is refused later, saying why.
-                st.bodies
-                    .iter()
-                    .filter(|b| named.is_none_or(|n| b.name == n) && !b.body.is_mesh())
-                    .filter_map(|b| {
-                        let size = b.body.size();
-                        b.body.edges((size * 2e-3).max(1e-3)).ok().map(|edges| (size, edges))
-                    })
-                    .collect()
-            });
-            let mut nearest = f64::INFINITY;
-            let on_edge = bodies.iter().any(|(size, edges)| {
-                let d = edges
-                    .iter()
-                    .flat_map(|e| e.points.windows(2))
-                    .filter_map(|w| Some(pt.dist_to_segment(*w.first()?, *w.get(1)?)))
-                    .fold(f64::INFINITY, f64::min);
-                nearest = nearest.min(d);
-                d <= size * 0.05 + 1e-3
-            });
-            if !on_edge && !bodies.is_empty() {
-                let far = if nearest.is_finite() { format!("the nearest edge is {nearest:.3} mm away") } else { "there is no edge".to_string() };
-                return Err(bad(cmd, format!("no edge at [{}, {}, {}]: {far}", pt.x, pt.y, pt.z)));
+        let pt = match edge_ref_form(e).map_err(|why| bad(cmd, why))? {
+            EdgeRefForm::Point(pt) => pt,
+            EdgeRefForm::Index { body, index } => {
+                let idx = index as usize;
+                let b = st.body(body).ok_or_else(|| bad(cmd, format!("no body `{body}`")))?;
+                let tol = (b.body.size() * 2e-3).max(1e-3);
+                let edges = b.body.edges(tol)?;
+                out.push(edges.get(idx).ok_or_else(|| bad(cmd, format!("{body} has no edge {idx}")))?.mid);
+                continue;
             }
-            out.push(pt);
-            continue;
+        };
+        let bodies = candidates.get_or_insert_with(|| {
+            // Mesh bodies have no edges to pick: rounding one is refused later, saying why.
+            st.bodies
+                .iter()
+                .filter(|b| named.is_none_or(|n| b.name == n) && !b.body.is_mesh())
+                .filter_map(|b| {
+                    let size = b.body.size();
+                    b.body.edges((size * 2e-3).max(1e-3)).ok().map(|edges| (size, edges))
+                })
+                .collect()
+        });
+        let mut nearest = f64::INFINITY;
+        let on_edge = bodies.iter().any(|(size, edges)| {
+            let d = edges
+                .iter()
+                .flat_map(|e| e.points.windows(2))
+                .filter_map(|w| Some(pt.dist_to_segment(*w.first()?, *w.get(1)?)))
+                .fold(f64::INFINITY, f64::min);
+            nearest = nearest.min(d);
+            d <= size * 0.05 + 1e-3
+        });
+        if !on_edge && !bodies.is_empty() {
+            let far = if nearest.is_finite() { format!("the nearest edge is {nearest:.3} mm away") } else { "there is no edge".to_string() };
+            return Err(bad(cmd, format!("no edge at [{}, {}, {}]: {far}", pt.x, pt.y, pt.z)));
         }
-        let body = e.get("body").and_then(Value::as_str).ok_or_else(|| bad(cmd, "an edge is a point [x,y,z], {point} or {body, index}"))?;
-        let idx = e.get("index").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "edge `index` must be a number"))? as usize;
-        let b = st.body(body).ok_or_else(|| bad(cmd, format!("no body `{body}`")))?;
-        let tol = (b.body.size() * 2e-3).max(1e-3);
-        let edges = b.body.edges(tol)?;
-        out.push(edges.get(idx).ok_or_else(|| bad(cmd, format!("{body} has no edge {idx}")))?.mid);
+        out.push(pt);
     }
     Ok(out)
+}
+
+/// An edge reference as given, before it is looked up: see [`edge_points`].
+pub(crate) enum EdgeRefForm<'a> {
+    Point(Vec3),
+    Index { body: &'a str, index: u64 },
+}
+
+/// What [`edge_points`] reads one edge as, without the design: a point on it (`[x, y, z]` or
+/// `{point}`), else `{body, index}`.
+pub(crate) fn edge_ref_form(e: &Value) -> std::result::Result<EdgeRefForm<'_>, &'static str> {
+    if let Some(pt) = vec3(e).or_else(|| e.get("point").and_then(vec3)) {
+        return Ok(EdgeRefForm::Point(pt));
+    }
+    let body = e.get("body").and_then(Value::as_str).ok_or("an edge is a point [x,y,z], {point} or {body, index}")?;
+    let index = e.get("index").and_then(Value::as_u64).ok_or("edge `index` must be a number")?;
+    Ok(EdgeRefForm::Index { body, index })
 }
 
 /// Press Pull: a face moves along its normal (an extrude that joins outward or cuts inward); an
@@ -1921,14 +1936,19 @@ fn draft(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(super) fn sketch_id(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Result<u64> {
-    let key = match v {
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::String(x)) => x.clone(),
-        _ => return Err(bad(cmd, format!("`{what}` must be a sketch id or name"))),
-    };
+    let key = sketch_key(v).ok_or_else(|| bad(cmd, format!("`{what}` must be a sketch id or name")))?;
     match s.doc.find_feature(&key) {
         Some(f) if matches!(f.kind, FeatureKind::Sketch { .. }) => Ok(f.id),
         _ => Err(bad(cmd, format!("no sketch `{key}`"))),
+    }
+}
+
+/// The key [`sketch_id`] and [`feature_sketch`] look a sketch up by: an id (a number) or a name.
+pub(crate) fn sketch_key(v: Option<&Value>) -> Option<String> {
+    match v {
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(Value::String(x)) => Some(x.clone()),
+        _ => None,
     }
 }
 
