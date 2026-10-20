@@ -4314,6 +4314,15 @@ fn rotation(o: Vec3, a: Vec3, ang: f64) -> Mat {
     [[r[0][0], r[0][1], r[0][2], 0.0], [r[1][0], r[1][1], r[1][2], 0.0], [r[2][0], r[2][1], r[2][2], 0.0], [tr.x, tr.y, tr.z, 1.0]]
 }
 
+/// A copy of a sheet metal body is sheet metal too: its sheet model goes with it, moved, or
+/// mirrored into the opposite hand ([`crate::sheet::SheetBody::copied`]), so the copy has its
+/// own flat pattern, DXF and bend table. A copy by any other transform stays a plain solid.
+fn copy_sheet(st: &mut ModelState, from: &str, to: &str, m: &crate::Mat) {
+    let Some(sheet) = st.sheets.iter().find(|s| s.body == from).and_then(|s| s.copied(to, m)) else { return };
+    st.sheets.retain(|s| s.body != to);
+    st.sheets.push(sheet);
+}
+
 /// Reflection in a plane (column-major).
 fn mirror_matrix(pl: &Plane) -> Mat {
     let n = pl.normal();
@@ -5279,6 +5288,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 for (k, m) in mats.iter().enumerate() {
                     let copy = moved_copy(&mb, kernel::transform_matrix(&mb.body, *m)?, k + 1);
                     let name = pattern_copy_name(st, f, output, &mb.name);
+                    copy_sheet(st, &mb.name, &name, m);
                     st.bodies.push(ModelBody::traced_new(name, copy, f.id));
                     output += 1;
                 }
@@ -5326,6 +5336,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                     }
                 } else {
                     let name = copy_body_name(st, f, output, &mb.name);
+                    copy_sheet(st, &mb.name, &name, &copy);
                     st.bodies.push(ModelBody::traced_new(name, mirrored, f.id));
                     output += 1;
                 }
@@ -5599,6 +5610,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 if *copy {
                     let traced = moved_copy(&mb, nb, 1);
                     let name = copy_body_name(st, f, output, &mb.name);
+                    copy_sheet(st, &mb.name, &name, &crate::rigid(t, Vec3::ZERO, axis, ang));
                     st.bodies.push(ModelBody::traced_new(name, traced, f.id));
                     output += 1;
                 } else if let Some(slot) = st.bodies.get_mut(i) {
