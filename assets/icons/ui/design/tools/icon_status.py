@@ -31,11 +31,18 @@ master_hash = review_state.master_hash
 def art_rev():
     h = hashlib.sha256()
     h.update(SERVER_REV.encode())  # A backend restart must refresh already-open review tabs too.
-    paths = glob.glob(D + '/svg/*/*.svg') + glob.glob(HERE + '/review/*')
+    # Artwork is hashed by content: two edits of the same size can share a modification time
+    # (coarse file timestamps on CI VMs), and the stale page would then accept changed art.
+    art = glob.glob(D + '/svg/*/*.svg') + [D + '/palette.toml', D + '/aliases.toml']
+    for path in sorted(art):
+        h.update(os.path.relpath(path, ROOT).replace(os.sep, '/').encode())
+        if os.path.exists(path):
+            with open(path, 'rb') as f: h.update(hashlib.sha256(review_state.lf(f.read())).digest())
+    # The sources only tell what uses an icon, and are many: their size and modification time.
+    paths = glob.glob(HERE + '/review/*')
     paths += glob.glob(ROOT + '/crates/engine/src/**/*.rs', recursive=True)
     paths += glob.glob(ROOT + '/crates/ui-egui/src/**/*.rs', recursive=True)
-    paths += glob.glob(HERE + '/*.py')
-    paths += [D + '/palette.toml', D + '/aliases.toml', __file__]
+    paths += glob.glob(HERE + '/*.py') + [__file__]
     for path in sorted(paths):
         # Equal-length edits can share an mtime. Only the content identifies what
         # the reviewer saw; file metadata must never authorize stale acceptance.
