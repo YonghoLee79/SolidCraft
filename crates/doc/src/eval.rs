@@ -3455,14 +3455,14 @@ fn feature_tools_with_constructor(
             // The face names follow `face_points`: To, then From.
             let name = |k: usize| f.face_names.get(k).map(String::as_str);
             let (to_name, from_name) = if extent.to.is_some() { (name(0), name(1)) } else { (None, name(0)) };
-            let to_face = extent.to.and_then(|p| object_face(&tst, to_name, p.0));
+            let to_face = extent.to.and_then(|p| object_face(&tst, to_name, p.0, Some(n)));
             let centre = {
                 let pts: Vec<Vec2> = regions.iter().flat_map(|r| r.outer.polyline(1e-2)).collect();
                 let c = pts.iter().fold(Vec2::default(), |a, p| a + *p) * (1.0 / pts.len().max(1) as f64);
                 ss.plane.to_world(c)
             };
             let from = match extent.from {
-                Some(p) => height_at(&tst, object_face(&tst, from_name, p.0), &ss.plane, centre, p.0),
+                Some(p) => height_at(&tst, object_face(&tst, from_name, p.0, Some(n)), &ss.plane, centre, p.0),
                 None => 0.0,
             };
             let d = match extent.to {
@@ -3867,7 +3867,7 @@ fn feature_tools_with_constructor(
                 .collect::<Result<Vec<_>>>()?;
             // To a curved face: turn past the whole target body, then cut back to its surface
             // (the piece that starts at the profile).
-            let curved = curved_face(&tst, to.and_then(|p| object_face(&tst, f.face_names.first().map(String::as_str), p.0)), None);
+            let curved = curved_face(&tst, to.and_then(|p| object_face(&tst, f.face_names.first().map(String::as_str), p.0, None)), None);
             let curved_body = curved.and_then(|bi| tst.bodies.get(bi));
             // Each region's body: its sides named by the sketch curves, its caps start and end.
             let tool = |r: &Region2, body: Body, built: Option<&Body>| crate::lineage::ProfileRoles::swept(Some(&ss), Some(r)).tool(body, built);
@@ -4709,7 +4709,7 @@ mod surface;
 /// there if it is planar and parallel (its plane), else where a ray from `centre` along the
 /// normal meets the body there, else the point itself.
 pub fn object_height(st: &ModelState, plane: &Plane, centre: Vec3, p: Vec3) -> f64 {
-    height_at(st, face_at(st, p), plane, centre, p)
+    height_at(st, face_at(st, p, Some(plane.normal())), plane, centre, p)
 }
 
 /// [`object_height`] of the point `p` on `face` (`(body index, face index)`, see [`object_face`]).
@@ -4741,31 +4741,63 @@ fn height_at(st: &ModelState, face: Option<(usize, usize)>, plane: &Plane, centr
 /// face index)`, within that body's pick tolerance. Not the first body with any face within
 /// its tolerance: that is 5 % of the body's size, so a large body beside a small target (a
 /// plate under a post, a frame around a pin) would otherwise take a pick made on the target.
-fn face_at(st: &ModelState, p: Vec3) -> Option<(usize, usize)> {
+fn face_at(st: &ModelState, p: Vec3, normal: Option<Vec3>) -> Option<(usize, usize)> {
     st.bodies
         .iter()
         .enumerate()
         .filter(|(_, b)| !b.body.is_mesh())
         .filter_map(|(bi, b)| {
-            let (d, fi) = crate::appearance::nearest_face(b, p)?;
+            let (d, fi) = nearest_object_face(b, p, normal)?;
             (d <= crate::appearance::pick_tolerance(b)).then_some((d, bi, fi))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, bi, fi)| (bi, fi))
 }
 
+/// At a shared edge or corner an extrusion's end plane and side wall can be equally near.
+/// Prefer the plane square to the extrusion: choosing the wall would instead extend the tool
+/// past the whole body and try to trim it, even when the tool never intersects that body.
+/// Only settle a distance tie; a nearby plane must not steal a pick on another face.
+fn nearest_object_face(b: &ModelBody, p: Vec3, normal: Option<Vec3>) -> Option<(f64, usize)> {
+    let nearest = crate::appearance::nearest_face(b, p)?;
+    let Some(n) = normal else { return Some(nearest) };
+    if nearest.0 > crate::appearance::pick_tolerance(b) {
+        return Some(nearest);
+    }
+    let tol = (b.body.size() * 1e-3).max(1e-3);
+    let Ok(faces) = b.body.faces(tol) else { return Some(nearest) };
+    let caps: std::collections::BTreeSet<usize> =
+        faces.iter().filter(|f| f.plane_normal.is_some_and(|fnrm| fnrm.cross(n).len() < 1e-6)).map(|f| f.index).collect();
+    if caps.is_empty() || caps.contains(&nearest.1) {
+        return Some(nearest);
+    }
+    let tie = (b.body.size() * 1e-9).max(1e-7);
+    let mesh = b.mesh();
+    mesh.triangles
+        .iter()
+        .zip(&mesh.tri_face)
+        .filter(|(_, fi)| caps.contains(&(**fi as usize)))
+        .filter_map(|(tri, fi)| {
+            let [a, b, c] = mesh.tri(tri)?;
+            let d = crate::appearance::closest_on_triangle(p, a, b, c).dist(p);
+            (d <= nearest.0 + tie).then_some((d, *fi as usize))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .or(Some(nearest))
+}
+
 /// The face a To / From Object point stands for, `(body index, face index)`: the face its
 /// stored `name` finds when the point lies on it (evaluation has moved the point onto its named
 /// face), else the nearest face at the point. The name settles a tie: in an assembly a part of
 /// another component may rest on the target and touch it at the point.
-fn object_face(st: &ModelState, name: Option<&str>, p: Vec3) -> Option<(usize, usize)> {
+fn object_face(st: &ModelState, name: Option<&str>, p: Vec3, normal: Option<Vec3>) -> Option<(usize, usize)> {
     if let Some(n) = name.filter(|n| !n.is_empty())
         && let Some(hit) = crate::naming::locate_face(st, n, p)
         && hit.on_point
     {
         return Some((hit.body, hit.face));
     }
-    face_at(st, p)
+    face_at(st, p, normal)
 }
 
 /// The body of `face` when that face is not a plane (with `n`: not a plane square to `n`), so To
@@ -4784,7 +4816,7 @@ fn curved_face(st: &ModelState, face: Option<(usize, usize)>, n: Option<Vec3>) -
 
 /// The body at `p` when the face there is not planar.
 fn curved_target_any(st: &ModelState, p: Vec3) -> Option<usize> {
-    curved_face(st, face_at(st, p), None)
+    curved_face(st, face_at(st, p, None), None)
 }
 
 /// Tools run through `target`, cut back to its surface: each tool less the body, keeping the
@@ -5894,13 +5926,19 @@ pub fn face_point_names(doc: &Document, st: &ModelState, kind: &FeatureKind, com
         return crate::naming::face_names_at(st, &pts);
     }
     let fst = face_point_state(doc, st, kind, comp);
+    let normal = match kind {
+        FeatureKind::Extrude { sketch, .. } => {
+            st.sketch(sketch.0).and_then(|ss| sketch_in_feature_frame(doc, ss, comp).ok()).map(|ss| ss.plane.normal())
+        }
+        _ => None,
+    };
     pts.iter()
         .map(|p| {
             fst.bodies
                 .iter()
                 .filter(|b| !b.body.is_mesh())
                 .filter_map(|b| {
-                    let (d, fi) = crate::appearance::nearest_face(b, *p)?;
+                    let (d, fi) = nearest_object_face(b, *p, normal)?;
                     (d <= (b.body.size() * 1e-3).max(1e-3)).then_some((d, b, fi))
                 })
                 .min_by(|a, b| a.0.total_cmp(&b.0))
