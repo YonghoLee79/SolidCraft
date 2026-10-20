@@ -306,7 +306,7 @@ fn stream_key(cmds: &[(String, Value)], revision: u64, colors: Colors) -> Option
 /// Keep the preview in step with the open dialog: start a computation when its inputs changed,
 /// take finished results. Called once per frame.
 pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
-    let cmds = match app.dialog.as_ref().filter(|d| d.previews()).map(|d| crate::dialogs::preview_commands(app, d)) {
+    let cmds = match app.dialog.as_ref().filter(|d| d.previews() && d.preview_enabled).map(|d| crate::dialogs::preview_commands(app, d)) {
         Some(Ok(c)) if !c.is_empty() => c,
         _ if crate::sketch_attachment_ui::commands(app).is_some() => crate::sketch_attachment_ui::commands(app).unwrap_or_default(),
         // A parameter being edited in Change Parameters.

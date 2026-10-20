@@ -4,13 +4,14 @@
 //! Closing a design with unsaved changes asks first, and so does quitting: one "save changes?"
 //! per design with unsaved changes ([`request_quit`]).
 
-use egui::{Align2, FontId, Rect, Sense, pos2, vec2};
+use egui::{FontId, Rect, Sense, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::Session;
 use solidcraft_engine::render::Camera;
 
 use crate::SolveApp;
 use crate::theme::Tokens;
+use crate::ui_kit;
 
 /// Most designs open at once.
 pub const MAX_OPEN: usize = 32;
@@ -382,7 +383,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         .map(|(name, dirty)| {
             let shown_name = crate::i18n::Locale::for_language(&app.preferences.language).given_name(name);
             let label = format!("{shown_name}{}", if *dirty { " •" } else { "" });
-            let text = ui.painter().layout_no_wrap(label, FontId::proportional(13.0), t.app_bar_text).size().x;
+            let text = ui.painter().layout_no_wrap(label, crate::fonts::semibold(crate::theme::Tokens::get().font_button), t.app_bar_text).size().x;
             (text + 40.0).clamp(72.0, MAX_FIT)
         })
         .collect();
@@ -392,8 +393,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         let tr = Rect::from_min_size(pos2(x, r.top() + 4.0), vec2(w - 2.0, r.height() - 8.0));
         let active = !app.home.open && (i == app.docs.active || app.docs.slots.is_empty());
         let resp = ui.interact(tr, ui.id().with(("doc_tab", i)), Sense::click_and_drag());
-        crate::scenario::publish_handle(&format!("tab:design:{i}"), tr.center());
-        crate::scenario::publish_rect(&format!("tab:design:{i}"), tr);
+        crate::scenario::publish_target(&format!("tab:design:{i}"), tr);
         // The tabs are part of the title bar: dragging one moves the window, a double click
         // maximizes it.
         if app.custom_titlebar || app.integrated_titlebar {
@@ -405,8 +405,14 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         }
         tab_shape(ui.painter(), &t, tr, active, resp.hovered() || resp.has_focus());
         let ink = if active || resp.hovered() { t.app_bar_text } else { t.app_bar_text.gamma_multiply(0.7) };
-        let label = format!("{}{}", crate::i18n::Locale::for_language(&app.preferences.language).given_name(name), if *dirty { " •" } else { "" });
-        let g = ui.painter().layout_no_wrap(label, FontId::proportional(13.0), ink);
+        let name_display = crate::i18n::Locale::for_language(&app.preferences.language).given_name(name);
+        let label = format!("{name_display}{}", if *dirty { " •" } else { "" });
+        let font = if active {
+            crate::fonts::semibold(crate::theme::Tokens::get().font_button)
+        } else {
+            FontId::proportional(crate::theme::Tokens::get().font_button)
+        };
+        let g = ui.painter().layout_no_wrap(label, font, ink);
         let text_w = (tr.width() - 30.0).max(10.0);
         let clip = Rect::from_min_size(tr.min, vec2(text_w + 10.0, tr.height()));
         ui.painter().with_clip_rect(clip).galley(pos2(tr.left() + 10.0, tr.center().y - g.size().y / 2.0), g, ink);
@@ -414,8 +420,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         let xr = Rect::from_center_size(pos2(tr.right() - 13.0, tr.center().y), vec2(16.0, 16.0));
         let show_close = active || resp.hovered() || ui.rect_contains_pointer(tr);
         let xresp = ui.interact(xr, ui.id().with(("doc_close", i)), if show_close { Sense::click() } else { Sense::hover() });
-        crate::scenario::publish_handle(&format!("tab:close:{i}"), xr.center());
-        crate::scenario::publish_rect(&format!("tab:close:{i}"), xr);
+        crate::scenario::publish_target(&format!("tab:close:{i}"), xr);
         if show_close && (xresp.hovered() || xresp.has_focus()) {
             ui.painter().rect_filled(xr, 3.0, t.app_bar_hover_strong);
         }
@@ -438,10 +443,17 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
     if shown < n {
         let mr = Rect::from_center_size(pos2(x + 12.0, r.center().y), vec2(20.0, 22.0));
         let mresp = ui.interact(mr, ui.id().with("doc_more"), Sense::click());
+        crate::scenario::publish_handle("tab:overflow", mr.center());
         if mresp.hovered() {
             ui.painter().rect_filled(mr, 4.0, t.app_bar_hover_button);
         }
-        ui.painter().text(mr.center(), egui::Align2::CENTER_CENTER, format!("»{}", n - shown), FontId::proportional(12.0), t.app_bar_text);
+        ui.painter().text(
+            mr.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("»{}", n - shown),
+            FontId::proportional(crate::theme::Tokens::get().font_body),
+            t.app_bar_text,
+        );
         let id = egui::Id::new("sc_doc_more");
         if mresp.clone().on_hover_text(crate::i18n::tr_label("All open designs")).clicked() {
             ui.ctx().data_mut(|d| d.insert_temp(id, !d.get_temp::<bool>(id).unwrap_or(false)));
@@ -451,12 +463,8 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
                 crate::frame::area(id.with("area")).fixed_pos(pos2(mr.left(), r.bottom())).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
                     crate::context_menu::menu_frame(ui, |ui| {
                         for (i, (name, dirty)) in info.iter().enumerate() {
-                            let item = crate::context_menu::Item::action(
-                                "doc",
-                                &format!("{name}{}", if *dirty { " •" } else { "" }),
-                                if i == app.docs.active { "box" } else { "" },
-                            );
-                            if crate::context_menu::list_row(ui, &item).is_some() {
+                            let label = format!("{name}{}", if *dirty { " •" } else { "" });
+                            if ui_kit::list_picker(ui, &format!("document:{i}"), &label, i == app.docs.active).clicked() {
                                 pick = Some(i);
                             }
                         }
@@ -539,8 +547,9 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
     let name = tabs_info(app).get(i).map(|x| x.0.clone()).unwrap_or_default();
     let name_display = crate::i18n::tr_name(&name);
     let mut answer: Option<Answer> = None;
-    // Left and Right move between the buttons (Save is picked first); Enter gives the picked one.
-    let order = [Answer::Save, Answer::DontSave, Answer::Cancel];
+    // Left and Right move between the buttons as they are laid out (Save is picked first, at the
+    // right); Enter gives the picked one.
+    let order = [Answer::DontSave, Answer::Cancel, Answer::Save];
     let (left, right, enter) = ctx.input_mut(|x| {
         (
             x.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
@@ -548,7 +557,7 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
             x.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
         )
     });
-    let at = order.iter().position(|a| *a == app.docs.choice).unwrap_or(0);
+    let at = order.iter().position(|a| *a == app.docs.choice).unwrap_or(order.len() - 1);
     let at = if left {
         at.saturating_sub(1)
     } else if right {
@@ -562,26 +571,24 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
         answer = Some(choice);
     }
     let title = crate::i18n::format("document.save_changes", &[("name", &name_display)]);
-    crate::frame::window(ctx, title, crate::frame::Width::Normal)
-        .id(egui::Id::new("sc_close_prompt"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
-        .show(ctx, |ui| {
-            ui.label(crate::i18n::format("document.unsaved_changes", &[("name", &name_display)]));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(crate::i18n::tr("ui.save")).selected(choice == Answer::Save)).clicked() {
-                    answer = Some(Answer::Save);
-                }
-                if ui.add(egui::Button::new(crate::i18n::tr("ui.don_t_save")).selected(choice == Answer::DontSave)).clicked() {
-                    answer = Some(Answer::DontSave);
-                }
-                if ui.add(egui::Button::new(crate::i18n::tr("ui.cancel")).selected(choice == Answer::Cancel)).clicked() {
-                    answer = Some(Answer::Cancel);
-                }
-            });
+    let (closed, action) = ui_kit::Confirm::new(egui::Id::new("sc_close_prompt"), "status_warning", &title)
+        .tone(ui_kit::Tone::Warning)
+        .actions(crate::i18n::tr("ui.save"), crate::i18n::tr("ui.cancel"), Some(crate::i18n::tr("ui.don_t_save")))
+        .selected(match choice {
+            Answer::Save => ui_kit::Action::Ok,
+            Answer::DontSave => ui_kit::Action::Apply,
+            Answer::Cancel => ui_kit::Action::Cancel,
+        })
+        .show(ctx, true, |ui| {
+            ui_kit::text(ui, &crate::i18n::format("document.unsaved_changes", &[("name", &name_display)]), ui_kit::Text::Report("unsaved", false));
         });
+    answer = match action {
+        ui_kit::Action::Ok => Some(Answer::Save),
+        ui_kit::Action::Apply => Some(Answer::DontSave),
+        ui_kit::Action::Cancel => Some(Answer::Cancel),
+        ui_kit::Action::None if closed => Some(Answer::Cancel),
+        ui_kit::Action::None => answer,
+    };
     if ctx.input(|x| x.key_pressed(egui::Key::Escape)) {
         answer = Some(Answer::Cancel);
         app.esc_handled = true;
@@ -677,7 +684,7 @@ mod tests {
         for t in [Tokens::light(), Tokens::dark()] {
             let r = Rect::from_min_size(pos2(10.0, 5.0), vec2(80.0, 30.0));
             for (active, hovered) in [(false, false), (false, true), (true, false)] {
-                let ctx = egui::Context::default();
+                let ctx = crate::fonts::test_context();
                 let mut out = ctx.run_ui(egui::RawInput::default(), |ui| tab_shape(ui.painter(), &t, r, active, hovered));
                 out.textures_delta.clear();
                 let rects: Vec<_> = out
@@ -807,7 +814,7 @@ mod tests {
         request_quit(&mut a);
         answer_prompt(&mut a, Answer::Save);
         assert!(!a.quit_requested && a.file_picker_busy());
-        crate::file_picker::tick(&mut a, &egui::Context::default());
+        crate::file_picker::tick(&mut a, &crate::fonts::test_context());
         crate::save_job::tick(&mut a, true);
         assert!(a.quit_requested && file.exists());
         let _ = std::fs::remove_file(&file);

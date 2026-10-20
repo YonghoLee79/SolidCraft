@@ -146,20 +146,3 @@ pub(crate) fn cross(p: &egui::Painter, r: Rect, s: Stroke) {
     p.line_segment([r.left_top(), r.right_bottom()], s);
     p.line_segment([r.right_top(), r.left_bottom()], s);
 }
-pub(crate) fn radial_centre(p: &egui::Painter, c: Pos2, direction: Option<(egui::Vec2, bool)>, t: crate::theme::Tokens) {
-    p.circle(c, 15.0, t.panel.gamma_multiply(0.92), Stroke::new(1.0, t.border));
-    if let Some((d, enabled)) = direction {
-        p.line_segment([c + d * 6.0, c + d * 15.0], Stroke::new(3.0, if enabled { t.accent } else { t.border }));
-    } else {
-        p.circle_filled(c, 3.0, t.text_dim);
-    }
-}
-
-pub(crate) fn disclosure(p: &egui::Painter, ar: Rect, open: bool, ink: Color32) {
-    let pts = if open {
-        vec![pos2(ar.left() + 2.0, ar.top() + 4.0), pos2(ar.right() - 2.0, ar.top() + 4.0), pos2(ar.center().x, ar.bottom() - 3.0)]
-    } else {
-        vec![pos2(ar.left() + 4.0, ar.top() + 2.0), pos2(ar.right() - 3.0, ar.center().y), pos2(ar.left() + 4.0, ar.bottom() - 2.0)]
-    };
-    p.add(egui::Shape::convex_polygon(pts, ink, Stroke::NONE));
-}

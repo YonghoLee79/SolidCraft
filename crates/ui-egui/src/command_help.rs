@@ -50,8 +50,12 @@ mod tests {
         serde_json::from_str(source).unwrap()
     }
 
+    /// The `help.<command id>` messages; other `help.*` messages (About dialog texts) are not tool help.
     fn help_keys(source: &str) -> BTreeSet<String> {
-        catalog(source).into_keys().filter(|k| k.starts_with("help.")).collect()
+        catalog(source)
+            .into_keys()
+            .filter(|k| k.starts_with("help.") && (k.starts_with("help.solid.") || DOCUMENTED.contains(&&k["help.".len()..])))
+            .collect()
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! picture of the design rendered from it. Shown on launch without a file and from the house
 //! button or the first document tab; selecting a design returns to its view.
 
+use crate::fonts::RichTextExt as _;
 use std::collections::HashMap;
 
 use egui::{Color32, CornerRadius, RichText, Sense, Stroke, vec2};
@@ -424,8 +425,17 @@ pub fn open_sample(app: &mut SolveApp, i: usize) {
     }
 }
 
+/// Is this recent design there to open: in memory, or something the host can bring back?
+pub fn available(app: &SolveApp, path: &str) -> bool {
+    solidcraft_engine::io::vfs::exists(path) || app.services.can_restore.as_ref().is_some_and(|can| can(path))
+}
+
 pub fn open_recent(app: &mut SolveApp, path: &str) {
     if !solidcraft_engine::io::vfs::exists(path) {
+        if let Some(restore) = app.services.restore_file.as_ref().filter(|_| available(app, path)) {
+            restore(path);
+            return;
+        }
         app.set_status(format!("{path} is no longer there"), true);
         return;
     }
@@ -454,9 +464,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(36, 24))).show(ui, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("SolidCraft").size(26.0).strong().color(t.text));
+                ui.label(RichText::new("SolidCraft").size(crate::theme::Tokens::get().font_display).semibold().color(t.text));
                 ui.add_space(t.space_12);
-                ui.label(RichText::new(crate::i18n::tr_label("Start")).size(16.0).color(t.text_dim));
+                ui.label(RichText::new(crate::i18n::tr_label("Start")).size(crate::theme::Tokens::get().font_intro).color(t.text_dim));
             });
             ui.add_space(t.space_16);
             ui.horizontal(|ui| {
@@ -464,7 +474,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     // The label sets the width: a translation longer than the English one widens
                     // the button instead of running past its edge.
                     let ink_text = if primary { t.on_accent } else { t.text };
-                    let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(15.0), ink_text);
+                    let galley = ui.painter().layout_no_wrap(
+                        label.to_owned(),
+                        egui::FontId::proportional(crate::theme::Tokens::get().font_subtitle),
+                        ink_text,
+                    );
                     let width = (56.0 + galley.size().x + 20.0).max(170.0);
                     let (r, resp) = ui.allocate_exact_size(vec2(width, 64.0), Sense::click());
                     let fill = if primary {
@@ -524,9 +538,12 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let Some(p) = recent.get(i) else { return };
                     let path = std::path::Path::new(p);
                     let name = path.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| p.clone());
-                    let missing = !solidcraft_engine::io::vfs::exists(p);
+                    let missing = !available(app, p);
                     let mut sub = if missing {
                         app.tr("home.missing").to_string()
+                    } else if p.starts_with("/disk/") {
+                        // The web build remembers files it saved on the computer.
+                        crate::i18n::tr_label("On your computer").to_string()
                     } else if p.starts_with("/opfs/") {
                         // The web build keeps designs in the browser's own storage.
                         app.tr("home.in_this_browser").to_string()
@@ -552,12 +569,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                         .on_hover_text(p.as_str());
                     crate::scenario::publish_handle(&format!("home:recent:{i}"), response.rect.center());
                     response.context_menu(|ui| {
-                        if ui.button(crate::i18n::tr_label("Remove from list")).clicked() {
+                        if crate::context_menu::button(ui, crate::i18n::tr_label("Remove from list"), "delete").clicked() {
                             app.home.recent.retain(|x| x != p);
                             app.home.opened_at.remove(p);
                             ui.close();
                         }
-                        if !cfg!(target_arch = "wasm32") && ui.button(crate::i18n::tr_label("Show in folder")).clicked() {
+                        if !cfg!(target_arch = "wasm32")
+                            && crate::context_menu::button(ui, crate::i18n::tr_label("Show in folder"), "folder").clicked()
+                        {
                             if let Some(show) = &app.services.show_in_folder {
                                 show(p);
                             }
@@ -596,7 +615,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
 
 fn section(ui: &mut egui::Ui, title: &str) {
     let t = Tokens::get();
-    ui.label(RichText::new(title).size(15.0).strong().color(t.text));
+    ui.label(RichText::new(title).size(crate::theme::Tokens::get().font_subtitle).semibold().color(t.text));
     ui.add_space(t.space_8);
 }
 
@@ -686,6 +705,24 @@ mod tests {
             assert_eq!(sample_picture(i).unwrap().size, THUMB);
         }
         assert!(sample_picture(samples.len()).is_none());
+    }
+
+    /// A recent design the host can bring back (the browser build's remembered files) is not
+    /// "missing": choosing it asks the host to restore it, and one the host doesn't know still is.
+    #[test]
+    fn a_recent_design_the_host_can_restore_is_asked_for_not_reported_missing() {
+        let mut h = crate::scenario::Harness::new();
+        let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = asked.clone();
+        h.app.services.can_restore = Some(Box::new(|p| p.starts_with("/disk/known/")));
+        h.app.services.restore_file = Some(Box::new(move |p| sink.borrow_mut().push(p.to_string())));
+        assert!(available(&h.app, "/disk/known/Bracket.solidcraft"));
+        assert!(!available(&h.app, "/disk/other/Bracket.solidcraft"));
+        open_recent(&mut h.app, "/disk/known/Bracket.solidcraft");
+        assert_eq!(*asked.borrow(), ["/disk/known/Bracket.solidcraft"]);
+        open_recent(&mut h.app, "/disk/other/Bracket.solidcraft");
+        assert_eq!(asked.borrow().len(), 1, "a file the host doesn't remember is not asked for");
+        assert!(h.app.status.as_ref().is_some_and(|(text, _, error)| *error && text.contains("no longer there")));
     }
 
     /// Rebuild the shipped pictures from the authoritative sample command scripts.

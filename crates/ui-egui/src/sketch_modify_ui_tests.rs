@@ -480,7 +480,7 @@ fn rectangular_pattern_window_opens_instead_of_a_click_tool() {
 }
 
 #[test]
-fn rectangular_columns_flip_and_center_independently_and_restore_even_counts_when_editing() {
+fn rectangular_sections_flip_and_center_independently_and_restore_even_counts_when_editing() {
     use solidcraft_engine::sketch::PatternAlignment;
     let (mut h, id) = open("sketch.pattern.rectangular");
     h.app.dialog.as_mut().unwrap().inputs[0].items = vec![Sel::SketchCurve { id }];
@@ -488,8 +488,8 @@ fn rectangular_columns_flip_and_center_independently_and_restore_even_counts_whe
     h.settle();
     let first = crate::scenario::handle_at("dialog:Spacing").unwrap();
     let second = crate::scenario::handle_at("dialog:Spacing 2").unwrap();
-    assert!(second.x - first.x > 180.0, "the directions should occupy separate columns: {first:?}, {second:?}");
-    assert!((second.y - first.y).abs() < 2.0, "the independent spacing fields should share a row");
+    assert!((second.x - first.x).abs() < 2.0, "the dense direction sections share the same control column: {first:?}, {second:?}");
+    assert!(second.y > first.y, "the independent spacing fields belong to successive direction sections");
     for label in ["Alignment", "Alignment 2"] {
         let left = crate::scenario::handle_at(&format!("dialog:{label}:Flip direction")).unwrap();
         let right = crate::scenario::handle_at(&format!("dialog:{label}:Center")).unwrap();
