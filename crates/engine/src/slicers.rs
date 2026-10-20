@@ -595,9 +595,13 @@ impl Slicer {
     }
 
     /// [`Self::args`] without a file, for starting the slicer on its own: a Flatpak command's file
-    /// markers go too.
+    /// markers go too. A slicer that has to be started first (`WAIT_FOR_READY`) is always started
+    /// with the single-instance flag, whatever the preference says: a start that finds one already
+    /// running (a slow first look at the bus can start it twice) hands over to it and exits, where
+    /// without the flag it would open a second window.
     #[cfg(not(target_arch = "wasm32"))]
     fn start_args(&self, single_instance: bool) -> Vec<String> {
+        let single_instance = single_instance || self.waits_for_ready().is_some();
         self.base_args(single_instance).into_iter().filter(|a| a != "@@" && a != "@@u").collect()
     }
 
@@ -1116,7 +1120,16 @@ mod tests {
                 "--single-instance-on-url"
             ]
         );
-        assert_eq!(launcher.start_args(false), Vec::<String>::new());
+        // The preference does not take the flag off a start of the launcher (its entry's own is kept,
+        // and one is added where there is none); a normal send with the preference off has none.
+        assert_eq!(launcher.start_args(false), ["--single-instance-on-url"]);
+        let bare = slicer(&["slic3r-app-launcher"]);
+        assert_eq!(bare.start_args(false), ["--single-instance"]);
+        assert_eq!(bare.start_args(true), ["--single-instance"]);
+        assert_eq!(bare.args("/t/a.3mf", false), ["/t/a.3mf"]);
+        assert_eq!(bare.args("/t/a.3mf", true), ["--single-instance", "/t/a.3mf"]);
+        // A slicer that does not need a start first is started as the preference says.
+        assert!(slicer(&["prusa-slicer"]).start_args(false).is_empty());
     }
 
     #[test]
