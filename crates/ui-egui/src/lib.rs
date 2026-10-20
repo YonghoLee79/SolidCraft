@@ -846,6 +846,17 @@ impl SolveApp {
             return;
         }
         workspace::select_command_tab(self, id);
+        // Move a selected assembly placement the same way as its Browser menu, retaining
+        // the exact instance path and the grounding/rigid-group restrictions.
+        if id == "solid.move"
+            && let [solidcraft_engine::Sel::Occurrence { path }] = self.session.selection.as_slice()
+        {
+            let target = context_menu::Target::Occurrence { path: path.clone() };
+            if let Some(item) = context_menu::items(self, &target).into_iter().find(|item| item.id == "ui.moveOccurrence") {
+                context_menu::run_item(self, &item, egui::Pos2::ZERO);
+            }
+            return;
+        }
         if id == "material.properties.validate" {
             self.material_card_review = Some(material_card_review::ReviewWindow::default());
             self.home.open = false;
