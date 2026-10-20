@@ -103,7 +103,7 @@ fn window_chrome_renders_in_the_active_language() {
     }
 }
 
-/// The start page's two big buttons had a fixed width, so a translation longer than the English
+/// File-view action tiles must keep translated labels inside their bounds. A translation longer than the English
 /// label ran past the edge ("Nouvelle conception"). Every registered language's label must stay
 /// inside its button.
 #[test]
@@ -127,12 +127,12 @@ fn home_page_buttons_fit_their_translated_labels() {
         let (mut rects, mut texts) = (Vec::new(), Vec::new());
         out.shapes.iter().for_each(|shape| collect(&shape.shape, &mut rects, &mut texts));
         let locale = crate::i18n::Locale::for_language(catalog.id);
-        for id in ["ui.new_design", "home.open"] {
+        for id in ["home.new_mm", "home.new_inches", "home.open", "home.import"] {
             let label = locale.text(id);
             let (_, text) = texts.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("{}: {label:?} is not painted", catalog.id));
             let button = rects
                 .iter()
-                .filter(|r| (r.height() - 64.0).abs() < 1.0 && r.contains(text.left_center()))
+                .filter(|r| (r.height() - crate::theme::Tokens::get().file_tile_height).abs() < 1.0 && r.contains(text.left_center()))
                 .min_by(|a, b| a.area().total_cmp(&b.area()))
                 .unwrap_or_else(|| panic!("{}: no button around {label:?}", catalog.id));
             assert!(text.right() <= button.right(), "{}: {label:?} ends at {} past its button's edge {}", catalog.id, text.right(), button.right());
@@ -172,7 +172,7 @@ fn home_page_renders_in_the_active_language() {
         (
             "ja",
             [
-                "新規デザイン",
+                "新しいデザイン",
                 "開く…",
                 "ドキュメント",
                 "問題を報告",
@@ -201,9 +201,12 @@ fn home_page_renders_in_the_active_language() {
         let out = crate::test_support::frame(&h.ctx, egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| h.app.ui(ui));
         let mut texts = Vec::new();
         out.shapes.iter().for_each(|shape| painted(&shape.shape, &mut texts));
-        for word in words.into_iter().chain([missing_recent]) {
+        for word in words {
             assert!(texts.iter().any(|t| t == word), "{lang}: {word:?} must be painted, got {texts:?}");
         }
+        let (missing, opened) = missing_recent.split_once('\n').unwrap();
+        assert!(texts.iter().any(|text| text.starts_with(&format!("{missing} · "))), "{lang}: missing-file status must remain visible");
+        assert!(texts.iter().any(|text| text == opened), "{lang}: the recent timestamp must remain visible");
         for english in ["New Design", "Open…", "Documentation", "Report an Issue", "What's new", "Recent", "Samples", "Sample Plate"] {
             assert!(!texts.iter().any(|t| t == english), "{lang}: {english:?} is still painted in English");
         }

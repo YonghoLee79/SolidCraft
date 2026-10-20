@@ -356,3 +356,29 @@ rule. Ranking, command mode and keyboard routing remain with the caller.
 Generate CPU-rendered evidence of all five search states and the actual ribbon's
 closed/opening/open/closing transition in both themes with
 `SOLIDCRAFT_SEARCH_EVIDENCE=/tmp/search cargo test -p solidcraft-ui-egui --lib command_search`.
+
+## File/start presentation
+
+`FileView` owns the File navigation rail, action tiles, recent-file rows, sample
+cards and recovery surface. It accepts display strings, existing icon ids and
+optional cached thumbnail textures; callers own commands, opening, persistence,
+thumbnail jobs and recovery decisions. No application state enters the kit.
+
+- `navigation` supplies the blue rail surface and inset. `nav_row` accepts a stable
+  id, label, right-aligned shortcut, selection and enabled state; `back` supplies
+  the return entry and `separator` the grouped rule. The caller owns rail height
+  and scrolling. Disabled navigation retains an arrow and cannot activate.
+- `action_tile` allocates the tokenised 84 pt tile with original 44 pt artwork,
+  a label and a subtitle. `tile_min_width` informs responsive columns.
+- `recent_row` accepts `RecentRow` title/path/time/workspace/optional thumbnail.
+  Wide rows use aligned columns; narrow rows retain the title and path. Wrap the
+  call in `add_enabled_ui` for missing or unavailable files.
+- `sample_card` accepts `SampleCard` title, description, original icon id and
+  optional existing thumbnail. `sample_min_width` informs responsive columns.
+- `recovery` supplies a warning surface around existing kit text and actions.
+
+The `file_*` palette tokens pair rail, primary and recovery fills with readable
+ink in both themes; all are exported through theme files. They leave the global
+accent unchanged. Shared `space_*`, `font_*` and radius tokens cover the rest.
+
+File thumbnails use the neutral `file_image_tint` token in both palettes; image pixels are independent of icon and button text colours.

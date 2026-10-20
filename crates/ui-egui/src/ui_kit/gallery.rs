@@ -28,6 +28,42 @@ macro_rules! element {
 
 // One entry per element/variant: names, rendering and geometry expectations stay together.
 const ELEMENTS: &[Element] = &[
+    element!("file_navigation", |ui, _| {
+        FileView::navigation(ui, |ui| {
+            FileView::back(ui, "gallery:file:back", "Back to Sample Plate", "Esc");
+            FileView::nav_row(ui, "gallery:file:start", "Start", "", true, true);
+            FileView::nav_row(ui, "gallery:file:open", "Open", "Ctrl+O", false, true);
+            FileView::separator(ui);
+            FileView::nav_row(ui, "gallery:file:save", "Save", "Ctrl+S", false, false);
+        });
+    }),
+    element!("file_action", |ui, _| {
+        FileView::action_tile(ui, "gallery:file:new", ui.available_width(), "new", "New design", "Millimetres · opens in Design", true);
+    }),
+    element!("file_recent", |ui, _| {
+        FileView::recent_row(
+            ui,
+            "gallery:file:recent",
+            RecentRow { title: "Sample Plate", path: "Designs/sample-plate.solidcraft", when: "Open now", workspace: "Design", thumbnail: None },
+        );
+    }),
+    element!("file_sample", |ui, _| {
+        FileView::sample_card(
+            ui,
+            "gallery:file:sample",
+            FileView::sample_min_width(),
+            SampleCard { title: "Sample Plate", description: "Parametric plate with holes and a bored boss", icon: "new", thumbnail: None },
+        );
+    }),
+    element!("file_recovery", |ui, _| {
+        FileView::recovery(ui, |ui| {
+            text(ui, "A design has unsaved changes", Text::Inline);
+            ui.horizontal(|ui| {
+                button(ui, "Recover", Button::Normal);
+                button(ui, "Discard", Button::Normal);
+            });
+        });
+    }),
     element!("command_search", |ui, _| {
         let mut query = "fillet".to_owned();
         CommandSearch::field(
