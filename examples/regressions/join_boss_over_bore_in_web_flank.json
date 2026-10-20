@@ -1,0 +1,17 @@
+{
+ "description": "A 140 x 80 x 25 plate (x 0..140, y -40..40) with a 60 mm wide web on top whose flank is an R70 arc around (110, 95) in the XZ plane, then an R10 bore at (115, 0) through the plate and the foot of the flank. On the top face, a boss sketch: a 15 mm ring around the bore and a slot from x = 35 to the ring, extruded 25 mm as two profiles. Joining them in one extrude, or extruding a new body and combining it, failed with 'boolean Union: the operation failed: no result' (#2970): the common-bore guard refused the straight trims that leave a bore vertex outward. Result: one body of 547912.041 mm3 (plate - bore + web + boss - the part of the boss inside the web).",
+ "commands": [
+  {"command": "solid.box", "params": {"corner": [0, -40, 0], "length": 140, "width": 80, "height": 25, "operation": "new_body", "body_name": "Stock"}},
+  {"command": "sketch.create", "params": {"plane": {"origin": [0, 0, 0], "x_dir": [1, 0, 0], "y_dir": [0, 0, 1]}, "name": "Web"}},
+  {"command": "sketch.line", "params": {"points": [[110, 25], [10, 25], [10, 125], [40, 125], [40, 95]]}},
+  {"command": "sketch.arc.three_point", "params": {"start": [40, 95], "through": [60.50252531694167, 45.50252531694167], "end": [110, 25]}},
+  {"command": "sketch.finish", "params": {}},
+  {"command": "solid.extrude", "params": {"sketch": "Web", "distance": 60, "direction": "symmetric", "operation": "join", "targets": ["Stock"]}},
+  {"command": "solid.cylinder", "params": {"base": [115, 0, -5], "axis": "Z", "radius": 10, "height": 78, "operation": "cut", "targets": ["Stock"]}},
+  {"command": "sketch.create", "params": {"plane": "XY", "offset": 25, "name": "Boss"}},
+  {"command": "sketch.circle.center", "params": {"center": [115, 0], "radius": 10}},
+  {"command": "sketch.circle.center", "params": {"center": [115, 0], "radius": 15}},
+  {"command": "sketch.line", "params": {"points": [[115, 15], [35, 15], [35, -15], [115, -15]]}},
+  {"command": "sketch.finish", "params": {}}
+ ]
+}

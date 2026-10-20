@@ -85,13 +85,15 @@ pub(super) fn boundaries_clear(
                 return None;
             }
             // A trim can leave an existing bore vertex without entering the
-            // bore. Its radial distance is increasing along the whole line.
+            // bore. Its radial distance is increasing along the whole line, and
+            // its far end is off the wall: an axial line on the wall is refused.
             let outward = |a: Vec3, b: Vec3, vertex: &mt::Vertex| {
                 let pa = plane.to_local(a);
                 let pb = plane.to_local(b);
                 bore_vertices.contains(&vertex.id())
                     && a.dist(from_p3(vertex.point())) <= error
                     && (pa.len() - radius).abs() <= error
+                    && pb.len() > radius + error
                     && pa.dot(pb - pa) >= 0.
             };
             if outward(a, b, edge.absolute_front()) || outward(b, a, edge.absolute_back()) {
