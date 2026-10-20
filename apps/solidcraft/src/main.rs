@@ -438,7 +438,26 @@ fn msaa() -> u16 {
 
 /// Windows and Linux: no OS title bar; the application bar is the title bar
 /// (`solidcraft_ui_egui::titlebar`). macOS keeps its traffic lights over the integrated bar.
-const CUSTOM_TITLEBAR: bool = !cfg!(target_os = "macos");
+/// On Linux the window manager's own decorations (server-side, or the compositor's frame) can
+/// be asked for instead: [`custom_titlebar`].
+fn custom_titlebar() -> bool {
+    if cfg!(target_os = "macos") {
+        return false;
+    }
+    if !cfg!(all(unix, not(target_os = "macos"))) {
+        return true;
+    }
+    let setting = graphics().and_then(|v| v.get("titlebar").and_then(serde_json::Value::as_str).map(str::to_string));
+    titlebar_choice(solidcraft_engine::geom::env::var("TITLEBAR").as_deref(), setting.as_deref())
+}
+
+/// Linux: whether the application bar is the title bar. `SOLIDCRAFT_TITLEBAR` (else
+/// `graphics.json`'s `titlebar`) set to `system` gives the window the desktop's own title bar and
+/// buttons; `app` (or anything else, or nothing) keeps the application bar as the title bar.
+fn titlebar_choice(env: Option<&str>, setting: Option<&str>) -> bool {
+    let choice = env.map(str::trim).filter(|v| !v.is_empty()).or(setting.map(str::trim));
+    !choice.is_some_and(|v| v.eq_ignore_ascii_case("system"))
+}
 
 const DEPTH_BITS: u8 = 24;
 /// A 32-bit float depth buffer, drawn with reversed depth (1 near, 0 far) so its precision follows
@@ -449,7 +468,7 @@ const FLOAT_DEPTH_BITS: u8 = 32;
 const STENCIL_BITS: u8 = 8;
 const MSAA: u16 = 4;
 
-fn app_viewport() -> Result<egui::ViewportBuilder, eframe::Error> {
+fn app_viewport(custom_titlebar: bool) -> Result<egui::ViewportBuilder, eframe::Error> {
     // Let macOS use the bundle's layered icon; eframe's default bitmap would replace it.
     #[cfg(target_os = "macos")]
     let icon = egui::IconData::default();
@@ -462,7 +481,7 @@ fn app_viewport() -> Result<egui::ViewportBuilder, eframe::Error> {
         .with_inner_size([1600.0, 1000.0])
         .with_min_inner_size([960.0, 600.0])
         .with_drag_and_drop(true)
-        .with_decorations(!CUSTOM_TITLEBAR)
+        .with_decorations(!custom_titlebar)
         .with_fullsize_content_view(true)
         .with_titlebar_shown(false)
         .with_title_shown(false)
@@ -545,8 +564,9 @@ fn main() -> eframe::Result {
     native_crash::install();
     eframe::egui_wgpu::set_startup_hook(startup_step);
     solidcraft_engine::crash::phase("window");
+    let custom_titlebar = custom_titlebar();
     let options = eframe::NativeOptions {
-        viewport: app_viewport()?,
+        viewport: app_viewport(custom_titlebar)?,
         depth_buffer: depth_bits,
         stencil_buffer: STENCIL_BITS,
         multisampling: samples,
@@ -592,13 +612,13 @@ fn main() -> eframe::Result {
             solidcraft_ui_egui::fonts::setup_fonts(&cc.egui_ctx);
             let mut app = SolveApp::new(Session::default(), services(cc));
             app.apply_off_thread = Some(solidcraft_ui_egui::dialogs::APPLY_AT_ONCE);
-            app.custom_titlebar = CUSTOM_TITLEBAR;
+            app.custom_titlebar = custom_titlebar;
             // Windows: the OS hit test offers the resize border, at the window's DPI, from the
             // first message (#1381).
             #[cfg(target_os = "windows")]
             {
-                app.native_resize_border = CUSTOM_TITLEBAR && native_frame::install(cc);
-                if CUSTOM_TITLEBAR && !app.native_resize_border {
+                app.native_resize_border = custom_titlebar && native_frame::install(cc);
+                if custom_titlebar && !app.native_resize_border {
                     eprintln!("SolidCraft window: no native resize border; egui edge zones instead");
                 }
             }
@@ -787,6 +807,22 @@ mod backend_tests {
         assert!(prefer_x11(true, true, Some("niri"), Some("0")));
         assert!(!prefer_x11(false, true, Some("niri"), Some("0")));
     }
+
+    #[test]
+    fn the_desktops_title_bar_only_when_asked_for() {
+        use super::titlebar_choice;
+        // Nothing set: the application bar is the title bar, as before.
+        assert!(titlebar_choice(None, None));
+        // graphics.json's `titlebar`.
+        assert!(!titlebar_choice(None, Some("system")));
+        assert!(titlebar_choice(None, Some("app")));
+        // SOLIDCRAFT_TITLEBAR wins over the file; empty counts as unset; case and spaces don't matter.
+        assert!(!titlebar_choice(Some(" System "), Some("app")));
+        assert!(titlebar_choice(Some("app"), Some("system")));
+        assert!(!titlebar_choice(Some(""), Some("system")));
+        // Anything unknown keeps the application bar.
+        assert!(titlebar_choice(Some("ssd"), None));
+    }
 }
 
 #[cfg(test)]
@@ -794,7 +830,7 @@ mod icon_tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_preserves_the_bundle_icon_instead_of_setting_a_runtime_bitmap() {
-        let viewport = super::app_viewport().expect("viewport");
+        let viewport = super::app_viewport(super::custom_titlebar()).expect("viewport");
         assert_eq!(viewport.icon.as_deref(), Some(&eframe::egui::IconData::default()));
         assert_eq!(viewport.app_id.as_deref(), Some(super::APP_ID));
     }
@@ -802,7 +838,7 @@ mod icon_tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn desktop_viewport_supplies_the_original_mark_to_the_window() {
-        let viewport = super::app_viewport().expect("viewport");
+        let viewport = super::app_viewport(super::custom_titlebar()).expect("viewport");
         let icon = viewport.icon.expect("running window must have an icon");
         assert_eq!((icon.width, icon.height), (64, 64));
         assert_eq!(icon.rgba, super::app_icon::rgba(64).expect("original mark"));

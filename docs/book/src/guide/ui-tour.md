@@ -6,7 +6,10 @@
   the File menu (New, Open, Save, Save As, Export…), undo and redo, the Home tab (the start page)
   and one tab per open design (each with its own undo history, selection and camera; a dot marks
   unsaved changes). On the right: Report a bug, Help (?), Preferences (which hold the theme) and the
-  window's buttons.
+  window's buttons. On Linux, to have your desktop's own title bar and window buttons instead, set
+  `SOLIDCRAFT_TITLEBAR=system` or put `"titlebar": "system"` in `graphics.json` in the settings
+  folder (see [Troubleshooting](troubleshooting.md#reset-the-settings)) and restart; `app` (the
+  default) puts the application bar back.
 - **Toolbar.** The workspace switcher (DESIGN) sits on the left. The tabs (SOLID, SURFACE,
   SHEET METAL, PLASTIC, UTILITIES, and SKETCH while you sketch) hold panels of commands. Click a
   panel's name for all its commands. Drag a command from the dropdown onto a panel's label
