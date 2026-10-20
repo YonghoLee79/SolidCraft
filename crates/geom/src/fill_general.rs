@@ -52,9 +52,9 @@
 //! - **A crown** fills the middle out along the surface's own normals, on control points clear of
 //!   the loop, so it moves neither the loop nor the conditions across it.
 
-use crate::Vec3;
 use crate::bspline::{HPoint, NurbsSurface, SplineError, SplineResult, invalid};
-use crate::fill::{Band, Grid, MAX_LOOP_POINTS, SMOOTHNESS, inside_loop, segments_meet};
+use crate::fill::{Band, Grid, MAX_LOOP_POINTS, SMOOTHNESS, segments_meet};
+use crate::{Ring, Vec3};
 
 /// Most spans of the surface along the domain's longer side.
 pub const MAX_GENERAL_SPANS: usize = 64;
@@ -260,8 +260,8 @@ enum Round {
 
 /// The loop developed into the plane (see the module documentation).
 struct Developed {
-    /// The stations' places in the domain.
-    d: Vec<[f64; 2]>,
+    /// The stations' places in the domain: a closed polygon.
+    d: Ring<[f64; 2]>,
     /// The domain's inward unit normal at each station.
     nu: Vec<[f64; 2]>,
     /// The boundary's speed at each station: loop length per domain length.
@@ -413,17 +413,16 @@ fn develop(st: &[Station]) -> SplineResult<Developed> {
             *p = [-p[0], -p[1]];
         }
     }
+    let d = Ring::new(d);
     check_simple(&d)?;
     // The domain runs the way the loop turned in the patch.
-    let area: f64 = (0..m).map(|k| cross2(get2(&d, k), get2(&d, k + 1))).sum::<f64>() * 0.5;
+    let area: f64 = d.edges().map(|(a, b)| cross2(*a, *b)).sum::<f64>() * 0.5;
     if !(area * sense > 0.0) {
         return Err(SplineError::Unsupported("filling a loop that develops inside out".into()));
     }
     let mut nu = Vec::with_capacity(m);
     let mut speed = Vec::with_capacity(m);
-    for k in 0..m {
-        let (prev, next) = (get2(&d, k + m - 1), get2(&d, k + 1));
-        let here = get2(&d, k);
+    for (k, (&prev, &here, &next)) in d.corners().enumerate() {
         let (a, b) = ([here[0] - prev[0], here[1] - prev[1]], [next[0] - here[0], next[1] - here[1]]);
         let (la, lb) = (a[0].hypot(a[1]), b[0].hypot(b[1]));
         if !(la > 0.0 && lb > 0.0) {
@@ -441,24 +440,15 @@ fn develop(st: &[Station]) -> SplineResult<Developed> {
     Ok(Developed { d, nu, speed, true_angle, counter_clockwise: sense > 0.0 })
 }
 
-fn get2(d: &[[f64; 2]], k: usize) -> [f64; 2] {
-    d.get(k % d.len().max(1)).copied().unwrap_or([0.0; 2])
-}
-
 fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
 
 /// Refuse a domain polygon whose non-adjacent sides meet.
-fn check_simple(d: &[[f64; 2]]) -> SplineResult<()> {
+fn check_simple(d: &Ring<[f64; 2]>) -> SplineResult<()> {
     let m = d.len();
-    let q = |k: usize| get2(d, k);
-    let mut segs: Vec<(f64, f64, usize)> = (0..m)
-        .map(|k| {
-            let (a, b) = (q(k), q(k + 1));
-            (a[0].min(b[0]), a[0].max(b[0]), k)
-        })
-        .collect();
+    let q = |k: usize| d.at(k).copied().unwrap_or([0.0; 2]);
+    let mut segs: Vec<(f64, f64, usize)> = d.edges().enumerate().map(|(k, (a, b))| (a[0].min(b[0]), a[0].max(b[0]), k)).collect();
     segs.sort_by(|a, b| a.0.total_cmp(&b.0));
     for (i, &(_, hi, k)) in segs.iter().enumerate() {
         for &(lo2, _, l) in segs.get(i + 1..).into_iter().flatten() {
@@ -609,7 +599,7 @@ fn fit_round(st: &[Station], spec: &FillSpec, start: usize) -> SplineResult<Roun
     // The largest step between fitted stations, per direction.
     let mut step = [0.0f64; 2];
     for k in (0..m).step_by(2) {
-        let (p, q) = (get2(&dev.d, k), get2(&dev.d, k + 2));
+        let (p, q) = (dev.d.at(k).copied().unwrap_or([0.0; 2]), dev.d.at(k + 2).copied().unwrap_or([0.0; 2]));
         for i in 0..2 {
             step[i] = step[i].max((q[i] - p[i]).abs());
         }
@@ -990,7 +980,7 @@ fn fit_coupled<'a>(grid: &'a Grid, data: &[([f64; 2], Vec3)], rows: &mut [Hermit
 
 /// Where in the domain the surface comes nearest `p`: the nearest of a grid of samples inside
 /// the domain, then Gauss–Newton. A point nearest the surface outside the loop is refused.
-fn locate(net: &Net, d: &[[f64; 2]], p: Vec3) -> SplineResult<[f64; 2]> {
+fn locate(net: &Net, d: &Ring<[f64; 2]>, p: Vec3) -> SplineResult<[f64; 2]> {
     let kn = &net.grid.knots;
     let (Some(u0), Some(u1), Some(v0), Some(v1)) = (kn[0].first(), kn[0].last(), kn[1].first(), kn[1].last()) else {
         return invalid("the grid has no knots");
@@ -1001,7 +991,7 @@ fn locate(net: &Net, d: &[[f64; 2]], p: Vec3) -> SplineResult<[f64; 2]> {
     for i in 0..=samples {
         for j in 0..=samples {
             let q = [lo[0] + (hi[0] - lo[0]) * i as f64 / samples as f64, lo[1] + (hi[1] - lo[1]) * j as f64 / samples as f64];
-            if !inside_loop(q, d) {
+            if !d.contains(q) {
                 continue;
             }
             let Some(s) = net.point(q) else { continue };
@@ -1028,7 +1018,7 @@ fn locate(net: &Net, d: &[[f64; 2]], p: Vec3) -> SplineResult<[f64; 2]> {
             break;
         }
     }
-    if !inside_loop(q, d) {
+    if !d.contains(q) {
         return Err(SplineError::Unsupported("passing through a point that is not over the inside of the loop".into()));
     }
     Ok(q)
@@ -1104,13 +1094,13 @@ fn crown(surface: NurbsSurface, net: &Net, st: &[Station], dev: &Developed, crow
 /// Refuse a fit that folds over or pinches inside the loop: on a grid of samples inside the
 /// domain, the normal must be defined everywhere (the surface's parameter speed nowhere collapses
 /// against the rest) and must not turn over between neighbouring samples.
-fn check_folds(net: &Net, d: &[[f64; 2]], lo: [f64; 2], hi: [f64; 2]) -> SplineResult<()> {
+fn check_folds(net: &Net, d: &Ring<[f64; 2]>, lo: [f64; 2], hi: [f64; 2]) -> SplineResult<()> {
     let n = FOLD_SAMPLES;
     let mut cells: Vec<Option<(Vec3, f64)>> = Vec::with_capacity((n + 1) * (n + 1));
     for j in 0..=n {
         for i in 0..=n {
             let q = [lo[0] + (hi[0] - lo[0]) * i as f64 / n as f64, lo[1] + (hi[1] - lo[1]) * j as f64 / n as f64];
-            if !inside_loop(q, d) {
+            if !d.contains(q) {
                 cells.push(None);
                 continue;
             }

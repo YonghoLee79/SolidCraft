@@ -4814,7 +4814,7 @@ mod tests {
     fn ellipse(c: Vec2, a: f64, b: f64) -> Region2 {
         let corners = [c + Vec2::new(a, 0.0), c + Vec2::new(0.0, b), c - Vec2::new(a, 0.0), c - Vec2::new(0.0, b)];
         let w = std::f64::consts::FRAC_1_SQRT_2;
-        let segs = (0..4).map(|i| Seg2::Conic { a: corners[i], apex: corners[i] + corners[(i + 1) % 4] - c, b: corners[(i + 1) % 4], w }).collect();
+        let segs = Ring::from(corners).edges().map(|(&p, &q)| Seg2::Conic { a: p, apex: p + q - c, b: q, w }).collect();
         Region2 { outer: Loop2 { segs }, holes: vec![] }
     }
 
