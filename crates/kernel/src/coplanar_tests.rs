@@ -154,3 +154,89 @@ fn trimming_at_a_plane_with_nothing_beyond_it() {
     assert!((measure(&same).unwrap().volume - measured).abs() < measured * 1e-9);
     assert!(crate::coplanar::trim_exact(&dome, -Vec3::Z, 5.0).is_err());
 }
+
+/// A half turn of a profile 30 to 37 from the axis y = 0, z = 47 along x, from +y round under the axis to −y: both end faces
+/// lie in z = 47, the plane the axis lies in. The profile is centred on x = −45: a rectangle 4 wide, or a trapezoid 4 wide 30
+/// from the axis and 2 wide 37 from it (its sides then turn into cones).
+fn half_turn(trapezoid: bool) -> Body {
+    use solidcraft_geom::{Loop2, Plane, Region2, Vec2};
+    let plane = Plane::new(Vec3::new(0.0, 0.0, 47.0), Vec3::X, Vec3::Y).unwrap();
+    let top = if trapezoid { 1.0 } else { 2.0 };
+    let outline = Loop2::polygon(&[Vec2::new(-47.0, 30.0), Vec2::new(-43.0, 30.0), Vec2::new(-45.0 + top, 37.0), Vec2::new(-45.0 - top, 37.0)]);
+    let body = revolve(&plane, &[Region2 { outer: outline, holes: vec![] }], Vec2::ZERO, Vec2::X, -std::f64::consts::PI).unwrap().pop().unwrap();
+    let m = body.tessellate_with(0.01, true).unwrap().bounds();
+    assert!((m.min.z - 10.0).abs() < 1e-6 && (m.max.z - 47.0).abs() < 1e-6, "the turn goes under the axis: {m:?}");
+    body
+}
+
+/// The half turn's volume (Pappus, ring by ring), and the part of it inside a plate z 41 to 47 that covers it across: on each
+/// side of the axis, the ring r from it lies in the plate for the angle asin(6 / r) below the top face. By Simpson's rule
+/// (2000 steps: smooth integrands, far below the tolerances asked).
+fn half_turn_volumes(trapezoid: bool) -> (f64, f64) {
+    let width = |r: f64| if trapezoid { 4.0 - 2.0 * (r - 30.0) / 7.0 } else { 4.0 };
+    let integral = |f: &dyn Fn(f64) -> f64| {
+        let (n, h) = (2000, 7.0 / 2000.0);
+        let inner: f64 = (1..n).map(|i| f(30.0 + h * f64::from(i)) * if i % 2 == 1 { 4.0 } else { 2.0 }).sum();
+        (f(30.0) + f(37.0) + inner) * h / 3.0
+    };
+    (std::f64::consts::PI * integral(&|r| width(r) * r), 2.0 * integral(&|r| width(r) * r * (6.0 / r).asin()))
+}
+
+/// Plates z 41 to 47 under the half turn, its axis in their top face: 10 x 100 across it, and 104 x 104 around it. The faces
+/// are pushed apart by a share of the bodies' size: the larger plate pushes the revolve's end faces 2.4 mm out along the
+/// walls they end, where the corners placed on those walls must still lie on them within the kernel's fixed tolerance.
+fn plates_under_the_half_turn() -> [(Body, f64); 2] {
+    [
+        (box_solid(Vec3::new(-50.0, -50.0, 41.0), Vec3::new(-40.0, 50.0, 47.0)).unwrap(), 6000.0),
+        (box_solid(Vec3::new(-52.0, -52.0, 41.0), Vec3::new(52.0, 52.0, 47.0)).unwrap(), 104.0 * 104.0 * 6.0),
+    ]
+}
+
+/// The volume on a mesh 0.002 mm from the faces: within 1e-4 of the analytic volumes here (`measure`'s coarser meshes are not).
+fn fine_volume(b: &Body) -> f64 {
+    b.tessellate_with(0.002, true).unwrap().measure().volume
+}
+
+/// A profile turned ±90° about an axis in a plate's top face, joined to the plate (#3156): both end faces of the revolve lie in
+/// the top face. Its walls (cylinders, planes and cones) stand on its side of the plane though their surfaces go round past
+/// it, so the faces are pushed apart as an extrude's are, and the join is exact: the tool is not nudged.
+#[test]
+fn a_revolve_joined_flush_with_the_face_its_axis_lies_in_is_exact() {
+    for (plate, plate_volume) in plates_under_the_half_turn() {
+        for trapezoid in [false, true] {
+            let what = format!("plate {plate_volume}, trapezoid {trapezoid}");
+            let tool = half_turn(trapezoid);
+            let (turn, inside) = half_turn_volumes(trapezoid);
+            let tol = 1e-4 * turn;
+            assert!((fine_volume(&tool) - turn).abs() < tol, "{what}: {} vs {turn}", fine_volume(&tool));
+            let (r, how) = capture_boolean_diagnostics(|| boolean(&plate, &tool, BoolOp::Union));
+            let r = r.unwrap().unwrap();
+            assert!(!how.events.iter().any(|e| e.strategy.alters_result()) && how.warning().is_none(), "{what}: {how:?}");
+            let v = fine_volume(&r);
+            assert!((v - (plate_volume + turn - inside)).abs() < tol, "{what}: {v} vs {}", plate_volume + turn - inside);
+            assert!(r.lumps().unwrap().len() == 1 && r.validity().is_empty(), "{what}: {:?}", r.validity());
+            // Where the end faces were, the top face is whole: nothing sticks out of z = 47 or was left a hair below it.
+            let b = r.tessellate_with(0.01, true).unwrap().bounds();
+            assert!((b.max.z - 47.0).abs() < 1e-9 && (b.min.z - 10.0).abs() < 1e-6, "{what}: {b:?}");
+        }
+    }
+}
+
+/// The same revolves cut from the plates: a groove through the top face, exact as well.
+#[test]
+fn a_revolve_cut_flush_with_the_face_its_axis_lies_in_is_exact() {
+    for (plate, plate_volume) in plates_under_the_half_turn() {
+        for trapezoid in [false, true] {
+            let what = format!("plate {plate_volume}, trapezoid {trapezoid}");
+            let tool = half_turn(trapezoid);
+            let (turn, inside) = half_turn_volumes(trapezoid);
+            let (r, how) = capture_boolean_diagnostics(|| boolean(&plate, &tool, BoolOp::Cut));
+            let r = r.unwrap().unwrap();
+            assert!(!how.events.iter().any(|e| e.strategy.alters_result()) && how.warning().is_none(), "{what}: {how:?}");
+            let v = fine_volume(&r);
+            assert!((v - (plate_volume - inside)).abs() < 1e-4 * turn, "{what}: {v} vs {}", plate_volume - inside);
+            // The groove goes through the plate, but not across it: it stays one piece.
+            assert!(r.lumps().unwrap().len() == 1 && r.validity().is_empty(), "{what}: {:?}", r.validity());
+        }
+    }
+}

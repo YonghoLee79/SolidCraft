@@ -82,3 +82,51 @@ fn a_barrel_joined_between_the_sides_of_a_leaf_needs_no_retry() {
     let actual = plate.tessellate(1e-4).unwrap().measure().volume;
     assert!(rel(actual, expected) < 1e-5, "{actual} vs {expected}");
 }
+
+/// A profile revolved ±90° about an axis lying in a plate's top face, joined to the plate or cut from it (#3156): both end
+/// faces of the revolve lie flush in that face. The join and the cut are exact, with no Boolean retry warning (the tool is
+/// not nudged). Volumes are analytic: the plate, plus or minus the part of the revolve inside it.
+#[test]
+fn a_revolve_ended_flush_with_the_face_its_axis_lies_in_needs_no_retry() {
+    // Simpson's rule over [30, 37], the profile's distances from the axis.
+    let integral = |f: &dyn Fn(f64) -> f64| {
+        let (n, h) = (2000, 7. / 2000.);
+        let inner: f64 = (1..n).map(|i| f(30. + h * f64::from(i)) * if i % 2 == 1 { 4. } else { 2. }).sum();
+        (f(30.) + f(37.) + inner) * h / 3.
+    };
+    // The rectangle is 4 wide along x; the trapezoid is 4 wide 30 from the axis and 2 wide 37 from it.
+    let profiles: [(&str, [[f64; 2]; 4], &dyn Fn(f64) -> f64); 2] = [
+        ("rectangle", [[-47., -10.], [-43., -10.], [-43., -17.], [-47., -17.]], &|_| 4.),
+        ("trapezoid", [[-47., -17.], [-43., -17.], [-44., -10.], [-46., -10.]], &|r| 4. - 2. * (r - 30.) / 7.),
+    ];
+    for (name, outline, width) in profiles {
+        let turn = PI * integral(&|r| width(r) * r);
+        // On each side of the axis, the ring r from it lies in the plate (6 thick) for asin(6 / r) below its top face.
+        let inside = 2. * integral(&|r| width(r) * r * (6. / r).asin());
+        for (operation, expected) in [("join", 6000. + turn - inside), ("cut", 6000. - inside)] {
+            let mut session = Session::default();
+            run(&mut session, "solid.box", json!({"length":10,"width":100,"height":6,"corner":[-50,-50,41],"body_name":"Plate"}));
+            run(&mut session, "sketch.create", json!({"plane":"XZ"}));
+            run(&mut session, "sketch.line", json!({"points":outline,"closed":true}));
+            run(&mut session, "sketch.line", json!({"points":[[-60,-47],[-30,-47]],"construction":true,"ids":["ax"]}));
+            run(&mut session, "sketch.finish", json!({}));
+            let reply = run(
+                &mut session,
+                "solid.revolve",
+                json!({"axis":"ax","angle":"90 deg","angle2":"90 deg","operation":operation,"profiles":[{"point":[-45,-13.5]}]}),
+            );
+            assert!(reply["warning"].is_null(), "{name} {operation}: {reply}");
+            let result = session.model.result(reply["feature"].as_u64().unwrap()).unwrap();
+            assert!(
+                !result.boolean_diagnostics.events.iter().any(|event| event.strategy.alters_result()),
+                "{name} {operation}: {:?}",
+                result.boolean_diagnostics
+            );
+            let state = session.model.state();
+            let plate = &state.body("Plate").unwrap().body;
+            assert!(plate.validity().is_empty(), "{name} {operation}: {:?}", plate.validity());
+            let actual = plate.tessellate(2e-3).unwrap().measure().volume;
+            assert!(rel(actual, expected) < 2e-5, "{name} {operation}: {actual} vs {expected}");
+        }
+    }
+}

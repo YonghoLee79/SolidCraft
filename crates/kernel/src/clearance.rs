@@ -277,7 +277,9 @@ impl<'a> Clearance<'a> {
                 || crate::prism::wall_along(&surface, along, self.tol * 10.0, &mut 262_144);
             Ok(if straight {
                 Reach::Sideways
-            } else if round.and_then(|s| span(&s, along)).is_some_and(|(s0, s1)| s1 <= lo || s0 >= hi) {
+            } else if round.and_then(|s| span(&s, along)).is_some_and(|(s0, s1)| s1 <= lo || s0 >= hi)
+                || round.and_then(|s| face_span(f, &s, along)).is_some_and(|(s0, s1)| s1 <= lo || s0 >= hi)
+            {
                 Reach::Never
             } else if let Some(Surf::Cylinder { convex, .. } | Surf::Cone { convex, .. } | Surf::Sphere { convex, .. }) = round {
                 Reach::Beyond { convex }
@@ -298,6 +300,92 @@ fn span(s: &Surf, along: Vec3) -> Option<(f64, f64)> {
         Surf::Torus { o, a, h, r, .. } if a.dot(along).abs() > 1.0 - 1e-12 => about(o + a * h, r),
         _ => None,
     }
+}
+
+/// The extent along `along` of a face of a surface of revolution (a cylinder, a cone or a torus), from the angles round its
+/// axis that it spans: the face of a revolve that ends in a plane through its axis stands on one side of that plane, though
+/// its surface goes round to the other, and its triangles may meet the plane where the face does (a revolve ended flush with
+/// a face it joins, #3156). Along a circle of the surface the height is a sine of the angle, so over an arc that leaves
+/// out the circle's highest point it is greatest at an end of the arc; the arcs the face spans are found from its
+/// boundary, where its least and greatest angles lie (the angle round the axis has no extremes inside a face). `None` for
+/// other faces, or a face that goes nearly all the way round.
+fn face_span(f: &mt::Face, s: &Surf, along: Vec3) -> Option<(f64, f64)> {
+    use mt::{BoundedCurve, ParametricCurve};
+    const STEPS: u32 = 64;
+    let along = along.normalized()?;
+    // A point of the axis (a cone's apex) and its direction.
+    let (o, a) = match *s {
+        Surf::Cylinder { o, a, .. } | Surf::Torus { o, a, .. } => (o, a),
+        Surf::Cone { v, a, .. } => (v, a),
+        _ => return None,
+    };
+    let mut points: Vec<Vec3> = Vec::new();
+    for e in f.edge_iter() {
+        let c = e.curve();
+        let (t0, t1) = c.range_tuple();
+        points.extend((0..=STEPS).map(|i| crate::body::from_p3(c.subs(t0 + (t1 - t0) * f64::from(i) / f64::from(STEPS)))));
+    }
+    if points.is_empty() || points.iter().any(|p| !p.is_finite()) {
+        return None;
+    }
+    // The heights along the axis the face lies within, and its least and greatest distance from the axis there.
+    let heights = points.iter().map(|p| a.dot(*p - o));
+    let (t0, t1) = heights.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| (lo.min(t), hi.max(t)));
+    let (rho0, rho1, t0, t1) = match *s {
+        Surf::Cylinder { r, .. } => (r, r, t0, t1),
+        // The apex is at t = 0, the cone opening along a; the height along the axis has no extremes inside a face.
+        Surf::Cone { half, .. } => {
+            let k = half.tan();
+            if !(k.is_finite() && k > 0.0 && t0 >= 0.0) {
+                return None;
+            }
+            (t0 * k, t1 * k, t0, t1)
+        }
+        // A tube may reach higher or lower along the axis inside the face than on its boundary.
+        Surf::Torus { big, h, r, .. } => {
+            if big - r <= 0.0 {
+                return None;
+            }
+            (big - r, big + r, h - r, h + r)
+        }
+        _ => return None,
+    };
+    // Heights along `along`: n·o + (n·a) t + rho |n⊥| cos θ, θ measured from n⊥ round the axis.
+    let up = along.dot(a);
+    let across = along - a * up;
+    let m = across.len();
+    let base = along.dot(o);
+    let (low, high) = (base + (up * t0).min(up * t1), base + (up * t0).max(up * t1));
+    if m < 1e-12 {
+        return Some((low, high));
+    }
+    let e1 = across * (1.0 / m);
+    let e2 = a.cross(e1);
+    let mut angles: Vec<f64> = points.iter().map(|p| (*p - o).dot(e2).atan2((*p - o).dot(e1))).collect();
+    angles.sort_by(f64::total_cmp);
+    // The face spans the circle less the widest gap between the angles of its boundary.
+    let tau = std::f64::consts::TAU;
+    let (mut gap, mut from) = (angles.first()? + tau - angles.last()?, *angles.last()?);
+    for w in angles.windows(2) {
+        if let [x, y] = w
+            && y - x > gap
+        {
+            (gap, from) = (y - x, *x);
+        }
+    }
+    if gap < 0.2 {
+        return None;
+    }
+    // The span starts at the gap's end and runs `tau - gap` round from there.
+    let start = from + gap;
+    let width = tau - gap;
+    let holds = |angle: f64| (angle - start).rem_euclid(tau) <= width;
+    let ends = [start.cos(), (start + width).cos()];
+    let cos_max = if holds(0.0) { 1.0 } else { ends[0].max(ends[1]) };
+    let cos_min = if holds(std::f64::consts::PI) { -1.0 } else { ends[0].min(ends[1]) };
+    let most = if cos_max >= 0.0 { rho1 * m * cos_max } else { rho0 * m * cos_max };
+    let least = if cos_min <= 0.0 { rho1 * m * cos_min } else { rho0 * m * cos_min };
+    Some((low + least, high + most))
 }
 
 #[cfg(test)]
