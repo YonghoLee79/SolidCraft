@@ -2,6 +2,7 @@
 use super::{cell_value, column_parts, configuration_rules_ui, table, unit_of};
 use crate::{SolveApp, ui_kit};
 use serde_json::{Value, json};
+use solidcraft_engine::geom::Triangle;
 /// The Configurations table, its rules and errors.
 pub(super) fn configurations_rows(
     app: &mut SolveApp,
@@ -340,7 +341,7 @@ fn column_menu(app: &mut SolveApp, ui: &mut egui::Ui, error: &mut Option<String>
                             let mut points = std::collections::BTreeMap::new();
                             for (triangle, index) in mesh.triangles.iter().zip(&mesh.tri_face) {
                                 if let std::collections::btree_map::Entry::Vacant(entry) = points.entry(*index as usize)
-                                    && let Some([a, b, c]) = mesh.tri(triangle)
+                                    && let Some(Triangle([a, b, c])) = mesh.tri(triangle)
                                 {
                                     entry.insert((a + b + c) * (1. / 3.));
                                 }

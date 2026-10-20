@@ -1843,8 +1843,8 @@ fn body_of_other_component_at(s: &Session, p: Vec3) -> Option<String> {
         .iter()
         .filter(|b| !b.body.is_mesh())
         .filter_map(|b| {
-            let (d, _) = solidcraft_doc::appearance::nearest_face(b, p)?;
-            (d <= solidcraft_doc::appearance::pick_tolerance(b)).then_some((d, b))
+            let dist = b.mesh().nearest_face(p)?.dist;
+            (dist <= solidcraft_doc::appearance::pick_tolerance(b)).then_some((dist, b))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))?;
     (s.doc.model_body_component(body) != s.active_component).then(|| body.name.clone())

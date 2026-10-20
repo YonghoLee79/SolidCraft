@@ -3,7 +3,7 @@ use super::Column;
 use crate::{DocError, Document, FeatureKind, ModelState, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Triangle, Vec3};
 
 pub(crate) fn shell_plane_family(planes: impl IntoIterator<Item = Option<solidcraft_geom::Plane>>) -> bool {
     let mut planes = planes.into_iter();
@@ -327,8 +327,8 @@ impl Document {
             if indices.binary_search(&(*face as usize)).is_err() {
                 continue;
             }
-            let Some([a, b, c]) = mesh.tri(triangle) else { continue };
-            let Some(normal) = (b - a).cross(c - a).normalized() else { continue };
+            let Some(tri @ Triangle([a, b, c])) = mesh.tri(triangle) else { continue };
+            let Some(normal) = tri.normal() else { continue };
             if let Some((point, base)) = plane {
                 let magnitude = [point.x, point.y, point.z, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z]
                     .iter()

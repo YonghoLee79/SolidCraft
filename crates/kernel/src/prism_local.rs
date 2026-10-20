@@ -256,7 +256,7 @@ fn survey(body: &Body, d: Vec3, tol: f64, mesh_tol: f64, axes: [Vec3; 3]) -> Opt
                 continue;
             }
             let Some(tri) = mesh.tri(t) else { continue };
-            if let Some(e) = extent(&tri, axes) {
+            if let Some(e) = extent(tri.as_slice(), axes) {
                 pieces.push((i, widened(e, mesh_tol)));
             }
         }

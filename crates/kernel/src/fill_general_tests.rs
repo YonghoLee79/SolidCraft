@@ -4,7 +4,7 @@
 //! surface itself, never against the mesher alone.
 
 use mt::{BoundedCurve, InnerSpace, ParametricCurve, ParametricSurface, ParametricSurface3D};
-use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, Plane, Region2, Triangle, Vec2, Vec3};
 use truck_modeling as mt;
 
 use super::{PATCH_ANGLE_TOL_DEG, PatchReport, PatchSpec, face_tolerance, patch_edges_report};
@@ -174,7 +174,7 @@ fn check_face(name: &str, open: &Body, fill: &Body) -> f64 {
     let m = fill.tessellate(0.01).unwrap();
     assert!(!m.triangles.is_empty(), "{name}: the face meshes");
     for t in &m.triangles {
-        let [a, b, c] = m.tri(t).unwrap();
+        let Triangle([a, b, c]) = m.tri(t).unwrap();
         let v = (b - a).cross(c - a);
         let n: Vec3 = t.iter().map(|&i| m.normals[i as usize]).fold(Vec3::ZERO, |s, x| s + x);
         if v.len() > 1e-10 {

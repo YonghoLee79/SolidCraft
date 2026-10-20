@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 use solidcraft_doc::{EmbossFace, apply_point, mat_inverse, mat_mul};
-use solidcraft_geom::{Mesh, Vec2, Vec3};
+use solidcraft_geom::{Mesh, Triangle, Vec2, Vec3};
 
 use crate::params::{bad, vec3};
 use crate::{Result, Session};
@@ -30,12 +30,7 @@ pub(super) fn face_normal_in(s: &Session, p: Vec3, body: Option<&str>) -> Option
     if d > tol * 10.0 {
         return None;
     }
-    m.triangles
-        .iter()
-        .zip(&m.tri_face)
-        .filter(|(_, tf)| **tf == f)
-        .filter_map(|(t, _)| m.tri(t))
-        .find_map(|[a, b, c]| (b - a).cross(c - a).normalized())
+    m.triangles.iter().zip(&m.tri_face).filter(|(_, tf)| **tf == f).filter_map(|(t, _)| m.tri(t)).find_map(|tri| tri.normal())
 }
 
 /// Is the body face at `p` planar (`None`: no face there)?
@@ -45,14 +40,8 @@ pub(super) fn face_is_planar(s: &Session, p: Vec3) -> Option<bool> {
     if d > tol * 10.0 {
         return None;
     }
-    let ns: Vec<Vec3> = m
-        .triangles
-        .iter()
-        .zip(&m.tri_face)
-        .filter(|(_, tf)| **tf == f)
-        .filter_map(|(t, _)| m.tri(t))
-        .filter_map(|[a, b, c]| (b - a).cross(c - a).normalized())
-        .collect();
+    let ns: Vec<Vec3> =
+        m.triangles.iter().zip(&m.tri_face).filter(|(_, tf)| **tf == f).filter_map(|(t, _)| m.tri(t)).filter_map(|tri| tri.normal()).collect();
     let n0 = *ns.first()?;
     Some(ns.iter().all(|n| n.dot(n0) > 1.0 - 1e-6))
 }
@@ -93,11 +82,10 @@ pub(super) fn face_at_state(st: &solidcraft_doc::ModelState, p: Vec3, only: Opti
     for b in st.bodies.iter().filter(|b| only.is_none_or(|n| b.name == n)) {
         let m = b.mesh();
         let mut near: Option<(u32, f64)> = None;
-        for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-            let Some([a, bb, c]) = m.tri(t) else { continue };
+        for (Triangle([a, bb, c]), f) in m.face_tris() {
             let d = point_triangle_dist(p, a, bb, c);
             if near.is_none_or(|(_, nd)| d < nd) {
-                near = Some((*f, d));
+                near = Some((f, d));
             }
         }
         if let Some((f, d)) = near {
@@ -170,8 +158,8 @@ pub(super) fn sketch_of_faces(s: &mut Session, points: &[Vec3], cmd: &str, face_
             .zip(&mesh.tri_face)
             .filter(|(_, face)| **face == index)
             .filter_map(|(triangle, _)| mesh.tri(triangle))
-            .max_by(|[a, b, c], [x, y, z]| ((*b - *a).cross(*c - *a).len()).total_cmp(&((*y - *x).cross(*z - *x).len())))
-            .map(|[a, b, c]| (a + b + c) / 3.0)
+            .max_by(|x, y| x.normal_vector().len().total_cmp(&y.normal_vector().len()))
+            .map(|tri| tri.centroid())
             .ok_or_else(|| bad(cmd, "degenerate face"))?;
         picked.push((index as usize, inside));
     }
@@ -220,16 +208,16 @@ pub(super) fn sketch_of_face(s: &mut Session, point: Vec3, cmd: &str, face_body:
     if d > tol * 10.0 {
         return Err(none());
     }
-    let tris: Vec<[Vec3; 3]> = m.triangles.iter().zip(&m.tri_face).filter(|(_, tf)| **tf == f).filter_map(|(t, _)| m.tri(t)).collect();
-    let normal = tris.iter().find_map(|[a, b, c]| (*b - *a).cross(*c - *a).normalized()).ok_or_else(|| bad(cmd, "degenerate face"))?;
-    if tris.iter().any(|[a, b, c]| (*b - *a).cross(*c - *a).normalized().is_some_and(|n| n.dot(normal) < 1.0 - 1e-6)) {
+    let tris: Vec<Triangle> = m.face_tris_of(f as usize).collect();
+    let normal = tris.iter().find_map(|Triangle([a, b, c])| (*b - *a).cross(*c - *a).normalized()).ok_or_else(|| bad(cmd, "degenerate face"))?;
+    if tris.iter().any(|Triangle([a, b, c])| (*b - *a).cross(*c - *a).normalized().is_some_and(|n| n.dot(normal) < 1.0 - 1e-6)) {
         return Err(bad(cmd, "only planar faces can be extruded"));
     }
     // A point well inside the face: the centroid of its largest triangle.
     let inside = tris
         .iter()
         .max_by(|x, y| (x[1] - x[0]).cross(x[2] - x[0]).len().total_cmp(&(y[1] - y[0]).cross(y[2] - y[0]).len()))
-        .map(|[a, b, c]| (*a + *b + *c) / 3.0)
+        .map(|Triangle([a, b, c])| (*a + *b + *c) / 3.0)
         .unwrap_or(point);
     let edges: Vec<Vec<Vec3>> =
         m.face_edges(f).into_iter().filter(|e| !m.seams.get(*e).copied().unwrap_or(false)).filter_map(|e| m.edges.get(e).cloned()).collect();

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Plane, Vec3};
+use solidcraft_geom::{Plane, Triangle, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::{Body, Solid, from_p3, p3, v3};
@@ -295,7 +295,7 @@ fn draft_walls(b: &Body, at: &[Vec3], neutral: &Plane, pull: Vec3, angle: f64) -
             .triangles
             .iter()
             .zip(&mesh.tri_face)
-            .filter_map(|(t, f)| mesh.tri(t).map(|[x, y, z]| (point_tri(*p, x, y, z), *f as usize)))
+            .filter_map(|(t, f)| mesh.tri(t).map(|Triangle([x, y, z])| (point_tri(*p, x, y, z), *f as usize)))
             .min_by(|a, c| a.0.total_cmp(&c.0));
         match near {
             Some((d, f)) if d < size * 1e-3 + 1e-6 => {
@@ -470,7 +470,7 @@ fn shell_planar(b: &Body, open: &[Vec3], thickness: f64) -> Result<Body> {
             .triangles
             .iter()
             .zip(&mesh.tri_face)
-            .filter_map(|(t, f)| mesh.tri(t).map(|[x, y, z]| (point_tri(*p, x, y, z), *f as usize)))
+            .filter_map(|(t, f)| mesh.tri(t).map(|Triangle([x, y, z])| (point_tri(*p, x, y, z), *f as usize)))
             .min_by(|a, c| a.0.total_cmp(&c.0));
         if let Some((d, f)) = near
             && d < size * 1e-3 + 1e-6
@@ -671,7 +671,7 @@ fn shell_opened(b: &Body, healed: &Body, open: &[Vec3], opened: &[usize], thickn
                     .triangles
                     .iter()
                     .zip(&raw.tri_face)
-                    .filter_map(|(t, f)| raw.tri(t).map(|[x, y, z]| (point_tri(*p, x, y, z), *f as usize)))
+                    .filter_map(|(t, f)| raw.tri(t).map(|Triangle([x, y, z])| (point_tri(*p, x, y, z), *f as usize)))
                     .min_by(|a, c| a.0.total_cmp(&c.0));
                 if let Some((d, f)) = near
                     && d < size * 1e-3 + 1e-6
@@ -705,15 +705,14 @@ fn opening_overreach(healed: &Body, cavity: &Body, opened: &[usize], thickness: 
     let faces: Vec<mt::Face> = healed.solid.face_iter().cloned().collect();
     // Each open face's plane (outward normal, offset) and its triangles.
     let mesh = healed.tessellate((size * 1e-3).max(1e-3))?;
-    let mut open: Vec<(&mt::Face, Vec3, f64, Vec<[Vec3; 3]>)> = Vec::new();
+    let mut open: Vec<(&mt::Face, Vec3, f64, Vec<Triangle>)> = Vec::new();
     for fi in opened {
         let Some(f) = faces.get(*fi) else { return Ok(None) };
         let mt::Surface::Plane(pl) = f.oriented_surface() else { return Ok(None) };
         let n = pl.normal();
         let Some(n) = Vec3::new(n.x, n.y, n.z).normalized() else { return Ok(None) };
         let d = n.dot(from_p3(pl.origin()));
-        let tris: Vec<[Vec3; 3]> =
-            mesh.triangles.iter().zip(&mesh.tri_face).filter(|(_, f)| **f as usize == *fi).filter_map(|(t, _)| mesh.tri(t)).collect();
+        let tris: Vec<Triangle> = mesh.face_tris_of(*fi).collect();
         if tris.is_empty() {
             return Ok(None);
         }
@@ -727,7 +726,7 @@ fn opening_overreach(healed: &Body, cavity: &Body, opened: &[usize], thickness: 
             let h = n.dot(q) - d;
             h > tol && {
                 let on = q - *n * h;
-                !tris.iter().any(|[a, b, c]| point_tri(on, *a, *b, *c) < size * 1e-4 + 1e-6)
+                !tris.iter().any(|Triangle([a, b, c])| point_tri(on, *a, *b, *c) < size * 1e-4 + 1e-6)
             }
         })
     });
@@ -851,7 +850,7 @@ pub fn offset_faces(b: &Body, at: &[Vec3], distance: f64) -> Result<Body> {
             .triangles
             .iter()
             .zip(&mesh.tri_face)
-            .filter_map(|(t, f)| mesh.tri(t).map(|[x, y, z]| (point_tri(*p, x, y, z), *f as usize)))
+            .filter_map(|(t, f)| mesh.tri(t).map(|Triangle([x, y, z])| (point_tri(*p, x, y, z), *f as usize)))
             .min_by(|a, c| a.0.total_cmp(&c.0));
         match near {
             Some((d, f)) if d < size * 1e-3 + 1e-6 => {

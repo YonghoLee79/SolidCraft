@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use solidcraft_geom::{Mesh, Plane, Seg2, Vec2, Vec3};
+use solidcraft_geom::{FaceHit, Mesh, Plane, Seg2, Triangle, Vec2, Vec3};
 use solidcraft_sketch::{CurveKind, LinkGeom, LinkKind, LinkSource, Sketch};
 
 use crate::eval::ModelState;
@@ -125,7 +125,7 @@ fn resolve_uncached(
         }
         LinkSource::Face { body, at } => {
             let (bi, mesh) = body_mesh(st, body, *at)?;
-            let (f, q, d) = nearest_face(&mesh, *at).ok_or_else(|| lost("the face"))?;
+            let FaceHit { face: f, point: q, dist: d } = mesh.nearest_face(*at).ok_or_else(|| lost("the face"))?;
             face_index = Some(usize::try_from(f).map_err(|_| DocError::Invalid("face index exceeds platform limit".into()))?);
             let size = mesh.bounds().diagonal().max(1e-9);
             if d > size * 0.25 {
@@ -195,7 +195,7 @@ fn resolve_uncached(
             let ci = ss.sketch.curve_index(curve).ok_or_else(|| lost(&format!("sketch curve {curve}")))?;
             let pts: Vec<Vec3> = ss.sketch.polyline(ci).iter().map(|p| ss.plane.to_world(*p)).collect();
             let (bi, mesh) = body_mesh(st, body, *at)?;
-            let (f, q, d) = nearest_face(&mesh, *at).ok_or_else(|| lost("the face"))?;
+            let FaceHit { face: f, point: q, dist: d } = mesh.nearest_face(*at).ok_or_else(|| lost("the face"))?;
             let size = mesh.bounds().diagonal().max(1e-9);
             if d > size * 0.25 {
                 return Err(lost("the face"));
@@ -213,7 +213,7 @@ fn resolve_uncached(
         }
         LinkSource::Iso { body, at, dir } => {
             let (bi, mesh) = body_mesh(st, body, *at)?;
-            let (f, q, d) = nearest_face(&mesh, *at).ok_or_else(|| lost("the face"))?;
+            let FaceHit { face: f, point: q, dist: d } = mesh.nearest_face(*at).ok_or_else(|| lost("the face"))?;
             let size = mesh.bounds().diagonal().max(1e-9);
             if d > size * 0.25 {
                 return Err(lost("the face"));
@@ -473,7 +473,7 @@ pub fn resolve_face_indices(st: &ModelState, plane: &Plane, kind: LinkKind, body
         .triangles
         .iter()
         .zip(&mesh.tri_face)
-        .find_map(|(triangle, face)| selected.contains(&(*face as usize)).then(|| mesh.tri(triangle)).flatten().map(|[a, b, c]| (a + b + c) / 3.0))
+        .find_map(|(triangle, face)| selected.contains(&(*face as usize)).then(|| mesh.tri(triangle)).flatten().map(|tri| tri.centroid()))
         .ok_or_else(|| lost("anchored projection face"))?;
     if geometry.is_empty() {
         return Err(lost("anchored projection boundaries"));
@@ -694,11 +694,10 @@ fn body_mesh(st: &ModelState, name: &str, at: Vec3) -> Result<(usize, std::sync:
     }
     let mut best: Option<(usize, f64)> = None;
     for (i, b) in st.bodies.iter().enumerate() {
-        let m = b.mesh();
-        if let Some((_, _, d)) = nearest_face(&m, at)
-            && best.is_none_or(|(_, bd)| d < bd)
+        if let Some(h) = b.mesh().nearest_face(at)
+            && best.is_none_or(|(_, bd)| h.dist < bd)
         {
-            best = Some((i, d));
+            best = Some((i, h.dist));
         }
     }
     let (i, _) = best.ok_or_else(|| DocError::Invalid(format!("body {name} no longer exists")))?;
@@ -727,34 +726,6 @@ pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
             if best.is_none_or(|(_, _, bd)| d < bd) {
                 best = Some((i, q, d));
             }
-        }
-    }
-    best
-}
-
-pub(crate) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let n = (b - a).cross(c - a);
-    let Some(nn) = n.normalized() else { return closest_on_segment(p, a, b) };
-    let q = p - nn * (p - a).dot(nn);
-    let inside = (b - a).cross(q - a).dot(n) >= 0.0 && (c - b).cross(q - b).dot(n) >= 0.0 && (a - c).cross(q - c).dot(n) >= 0.0;
-    if inside {
-        return q;
-    }
-    [closest_on_segment(p, a, b), closest_on_segment(p, b, c), closest_on_segment(p, c, a)]
-        .into_iter()
-        .min_by(|x, y| x.dist(p).total_cmp(&y.dist(p)))
-        .unwrap_or(a)
-}
-
-/// Nearest face: (B-rep face index, closest point, distance).
-pub(crate) fn nearest_face(m: &Mesh, p: Vec3) -> Option<(u32, Vec3, f64)> {
-    let mut best: Option<(u32, Vec3, f64)> = None;
-    for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-        let Some([a, b, c]) = m.tri(t) else { continue };
-        let q = closest_on_triangle(p, a, b, c);
-        let d = q.dist(p);
-        if best.is_none_or(|(_, _, bd)| d < bd) {
-            best = Some((*f, q, d));
         }
     }
     best
@@ -993,8 +964,8 @@ fn silhouette(plane: &Plane, m: &Mesh) -> Vec<LinkGeom> {
     // Undirected mesh edge → facing flags of the triangles using it.
     let mut edges: BTreeMap<((i64, i64, i64), (i64, i64, i64)), (Vec3, Vec3, Vec<bool>)> = BTreeMap::new();
     for t in &m.triangles {
-        let Some([a, b, c]) = m.tri(t) else { continue };
-        let fnrm = (b - a).cross(c - a);
+        let Some(tri @ Triangle([a, b, c])) = m.tri(t) else { continue };
+        let fnrm = tri.normal_vector();
         let Some(un) = fnrm.normalized() else { continue };
         let front = un.dot(n) > 1e-6;
         for (p, r) in [(a, b), (b, c), (c, a)] {

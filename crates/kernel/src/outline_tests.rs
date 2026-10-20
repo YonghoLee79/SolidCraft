@@ -44,13 +44,7 @@ fn a_swept_lips_foot_is_a_plane() {
     let l = lip(0.0);
     let foot = crate::coplanar::faces_in(&l, -Vec3::Z, -10.0, 1e-6);
     let m = l.tessellate(1e-5).unwrap();
-    let area: f64 = m
-        .triangles
-        .iter()
-        .zip(&m.tri_face)
-        .filter(|(_, f)| foot.contains(&(**f as usize)))
-        .filter_map(|(t, _)| m.tri(t))
-        .map(|[a, b, c]| (b - a).cross(c - a).len() / 2.0)
-        .sum();
+    let area: f64 =
+        m.triangles.iter().zip(&m.tri_face).filter(|(_, f)| foot.contains(&(**f as usize))).filter_map(|(t, _)| m.tri(t)).map(|tri| tri.area()).sum();
     assert!((area - PI * (100.0 - 81.0) / 4.0).abs() < 1e-3, "{} faces, {area} mm²", foot.len());
 }

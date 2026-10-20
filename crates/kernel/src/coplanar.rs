@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 
-use solidcraft_geom::{Aabb3, Ring, UnitVec3, Vec3};
+use solidcraft_geom::{Aabb3, Ring, Triangle, UnitVec3, Vec3};
 use truck_modeling::{self as mt, builder};
 
 use crate::body::shell_groups::boxes_separate;
@@ -995,7 +995,7 @@ pub(crate) fn faces_touch(a: &Body, b: &Body) -> bool {
     let depth = (size * 1e-4).max(1e-6);
     mb.triangles.iter().zip(&mb.tri_face).take(100_000).any(|(t, fi)| {
         let Some((_, n)) = faces.iter().find(|(i, _)| *i == *fi as usize) else { return false };
-        mb.tri(t).is_some_and(|[p, q, r]| inside.contains((p + q + r) / 3.0 + *n * depth))
+        mb.tri(t).is_some_and(|tri| inside.contains(tri.centroid() + *n * depth))
     })
 }
 
@@ -1026,7 +1026,7 @@ pub(crate) fn has_skin(r: &Body, mesh: &solidcraft_geom::Mesh) -> bool {
     let depth = (size * 1e-4).max(1e-6);
     let mut open = 0.0;
     for (t, face) in mesh.triangles.iter().zip(&mesh.tri_face).take(100_000) {
-        let (Some(n), Some([a, b, c])) = (paired.get(&(*face as usize)), mesh.tri(t)) else { continue };
+        let (Some(n), Some(Triangle([a, b, c]))) = (paired.get(&(*face as usize)), mesh.tri(t)) else { continue };
         if !inside.contains((a + b + c) / 3.0 - *n * depth) {
             open += (b - a).cross(c - a).len() * 0.5;
         }
@@ -1042,7 +1042,7 @@ const MAX_SKIN_FACES: usize = 2000;
 /// triangles; they are drawn in by `skin`, so that faces of the other body lying against the
 /// face's sides are not in its way. A face with a curved edge reaches past its triangles by
 /// the chord error.
-fn in_plane(tool: &Body, m: Vec3, d: f64, skin: f64) -> Vec<([Vec3; 3], f64)> {
+fn in_plane(tool: &Body, m: Vec3, d: f64, skin: f64) -> Vec<(Triangle, f64)> {
     let chord = (tool.size() * 2e-4).max(skin);
     let Ok(mesh) = tool.tessellate_with(chord, true) else { return Vec::new() };
     let faces: Vec<&mt::Face> = tool.solid.face_iter().collect();
@@ -1054,7 +1054,7 @@ fn in_plane(tool: &Body, m: Vec3, d: f64, skin: f64) -> Vec<([Vec3; 3], f64)> {
             Some((i, if straight { -skin } else { 2.0 * chord }))
         })
         .collect();
-    mesh.triangles.iter().zip(&mesh.tri_face).filter_map(|(t, face)| Some((mesh.tri(t)?, *margins.get(&(*face as usize))?))).collect()
+    mesh.face_tris().filter_map(|(t, face)| Some((t, *margins.get(&(face as usize))?))).collect()
 }
 
 /// Has `a` material behind every part of b's faces in the plane (m, d) (m their outward
@@ -1070,7 +1070,7 @@ fn backed(a: &Body, b: &Body, m: Vec3, d: f64, depth: f64) -> bool {
         if !faces.contains(&(*fi as usize)) {
             continue;
         }
-        let Some([p, q, r]) = mb.tri(t) else { continue };
+        let Some(Triangle([p, q, r])) = mb.tri(t) else { continue };
         let c = (p + q + r) / 3.0;
         points.extend([c, c.lerp(p, 0.8), c.lerp(q, 0.8), c.lerp(r, 0.8)]);
         if points.len() > 4000 {

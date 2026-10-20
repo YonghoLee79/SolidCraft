@@ -8,7 +8,7 @@
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::doc::FeatureKind;
-use solidcraft_engine::geom::{Aabb3, Vec2, Vec3};
+use solidcraft_engine::geom::{Aabb3, Triangle, Vec2, Vec3};
 use solidcraft_engine::sketch::{CurveKind, LinkKind, SPoint};
 
 use crate::dialogs::Kind;
@@ -481,8 +481,8 @@ fn cylinder_with_cluster(sketch: Value, at: [f64; 2], view: &str) -> Cluster {
     let ray = hits_at(&h, click);
     let Some(Hit::Face { body, index, .. }) = ray.iter().find(|x| matches!(x, Hit::Face { .. })) else { panic!("no face under {centre:?}: {ray:?}") };
     let m = h.app.session.world_state().body(body).unwrap().mesh();
-    let face: Vec<[Vec3; 3]> = m.triangles.iter().zip(&m.tri_face).filter(|(_, f)| **f as usize == *index).filter_map(|(t, _)| m.tri(t)).collect();
-    let near_points = |t: &[Vec3; 3]| {
+    let face: Vec<Triangle> = m.face_tris_of(*index).collect();
+    let near_points = |t: &Triangle| {
         let mut b = Aabb3::EMPTY;
         t.iter().for_each(|v| b.add(*v));
         let gap = (b.min - points.max).max(points.min - b.max);

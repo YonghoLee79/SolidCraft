@@ -16,7 +16,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use serde_json::Value;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::ModelState;
-use solidcraft_engine::geom::{Aabb3, Mesh, Ring, Vec3};
+use solidcraft_engine::geom::{Aabb3, Mesh, Ring, Triangle, Vec3};
 
 use crate::SolveApp;
 use crate::gpu::{GpuScene, SceneSlot};
@@ -682,9 +682,9 @@ pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
 /// near-linear however many faces there are (a modeled thread has thousands).
 fn new_faces(m: &Mesh, nf: usize, old: &Mesh) -> Vec<bool> {
     let mut cents: Vec<Vec<Vec3>> = vec![Vec::new(); nf];
-    for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-        if let (Some(face), Some([a, b, c])) = (cents.get_mut(*f as usize), m.tri(t)) {
-            face.push((a + b + c) / 3.0);
+    for (tri, f) in m.face_tris() {
+        if let Some(face) = cents.get_mut(f as usize) {
+            face.push(tri.centroid());
         }
     }
     let index = SurfaceIndex::new(old);
@@ -706,7 +706,7 @@ fn new_faces(m: &Mesh, nf: usize, old: &Mesh) -> Vec<bool> {
 /// The triangles of a mesh in a uniform grid, to ask whether a point lies on the surface (within
 /// its tessellation tolerance) by looking only at the triangles near it.
 struct SurfaceIndex {
-    tris: Vec<[Vec3; 3]>,
+    tris: Vec<Triangle>,
     tol: f64,
     lo: [f64; 3],
     cell: [f64; 3],
@@ -725,7 +725,7 @@ impl SurfaceIndex {
             return None;
         }
         let tol = (bb.diagonal() * 2e-3).max(1e-4);
-        let tris: Vec<[Vec3; 3]> = m.triangles.iter().filter_map(|t| m.tri(t)).collect();
+        let tris: Vec<Triangle> = m.triangles.iter().filter_map(|t| m.tri(t)).collect();
         let lo = [bb.min.x - tol, bb.min.y - tol, bb.min.z - tol];
         let ext = [bb.max.x - bb.min.x + 2.0 * tol, bb.max.y - bb.min.y + 2.0 * tol, bb.max.z - bb.min.z + 2.0 * tol];
         let mut res = ((tris.len() as f64).cbrt().round() as usize).clamp(1, 48);
@@ -779,7 +779,7 @@ impl SurfaceIndex {
     fn contains(&self, p: Vec3) -> bool {
         let (x, y, z) = (self.cell_of(p.x, 0), self.cell_of(p.y, 1), self.cell_of(p.z, 2));
         let Some(cell) = self.cells.get((x * self.res + y) * self.res + z) else { return false };
-        cell.iter().filter_map(|i| self.tris.get(*i as usize)).any(|[a, b, c]| point_triangle_dist(p, *a, *b, *c) < self.tol)
+        cell.iter().filter_map(|i| self.tris.get(*i as usize)).any(|Triangle([a, b, c])| point_triangle_dist(p, *a, *b, *c) < self.tol)
     }
 }
 
@@ -1053,7 +1053,7 @@ mod tests {
     fn brute_force_on_surface(m: &Mesh, p: Vec3) -> bool {
         let bb = m.bounds();
         let tol = (bb.diagonal() * 2e-3).max(1e-4);
-        m.triangles.iter().filter_map(|t| m.tri(t)).any(|[a, b, c]| point_triangle_dist(p, a, b, c) < tol)
+        m.triangles.iter().filter_map(|t| m.tri(t)).any(|Triangle([a, b, c])| point_triangle_dist(p, a, b, c) < tol)
     }
 
     /// A flat sheet of `n × n` squares, two triangles and one face each, lifted by `z`.

@@ -10,7 +10,7 @@
 //! through the touching points (the solids are unchanged), and the result's history is composed
 //! back over the operands as they were given.
 
-use solidcraft_geom::{Plane, UnitVec3, Vec3};
+use solidcraft_geom::{Plane, Triangle, UnitVec3, Vec3};
 use truck_modeling::{ParametricCurve, SearchNearestParameter};
 
 use crate::body::{Body, from_p3, p3};
@@ -97,7 +97,7 @@ fn on_face(mesh: &solidcraft_geom::Mesh, face: usize, p: Vec3, reach: f64) -> bo
         .zip(&mesh.tri_face)
         .filter(|(_, f)| **f as usize == face)
         .filter_map(|(t, _)| mesh.tri(t))
-        .any(|[a, b, c]| crate::boolean_guard::point_triangle_dist(p, a, b, c) <= reach)
+        .any(|Triangle([a, b, c])| crate::boolean_guard::point_triangle_dist(p, a, b, c) <= reach)
 }
 
 /// Whether `p` lies on an edge of face `face` (within `margin`).

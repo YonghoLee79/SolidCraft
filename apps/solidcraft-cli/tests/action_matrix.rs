@@ -217,11 +217,11 @@ fn actions(s: &Session) -> Vec<Action> {
         // A point well inside each face: the middle of its largest triangle.
         let mut inside: BTreeMap<usize, (Vec3, f64)> = BTreeMap::new();
         for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
-            if let Some([a, bb, c]) = mesh.tri(t) {
-                let area = (bb - a).cross(c - a).len();
-                let e = inside.entry(*f as usize).or_insert(((a + bb + c) * (1.0 / 3.0), -1.0));
+            if let Some(tri) = mesh.tri(t) {
+                let area = tri.normal_vector().len();
+                let e = inside.entry(*f as usize).or_insert((tri.centroid(), -1.0));
                 if area > e.1 {
-                    *e = ((a + bb + c) * (1.0 / 3.0), area);
+                    *e = (tri.centroid(), area);
                 }
             }
         }

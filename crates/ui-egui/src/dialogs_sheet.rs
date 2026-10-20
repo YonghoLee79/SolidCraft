@@ -727,15 +727,8 @@ pub fn arrow(app: &SolveApp, d: &Dialog) -> Option<Vec3> {
     let st = app.session.world_state();
     let m = st.body(body)?.mesh();
     let faces = m.edge_faces.get(*index)?;
-    let area = |f: u32| -> f64 {
-        m.triangles
-            .iter()
-            .zip(&m.tri_face)
-            .filter(|(_, tf)| **tf == f)
-            .filter_map(|(t, _)| m.tri(t))
-            .map(|[a, b, c]| (b - a).cross(c - a).len() * 0.5)
-            .sum()
-    };
+    let area =
+        |f: u32| -> f64 { m.triangles.iter().zip(&m.tri_face).filter(|(_, tf)| **tf == f).filter_map(|(t, _)| m.tri(t)).map(|tri| tri.area()).sum() };
     let f = faces.iter().copied().max_by(|a, b| area(*a).total_cmp(&area(*b)))?;
     let n = m
         .triangles
@@ -743,8 +736,8 @@ pub fn arrow(app: &SolveApp, d: &Dialog) -> Option<Vec3> {
         .zip(&m.tri_face)
         .filter(|(_, tf)| **tf == f)
         .filter_map(|(t, _)| m.tri(t))
-        .min_by(|a, b| ((a[0] + a[1] + a[2]) / 3.0).dist(*point).total_cmp(&((b[0] + b[1] + b[2]) / 3.0).dist(*point)))
-        .and_then(|[a, b, c]| (b - a).cross(c - a).normalized())?;
+        .min_by(|a, b| a.centroid().dist(*point).total_cmp(&b.centroid().dist(*point)))
+        .and_then(|tri| tri.normal())?;
     Some(if flip { -n } else { n })
 }
 
