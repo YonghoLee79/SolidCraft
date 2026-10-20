@@ -32,6 +32,8 @@
   in the default and Inventor presets. In every preset, Ctrl+left drag (Cmd on macOS) that starts
   on empty space orbits; a Ctrl+click still adds to the selection. Shift+right-drag snaps to the nearest standard or
   diagonal view; Shift does not request snapping when the preset already requires it to orbit.
+  An orbit drag that reaches the edge of the view carries on: the cursor reappears at the opposite
+  edge, so you can keep turning round the model without letting go (not on Wayland or in the browser).
   With **Touchpad** selected in Preferences › Navigation, hold **Shift** and move the pointer to
   pan, or hold **Alt** (**Option** on macOS) and move it to orbit—no mouse button is needed.
   Vertical two-finger scrolling zooms in this preset, regardless of the saved two-finger pan
