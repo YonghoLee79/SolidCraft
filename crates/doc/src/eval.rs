@@ -15,7 +15,7 @@ use solidcraft_sketch::{CurveKind, Profile, SolveReport, find_profiles};
 
 use crate::expr::{self, Kind, Value};
 use crate::lineage::Traced;
-use crate::{AxisRef, DocError, Document, Feature, FeatureKind, HoleKind, Operation, PlaneRef, ProfileSel, Result};
+use crate::{AxisRef, DocError, Document, Feature, FeatureKind, HoleKind, Operation, PlaneRef, ProfileSel, Result, ThreadSizing};
 
 /// A body in the evaluated model.
 #[derive(Clone, Debug)]
@@ -257,7 +257,8 @@ pub struct ThreadInfo {
     pub end: f64,
 }
 
-/// ISO metric coarse threads: (nominal diameter, pitch).
+/// Historical automatic sizing and implicit coarse designations. Do not expand this table:
+/// it defines the meaning of existing saved threads (including explicit names such as M8).
 const ISO_COARSE: [(f64, f64); 22] = [
     (1.6, 0.35),
     (2.0, 0.4),
@@ -287,6 +288,65 @@ const ISO_COARSE: [(f64, f64); 22] = [
 /// Other diameter/pitch pairs can be supplied as explicit designations.
 pub fn metric_thread_sizes() -> &'static [(f64, f64)] {
     &ISO_COARSE
+}
+
+// Additional coarse pairs from ISO 261:1998, table 2 (columns 1 and 2):
+// https://www.iso.org/standard/4165.html
+const EXTRA_COARSE: &[(f64, f64)] = &[
+    (1.0, 0.25),
+    (1.1, 0.25),
+    (1.2, 0.25),
+    (1.4, 0.3),
+    (1.8, 0.35),
+    (2.2, 0.45),
+    (3.5, 0.6),
+    (4.5, 0.75),
+    (7.0, 1.0),
+    (9.0, 1.25),
+    (11.0, 1.5),
+    (33.0, 3.5),
+    (39.0, 4.0),
+    (45.0, 4.5),
+    (52.0, 5.0),
+    (60.0, 5.5),
+    (64.0, 6.0),
+    (68.0, 6.0),
+];
+
+/// Coarse presets for new threads and editable menus; historical sizing stays unchanged.
+pub fn metric_thread_coarse_presets() -> impl Iterator<Item = (f64, f64)> {
+    ISO_COARSE.iter().chain(EXTRA_COARSE).copied()
+}
+
+// Remaining ISO 261:1998 table 2 diameters through 100 mm, with fine pitches only.
+// Omit M35, which section 5.1 reserves for bearing locknuts. The 1.5 mm default is
+// listed in table 2 or permitted by section 5.4 (up to 150 mm); M5.5 uses 0.5 mm.
+const ISO_FINE_DIAMETERS: &[f64] = &[
+    5.5, 15.0, 17.0, 25.0, 26.0, 28.0, 32.0, 38.0, 40.0, 50.0, 55.0, 58.0, 62.0, 65.0, 70.0, 72.0, 75.0, 76.0, 78.0, 80.0, 82.0, 85.0, 90.0, 95.0,
+    100.0,
+];
+
+fn iso_thread_for(diameter: f64, internal: bool) -> Option<(f64, f64)> {
+    if !diameter.is_finite() || diameter <= 0.0 {
+        return None;
+    }
+    // A hole is measured at its tap-drill diameter, not the thread's major diameter.
+    if internal {
+        return thread_for(diameter, true);
+    }
+    let fine = ISO_FINE_DIAMETERS.iter().map(|&d| (d, if d == 5.5 { 0.5 } else { 1.5 }));
+    let nearest = metric_thread_coarse_presets()
+        .chain(fine)
+        .filter(|(d, _)| (d - diameter).abs() <= 0.15 * diameter && (d - diameter).abs() < 0.15 * d)
+        .min_by(|a, b| (a.0 - diameter).abs().total_cmp(&(b.0 - diameter).abs()).then_with(|| a.0.total_cmp(&b.0)));
+    nearest.or_else(|| {
+        // Only unmatched shafts use their measured diameter; discard sub-micron roundoff
+        // without overflowing or rounding a positive, very small diameter to zero.
+        let rounded = (diameter * 1e6).round() / 1e6;
+        let d = if rounded.is_finite() && rounded > 0.0 { rounded } else { diameter };
+        let p = 1.5_f64.min(d / 2.0);
+        (p > 0.0 && p < d).then_some((d, p))
+    })
 }
 
 /// "M8" or "M8x1" → (nominal diameter, pitch).
@@ -324,11 +384,17 @@ fn format_thread(d: f64, p: f64) -> String {
 /// The automatic ISO metric designation for a cylindrical face, using the same fit check as
 /// a thread feature without an explicit size. This query does not change the model.
 pub fn suggested_thread(st: &ModelState, p: Vec3) -> Result<String> {
-    thread_on(st, 0, p, None, None).map(|t| t.designation)
+    suggested_thread_with_sizing(st, p, ThreadSizing::Legacy)
+}
+
+/// Resolve the saved sizing rule through the same fit checks as feature evaluation.
+/// New UI and command features use `Iso261`; older automatic features use `Legacy`.
+pub fn suggested_thread_with_sizing(st: &ModelState, p: Vec3, sizing: ThreadSizing) -> Result<String> {
+    thread_on(st, 0, p, None, None, sizing).map(|t| t.designation)
 }
 
 /// A cosmetic thread on the cylindrical face at `p`.
-fn thread_on(st: &ModelState, feature: u64, p: Vec3, designation: Option<&str>, length: Option<f64>) -> Result<ThreadInfo> {
+fn thread_on(st: &ModelState, feature: u64, p: Vec3, designation: Option<&str>, length: Option<f64>, sizing: ThreadSizing) -> Result<ThreadInfo> {
     let (body, cyl) = st
         .bodies
         .iter()
@@ -341,7 +407,11 @@ fn thread_on(st: &ModelState, feature: u64, p: Vec3, designation: Option<&str>, 
     let dia = cyl.radius * 2.0;
     let (major, pitch) = match designation {
         Some(s) => parse_metric_thread(s).ok_or_else(|| DocError::Invalid(format!("unknown thread `{s}` (ISO metric, like M8 or M8x1)")))?,
-        None => thread_for(dia, cyl.internal).ok_or_else(|| DocError::Invalid(format!("no metric thread fits a {dia:.2} mm cylinder")))?,
+        None => match sizing {
+            ThreadSizing::Legacy => thread_for(dia, cyl.internal),
+            ThreadSizing::Iso261 => iso_thread_for(dia, cyl.internal),
+        }
+        .ok_or_else(|| DocError::Invalid(format!("no metric thread fits a {dia:.2} mm cylinder")))?,
     };
     let fits = if cyl.internal {
         (major - pitch * 1.0825 - dia).abs() < 0.2 * major || (major - pitch - dia).abs() < 0.15 * major
@@ -5170,18 +5240,18 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 let r = val(vals, diameter, Kind::Length)? / 2.0;
                 for p in spots {
                     let wall = p + dir.any_perp() * r + dir * (r * 0.5);
-                    let t = thread_on(st, f.id, wall, Some(d), None)?;
+                    let t = thread_on(st, f.id, wall, Some(d), None, ThreadSizing::Legacy)?;
                     st.threads.push(t);
                 }
             }
             Ok(())
         }
-        FeatureKind::Thread { face, designation, length, modeled } => {
+        FeatureKind::Thread { face, designation, length, modeled, sizing } => {
             let l = match length {
                 Some(e) => Some(val(vals, e, Kind::Length)?),
                 None => None,
             };
-            let t = thread_on(st, f.id, face.0, designation.as_deref(), l)?;
+            let t = thread_on(st, f.id, face.0, designation.as_deref(), l, *sizing)?;
             if !*modeled {
                 st.threads.push(t);
                 return Ok(());

@@ -519,6 +519,22 @@ impl<'de> Deserialize<'de> for FlangeEdge {
     }
 }
 
+/// Automatic thread sizing is saved with the feature so new defaults cannot resize old designs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadSizing {
+    #[default]
+    Legacy,
+    #[serde(rename = "iso261")]
+    Iso261,
+}
+
+impl ThreadSizing {
+    pub fn is_legacy(&self) -> bool {
+        *self == Self::Legacy
+    }
+}
+
 /// Feature definitions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, solidcraft_derive::Walk)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -728,6 +744,9 @@ pub enum FeatureKind {
         face: FacePick,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         designation: Option<String>,
+        /// Used only without an explicit designation. Missing fields retain historical sizing.
+        #[serde(default, skip_serializing_if = "ThreadSizing::is_legacy")]
+        sizing: ThreadSizing,
         /// Thread length from the face's end nearest `face`; `None` = full length.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[walk(length = "Length")]

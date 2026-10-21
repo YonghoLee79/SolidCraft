@@ -93,10 +93,14 @@ completed drawings publish atomically. The browser still exports synchronously.
   Browser users apply the cut with OK to avoid blocking on every edit.
 
 - Thread resolves a suggested metric size when a cylindrical face is picked. Diameter and
-  pitch selectors expose the existing metric designation parameter; custom designations stay
-  editable, and Automatic size returns to the face's suggestion. Cosmetic/modelled and
-  full/partial-length options remain available. This does not add tolerance classes or
-  left-hand threads.
+  pitch are editable millimetre fields with optional menus of whole-millimetre sizes through
+  100 mm, fractional coarse sizes and intermediate pitches. Other dimensions can be typed
+  directly. New external threads use the nearest fitting ISO 261 diameter (through 100 mm),
+  with measured diameter as the fallback. UI, CLI and MCP share this rule; automatic threads
+  follow diameter edits, while existing saved features retain their historical sizing rule.
+  Holes keep the existing coarse tap-drill suggestions. Automatic size returns to the face's
+  suggestion. Cosmetic/modelled and full/partial-length options remain available. This does
+  not add tolerance classes or left-hand threads.
 - New Body extrusion and face-offset previews show completed intermediate geometry while a
   drag continues, then catch up to the exact final value. Changes to the selected geometry,
   operation or feature still discard obsolete results. Distance arrows and their value boxes

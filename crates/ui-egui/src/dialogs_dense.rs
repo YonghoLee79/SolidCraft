@@ -715,12 +715,12 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
         Kind::OffsetFaces { distance } => {
             enter |= expr_row(ui, "Distance", distance);
         }
-        Kind::Thread { designation, length, suggested, of } => {
+        Kind::Thread { designation, length, dimensions, suggested, of, .. } => {
             let mut full = length.trim().is_empty();
             let was_full = full;
             let mut modeled = d.extra.get("modeled").and_then(Value::as_bool).unwrap_or(false);
             let before = modeled;
-            let (submitted, reset) = crate::dialogs_thread::rows(ui, designation, suggested, &mut modeled, &mut full);
+            let (submitted, reset) = crate::dialogs_thread::rows(ui, designation, suggested, dimensions, &mut modeled, &mut full);
             if modeled != before {
                 d.extra.insert("modeled".into(), json!(modeled));
             }

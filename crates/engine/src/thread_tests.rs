@@ -93,6 +93,49 @@ fn modelled_full_length_fine_threads_on_large_shafts() {
 }
 
 #[test]
+fn automatic_thread_sizing_survives_reload_redefine_and_diameter_edits() {
+    for (sizing, before, after) in [("legacy", "M42", "M48"), ("iso261", "M45x4.5", "M50x1.5")] {
+        let mut s = Session::default();
+        run(&mut s, "solid.cylinder", json!({"radius":22,"height":10,"name":"Shaft"}));
+        let id = run(&mut s, "solid.thread", json!({"face":[22,0,5],"sizing":sizing}))["feature"].as_u64().unwrap();
+        let mut saved: Value = serde_json::from_str(&s.doc.to_json()).unwrap();
+        let feature = saved["features"].as_array().unwrap().iter().find(|f| f["id"] == id).unwrap();
+        assert!(feature.get("designation").is_none(), "automatic sizes must not be frozen");
+        if sizing == "legacy" {
+            assert!(feature.get("sizing").is_none(), "old features keep their serialized definition");
+            // Simulate a design written before this pending format change existed.
+            saved["format_pending"].as_array_mut().unwrap().retain(|v| v != "thread-sizing");
+        } else {
+            assert_eq!(feature["sizing"], "iso261");
+        }
+        s = Session::new(solidcraft_doc::Document::from_json(&saved.to_string()).unwrap());
+        assert_eq!(s.world_state().threads[0].designation, before);
+        // CLI/MCP feature edits that omit sizing must also preserve the saved rule.
+        run(&mut s, "timeline.redefine", json!({"feature":id,"command":"solid.thread","params":{"face":[22,0,5],"length":6}}));
+        assert_eq!(s.world_state().threads[0].designation, before);
+        run(&mut s, "timeline.edit", json!({"feature":"Shaft","set":{"radius":"25"}}));
+        assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results);
+        assert_eq!(s.world_state().threads[0].designation, after);
+        s = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+        assert_eq!(s.world_state().threads[0].designation, after);
+    }
+}
+
+#[test]
+fn explicit_thread_sizes_remain_fixed_and_invalid_sizing_is_atomic() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius":22,"height":10,"name":"Shaft"}));
+    run(&mut s, "solid.thread", json!({"face":[22,0,5],"designation":"M44x1.5"}));
+    run(&mut s, "timeline.edit", json!({"feature":"Shaft","set":{"radius":"23"}}));
+    assert_eq!(s.world_state().threads[0].designation, "M44x1.5");
+    let saved = s.doc.to_json();
+    for sizing in [json!("unknown"), json!(null), json!(false), json!(5), json!({})] {
+        assert!(s.execute("solid.thread", &json!({"face":[23,0,5],"sizing":sizing})).is_err());
+        assert_eq!(s.doc.to_json(), saved);
+    }
+}
+
+#[test]
 fn non_finite_thread_designations_are_refused_without_changing_the_design() {
     let mut s = Session::default();
     run(&mut s, "solid.cylinder", json!({"radius":4,"height":10}));
