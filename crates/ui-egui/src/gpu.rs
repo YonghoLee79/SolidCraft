@@ -19,11 +19,28 @@ pub struct ViewportCallback(pub Frame);
 /// settings. Without a stencil the section cap does not hide the inside of cut bodies. Without
 /// `gpu_meshing` (safe mode) bodies are meshed on the CPU.
 pub fn install(rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32, gpu_meshing: bool) -> GpuTarget {
+    adopt(rs, build(rs, depth_bits, stencil_bits, samples, gpu_meshing))
+}
+
+/// The viewport's pipelines, compiled but not yet in egui's hands.
+pub struct Built {
+    target: GpuTarget,
+    renderer: Renderer,
+}
+
+/// [`install`]'s slow half, the shader compile (seconds on some GPUs): it only needs the device, so
+/// the desktop app runs it on a worker thread while the window keeps drawing (#1210).
+pub fn build(rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32, gpu_meshing: bool) -> Built {
     let tess = if gpu_meshing { solidcraft_gpu::view::tessellation(&rs.adapter, &rs.device, &rs.queue, solidcraft_gpu::SHADER) } else { None };
-    let t = GpuTarget { format: rs.target_format, depth: egui_wgpu::depth_format_from_bits(depth_bits, stencil_bits), samples, tess: tess.is_some() };
-    let res = Renderer::new(&rs.device, t, tess);
-    rs.renderer.write().callback_resources.insert(res);
-    t
+    let target =
+        GpuTarget { format: rs.target_format, depth: egui_wgpu::depth_format_from_bits(depth_bits, stencil_bits), samples, tess: tess.is_some() };
+    Built { target, renderer: Renderer::new(&rs.device, target, tess) }
+}
+
+/// [`install`]'s other half: the pipelines [`build`] made, in egui's paint callbacks.
+pub fn adopt(rs: &egui_wgpu::RenderState, built: Built) -> GpuTarget {
+    rs.renderer.write().callback_resources.insert(built.renderer);
+    built.target
 }
 
 /// Draw this process's headless pictures (`ui.render`, the agent's view image, thumbnails of
