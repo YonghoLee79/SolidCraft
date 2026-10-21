@@ -4196,6 +4196,19 @@ name = "solidcraft-3dx-client"
 version = "0.18.4"
 
 [[package]]
+name = "solidcraft-android"
+version = "0.18.3"
+dependencies = [
+ "eframe",
+ "egui",
+ "jni",
+ "log",
+ "solidcraft-engine",
+ "solidcraft-ui-egui",
+ "winit",
+]
+
+[[package]]
 name = "solidcraft-cli"
 version = "0.18.4"
 dependencies = [

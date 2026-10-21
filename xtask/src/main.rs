@@ -25,7 +25,7 @@ usage: cargo xtask <command>
 commands:
   layers          enforce the crate dependency layering (plan/architecture.md §3)
   assets          check that every non-code asset file is attributed in ATTRIBUTION.md
-  app-icons       regenerate shared app-icon exports for Linux, FreeBSD and Windows
+  app-icons       regenerate shared app-icon exports for Android, Linux, FreeBSD and Windows
   icons           validate UI icon standards, discovery and review-tool behavior (Python 3.11+)
   features        list SolidCraft's commands by area in docs/features.md (from the registry)
   i18n [--check | --add-missing]
@@ -57,6 +57,9 @@ commands:
                   build the tests with the ci profile, then run every test binary at once
                   (and the doc tests alongside)
   wasm            cargo check every library crate and the web app for wasm32-unknown-unknown
+  android         cargo check the Android app and its graph for aarch64-linux-android (arm64-v8a);
+                  needs an Android NDK: ANDROID_NDK_ROOT, or one under $ANDROID_HOME/ndk or
+                  ~/Android/Sdk/ndk, and `rustup target add aarch64-linux-android`
   web-offline [DIR]
                   write the web build's service worker (sw.js: offline use, updates); run by
                   Trunk after release builds of apps/solidcraft-web, or on a built site in DIR
@@ -93,6 +96,7 @@ fn main() -> ExitCode {
         }
         Some("ci") => cmd_ci(),
         Some("wasm") => cmd_wasm(),
+        Some("android") => cmd_android(),
         Some("web-offline") => web_offline::run(&root(), rest.first().copied()),
         Some("web-offline-test") => {
             let site = rest.iter().position(|a| *a == "--site").and_then(|i| rest.get(i + 1)).copied();
@@ -361,6 +365,110 @@ fn wasm_check() -> Result<(Command, usize), String> {
         c.args(["-p", p]);
     }
     Ok((c, set.len()))
+}
+
+/// Never break the Android build: `solidcraft-android` and its whole dependency graph (geom
+/// through ui-egui, including the C build scripts such as zstd through crates/io) must build for
+/// `aarch64-linux-android` (arm64-v8a). Like `wasm`, a cross-target compile check — the APK
+/// itself is cargo-apk2's, built with `cargo apk2 build --target aarch64-linux-android` in
+/// apps/solidcraft-android.
+fn cmd_android() -> Result<(), String> {
+    let ndk = find_android_ndk()?;
+    let bin = ndk.join("toolchains/llvm/prebuilt").join(ndk_host()).join("bin");
+    // The per-API clang wrapper for apps/solidcraft-android's min_sdk_version (26): it passes
+    // --target and the sysroot itself, which is what the cc crate looks for in a compiler whose
+    // name already contains "android".
+    let (clang, ar) = if cfg!(target_os = "windows") {
+        (bin.join("aarch64-linux-android26-clang.cmd"), bin.join("llvm-ar.exe"))
+    } else {
+        (bin.join("aarch64-linux-android26-clang"), bin.join("llvm-ar"))
+    };
+    for tool in [&clang, &ar] {
+        if !tool.is_file() {
+            return Err(format!("Android NDK: {} not found — is {} a complete NDK?", tool.display(), ndk.display()));
+        }
+    }
+    let mut c = cargo();
+    // Clippy, not check: the shell lives in `cfg(target_os = "android")`, which a host
+    // `cargo clippy --workspace` never compiles, so this is the only clippy it ever sees.
+    c.args([
+        "clippy",
+        "-p",
+        "solidcraft-android",
+        "--target",
+        "aarch64-linux-android",
+        "--profile",
+        "ci",
+        "--",
+        "-D",
+        "warnings",
+        // Clippy 1.99 flags the kernel's `thread_local!` initializers as "can be made const"
+        // on aarch64-linux-android alone — they are already `const { … }`, and the same lines
+        // pass host clippy. A target-only false positive: allow it here, not in the kernel.
+        "-A",
+        "clippy::missing_const_for_thread_local",
+    ]);
+    c.env("ANDROID_NDK_ROOT", &ndk);
+    // The cc crate reads CC_<target> first (dashes, then underscores) for its C build scripts.
+    c.env("CC_aarch64-linux-android", &clang);
+    c.env("AR_aarch64-linux-android", &ar);
+    // Captured rather than streamed so the log carries every lint; `-D warnings` fails on them.
+    eprintln!("$ cargo clippy -p solidcraft-android --target aarch64-linux-android -- -D warnings -A clippy::missing_const_for_thread_local");
+    let out = c.output().map_err(|e| format!("cargo clippy -p solidcraft-android: failed to spawn: {e}"))?;
+    print!("{}", String::from_utf8_lossy(&out.stdout));
+    eprint!("{}", String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        return Err(format!("cargo clippy -p solidcraft-android --target aarch64-linux-android: exited with {}", out.status));
+    }
+    println!("android: solidcraft-android and its graph clippy for aarch64-linux-android (arm64-v8a)");
+    Ok(())
+}
+
+/// The Android NDK: `ANDROID_NDK_ROOT` / `ANDROID_NDK_HOME`, else the newest version directory
+/// under `$ANDROID_HOME/ndk` or `~/Android/Sdk/ndk`.
+fn find_android_ndk() -> Result<PathBuf, String> {
+    for var in ["ANDROID_NDK_ROOT", "ANDROID_NDK_HOME"] {
+        if let Ok(v) = std::env::var(var) {
+            let p = PathBuf::from(v);
+            if p.is_dir() {
+                return Ok(p);
+            }
+        }
+    }
+    let mut roots = Vec::new();
+    if let Ok(v) = std::env::var("ANDROID_HOME") {
+        roots.push(PathBuf::from(v).join("ndk"));
+    }
+    if let Ok(v) = std::env::var("HOME") {
+        roots.push(PathBuf::from(v).join("Android/Sdk/ndk"));
+    }
+    let mut best: Option<(Vec<u64>, PathBuf)> = None;
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            // Directory names are versions ("29.0.14206865"); compare numerically per segment.
+            let v: Vec<u64> = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().split('.').filter_map(|s| s.parse().ok()).collect();
+            if best.as_ref().is_none_or(|(bv, _)| v > *bv) {
+                best = Some((v, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+        .ok_or_else(|| "Android NDK not found: set ANDROID_NDK_ROOT to an NDK (or install one under $ANDROID_HOME/ndk or ~/Android/Sdk/ndk)".into())
+}
+
+/// The NDK's prebuilt toolchain folder for this host.
+fn ndk_host() -> &'static str {
+    match (cfg!(target_os = "windows"), cfg!(target_os = "macos"), cfg!(target_arch = "aarch64")) {
+        (true, _, _) => "windows-x86_64",
+        (false, true, true) => "darwin-arm64",
+        (false, true, false) => "darwin-x86_64",
+        (false, false, _) => "linux-x86_64",
+    }
 }
 
 /// The quick gates first, so they fail fast; the wasm check (and doc tests) run while the test
