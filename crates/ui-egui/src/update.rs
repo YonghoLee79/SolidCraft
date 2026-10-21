@@ -80,6 +80,14 @@ impl std::fmt::Display for FetchError {
     }
 }
 
+/// Localize the typed rate-limit message; arbitrary host errors remain opaque.
+fn fetch_error_text(error: &FetchError) -> String {
+    match error {
+        FetchError::RateLimited { .. } => crate::i18n::diagnostic(&error.to_string()),
+        FetchError::Failed(text) => text.clone(),
+    }
+}
+
 /// The host's HTTP GET (HTTPS, short timeout): the body of a 200 answer, or why not.
 pub type HttpGet = Arc<dyn Fn(&str) -> Result<Vec<u8>, FetchError> + Send + Sync>;
 
@@ -250,6 +258,14 @@ impl InstallKind {
         matches!(self, InstallKind::Flatpak(_) | InstallKind::Snap { store: true })
     }
 
+    /// A localized label, preserving names of package formats and managers.
+    fn display_label(&self) -> String {
+        match self.label() {
+            "AppImage" | "Flatpak" | "Snap" | ".tar.gz" => self.label().to_string(),
+            label => crate::i18n::diagnostic(label),
+        }
+    }
+
     /// A short name for Preferences and docs.
     pub fn label(&self) -> &'static str {
         match self {
@@ -348,14 +364,18 @@ impl Release {
     /// A `releases/latest` answer. Drafts and prereleases are refused (GitHub never returns them
     /// there, but the answer comes from the network).
     pub fn parse(json: &[u8]) -> Result<Release, FetchError> {
-        let v: Value = serde_json::from_slice(json).map_err(|e| FetchError::Failed(format!("unexpected answer from GitHub: {e}")))?;
+        let v: Value =
+            serde_json::from_slice(json).map_err(|e| FetchError::Failed(crate::i18n::diagnostic(&format!("unexpected answer from GitHub: {e}"))))?;
         let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
         if v.get("draft").and_then(Value::as_bool).unwrap_or(false) || v.get("prerelease").and_then(Value::as_bool).unwrap_or(false) {
-            return Err(FetchError::Failed("the latest release is a prerelease".into()));
+            return Err(FetchError::Failed(crate::i18n::diagnostic("the latest release is a prerelease")));
         }
         let tag = s("tag_name");
         if parse_version(&tag).is_none() {
-            return Err(FetchError::Failed(format!("the latest release's tag `{}` isn't a version", tag.chars().take(40).collect::<String>())));
+            return Err(FetchError::Failed(crate::i18n::diagnostic(&format!(
+                "the latest release's tag `{}` isn't a version",
+                tag.chars().take(40).collect::<String>()
+            ))));
         }
         let mut notes = s("body");
         if notes.len() > MAX_NOTES {
@@ -570,7 +590,7 @@ pub fn check_now(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if now < app.preferences.update.rate_limited_until {
         let wait = (app.preferences.update.rate_limited_until - now).max(0.0) as u64;
-        app.updater.status = Status::Failed(FetchError::RateLimited { retry_after_s: wait }.to_string());
+        app.updater.status = Status::Failed(fetch_error_text(&FetchError::RateLimited { retry_after_s: wait }));
         return;
     }
     app.updater.last_manual = now;
@@ -583,11 +603,12 @@ fn start(app: &mut SolveApp, ctx: &egui::Context, manual: bool) {
     app.updater.rx = Some((rx, manual));
     let feed = app.updater.feed.clone();
     let http = app.services.http_get.clone();
+    let locale = crate::i18n::Locale::for_language(&app.preferences.language);
     let fetch = move || -> Result<Release, FetchError> {
         let body = match (&feed, &http) {
             (Some(path), _) => std::fs::read(path).map_err(|e| FetchError::Failed(format!("{}: {e}", path.display())))?,
             (None, Some(get)) => get(LATEST_API)?,
-            (None, None) => return Err(FetchError::Failed("no network client".into())),
+            (None, None) => return Err(FetchError::Failed(crate::i18n::diagnostic("no network client"))),
         };
         Release::parse(&body)
     };
@@ -595,6 +616,7 @@ fn start(app: &mut SolveApp, ctx: &egui::Context, manual: bool) {
     {
         let ctx = ctx.clone();
         let spawned = std::thread::Builder::new().name("update-check".into()).spawn(move || {
+            let _language = crate::i18n::scope(locale.id());
             let _ = tx.send(fetch());
             ctx.request_repaint();
         });
@@ -605,7 +627,7 @@ fn start(app: &mut SolveApp, ctx: &egui::Context, manual: bool) {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (ctx, tx, fetch);
+        let _ = (ctx, tx, fetch, locale);
         app.updater.rx = None;
         app.updater.status = Status::Idle;
     }
@@ -617,7 +639,7 @@ fn poll(app: &mut SolveApp) {
     let result = match rx.try_recv() {
         Ok(r) => r,
         Err(TryRecvError::Empty) => return,
-        Err(TryRecvError::Disconnected) => Err(FetchError::Failed("the check stopped".into())),
+        Err(TryRecvError::Disconnected) => Err(FetchError::Failed(crate::i18n::diagnostic("the check stopped"))),
     };
     app.updater.rx = None;
     app.preferences.update.checked(unix_now(), &result);
@@ -634,8 +656,9 @@ fn poll(app: &mut SolveApp) {
             app.updater.release = Some(release);
         }
         Err(e) => {
-            log::info!("update check: {e}");
-            app.updater.status = if manual { Status::Failed(e.to_string()) } else { Status::Idle };
+            let shown = fetch_error_text(&e);
+            log::info!("{}", crate::i18n::diagnostic(&format!("update check: {shown}")));
+            app.updater.status = if manual { Status::Failed(shown) } else { Status::Idle };
         }
     }
 }
@@ -669,6 +692,7 @@ pub fn start_install(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let kind = app.updater.kind().clone();
+    let locale = crate::i18n::Locale::for_language(&app.preferences.language);
     let progress = Arc::new(install::Progress::default());
     let (tx, rx) = std::sync::mpsc::channel();
     app.updater.installed = None;
@@ -679,6 +703,7 @@ pub fn start_install(app: &mut SolveApp, ctx: &egui::Context) {
         let staging = std::env::temp_dir().join("solidcraft-update");
         let net = install::Net { get, download };
         let spawned = std::thread::Builder::new().name("update-install".into()).spawn(move || {
+            let _language = crate::i18n::scope(locale.id());
             let result = install::run(&release, &kind, &method, std::env::consts::ARCH, &net, &staging, &progress);
             let _ = tx.send(result);
             ctx.request_repaint();
@@ -690,7 +715,7 @@ pub fn start_install(app: &mut SolveApp, ctx: &egui::Context) {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (ctx, tx, release, method, get, download, kind);
+        let _ = (ctx, tx, release, method, get, download, kind, locale);
         app.updater.job = None;
     }
 }
@@ -700,7 +725,7 @@ fn poll_install(app: &mut SolveApp) {
     let result = match rx.try_recv() {
         Ok(r) => r,
         Err(TryRecvError::Empty) => return,
-        Err(TryRecvError::Disconnected) => Err("the update stopped".into()),
+        Err(TryRecvError::Disconnected) => Err(crate::i18n::diagnostic("the update stopped")),
     };
     app.updater.job = None;
     match &result {
@@ -722,7 +747,7 @@ fn poll_install(app: &mut SolveApp) {
             let _ = dmg;
         }
         Ok(install::Outcome::Restart(_)) => {}
-        Err(e) => log::warn!("update: {e}"),
+        Err(e) => log::warn!("{}", crate::i18n::diagnostic(&format!("update: {e}"))),
     }
     app.updater.installed = Some(result);
 }
@@ -800,7 +825,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     InstallKind::Deb | InstallKind::Rpm | InstallKind::Snap { store: false } => "update.package_hint",
                     _ => "update.system_hint",
                 };
-                ui.add(egui::Label::new(crate::i18n::format(how, &[("kind", kind.label())])).wrap());
+                ui.add(egui::Label::new(crate::i18n::format(how, &[("kind", &kind.display_label())])).wrap());
                 ui.horizontal(|ui| {
                     ui.add(egui::Label::new(RichText::new(&cmd).monospace()).selectable(true));
                     if ui.small_button(crate::i18n::tr("update.copy")).clicked() {
@@ -938,7 +963,7 @@ pub fn prefs_rows(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
     ui.end_row();
     ui.label("");
     let note = if can {
-        crate::i18n::format("update.prefs_note", &[("version", current_version()), ("kind", kind.label())])
+        crate::i18n::format("update.prefs_note", &[("version", current_version()), ("kind", &kind.display_label())])
     } else if let InstallKind::Flatpak(id) = &kind {
         crate::i18n::format("update.prefs_flatpak", &[("version", current_version()), ("command", &format!("flatpak update {id}"))])
     } else {
@@ -1133,5 +1158,22 @@ pub mod install;
 
 #[cfg(test)]
 mod install_tests;
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    #[test]
+    fn package_names_do_not_use_cad_snap_translation() {
+        let _language = crate::i18n::scope("pt-BR");
+        assert_eq!(InstallKind::Snap { store: true }.display_label(), "Snap");
+        assert_eq!(InstallKind::Snap { store: false }.display_label(), "Snap (instalado a partir de um arquivo)");
+        assert_eq!(InstallKind::Flatpak("org.example.App".into()).display_label(), "Flatpak");
+        assert_eq!(InstallKind::Dev.display_label(), "versão de desenvolvimento");
+        let source = format!("this release has no package for a {} on x86_64", InstallKind::Snap { store: true }.display_label());
+        let shown = crate::i18n::diagnostic(&source);
+        assert!(shown.contains("Snap") && !shown.contains("Ajuste automático"), "{shown}");
+    }
+}
 #[cfg(test)]
 mod tests;

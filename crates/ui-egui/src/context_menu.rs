@@ -292,7 +292,7 @@ pub fn component_bodies(app: &SolveApp, id: u64) -> Vec<String> {
 /// The eight radial commands, clockwise from the top.
 pub fn radial_items(app: &SolveApp) -> Vec<Item> {
     let repeat = match &app.last_command {
-        Some((_, label)) => act("ui.repeat", &format!("Repeat {label}"), "redo"),
+        Some((_, label)) => act("ui.repeat", &crate::i18n::format("ui.repeat_command", &[("command", crate::i18n::tr_label(label))]), "redo"),
         None => act("ui.repeat", "Repeat", "redo").on(false),
     };
     let delete = act("ui.delete", "Delete", "delete").key("Del").on(!app.session.selection.is_empty());
@@ -387,7 +387,7 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
     let has = |f: fn(&Sel) -> bool| sel.iter().any(f);
     let mut v = Vec::new();
     if let Some((_, label)) = &app.last_command {
-        v.push(act("ui.repeat", &format!("Repeat {label}"), "redo"));
+        v.push(act("ui.repeat", &crate::i18n::format("ui.repeat_command", &[("command", crate::i18n::tr_label(label))]), "redo"));
         v.push(Item::sep());
     }
     // Everything under the cursor, for what lies beneath something else.
@@ -1811,7 +1811,7 @@ fn show_props(app: &mut SolveApp, ctx: &egui::Context) {
     let Some((title, v)) = app.menu.props.clone() else { return };
     let mut open = true;
     let f = |x: &Value, k: &str| x.get(k).and_then(Value::as_f64).unwrap_or(f64::NAN);
-    crate::frame::window(ctx, format!("Properties: {title}"), crate::frame::Width::Normal)
+    crate::frame::window(ctx, crate::i18n::format("properties.title", &[("name", &title)]), crate::frame::Width::Normal)
         .id(egui::Id::new("sc_props"))
         .open(&mut open)
         .resizable(false)
@@ -1822,7 +1822,7 @@ fn show_props(app: &mut SolveApp, ctx: &egui::Context) {
                 let bodies = v["bodies"].as_array().cloned().unwrap_or_default();
                 if let [b] = bodies.as_slice() {
                     ui.label(crate::i18n::tr_label("Material"));
-                    ui.label(b["material"].as_str().unwrap_or("Default"));
+                    ui.label(crate::dialogs::material_display(app, b["material"].as_str().unwrap_or("Default")));
                     ui.end_row();
                     ui.label(crate::i18n::tr_label("Density"));
                     ui.label(format!("{:.3} g/cm³", f(b, "density_g_cm3")));

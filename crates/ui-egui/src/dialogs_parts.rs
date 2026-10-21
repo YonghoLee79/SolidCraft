@@ -110,6 +110,20 @@ fn picture(p: &Value) -> Option<egui::ColorImage> {
     crate::home::thumbnail(&s)
 }
 
+fn family_display(family: &Family) -> &str {
+    let builtin = matches!(
+        (family.id.as_str(), family.name.as_str()),
+        ("socket_head_cap_screw", "Socket head cap screw")
+            | ("hex_bolt", "Hex head bolt / screw")
+            | ("hex_nut", "Hex nut")
+            | ("washer", "Plain washer")
+            | ("set_screw", "Hex socket set screw, flat point")
+            | ("dowel_pin", "Parallel pin (dowel)")
+            | ("bearing", "Deep groove ball bearing (envelope)")
+    );
+    if builtin { crate::i18n::tr_label(&family.name) } else { &family.name }
+}
+
 /// The dialog's rows.
 pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Pt, inputs: &[SelInput]) -> bool {
     let t = Tokens::get();
@@ -130,9 +144,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Pt, inputs: &[SelInpu
     let names: Vec<String> =
         lib.iter().map(|f| if f.standard.is_empty() { f.name.clone() } else { format!("{} ({})", f.name, f.standard) }).collect();
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let display_names: Vec<String> = lib
+        .iter()
+        .map(|f| if f.standard.is_empty() { family_display(f).to_string() } else { format!("{} ({})", family_display(f), f.standard) })
+        .collect();
+    let display: Vec<&str> = display_names.iter().map(String::as_str).collect();
     row_label(ui, "Type");
     let before = k.family;
-    combo(ui, "pt_family", &refs, &mut k.family);
+    crate::dialogs::combo_display(ui, "pt_family", &refs, &display, &mut k.family);
     ui.end_row();
     if k.family != before {
         k.size = 0;
@@ -141,7 +160,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Pt, inputs: &[SelInpu
     let Some(f) = lib.get(k.family) else { return false };
     let sizes: Vec<&str> = f.sizes.iter().map(|s| s.0.as_str()).collect();
     row_label(ui, "Size");
-    combo(ui, "pt_size", &sizes, &mut k.size);
+    crate::dialogs::combo_raw(ui, "pt_size", &sizes, &mut k.size);
     ui.end_row();
     if let Some(ls) = &f.lengths {
         let mut labels = vec!["Default".to_string()];
@@ -154,7 +173,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Pt, inputs: &[SelInpu
         ui.end_row();
     }
     row_label(ui, "Name");
-    ui.add(egui::TextEdit::singleline(&mut k.name).hint_text("automatic"));
+    ui.add(egui::TextEdit::singleline(&mut k.name).hint_text(crate::i18n::tr("parts.automatic_name")));
     ui.end_row();
     // The part, and its table values.
     let key = (k.family, k.size, k.length);

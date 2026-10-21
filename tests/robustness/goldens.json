@@ -128,5 +128,36 @@
   {"reason":"a prism cut in a column round the tool (prism_local): seed 65's rectangular pattern (step 4, a second half-cylinder groove overlapping the first, in a block with a rounded vertical edge) is now built by the exact 2D route in a column clear of the round, where the B-rep tries left it with split edges. The step's part has the 10 faces, 24 edges and 16 vertices it should (28 edges and 18 vertices before), and its volume is 45145.383 mm³ against 45145.214 (exactly 45145.103, both within the mesh measure); the generator then picks other edges for its step 7 fillet, so the run ends on another design (45143.48 mm³, 15 faces)","seeds":[65]},
   {"reason":"Seed 31: #1581 no longer maps a pick on an earlier round's seam to some other nearby edge; the second fillet's selection includes the smooth seam at [2, 27.5, 13.5] beside the first round, which is now refused (no corner to round) instead of silently re-rounding a different edge at 1 mm, so the run goes on to a hole. Seed 83: #1316 was recorded before its branch took in #1495; with #1495's shell (an open face next to a concave edge no longer cuts the wall past it) the shelled part keeps more wall (6217 to 6339 mm3), its edges differ, and the 2.5 mm fillet of the first run is not picked; a later fillet is refused as not supported yet (an end face parallel to the edge)","seeds":[31,83]},
 {"reason":"the 2D route sews a cut whose outline has a point a hair from a segment's end (text-recut): seed 53's shell (step 3, a 2 mm shell of an extruded L with an arc side, opened at the notch's inner face) builds its cavity by the 2D route in 77 ms, where it took the B-rep path (2.4 s) and gave a part 336 mm³ lighter, which a box can't then be intersected with (no result). Its section at mid height is 338.27 mm² (a distance-rule raster of the profile gives 343.7, rounding the cavity's concave corners); the generator then builds the step 4 fillet it refused before, so the run goes on another way (16954.55 mm³, 48 faces)","seeds":[53]}
- ]
+ ],
+ "platforms": {
+  "x86_64-pc-windows-msvc": {
+    "reason": "Historical af2f09f record on x86_64-pc-windows-msvc with Rust 1.99.0: Complete public fuzz::golden(seed,8) observations on isolated clean and candidate graphs reproduced the same pre-existing numeric differences for seeds 1,23,67,92. The prism station identity correction removed one redundant cylindrical wall seam in each of seeds13/71; identical-command replays preserved validity, area, volume, centroid and merged topology at every accepted step within the original comparison bounds. At that stage, seed94 matched the common golden and needed no override. Its own public commands differed by roundoff; both fixed-transcript cross replays still exceeded the original material area/volume/centroid bounds at the final join. Finer supplemental tessellations of both exact transcripts approached the analytic volume and agreed within those same bounds, supporting representation-dependent measurement error without certifying exact BRep equivalence. Original false material flags remained false; neither geometric improvement nor material equivalence was asserted for that join. At that historical refresh, the comparator, behavior fields and common records were unchanged. Historical refresh for 0.13.1 at 987f0be with Rust 1.99.0/profile ci: the R3 CI observations for seeds 31,34,92 were reproduced by fresh captures on the pure clean HEAD987 baseline, each with its actual public fuzz::golden(seed,8) exactly equal to its own replay. Common seed31 and its seed31-only causal note are imported from upstream 9d82b944691529c806cd4e87acc032577f72eaf1 (#1657), recording #1581; no Windows behavior override is added. Windows seed34 records only area 1086.303608. The obsolete Windows seed92 edges=53 override is removed because the observed 30 edges match the common record. No new cross-graph material qualification, general geometry equivalence or full CI PASS is claimed by this refresh; the comparator and comparison bounds are unchanged. These are observed target records, not evidence that differences are Windows-only or that Linux ran. Integration of pinned 77b33efd8f0e8498f4d0d00697419d0992150759 (0.14): all common records and notes above are retained exactly from that upstream snapshot. The Windows overrides below are carried forward solely from the historical af2f09f/987f0be observations; they have not yet been validated on the integrated 77b33ef source. In particular, seed34 area 1086.303608 and seed92 matching the common 30-edge record require fresh validation on the new base. No new numeric result, material qualification or CI PASS is asserted for 77b33ef. Keep the original comparator and bounds; preserve any fresh mismatch rather than infer a new target record.",
+    "seeds": {
+      "1": {
+        "area": 2642.450837,
+        "edges": 32,
+        "faces": 13,
+        "volume": 6991.569339
+      },
+      "13": {
+        "edges": 83,
+        "faces": 36
+      },
+      "23": {
+        "edges": 15
+      },
+      "34": {
+        "area": 1086.303608
+      },
+      "67": {
+        "edges": 86,
+        "faces": 36
+      },
+      "71": {
+        "edges": 50,
+        "faces": 19
+      }
+    }
+  }
+}
 }

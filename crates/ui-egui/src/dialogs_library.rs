@@ -47,7 +47,7 @@ fn save_library(app: &mut SolveApp, token: Arc<()>, overwrite: bool) {
                     k.local.catalog = parsed;
                     k.local.selected = None;
                     k.local.search.clear();
-                    k.note = Some(format!("Saved {count} reusable definitions. The design is unchanged."));
+                    k.note = Some(crate::i18n::format("library.saved_definitions", &[("count", &count.to_string())]));
                 }
             }
             Err(error) => {
@@ -86,7 +86,7 @@ fn export(app: &mut SolveApp, k: &mut Ap, path: String, overwrite: bool) {
             k.local.catalog = parsed;
             k.local.selected = None;
             k.local.search.clear();
-            format!("Saved {count} reusable definitions. The design is unchanged.")
+            crate::i18n::format("library.saved_definitions", &[("count", &count.to_string())])
         }
         Err(error) => error,
     });
@@ -96,7 +96,7 @@ fn export(app: &mut SolveApp, k: &mut Ap, path: String, overwrite: bool) {
 fn load(app: &mut SolveApp, library: &mut LocalLibrary) -> Result<String, String> {
     let result = app.run("library.inspect", json!({"path":library.path}))?;
     let catalog: Catalog = serde_json::from_value(result.get("catalog").cloned().ok_or("Library response is missing")?).map_err(|e| e.to_string())?;
-    let note = format!("Opened {} ({} entries)", catalog.name, catalog.entries.len());
+    let note = crate::i18n::format("library.opened", &[("name", &catalog.name), ("count", &catalog.entries.len().to_string())]);
     library.catalog = Some(display_order(catalog));
     library.selected = None;
     library.search.clear();
@@ -111,7 +111,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelInpu
         #[cfg(target_arch = "wasm32")]
         {
             let _ = inputs;
-            ui.label("Open local libraries in the desktop app. You can export this design's library here.");
+            ui.label(crate::i18n::tr_label("Open local libraries in the desktop app. You can export this design's library here."));
         }
         ui.checkbox(&mut k.local.overwrite, crate::i18n::tr_label("Replace existing library file"));
         let save = ui.button(crate::i18n::tr_label("Export design library..."));
@@ -124,7 +124,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelInpu
             }
         }
         ui.label(
-            RichText::new("Apply your appearance first. Exports assigned appearances and materials created in this design.")
+            RichText::new(crate::i18n::tr_label("Apply your appearance first. Exports assigned appearances and materials created in this design."))
                 .small()
                 .color(Tokens::get().text_dim),
         );
@@ -134,7 +134,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelInpu
 
 #[cfg(not(target_arch = "wasm32"))]
 fn import_rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelInput]) {
-    let path = ui.add(egui::TextEdit::singleline(&mut k.local.path).hint_text("Library file").desired_width(200.0));
+    let path = ui.add(egui::TextEdit::singleline(&mut k.local.path).hint_text(crate::i18n::tr_label("Library file")).desired_width(200.0));
     crate::scenario::publish_handle("library:path", path.rect.center());
     if path.changed() {
         k.local.catalog = None;
@@ -154,7 +154,8 @@ fn import_rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelI
     });
     if let Some(catalog) = &k.local.catalog {
         ui.label(RichText::new(&catalog.name).strong());
-        let search = ui.add(egui::TextEdit::singleline(&mut k.local.search).hint_text("Search this library").desired_width(200.0));
+        let search =
+            ui.add(egui::TextEdit::singleline(&mut k.local.search).hint_text(crate::i18n::tr_label("Search this library")).desired_width(200.0));
         crate::scenario::publish_handle("library:search", search.rect.center());
         if search.changed() {
             k.local.selected = None;
@@ -166,7 +167,7 @@ fn import_rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelI
             .filter(|entry| matches!(&entry.definition, Definition::Appearance(_)) && entry.definition.name().to_lowercase().contains(&query))
             .collect();
         if appearances.is_empty() {
-            ui.label("No matching appearance presets.");
+            ui.label(crate::i18n::tr_label("No matching appearance presets."));
         }
         let row_height = ui.spacing().interact_size.y;
         egui::ScrollArea::vertical().id_salt("local_library_entries").max_height(120.0).show_rows(ui, row_height, appearances.len(), |ui, range| {
@@ -177,12 +178,16 @@ fn import_rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelI
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         let [r, g, b] = look.color;
                         ui.colored_label(egui::Color32::from_rgb(r, g, b), "■");
-                        let button = ui.selectable_label(k.local.selected.as_deref() == Some(entry.id.as_str()), &look.name).on_hover_text(format!(
-                            "Opacity {:.0}% · {} · {}",
-                            look.opacity * 100.0,
-                            entry.provenance.license,
-                            entry.provenance.source_url.as_deref().unwrap_or("Local definition")
-                        ));
+                        let button = ui.selectable_label(k.local.selected.as_deref() == Some(entry.id.as_str()), &look.name).on_hover_text(
+                            crate::i18n::format(
+                                "library.entry_details",
+                                &[
+                                    ("opacity", &format!("{:.0}", look.opacity * 100.0)),
+                                    ("license", &entry.provenance.license),
+                                    ("source", entry.provenance.source_url.as_deref().unwrap_or_else(|| crate::i18n::tr_label("Local definition"))),
+                                ],
+                            ),
+                        );
                         crate::scenario::publish_handle(&format!("library:entry:{index}"), button.rect.center());
                         if button.clicked() {
                             k.local.selected = Some(entry.id.clone());
@@ -225,9 +230,9 @@ fn import_rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelI
                     k.look = Some(look.name.clone());
                     k.remove_override = false;
                     k.applied = selected_params(k, picked);
-                    format!("{} copied into this design", look.name)
+                    crate::i18n::format("library.copied", &[("name", &look.name)])
                 } else {
-                    "This panel applies appearance presets only".into()
+                    crate::i18n::tr_label("This panel applies appearance presets only").into()
                 }
             }
             Err(error) => error,

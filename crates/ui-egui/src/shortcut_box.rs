@@ -105,8 +105,12 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<(&'static str, &'static str, &'sta
     let mut v: Vec<(u32, &'static str, &'static str, &'static str, String)> = command_specs()
         .into_iter()
         .filter_map(|c| {
-            let place = if c.tab.is_empty() { String::new() } else { format!("{} › {}", c.tab, c.panel) };
-            let s = score(&q, c.label).max(score(&q, c.id) * 9 / 10).max(score(&q, c.tab) / 3).max(score(&q, c.panel) / 3);
+            let place = if c.tab.is_empty() { String::new() } else { format!("{} › {}", app.tr_label(c.tab), app.tr_label(c.panel)) };
+            let s = score(&q, c.label)
+                .max(score(&q, app.tr_label(c.label)))
+                .max(score(&q, c.id) * 9 / 10)
+                .max(score(&q, app.tr_label(c.tab)) / 3)
+                .max(score(&q, app.tr_label(c.panel)) / 3);
             let recent = app.sbox.recent.iter().position(|r| r == c.id).map_or(0, |i| 2000 - i as u32);
             // Commands that can run now come before those that can't.
             let usable = if c.info(&app.session).enabled { 150 } else { 0 };
@@ -178,7 +182,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             ui.painter().rect_filled(r, 4.0, t.hover);
                         }
                         icons::paint(ui.painter(), r.shrink(5.0), c.icon, t.icon, t.icon_fill, t.accent);
-                        if resp.on_hover_text(c.label).clicked() {
+                        if resp.on_hover_text(app.tr_label(c.label)).clicked() {
                             picked = Some(c.id);
                         }
                     }
@@ -223,7 +227,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         t.accent,
                     );
                     let col = if enabled { t.text } else { t.text_dim };
-                    ui.painter().text(pos2(r.left() + 30.0, r.center().y), Align2::LEFT_CENTER, *label, FontId::proportional(13.0), col);
+                    ui.painter().text(pos2(r.left() + 30.0, r.center().y), Align2::LEFT_CENTER, app.tr_label(label), FontId::proportional(13.0), col);
                     let key = crate::keymap::effective(app, id).unwrap_or_default();
                     let right = if key.is_empty() { place.clone() } else { format!("{key}   {place}") };
                     ui.painter().text(pos2(r.right() - 26.0, r.center().y), Align2::RIGHT_CENTER, right, FontId::proportional(10.5), t.text_dim);
@@ -245,7 +249,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         }
                         ui.painter().add(egui::Shape::closed_line(pts, Stroke::new(1.0, if pinned { t.warning } else { t.text_dim })));
                     }
-                    if presp.on_hover_text(if pinned { "Unpin" } else { "Pin to the top of the S box" }).clicked() {
+                    if presp.on_hover_text(crate::i18n::tr(if pinned { "ui.unpin" } else { "ui.pin_s_box" })).clicked() {
                         pin = Some(id);
                     } else if resp.clicked() && enabled {
                         picked = Some(id);

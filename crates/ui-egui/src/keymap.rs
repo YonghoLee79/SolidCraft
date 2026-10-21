@@ -136,7 +136,7 @@ fn sketch_tool_for(app: &SolveApp, key: &str) -> Option<&'static str> {
 /// Bind `key` to a command (`""` clears it). Refused for reserved keys, and when other commands
 /// use the key unless `replace` (they lose it).
 pub fn bind(app: &mut SolveApp, id: &str, key: &str, replace: bool) -> Result<(), String> {
-    let spec = solidcraft_engine::find_command(id).ok_or_else(|| format!("no command `{id}`"))?;
+    let spec = solidcraft_engine::find_command(id).ok_or_else(|| app.tr_format("error.no_command", &[("id", id)]))?;
     if RESERVED.contains(&key) {
         return Err(format!("{key} is used by SolidCraft itself"));
     }
@@ -213,11 +213,11 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
                 }
             });
             if let Some(m) = &app.keymap.message {
-                ui.label(RichText::new(m).color(t.warning));
+                ui.label(RichText::new(crate::display_error(m)).color(t.warning));
             }
             if let Some((id, key, _)) = app.keymap.conflict.clone() {
                 ui.horizontal(|ui| {
-                    if ui.button(format!("Use {key} here anyway")).clicked() {
+                    if ui.button(crate::i18n::format("keymap.use_anyway", &[("key", &key.to_string())])).clicked() {
                         action = Some((format!("{id}\n{key}"), "replace"));
                     }
                     if ui.button(app.tr_label("Cancel")).clicked() {
@@ -289,7 +289,8 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
             let text = crate::toolbar_custom::export(app).to_string();
             app.pick_save("SolidCraft shortcuts.json", &["json"], move |app, path| {
                 if let Some(path) = path {
-                    app.keymap.message = std::fs::write(&path, text).err().map(|e| format!("export: {e}"));
+                    app.keymap.message =
+                        std::fs::write(&path, text).err().map(|e| app.tr_format("error.export_failed", &[("error", &e.to_string())]));
                 }
             });
         }
@@ -300,7 +301,7 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
                     .map_err(|e| e.to_string())
                     .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()))
                     .and_then(|v| crate::toolbar_custom::import(app, &v));
-                app.keymap.message = r.err().map(|e| format!("import: {e}"));
+                app.keymap.message = r.err().map(|e| app.tr_format("error.import_failed", &[("error", &e.to_string())]));
             });
         }
         Some((pair, "replace")) => {

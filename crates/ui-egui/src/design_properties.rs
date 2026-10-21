@@ -130,7 +130,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     });
             }
             if let Some(e) = &d.error {
-                ui.label(RichText::new(e).color(t.error));
+                ui.label(RichText::new(crate::display_error(e)).color(t.error));
             }
             ui.separator();
             // OK and Cancel flush right, as in every dialog.

@@ -12,13 +12,23 @@ pub const COMMIT: &str = env!("SOLIDCRAFT_COMMIT");
 pub const BUILD_DATE: &str = env!("SOLIDCRAFT_BUILD_DATE");
 /// The user and developer guide (docs/book, published by .github/workflows/pages.yml).
 pub const DOCS_URL: &str = "https://bherbruck.github.io/solidcraft/";
+pub const PT_BR_DOCS_URL: &str = "https://bherbruck.github.io/solidcraft/pt-BR/";
 const ATTRIBUTION: &str = include_str!("../../../ATTRIBUTION.md");
+const PT_BR_ATTRIBUTION: &str = include_str!("../../../docs/pt-BR/ATTRIBUTION.md");
 use solidcraft_engine::licences::{LICENSE_APACHE, LICENSE_MIT, NOTICE, THIRD_PARTY};
 /// Fonts: what this build carries.
 pub const FONTS: &str = "The interface uses egui's built-in fonts (Ubuntu Light and Hack, under the Ubuntu Font Licence and \
 the MIT/Bitstream Vera licence; Noto Emoji and the emoji icon font, under the OFL and MIT). Sketch text uses Liberation Sans \
 (SIL OFL 1.1). The Crafting Apps' optional font pack, craft-fonts (BIZ UDPGothic, Shippori Mincho, BIZ UDMincho, Noto Sans \
 CJK SC, Noto Sans Arabic; SIL OFL 1.1), is not bundled in SolidCraft builds.";
+
+/// Languages with a published book use it; other locales keep the English guide.
+pub fn documentation_url(language: &str) -> &'static str {
+    match language {
+        "pt-BR" => PT_BR_DOCS_URL,
+        _ => DOCS_URL,
+    }
+}
 
 #[derive(Default)]
 pub struct HelpState {
@@ -31,15 +41,18 @@ pub struct HelpState {
 /// One line per fact, for bug reports.
 pub fn diagnostics(app: &SolveApp) -> String {
     let renderer = if app.viewport.gpu.is_some() { "GPU" } else { "CPU" };
-    format!(
-        "SolidCraft {VERSION} ({COMMIT}, built {BUILD_DATE})\nOS: {} {}\nRenderer: {renderer}{}\nWindow: {}\nDesign: {} ({} features, {} bodies)",
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        app.help.gpu.as_ref().map(|g| format!(", {g}")).unwrap_or_default(),
-        if app.custom_titlebar { "custom title bar" } else { "system title bar" },
-        app.session.doc.name,
-        app.session.doc.features.len(),
-        app.session.world_state().bodies.len(),
+    let locale = crate::i18n::Locale::for_language(&app.preferences.language);
+    let renderer = format!("{renderer}{}", app.help.gpu.as_ref().map(|g| format!(", {g}")).unwrap_or_default());
+    locale.protocol_format(
+        "SolidCraft {version} ({commit}, built {date})\nOS: {os} {arch}\nRenderer: {renderer}\nWindow: {window}\nDesign: {design} ({features} features, {bodies} bodies)",
+        &[
+            ("version", VERSION), ("commit", COMMIT), ("date", BUILD_DATE),
+            ("os", std::env::consts::OS), ("arch", std::env::consts::ARCH), ("renderer", &renderer),
+            ("window", locale.protocol_label(if app.custom_titlebar { "custom title bar" } else { "system title bar" })),
+            ("design", &app.session.doc.name),
+            ("features", &app.session.doc.features.len().to_string()),
+            ("bodies", &app.session.world_state().bodies.len().to_string()),
+        ],
     )
 }
 
@@ -47,7 +60,7 @@ pub fn diagnostics(app: &SolveApp) -> String {
 pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
     app.help.menu = false;
     match item {
-        "docs" => ctx.open_url(egui::OpenUrl::new_tab(DOCS_URL)),
+        "docs" => ctx.open_url(egui::OpenUrl::new_tab(documentation_url(&app.preferences.language))),
         "about" => app.help.about = true,
         "shortcuts" => {
             app.keymap.open = true;
@@ -109,7 +122,7 @@ fn about(app: &mut SolveApp, ctx: &egui::Context) {
         .default_size(vec2(440.0, 560.0))
         .show(ctx, |ui| {
             ui.label(RichText::new("SolidCraft").size(22.0).strong());
-            ui.label(format!("Version {VERSION} · commit {COMMIT} · built {BUILD_DATE}"));
+            ui.label(crate::i18n::format("ui.build_information", &[("version", VERSION), ("commit", COMMIT), ("date", BUILD_DATE)]));
             ui.label(RichText::new(crate::i18n::tr_label("Open-source parametric 3D CAD in Rust. Licensed MIT OR Apache-2.0.")).color(t.text_dim));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -119,23 +132,24 @@ fn about(app: &mut SolveApp, ctx: &egui::Context) {
             });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
-                egui::CollapsingHeader::new("Attributions (ATTRIBUTION.md)").show(ui, |ui| {
-                    ui.label(RichText::new(ATTRIBUTION).monospace().size(11.0));
+                egui::CollapsingHeader::new(crate::i18n::tr("ui.attribution_heading")).show(ui, |ui| {
+                    let attribution = if app.preferences.language == "pt-BR" { PT_BR_ATTRIBUTION } else { ATTRIBUTION };
+                    ui.label(RichText::new(attribution).monospace().size(11.0));
                 });
-                egui::CollapsingHeader::new("Fonts").show(ui, |ui| {
-                    ui.label(FONTS);
+                egui::CollapsingHeader::new(crate::i18n::tr("ui.fonts_heading")).show(ui, |ui| {
+                    ui.label(crate::i18n::tr("ui.fonts_information"));
                 });
-                egui::CollapsingHeader::new("Licences").show(ui, |ui| {
+                egui::CollapsingHeader::new(crate::i18n::tr("ui.licences_heading")).show(ui, |ui| {
                     egui::CollapsingHeader::new("NOTICE").show(ui, |ui| {
                         ui.label(RichText::new(NOTICE).monospace().size(11.0));
                     });
-                    egui::CollapsingHeader::new("MIT licence").show(ui, |ui| {
+                    egui::CollapsingHeader::new(crate::i18n::tr("ui.mit_licence_heading")).show(ui, |ui| {
                         ui.label(RichText::new(LICENSE_MIT).monospace().size(11.0));
                     });
-                    egui::CollapsingHeader::new("Apache licence 2.0").show(ui, |ui| {
+                    egui::CollapsingHeader::new(crate::i18n::tr("ui.apache_licence_heading")).show(ui, |ui| {
                         ui.label(RichText::new(LICENSE_APACHE).monospace().size(11.0));
                     });
-                    egui::CollapsingHeader::new("Third-party licences").show(ui, |ui| {
+                    egui::CollapsingHeader::new(crate::i18n::tr("ui.third_party_licences_heading")).show(ui, |ui| {
                         if ui.button(crate::i18n::tr_label("Copy all licences")).clicked() {
                             ctx.copy_text(solidcraft_engine::licences::all());
                         }
@@ -165,6 +179,15 @@ fn third_party(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn documentation_follows_the_published_locale_and_falls_back_to_english() {
+        assert_eq!(documentation_url("pt-BR"), "https://bherbruck.github.io/solidcraft/pt-BR/");
+        assert_eq!(documentation_url("en"), DOCS_URL);
+        assert_eq!(documentation_url("ja"), DOCS_URL);
+        assert_eq!(documentation_url("unknown"), DOCS_URL);
+        assert!(PT_BR_ATTRIBUTION.contains("Atribuição") || PT_BR_ATTRIBUTION.contains("Atribuições"));
+    }
 
     #[test]
     fn about_knows_its_build_and_diagnostics_say_where_it_runs() {

@@ -364,9 +364,11 @@ fn begin_applying(app: &SolveApp, d: &Dialog) -> Option<Applying> {
     let scratch = app.session.scratch();
     let (tx, rx) = std::sync::mpsc::channel();
     let computed = cmds.clone();
+    let locale = crate::i18n::Locale::for_language(&app.preferences.language);
     std::thread::Builder::new()
         .name("apply".into())
         .spawn(move || {
+            let _language = crate::i18n::scope(locale.id());
             let _ = scratch.preview(&computed);
             let _ = tx.send(());
         })
@@ -1279,12 +1281,32 @@ pub(crate) fn check(ui: &mut egui::Ui, on: &mut bool) {
     publish_row(&r);
 }
 
+/// Built-in material labels translate; names defined by the document stay literal.
+pub(crate) fn material_display<'a>(app: &SolveApp, name: &'a str) -> &'a str {
+    if app.session.doc.user_material(name).is_none() && solidcraft_engine::doc::MATERIALS.iter().any(|(n, _)| *n == name) {
+        app.tr_label(name)
+    } else {
+        name
+    }
+}
+
 pub(crate) fn combo(ui: &mut egui::Ui, id: &str, labels: &[&str], sel: &mut usize) {
+    let display: Vec<&str> = labels.iter().map(|label| tr(label)).collect();
+    combo_display(ui, id, labels, &display, sel);
+}
+
+/// User-defined names and unit/size tokens retain their literal display text.
+pub(crate) fn combo_raw(ui: &mut egui::Ui, id: &str, labels: &[&str], sel: &mut usize) {
+    combo_display(ui, id, labels, labels, sel);
+}
+
+/// Separate raw automation labels from translated labels for mixed built-in/user lists.
+pub(crate) fn combo_display(ui: &mut egui::Ui, id: &str, labels: &[&str], display: &[&str], sel: &mut usize) {
     let row = ROW.with(|r| r.borrow().clone());
-    let selected = labels.get(*sel).copied().map(tr).unwrap_or("");
+    let selected = display.get(*sel).copied().unwrap_or("");
     let r = egui::ComboBox::from_id_salt(id).selected_text(selected).width(FIELD_W).show_ui(ui, |ui| {
         for (i, l) in labels.iter().enumerate() {
-            let item = ui.selectable_value(sel, i, tr(l));
+            let item = ui.selectable_value(sel, i, display.get(i).copied().unwrap_or(l));
             crate::scenario::publish_handle(&format!("dialog:{row}:{l}"), item.rect.center());
         }
     });
@@ -1429,8 +1451,12 @@ const LABEL_MAX_W: f32 = 150.0;
 
 /// A row label in the dialog's label column (the grid sizes the column to its widest label).
 pub(crate) fn row_label(ui: &mut egui::Ui, text: &str) {
-    ROW.with(|r| *r.borrow_mut() = text.to_string());
-    let display_text = tr(text);
+    row_label_display(ui, text, tr(text));
+}
+
+/// Translated dynamic rows retain their source label as the automation handle.
+pub(crate) fn row_label_display(ui: &mut egui::Ui, source: &str, display_text: &str) {
+    ROW.with(|r| *r.borrow_mut() = source.to_string());
     let full = egui::WidgetText::from(display_text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
     let w = full.clamp(LABEL_W, LABEL_MAX_W);
     ui.allocate_ui_with_layout(vec2(w, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1601,8 +1627,8 @@ fn selection_label(s: &Session, item: &Sel) -> String {
         Sel::SketchCurve { id } => id.clone(),
         Sel::SketchPoint { id } => crate::sketch_modify_ui::point_id(s, item).unwrap_or(id).to_string(),
         Sel::Plane { name } | Sel::Axis { name } | Sel::Body { name } => name.clone(),
-        Sel::Face { body, index, .. } => format!("{body} · face {index}"),
-        Sel::Edge { body, index, .. } => format!("{body} · edge {index}"),
+        Sel::Face { body, index, .. } => crate::i18n::format("selection.body_face", &[("body", body), ("index", &index.to_string())]),
+        Sel::Edge { body, index, .. } => crate::i18n::format("selection.body_edge", &[("body", body), ("index", &index.to_string())]),
         Sel::Feature { id } => s.doc.feature(*id).map(|f| f.name.clone()).unwrap_or_else(|| format!("Feature {id}")),
         Sel::Vertex { body, point } if body.is_empty() => {
             let state = s.world_state();
@@ -1674,16 +1700,18 @@ fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, range: std::
                 reference.to_string()
             } else if custom_axis {
                 if let Kind::Revolve { axis: Some(axis), .. } = &d.kind {
-                    format!(
-                        "Custom axis\nOrigin: {}\nDirection: {}\nClick to select a replacement axis",
-                        axis.get("origin").map(ToString::to_string).unwrap_or_default(),
-                        axis.get("dir").map(ToString::to_string).unwrap_or_default()
+                    crate::i18n::format(
+                        "dialog.custom_axis_hint",
+                        &[
+                            ("origin", &axis.get("origin").map(ToString::to_string).unwrap_or_default()),
+                            ("direction", &axis.get("dir").map(ToString::to_string).unwrap_or_default()),
+                        ],
                     )
                 } else {
-                    hint(inp).to_string()
+                    crate::i18n::tr_label(hint(inp)).to_string()
                 }
             } else {
-                format!("{} (click to pick into this input)", hint(inp))
+                crate::i18n::format("dialog.pick_hint", &[("hint", crate::i18n::tr_label(hint(inp)))])
             };
             if chip.on_hover_text(tooltip).clicked() {
                 activate = Some(i);
@@ -1720,7 +1748,7 @@ fn rectangular_pattern_rows(d: &mut Dialog, ui: &mut egui::Ui, session: &Session
     use solidcraft_engine::sketch::PatternAlignment;
     let mut enter = false;
     ui.vertical(|ui| {
-        ui.label(tr("dialog.selection_guidance"));
+        ui.label(crate::i18n::tr("dialog.selection_guidance"));
         egui::Grid::new("pattern_source").spacing(vec2(10.0, 8.0)).show(ui, |ui| {
             if matches!(d.kind, Kind::PatternRect { .. }) {
                 placement_row(d, ui);
@@ -1824,8 +1852,8 @@ fn error_rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: &mut 
             row_label(ui, "");
         }
         ui.vertical(|ui| {
-            ui.add(egui::Label::new(RichText::new(error.as_str()).color(Tokens::get().error)).wrap());
-            let response = ui.button("Create Issue…");
+            ui.add(egui::Label::new(RichText::new(crate::display_error(error.as_str())).color(Tokens::get().error)).wrap());
+            let response = ui.button(crate::i18n::tr("dialog.create_issue"));
             crate::scenario::publish_handle("dialog:create_issue", response.rect.center());
             if response.clicked() {
                 crate::issue_report::begin(app, ctx, Some(d), Some(&error));
@@ -1896,7 +1924,7 @@ pub(crate) fn fill_cells(st: &solidcraft_engine::doc::ModelState, tools: &[Strin
             // The sample nearest the middle (the middle itself may be outside a curved cell).
             let rep = pts.iter().min_by(|a, b| a.dist(c).total_cmp(&b.dist(c))).copied()?;
             let inside: Vec<&str> = bodies.iter().enumerate().filter(|(t, _)| sig & (1 << t) != 0).map(|(_, (name, _))| name.as_str()).collect();
-            Some((rep, format!("Inside {}", inside.join(", "))))
+            Some((rep, crate::i18n::format("dialog.inside", &[("bodies", &inside.join(", "))])))
         })
         .collect()
 }
@@ -1958,7 +1986,7 @@ fn measure_rows(app: &SolveApp, ui: &mut egui::Ui, r: Option<&Value>, show: &mut
     };
     if let Some(e) = r.get("error").and_then(Value::as_str) {
         ui.label("");
-        ui.label(RichText::new(e).color(t.error));
+        ui.label(RichText::new(crate::display_error(e)).color(t.error));
         ui.end_row();
         return;
     }
@@ -1990,12 +2018,12 @@ fn measure_rows(app: &SolveApp, ui: &mut egui::Ui, r: Option<&Value>, show: &mut
             }
             Some("vertex" | "sketch_point") => {
                 let p = &it["position"];
-                lines.push(format!("At  {}, {}, {}", mm(&p[0]), mm(&p[1]), mm(&p[2])));
+                lines.push(crate::i18n::format("measure.at", &[("x", &mm(&p[0])), ("y", &mm(&p[1])), ("z", &mm(&p[2]))]));
             }
             _ => {}
         }
         for (k, line) in lines.into_iter().enumerate() {
-            ui.label(if k == 0 { format!("Item {}", i + 1) } else { String::new() });
+            ui.label(if k == 0 { crate::i18n::format("ui.item_number", &[("number", &(i + 1).to_string())]) } else { String::new() });
             ui.label(line);
             ui.end_row();
         }
@@ -2202,7 +2230,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             let fold = if d.collapsed { "+" } else { "−" };
             if ui
                 .add(egui::Button::new(RichText::new(fold).size(14.0)).frame(false))
-                .on_hover_text(if d.collapsed { "Expand" } else { "Collapse" })
+                .on_hover_text(tr(if d.collapsed { "Expand" } else { "Collapse" }))
                 .clicked()
             {
                 d.collapsed = !d.collapsed;
@@ -2214,7 +2242,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 let chevron = if d.collapsed { "«" } else { "»" };
                 if ui
                     .add(egui::Button::new(RichText::new(chevron).color(t.text_dim)).frame(false).min_size(vec2(chevron_width, 0.0)))
-                    .on_hover_text(if d.collapsed { "Expand" } else { "Collapse" })
+                    .on_hover_text(tr(if d.collapsed { "Expand" } else { "Collapse" }))
                     .clicked()
                 {
                     d.collapsed = !d.collapsed;
@@ -2262,7 +2290,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     ));
                     ui.end_row();
                     row_label(ui, "");
-                    ui.label(tr("dialog.selection_guidance"));
+                    ui.label(crate::i18n::tr("dialog.selection_guidance"));
                     ui.end_row();
                 }
                 input_rows(&mut d, ui, &app.session);
@@ -2680,12 +2708,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         *deboss = i == 1;
                         ui.end_row();
                         ui.label("");
-                        ui.add(
-                            egui::Label::new(
-                                "Orthogonal line profiles tangent to one supported cylinder wrap automatically. Pick a wall to choose a target.",
-                            )
-                            .wrap(),
-                        );
+                        ui.add(egui::Label::new(crate::i18n::tr("dialog.emboss_wrap_hint")).wrap());
                         ui.end_row();
                     }
                     Kind::Align { flip } => {
@@ -2707,7 +2730,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         }
                         ui.end_row();
                         for (i, (_, label, on)) in cells.iter_mut().enumerate() {
-                            row_label(ui, &format!("Cell {}", i + 1));
+                            row_label_display(
+                                ui,
+                                &format!("Cell {}", i + 1),
+                                &crate::i18n::format("ui.cell_number", &[("number", &(i + 1).to_string())]),
+                            );
                             ui.checkbox(on, label.as_str());
                             ui.end_row();
                         }
@@ -2774,8 +2801,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     }
                     Kind::Material { index } => {
                         let names: Vec<&str> = material_names.iter().map(String::as_str).collect();
+                        let display: Vec<&str> = names
+                            .iter()
+                            .enumerate()
+                            .map(|(i, name)| if i < solidcraft_engine::doc::MATERIALS.len() { tr(name) } else { name })
+                            .collect();
                         row_label(ui, "Material");
-                        combo(ui, "mat", &names, index);
+                        combo_display(ui, "mat", &names, &display, index);
                         ui.end_row();
                     }
                     Kind::Section { offset, flip } => {
@@ -3368,7 +3400,7 @@ fn params_table(app: &mut SolveApp, ui: &mut egui::Ui, new_name: &mut String, ne
             let refused = ui.data(|dd| dd.get_temp::<String>(refused_id));
             let v = vals.get(&p.name).map(|v| if p.unit == "deg" { format!("{:.3}°", v.v.to_degrees()) } else { format!("{:.4} {}", v.v, p.unit) });
             match (v, errs.get(&p.name).or(refused.as_ref())) {
-                (_, Some(e)) => ui.label(RichText::new(e).color(t.error)),
+                (_, Some(e)) => ui.label(RichText::new(crate::display_error(e)).color(t.error)),
                 (Some(v), None) => ui.label(RichText::new(v).color(t.text_dim)),
                 _ => ui.label(""),
             };

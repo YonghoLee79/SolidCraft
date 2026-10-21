@@ -143,17 +143,21 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut d.filter).hint_text(crate::i18n::tr_label("Filter")).desired_width(180.0));
                 ui.separator();
-                if ui.button("Import…").on_hover_text(crate::i18n::tr_label("CSV or JSON: updates existing parameters, adds new ones")).clicked() {
+                if ui
+                    .button(crate::i18n::tr_label("Import…"))
+                    .on_hover_text(crate::i18n::tr_label("CSV or JSON: updates existing parameters, adds new ones"))
+                    .clicked()
+                {
                     app.pick_open_command("parameters.import", json!({}));
                 }
                 for (label, ext) in [("Export CSV…", "csv"), ("Export JSON…", "json")] {
-                    if ui.button(label).clicked() {
+                    if ui.button(crate::i18n::tr_label(label)).clicked() {
                         app.pick_save_command(&format!("parameters.{ext}"), &[ext], "parameters.export", json!({"format": ext}));
                     }
                 }
             });
             if let Some(e) = &d.error {
-                ui.label(RichText::new(e).color(t.error));
+                ui.label(RichText::new(crate::display_error(e)).color(t.error));
             }
             ui.separator();
             let f = d.filter.to_ascii_lowercase();
@@ -223,7 +227,7 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
     let t = Tokens::get();
     egui::Grid::new(("ptable", salt)).num_columns(7).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
         for h in ["", "Name", "Unit", "Expression", "Value", "Comment", ""] {
-            ui.label(RichText::new(h).color(t.text_dim).small());
+            ui.label(RichText::new(crate::i18n::tr_label(h)).color(t.text_dim).small());
         }
         ui.end_row();
         for (i, r) in rows.iter().enumerate() {
@@ -326,14 +330,14 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
             }
             // Value, or why it has none.
             match (&live, &r.error) {
-                (Some(Err(m)), _) => ui.label(RichText::new(m).color(t.error)).on_hover_text(m),
+                (Some(Err(m)), _) => ui.label(RichText::new(crate::display_error(m)).color(t.error)).on_hover_text(crate::display_error(m)),
                 (Some(Ok(v)), _) => ui.label(RichText::new(v).color(t.accent)),
-                (None, Some(m)) => ui.label(RichText::new(m).color(t.error)).on_hover_text(m),
+                (None, Some(m)) => ui.label(RichText::new(crate::display_error(m)).color(t.error)).on_hover_text(crate::display_error(m)),
                 (None, None) => ui.label(RichText::new(show_value(r)).color(t.text_dim)),
             };
             // Comment.
             let mut c = d.comments.get(&r.name).cloned().unwrap_or_else(|| r.comment.clone());
-            let cr = ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut c).hint_text("comment"));
+            let cr = ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut c).hint_text(crate::i18n::tr("parameters.comment_hint")));
             if cr.changed() {
                 d.comments.insert(r.name.clone(), c.clone());
             }
@@ -346,7 +350,11 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
             // Delete (user parameters; refused while used, the message says by what).
             if r.source == "user" {
                 // Outlined on hover like the expression and comment fields; the label says what it does.
-                if ui.add(egui::Button::new(RichText::new("Delete").small().color(t.text_dim)).frame_when_inactive(false)).clicked() {
+                if ui
+                    .add(egui::Button::new(RichText::new(crate::i18n::tr_label("Delete")).small().color(t.text_dim)).frame_when_inactive(false))
+                    .on_hover_text(crate::i18n::tr_label("Delete this parameter"))
+                    .clicked()
+                {
                     d.error = app.run("parameters.delete", json!({"name": r.name})).err();
                 }
             } else {
@@ -358,7 +366,7 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
 }
 
 fn unit_label(u: &str) -> &str {
-    if u.is_empty() { "none" } else { u }
+    if u.is_empty() { crate::i18n::tr("ui.none") } else { u }
 }
 
 /// Only a fresh Enter in this field submits; held keys and unrelated focus do not.
@@ -407,9 +415,11 @@ fn add_row(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog) {
         let live = check(app, &d.new_expr, unit);
         match &live {
             Ok(v) => ui.label(RichText::new(v).color(t.text_dim)),
-            Err(m) => ui.label(RichText::new(m).color(t.error)),
+            Err(m) => ui.label(RichText::new(crate::display_error(m)).color(t.error)),
         };
-        let comment = ui.add(egui::TextEdit::singleline(&mut d.new_comment).id(comment_id).hint_text("comment").desired_width(120.0));
+        let comment = ui.add(
+            egui::TextEdit::singleline(&mut d.new_comment).id(comment_id).hint_text(crate::i18n::tr("parameters.comment_hint")).desired_width(120.0),
+        );
         crate::scenario::publish_handle("param:new:comment", comment.rect.center());
         let submit = !completed && enter_for(ui, focused_id.is_some());
         let ok = !d.new_name.trim().is_empty() && live.is_ok();

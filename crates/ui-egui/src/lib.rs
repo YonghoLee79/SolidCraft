@@ -177,6 +177,7 @@ pub mod tools;
 pub mod update;
 pub mod viewport;
 mod viewport_layout;
+mod warning_display;
 pub mod workspace;
 
 use std::sync::mpsc::Receiver;
@@ -494,6 +495,11 @@ impl SolveApp {
         i18n::Locale::for_language(&self.preferences.language).label(text)
     }
 
+    /// Format a message using the active language preference, including outside a render scope.
+    pub fn tr_format(&self, id: &str, args: &[(&str, &str)]) -> String {
+        i18n::Locale::for_language(&self.preferences.language).format(id, args)
+    }
+
     /// Draw the viewport on the GPU (eframe's wgpu render state, with the app's depth and
     /// stencil buffer bits and MSAA sample count). Without it the viewport renders on the CPU.
     pub fn set_wgpu(&mut self, rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32) {
@@ -614,8 +620,9 @@ impl SolveApp {
 
     /// Run a command programmatically (JSON parameters, no dialogs).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        let _language = i18n::scope(&self.preferences.language);
         if self.file_load.busy() || self.file_picker.is_some() {
-            return Err("a file operation is in progress".into());
+            return Err(i18n::diagnostic("a file operation is in progress"));
         }
         let t0 = now_ms();
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
@@ -695,6 +702,7 @@ impl SolveApp {
     /// Start a command the way a toolbar click does: interactive tools and dialogs for commands
     /// that have them, otherwise run it with defaults.
     pub fn start(&mut self, id: &str) {
+        let _language = i18n::scope(&self.preferences.language);
         // A file is loading: the design waits for it.
         if self.file_load.busy() || self.file_picker.is_some() {
             return;
@@ -706,7 +714,7 @@ impl SolveApp {
             && let Some(why) = info.disabled_reason
         {
             let label = self.tr_label(info.label).to_string();
-            self.set_status(format!("{label}: {why}"), true);
+            self.set_status(format!("{label}: {}", display_error(&why)), true);
             return;
         }
         if id == "material.properties.validate" {
@@ -793,7 +801,7 @@ impl SolveApp {
             if let Some(params) = tools::constraint_preselection(id, &self.session.selection) {
                 if self.run(id, params).is_ok() {
                     let _ = self.session.execute("select.clear", &json!({}));
-                    self.set_status("Constraint applied", false);
+                    self.set_status(self.tr("status.constraint_applied").to_string(), false);
                 }
                 return;
             }
@@ -802,7 +810,7 @@ impl SolveApp {
             {
                 if self.run(id, json!({"refs":refs})).is_ok() {
                     let _ = self.session.execute("select.clear", &json!({}));
-                    self.set_status("Projection applied", false);
+                    self.set_status(self.tr("status.projection_applied").to_string(), false);
                 }
                 return;
             }
@@ -823,7 +831,7 @@ impl SolveApp {
                 let params = json!({ "a": a, "b": b });
                 if self.run(id, params).is_ok() {
                     let _ = self.session.execute("select.clear", &json!({}));
-                    self.set_status("Constraint applied", false);
+                    self.set_status(self.tr("status.constraint_applied").to_string(), false);
                 }
                 return;
             }
@@ -841,7 +849,7 @@ impl SolveApp {
                 let _ = self.session.execute("select.clear", &json!({}));
             }
             self.tool = Some(t);
-            self.set_status(tools::hint(id), false);
+            self.set_status(tools::hint_for_language(&self.preferences.language, id), false);
             return;
         }
         if let Some(d) = dialogs::Dialog::for_command(self, id) {
@@ -968,7 +976,9 @@ impl SolveApp {
     }
 
     pub fn set_status(&mut self, s: impl Into<String>, error: bool) {
-        self.status = Some((s.into(), now_ms(), error));
+        let _language = i18n::scope(&self.preferences.language);
+        let source = s.into();
+        self.status = Some((display_error(&source), now_ms(), error));
     }
 
     pub fn open_path(&mut self, path: &str) {
@@ -996,7 +1006,20 @@ impl SolveApp {
             self.fit_view();
             stand_up::offer(self, path, &before, Some(&r));
             if let Some(w) = r["warnings"].as_array().filter(|w| !w.is_empty()) {
-                self.set_status(format!("imported with {} warning(s): {}", w.len(), w.first().and_then(Value::as_str).unwrap_or("")), false);
+                self.set_status(
+                    self.tr_format(
+                        "file.import_warnings",
+                        &[
+                            ("count", &w.len().to_string()),
+                            (
+                                "warning",
+                                &i18n::Locale::for_language(&self.preferences.language)
+                                    .protocol_error(w.first().and_then(Value::as_str).unwrap_or("")),
+                            ),
+                        ],
+                    ),
+                    false,
+                );
             }
         }
     }
@@ -1221,6 +1244,7 @@ impl SolveApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        let _language = i18n::scope(&self.preferences.language);
         file_picker::tick(self, ctx);
         render_workspace::sync_backend(self);
         render_workspace::tick(self, ctx);
@@ -1427,7 +1451,8 @@ impl SolveApp {
                 if self.control_held.len() < MAX_HELD {
                     self.control_held.push_back(req);
                 } else {
-                    let _ = req.reply.send(json!({"ok": false, "error": "a file operation is in progress"}));
+                    let locale = i18n::Locale::for_language(&self.preferences.language);
+                    let _ = req.reply.send(json!({"ok": false, "error": locale.protocol_error("a file operation is in progress")}));
                 }
                 continue;
             }
@@ -1448,7 +1473,8 @@ impl SolveApp {
                 // A window that is minimised or covered (another macOS Space) presents no frame:
                 // say so at once rather than after the deadline (#1677).
                 control::Outcome::Screenshot { .. } if window_hidden(ctx) => {
-                    let _ = reply.send(json!({"ok": false, "hidden": true, "error": "no frame was presented (window hidden?); use ui.render"}));
+                    let locale = i18n::Locale::for_language(&self.preferences.language);
+                    let _ = reply.send(json!({"ok": false, "hidden": true, "error": locale.protocol_error("no frame was presented (window hidden?); use ui.render")}));
                 }
                 control::Outcome::Screenshot { path } => {
                     self.shot_token += 1;
@@ -1505,11 +1531,12 @@ impl SolveApp {
         let now = now_ms();
         // Hidden while waiting: no frame is coming.
         let hidden = window_hidden(ctx);
+        let locale = i18n::Locale::for_language(&self.preferences.language);
         self.pending_shots.retain(|(_, _, reply, deadline)| {
             if now < *deadline && !hidden {
                 return true;
             }
-            let _ = reply.send(json!({"ok": false, "error": "no frame was presented (window hidden?); use ui.render"}));
+            let _ = reply.send(json!({"ok": false, "error": locale.protocol_error("no frame was presented (window hidden?); use ui.render")}));
             false
         });
     }
@@ -1526,10 +1553,36 @@ pub fn command_label(id: &str) -> &str {
     solidcraft_engine::find_command(id).map_or(id, |c| c.label)
 }
 
+/// Localize legacy UI errors at their display boundary, leaving engine diagnostics intact.
+pub(crate) fn display_error(source: &str) -> String {
+    let translated = i18n::tr_label(source);
+    if translated != source {
+        return translated.to_string();
+    }
+    if let Some(what) = source.strip_prefix("select ").and_then(|s| s.strip_suffix(" first")) {
+        return i18n::format("error.select_first", &[("what", i18n::tr_label(what))]);
+    }
+    if let Some(key) = source.strip_suffix(" is used by SolidCraft itself") {
+        return i18n::format("error.key_reserved", &[("key", key)]);
+    }
+    if let Some((key, commands)) = source.split_once(" is already used by ") {
+        let commands = commands.split(", ").map(i18n::tr_label).collect::<Vec<_>>().join(", ");
+        return i18n::format("error.key_used", &[("key", key), ("commands", &commands)]);
+    }
+    i18n::diagnostic(source)
+}
+
 /// An engine error with the command's label instead of its id: "Shell: offset must be …".
 pub fn friendly_error(id: &str, e: &str) -> String {
-    let label = command_label(id);
-    let msg = e.replace(&format!("invalid parameters for `{id}`: "), "").replace(&format!("{id}: "), "").replace(&format!("`{id}`"), label);
+    let source_label = command_label(id);
+    let label = i18n::tr_label(source_label);
+    let msg = if e.starts_with(&format!("invalid parameters for `{id}`: ")) {
+        let translated = i18n::diagnostic(e);
+        let prefix = i18n::protocol_format("invalid parameters for `{command}`: {detail}", &[("command", id), ("detail", "")]);
+        translated.strip_prefix(&prefix).unwrap_or(&translated).to_string()
+    } else {
+        display_error(e.strip_prefix(&format!("{id}: ")).unwrap_or(e))
+    };
     if msg.starts_with(label) { msg } else { format!("{label}: {msg}") }
 }
 

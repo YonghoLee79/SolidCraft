@@ -25,7 +25,9 @@ pub fn offer(app: &mut SolveApp, path: &str, before: &[String], result: Option<&
 
 /// Turn the offered bodies a quarter turn about X (Y up becomes Z up).
 pub fn stand_up(app: &mut SolveApp) -> Result<(), String> {
-    let Some(bodies) = app.stand_up.take() else { return Err("no file is waiting to be stood up".into()) };
+    let Some(bodies) = app.stand_up.take() else {
+        return Err(crate::i18n::Locale::for_language(&app.preferences.language).protocol_error("no file is waiting to be stood up"));
+    };
     match app.stand_up_occurrence.take() {
         // The import's component turns about its parent's origin, contents and all.
         Some(occurrence) => app.run("occurrence.move", json!({ "occurrence": occurrence, "axis": [1, 0, 0], "angle": "90 deg" })),
@@ -58,7 +60,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 if ui.button(crate::i18n::tr_label("Leave it")).clicked() {
                     act = Some("leave");
                 }
-                if ui.button("Don't ask again").on_hover_text("Preferences › Design turns the offer back on").clicked() {
+                if ui.button(crate::i18n::tr("ui.dont_ask_again")).on_hover_text(crate::i18n::tr("stand_up.preferences_hint")).clicked() {
                     act = Some("never");
                 }
             });

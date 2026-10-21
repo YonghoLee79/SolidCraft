@@ -17,13 +17,23 @@ pub struct Palette {
 
 /// Commands whose id or label matches the query.
 pub fn matches(q: &str) -> Vec<(&'static str, &'static str, &'static str)> {
-    let q = q.trim().to_ascii_lowercase();
+    matches_for_language("en", q)
+}
+
+fn matches_for_language(language: &str, q: &str) -> Vec<(&'static str, &'static str, &'static str)> {
+    let locale = crate::i18n::Locale::for_language(language);
+    let q = q.trim().to_lowercase();
     let mut v: Vec<(&'static str, &'static str, &'static str)> = command_specs()
         .into_iter()
-        .filter(|c| q.is_empty() || c.label.to_ascii_lowercase().contains(&q) || c.id.to_ascii_lowercase().contains(&q))
+        .filter(|c| {
+            q.is_empty()
+                || c.label.to_lowercase().contains(&q)
+                || c.id.to_lowercase().contains(&q)
+                || locale.label(c.label).to_lowercase().contains(&q)
+        })
         .map(|c| (c.id, c.label, c.icon))
         .collect();
-    v.sort_by_key(|(id, label, _)| (!label.to_ascii_lowercase().starts_with(&q), !id.to_ascii_lowercase().starts_with(&q), *label));
+    v.sort_by_key(|(id, label, _)| (!locale.label(label).to_lowercase().starts_with(&q), !id.to_ascii_lowercase().starts_with(&q), *label));
     v
 }
 
@@ -46,15 +56,15 @@ pub fn submit(app: &mut SolveApp, line: &str) {
                 Ok(p) => {
                     let _ = app.run(id, p);
                 }
-                Err(e) => app.set_status(format!("parameters must be JSON: {e}"), true),
+                Err(e) => app.set_status(app.tr_format("palette.json_error", &[("error", &e.to_string())]), true),
             }
         }
         return;
     }
-    if let Some((id, _, _)) = matches(line).first() {
+    if let Some((id, _, _)) = matches_for_language(&app.preferences.language, line).first() {
         app.start(id);
     } else {
-        app.set_status(format!("no command matches `{line}`"), true);
+        app.set_status(app.tr_format("palette.no_match", &[("line", line)]), true);
     }
 }
 
@@ -109,7 +119,7 @@ pub fn popup(app: &mut SolveApp, ctx: &egui::Context) {
             // Read Enter before taking the focus back (lost_focus reads the focus as it is now).
             let entered = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             r.request_focus();
-            let list = matches(&app.palette.text);
+            let list = matches_for_language(&app.preferences.language, &app.palette.text);
             if entered {
                 picked = list.first().map(|x| x.0);
             }
@@ -119,7 +129,7 @@ pub fn popup(app: &mut SolveApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         let (ir, _) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::hover());
                         crate::icons::paint(ui.painter(), ir, icon, t.icon, t.icon_fill, t.accent);
-                        if ui.add_enabled(enabled, egui::Button::new(*label).frame(false)).clicked() {
+                        if ui.add_enabled(enabled, egui::Button::new(app.tr_label(label)).frame(false)).clicked() {
                             picked = Some(id);
                         }
                         ui.label(RichText::new(*id).size(10.5).color(t.text_dim));

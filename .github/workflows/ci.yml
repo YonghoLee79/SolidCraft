@@ -199,7 +199,8 @@ jobs:
     name: Native Linux tests (${{ matrix.shard }}/4)
     needs: [changes, build-tests]
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Full-corpus seeds can exceed an hour; PR samples keep the existing budget.
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 60 || 120 }}
     strategy:
       fail-fast: false
       matrix:

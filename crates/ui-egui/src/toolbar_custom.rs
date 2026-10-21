@@ -233,13 +233,7 @@ pub fn window(app: &mut SolveApp, ctx: &egui::Context) {
         .open(&mut open)
         .default_height(520.0)
         .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} tab. Tick a command to give it a toolbar button. You can also drag a row of a panel's drop-down onto the toolbar, drag a button off the toolbar to remove it, or use the pin on a drop-down row.",
-                    app.tr_label(&tab)
-                ))
-                .color(t.text_dim),
-            );
+            ui.label(egui::RichText::new(crate::i18n::format("toolbar.customize_hint", &[("tab", app.tr_label(&tab))])).color(t.text_dim));
             ui.separator();
             egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
                 for (panel, cmds, n) in panel_lists(&tab) {

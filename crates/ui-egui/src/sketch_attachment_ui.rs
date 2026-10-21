@@ -104,9 +104,9 @@ fn face_label(app: &SolveApp, selection: &Sel) -> String {
     if let Some((_, source, _, path, _)) =
         placed.body_frames_with_source(&app.session.model.state()).into_iter().find(|(world, _, _, _, _)| world == body)
     {
-        format!("Face on {source} / {}", path_label(app, &path))
+        crate::i18n::format("attachment.face_source", &[("source", &source), ("placement", &path_label(app, &path))])
     } else {
-        format!("Face on {body}")
+        crate::i18n::format("attachment.face_body", &[("body", body)])
     }
 }
 
@@ -135,7 +135,7 @@ pub fn panel(app: &mut SolveApp, ctx: &egui::Context, at: Pos2) {
     let mut cancel = false;
     let t = Tokens::get();
     crate::frame::docked(
-        format!("Redefine Sketch Plane: {name}"),
+        crate::i18n::format("attachment.redefine_title", &[("name", name)]),
         egui::Id::new("sc_redefine"),
         at,
         app.viewport.rect.map(|rect| rect.bottom()).unwrap_or_else(|| ctx.content_rect().bottom()) - at.y - 8.0,
@@ -147,15 +147,17 @@ pub fn panel(app: &mut SolveApp, ctx: &egui::Context, at: Pos2) {
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
         // The wrapped notes below fill the width anyway, so the band may too.
         let width = ui.available_width();
-        crate::frame::heading(ui, crate::frame::Level::Title, width, |ui| ui.strong(format!("Redefine Sketch Plane: {name}")));
+        crate::frame::heading(ui, crate::frame::Level::Title, width, |ui| {
+            ui.strong(crate::i18n::format("attachment.redefine_title", &[("name", name)]))
+        });
         let saved_plane = match &status {
             FaceAttachmentStatus::Healthy { plane, target, path } => {
-                ui.label(format!("Attached to {} / {}", target.body, path_label(app, path)));
+                ui.label(crate::i18n::format("attachment.attached_to", &[("body", &target.body), ("placement", &path_label(app, path))]));
                 Some(*plane)
             }
             FaceAttachmentStatus::Lost { message, repair_plane } => {
                 ui.label(RichText::new(crate::i18n::tr_label("Face attachment lost")).color(t.error));
-                ui.label(message);
+                ui.label(crate::display_error(message));
                 if repair_plane.is_some() {
                     ui.label(crate::i18n::tr_label("The dashed sketch is a saved plane guide. Select a new face to repair the attachment."));
                 } else {
@@ -168,7 +170,7 @@ pub fn panel(app: &mut SolveApp, ctx: &egui::Context, at: Pos2) {
                 *plane
             }
             FaceAttachmentStatus::Sheet { plane } => {
-                ui.label("Attached to a flat face of a sheet metal body; it follows that panel when the sheet changes.");
+                ui.label(crate::i18n::tr("attachment.sheet_note"));
                 *plane
             }
             FaceAttachmentStatus::Fixed { plane } => {
@@ -185,13 +187,13 @@ pub fn panel(app: &mut SolveApp, ctx: &egui::Context, at: Pos2) {
                 draft.error = None;
             }
             if available && let Some(path) = &draft.author_path {
-                ui.label(format!("Author placement: {}", path_label(app, path)));
+                ui.label(crate::i18n::format("attachment.author_placement", &[("placement", &path_label(app, path))]));
             }
         }
         ui.label(crate::i18n::tr_label("Choose a new plane. Sketch geometry and dimensions stay unchanged in its two-dimensional coordinates."));
         ui.horizontal_wrapped(|ui| {
             for plane in ["XY", "XZ", "YZ"] {
-                if ui.button(format!("Use {plane} plane")).clicked() {
+                if ui.button(crate::i18n::format("attachment.use_plane", &[("plane", plane)])).clicked() {
                     draft.choose(json!(plane), plane.into());
                 }
             }
@@ -223,16 +225,16 @@ pub fn panel(app: &mut SolveApp, ctx: &egui::Context, at: Pos2) {
         }
         if draft.candidate.is_some() {
             ui.separator();
-            ui.label(format!("Preview: {}", draft.label));
+            ui.label(crate::i18n::format("ui.preview_label", &[("name", crate::i18n::tr_label(&draft.label))]));
         }
         if let Some(error) = draft.error.as_ref().or(app.preview.error.as_ref()) {
-            ui.label(RichText::new(error).color(t.error));
+            ui.label(RichText::new(crate::display_error(error)).color(t.error));
         }
         ui.horizontal(|ui| {
-            if ui.add_enabled(draft.candidate.is_some() && app.preview.error.is_none(), egui::Button::new("Apply")).clicked() {
+            if ui.add_enabled(draft.candidate.is_some() && app.preview.error.is_none(), egui::Button::new(crate::i18n::tr_label("Apply"))).clicked() {
                 apply = true;
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr_label("Cancel")).clicked() {
                 cancel = true;
             }
         });

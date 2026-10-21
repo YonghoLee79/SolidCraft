@@ -34,6 +34,7 @@ impl SolveApp {
     }
 
     pub(crate) fn pick_open(&mut self, complete: impl FnOnce(&mut SolveApp, Option<String>) + 'static) {
+        let _language = crate::i18n::scope(&self.preferences.language);
         if self.file_picker_busy() {
             return;
         }
@@ -42,6 +43,7 @@ impl SolveApp {
     }
 
     pub(crate) fn pick_save(&mut self, name: &str, extensions: &[&str], complete: impl FnOnce(&mut SolveApp, Option<String>) + 'static) {
+        let _language = crate::i18n::scope(&self.preferences.language);
         if self.file_picker_busy() {
             return;
         }

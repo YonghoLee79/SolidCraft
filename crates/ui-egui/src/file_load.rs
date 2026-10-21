@@ -44,11 +44,12 @@ pub struct Request {
     /// What that caller asked of a STEP import besides its path (`up`, `names`): the command
     /// gets them as given.
     pub options: serde_json::Map<String, Value>,
+    locale: crate::i18n::Locale,
 }
 
 impl Request {
     pub fn new(path: &str, kind: Kind) -> Self {
-        Request { path: path.into(), kind, reply: None, scope: None, options: Default::default() }
+        Request { path: path.into(), kind, reply: None, scope: None, options: Default::default(), locale: crate::i18n::Locale::for_language("en") }
     }
     fn insert(&self) -> bool {
         self.kind == Kind::Insert
@@ -70,7 +71,7 @@ impl Request {
     }
     fn answer(&self, r: Result<Value, String>) {
         if let Some(reply) = &self.reply {
-            let _ = reply.send(match r {
+            let _ = reply.send(match crate::control::present_command_result(self.locale, self.command().0, r) {
                 Ok(v) => json!({"ok": true, "result": v}),
                 Err(e) => json!({"ok": false, "error": e}),
             });
@@ -194,7 +195,8 @@ pub fn begin(app: &mut SolveApp, path: &str, insert: bool) {
 }
 
 /// Queue a file operation; on the web (no threads) it runs now.
-pub fn begin_request(app: &mut SolveApp, request: Request) -> Result<(), String> {
+pub fn begin_request(app: &mut SolveApp, mut request: Request) -> Result<(), String> {
+    request.locale = crate::i18n::Locale::for_language(&app.preferences.language);
     #[cfg(target_arch = "wasm32")]
     {
         if staged_kind(&request) {
@@ -276,7 +278,11 @@ pub fn control(app: &mut SolveApp, req: crate::control::ControlRequest) -> Optio
     } else {
         ["up", "names"].iter().filter_map(|k| Some((k.to_string(), params?.get(*k).filter(|v| !v.is_null())?.clone()))).collect()
     };
-    let _ = begin_request(app, Request { path: path.into(), kind, reply: Some(req.reply.clone()), scope, options });
+    let mut request = Request::new(path, kind);
+    request.reply = Some(req.reply.clone());
+    request.scope = scope;
+    request.options = options;
+    let _ = begin_request(app, request);
     None
 }
 
@@ -300,7 +306,7 @@ fn recovered(app: &mut SolveApp, request: &Request) {
     if let Some(Ok(_)) = kept {
         let _ = app.session.execute("doc.recovery_discard", &json!({"id": id, "dir": dir}));
     }
-    app.set_status(format!("recovered {}: save it to keep it", request.path), false);
+    app.set_status(app.tr_format("file.recovered", &[("path", &request.path)]), false);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -337,6 +343,7 @@ fn start(app: &mut SolveApp) {
     let (tx, rx) = std::sync::mpsc::channel();
     let (preview_tx, preview_rx) = std::sync::mpsc::channel();
     let (command, params) = request.command();
+    let locale = request.locale;
     let scope = request.scope.clone();
     let thumbnail = request.kind == Kind::Open;
     // While a design rebuilds, a picture of what is built so far (a large design takes a while).
@@ -346,6 +353,7 @@ fn start(app: &mut SolveApp) {
         let (partial_tx, partial_rx) = std::sync::mpsc::channel();
         let (watch, finished) = (progress.clone(), finished.clone());
         let _ = std::thread::Builder::new().name("file-load-picture".into()).spawn(move || {
+            let _language = crate::i18n::scope(locale.id());
             let stop = || finished.load(Ordering::Relaxed) || watch.is_cancelled();
             while !stop() {
                 std::thread::sleep(std::time::Duration::from_millis(250));
@@ -370,6 +378,7 @@ fn start(app: &mut SolveApp) {
     });
     let worker_finished = finished;
     let spawned = std::thread::Builder::new().name("file-load".into()).spawn(move || {
+        let _language = crate::i18n::scope(locale.id());
         let preview_began = std::time::Instant::now();
         if command == "doc.open" {
             let progress = worker_progress.clone();
@@ -411,7 +420,7 @@ fn start(app: &mut SolveApp) {
             })
         }
         Err(e) => {
-            let e = format!("could not start file operation: {e}");
+            let e = app.tr_format("file.start_failed", &[("error", &e.to_string())]);
             request.answer(Err(e.clone()));
             app.set_status(e, true);
         }
@@ -805,9 +814,15 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
                 } else {
                     app.set_status(
                         if let Some(w) = warnings.filter(|w| !w.is_empty()) {
-                            format!("imported with {} warning(s): {}", w.len(), w.first().and_then(Value::as_str).unwrap_or(""))
+                            app.tr_format(
+                                "file.import_warnings",
+                                &[
+                                    ("count", &w.len().to_string()),
+                                    ("warning", &request.locale.protocol_error(w.first().and_then(Value::as_str).unwrap_or(""))),
+                                ],
+                            )
                         } else {
-                            format!("{} done", if request.insert() { "Insert" } else { "Open" })
+                            app.tr_format("ui.command_done", &[("command", app.tr_label(if request.insert() { "Insert" } else { "Open" }))])
                         },
                         false,
                     );
@@ -823,7 +838,10 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
                 request.answer(Err(e.clone()));
                 if let Kind::Recover { id, dir } = &request.kind {
                     reoffer(app, id, dir.as_deref());
-                    app.set_status(format!("could not recover {}: {e}. Discard it or choose Later", request.path), true);
+                    app.set_status(
+                        app.tr_format("file.recover_failed", &[("path", &request.path), ("error", &request.locale.protocol_error(&e))]),
+                        true,
+                    );
                 } else {
                     app.set_status(e, true);
                 }
@@ -894,12 +912,12 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     egui::RichText::new(if cancelled && export {
                         crate::i18n::tr_label("dxf.cancelling")
                     } else if cancelled {
-                        "Waiting for file operation"
+                        crate::i18n::tr("file.waiting")
                     } else {
                         match r.request.kind {
-                            Kind::Insert => "Inserting geometry",
-                            Kind::Open => "Opening design",
-                            Kind::Recover { .. } => "Recovering design",
+                            Kind::Insert => crate::i18n::tr("file.inserting"),
+                            Kind::Open => crate::i18n::tr("file.opening"),
+                            Kind::Recover { .. } => crate::i18n::tr("file.recovering"),
                             Kind::ExportDxf => crate::i18n::tr_label("dxf.exporting"),
                         }
                     })
@@ -917,7 +935,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 let w = ui.available_width().min(320.0);
                 ui.image((preview.id(), egui::vec2(w, w * 200.0 / 320.0)));
                 let note = match r.built {
-                    Some(built) => format!("Built so far: {built} of {total} features."),
+                    Some(built) => crate::i18n::format("file.built_so_far", &[("built", &built.to_string()), ("total", &total.to_string())]),
                     None => crate::i18n::tr_label("Saved preview. Geometry is being checked before editing.").to_string(),
                 };
                 ui.label(egui::RichText::new(note).small().weak());
@@ -928,16 +946,23 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.label(if cancelled && export {
                     crate::i18n::tr_label("dxf.cancel_wait").to_string()
                 } else if cancelled {
-                    "Waiting for the previous operation to stop...".to_string()
+                    crate::i18n::tr("file.stopping").to_string()
                 } else {
                     match (phase, work) {
                         (_, work) if r.request.kind == Kind::ExportDxf => crate::dialogs_view_dxf::progress_text(work),
-                        (_, Some(("reading", d, t))) => format!("Reading the file... {}%", d * 100 / t.max(1)),
-                        (_, Some((_, d, t))) => format!("Converting solid {} of {t}", d + 1),
-                        (1, _) => "Preparing the view...".into(),
-                        (2, _) => "Preparing the thumbnail...".into(),
-                        _ if total > 0 => format!("Rebuilding feature {} of {total}", (done + 1).min(total)),
-                        _ => "Reading the file...".into(),
+                        (_, Some(("reading", d, t))) => {
+                            crate::i18n::format("file.reading_progress", &[("percent", &(d * 100 / t.max(1)).to_string())])
+                        }
+                        (_, Some((_, d, t))) => {
+                            crate::i18n::format("file.converting_solid", &[("number", &(d + 1).to_string()), ("total", &t.to_string())])
+                        }
+                        (1, _) => crate::i18n::tr("file.preparing_view").into(),
+                        (2, _) => crate::i18n::tr("file.preparing_thumbnail").into(),
+                        _ if total > 0 => crate::i18n::format(
+                            "file.rebuilding_feature",
+                            &[("number", &(done + 1).min(total).to_string()), ("total", &total.to_string())],
+                        ),
+                        _ => crate::i18n::tr("file.reading").into(),
                     }
                 });
             });
@@ -961,7 +986,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         // import to overlap it in memory. The rebuild stops at its next feature and the
         // current design stays as it was.
         app.file_load.cancel();
-        app.set_status(if export { crate::i18n::tr_label("dxf.cancelled") } else { "file operation cancelled" }, false);
+        app.set_status(app.tr(if export { "dxf.cancelled" } else { "file.cancelled" }).to_string(), false);
     }
 }
 

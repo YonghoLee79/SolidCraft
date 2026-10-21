@@ -34,10 +34,10 @@ impl CrashUi {
 
 fn kind_label(kind: &str) -> &'static str {
     match kind {
-        "command_panic" => "Internal error in a command",
-        "kernel_panic_recovered" => "Kernel error (recovered)",
-        "unclean_exit" => "Closed unexpectedly",
-        _ => "Internal error",
+        "command_panic" => crate::i18n::tr("crash.command_error"),
+        "kernel_panic_recovered" => crate::i18n::tr("crash.kernel_recovered"),
+        "unclean_exit" => crate::i18n::tr("crash.unclean_exit"),
+        _ => crate::i18n::tr("crash.internal_error"),
     }
 }
 
@@ -50,7 +50,7 @@ pub fn announce(app: &mut SolveApp, fresh: &[Summary]) {
     }
     app.crashes.open = true;
     app.crashes.refresh();
-    app.set_status("SolidCraft closed unexpectedly or hit an internal error last time. A crash report was saved (Help > Crash Reports…).", true);
+    app.set_status(app.tr("crash.announcement").to_string(), true);
 }
 
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
@@ -66,17 +66,12 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         .open(&mut open)
         .default_size(vec2(620.0, 420.0))
         .show(ctx, |ui| {
-            ui.label(
-                RichText::new(
-                    "Crash reports stay on this computer and are never sent anywhere. Report… opens a draft you review before anything is shared.",
-                )
-                .color(t.text_dim),
-            );
+            ui.label(RichText::new(crate::i18n::tr("crash.privacy_note")).color(t.text_dim));
             if let Some(d) = app.crashes.dir.clone() {
                 // A long path is cut short (hover shows it all): it must not widen the window
                 // past its title bar.
                 ui.horizontal(|ui| {
-                    if ui.small_button("Copy folder path").clicked() {
+                    if ui.small_button(crate::i18n::tr("crash.copy_folder_path")).clicked() {
                         ctx.copy_text(d.clone());
                     }
                     ui.add(egui::Label::new(RichText::new(&d).monospace().size(11.0)).truncate()).on_hover_text(&d);
@@ -99,24 +94,24 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     });
                     ui.label(RichText::new(&r.message).size(12.0));
                     ui.horizontal(|ui| {
-                        if ui.small_button("Report…").clicked() {
+                        if ui.small_button(crate::i18n::tr("crash.report")).clicked() {
                             report = Some(r.id.clone());
                         }
-                        if ui.small_button("Copy path").clicked() {
+                        if ui.small_button(crate::i18n::tr("ui.copy_path")).clicked() {
                             ctx.copy_text(r.path.clone());
                         }
-                        if ui.small_button("Delete").clicked() {
+                        if ui.small_button(crate::i18n::tr_label("Delete")).clicked() {
                             delete = Some(Some(r.id.clone()));
                         }
                         if r.replayable {
-                            ui.label(RichText::new("replayable").size(11.0).color(t.text_dim));
+                            ui.label(RichText::new(crate::i18n::tr("crash.replayable")).size(11.0).color(t.text_dim));
                         }
                     });
                     ui.add_space(6.0);
                 }
             });
             if !app.crashes.note.is_empty() {
-                ui.label(RichText::new(&app.crashes.note).color(t.text_dim));
+                ui.label(RichText::new(crate::display_error(&app.crashes.note)).color(t.text_dim));
             }
             ui.separator();
             if !app.crashes.reports.is_empty() && ui.button(crate::i18n::tr_label("Delete all")).clicked() {
@@ -136,7 +131,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         && let Some(dir) = app.crashes.dir_path()
     {
         let n = crash::clear(&dir, which.as_deref());
-        app.crashes.note = format!("Deleted {n} report(s).");
+        app.crashes.note = app.tr_format("crash.deleted_reports", &[("count", &n.to_string())]);
         app.crashes.refresh();
     }
 }

@@ -3,7 +3,6 @@
 //! uses comes from [`Tokens`].
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[path = "../../../assets/styles/ui/palettes.rs"]
 mod palettes;
@@ -11,22 +10,19 @@ mod palettes;
 use egui::{Color32, Stroke};
 use serde::{Deserialize, Serialize};
 
-static DARK: AtomicBool = AtomicBool::new(true);
-
 thread_local! {
-    /// The colour vision mode, per thread, where the dark theme is one global (`DARK`). Each app
-    /// sets it from its own preferences at the start of every frame (`SolveApp::logic`), on the
-    /// thread that draws it. Tests run many apps side by side on their own threads in one process:
-    /// with one global, a test in a mode changed the colours under another one
-    /// (`hover_stays_off_during_spin_and_animated_views` failed that way). No worker thread reads
-    /// it: the preview thread is handed its colours (`preview::Colors`) and thumbnails are drawn by
-    /// the engine in the model's colours, so a new thread starts Off and stays Off.
+    /// Theme settings of the thread drawing an app. Each app sets them from its preferences at
+    /// the start of every frame ([`crate::SolveApp::logic`]). Concurrent render threads must not change
+    /// each other's colours between the model and highlight, or between comparison frames.
+    /// Workers receive colours explicitly: previews use [`crate::preview::Colors`], and thumbnails use
+    /// the engine's model colours. A new render thread starts dark with colour vision mode Off.
+    static DARK: Cell<bool> = const { Cell::new(true) };
     static VISION: Cell<ColorVision> = const { Cell::new(ColorVision::Off) };
 }
 
-/// Is the dark theme on?
+/// Is the dark theme on for this render thread?
 pub fn is_dark() -> bool {
-    DARK.load(Ordering::Relaxed)
+    DARK.with(Cell::get)
 }
 
 /// Colour vision modes (#778): a second set of values for the colours that carry a meaning, for
@@ -331,9 +327,9 @@ pub fn material_color(name: &str) -> Option<Color32> {
     solidcraft_engine::doc::material_color(name).map(|[r, g, b]| Color32::from_rgb(r, g, b))
 }
 
-/// Switch themes (the visuals follow on the next [`apply`]).
+/// Switch this render thread's theme (the visuals follow on the next [`apply`]).
 pub fn set_dark(dark: bool) {
-    DARK.store(dark, Ordering::Relaxed);
+    DARK.with(|value| value.set(dark));
 }
 
 fn visuals(dark: bool) -> egui::Visuals {
@@ -373,6 +369,54 @@ pub fn apply(ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
+    /// Another render thread changing its theme must not recolour this thread's model.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn concurrent_render_threads_keep_their_own_theme() {
+        use super::{ColorVision, Tokens, is_dark, set_dark, set_vision, vision};
+        use std::sync::Barrier;
+
+        let previous = (is_dark(), vision());
+        let barrier = Barrier::new(2);
+        let (light_before, light_after, dark) = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                let previous = (is_dark(), vision());
+                barrier.wait(); // The other render thread has selected its light palette.
+                set_dark(true);
+                set_vision(ColorVision::Off);
+                let before = Tokens::get();
+                barrier.wait(); // Publish dark before the light thread reads its own tokens.
+                barrier.wait(); // The light thread has captured its observation.
+                barrier.wait(); // It has selected light again before we read our own tokens.
+                let after = (is_dark(), Tokens::get());
+                set_dark(previous.0);
+                set_vision(previous.1);
+                (before, after)
+            });
+            set_dark(false);
+            set_vision(ColorVision::Off);
+            let before = Tokens::get();
+            barrier.wait();
+            barrier.wait();
+            let after = (is_dark(), Tokens::get());
+            barrier.wait();
+            set_dark(false);
+            barrier.wait();
+            (before, after, worker.join())
+        });
+        // Restore state and finish both threads before asserting, so no failed assertion can
+        // leave a thread waiting at a barrier or change the next test's palette.
+        set_dark(previous.0);
+        set_vision(previous.1);
+        let (dark_before, dark_after) = dark.expect("the other render thread should finish");
+        assert_eq!(light_before, Tokens::themed(false, ColorVision::Off));
+        assert!(!light_after.0, "another render thread replaced the light theme");
+        assert_eq!(light_after.1, light_before, "another render thread recoloured the light model");
+        assert_eq!(dark_before, Tokens::themed(true, ColorVision::Off));
+        assert!(dark_after.0, "another render thread replaced the dark theme");
+        assert_eq!(dark_after.1, dark_before, "another render thread recoloured the dark model");
+    }
+
     /// Title and section bands stand out from a dialog, the title more than its sections.
     #[test]
     fn heading_bands_are_darker_than_the_dialog_in_order() {

@@ -145,7 +145,7 @@ pub fn open_tab(app: &mut SolveApp, session: Session) -> Result<(), String> {
         app.docs.active = 0;
     }
     if app.docs.slots.len() >= MAX_OPEN {
-        return Err(format!("at most {MAX_OPEN} designs can be open"));
+        return Err(app.tr_format("error.max_designs", &[("maximum", &MAX_OPEN.to_string())]));
     }
     let at = app.docs.active + 1;
     app.docs.slots.insert(at, Some(DocSlot::new(session)));
@@ -418,7 +418,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         let s = Stroke::new(1.3, if active { t.text_dim } else { t.app_bar_text });
         ui.painter().line_segment([c - vec2(3.5, 3.5), c + vec2(3.5, 3.5)], s);
         ui.painter().line_segment([c - vec2(3.5, -3.5), c + vec2(3.5, -3.5)], s);
-        if xresp.on_hover_text("Close").clicked() {
+        if xresp.on_hover_text(crate::i18n::tr_label("Close")).clicked() {
             shut = Some(i);
         } else if resp.on_hover_text(name.as_str()).clicked() {
             pick = Some(i);
@@ -472,7 +472,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
     ui.painter().line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], s);
     // A file loading into the window keeps the tabs as they are (dragging still moves it).
     let idle = !app.file_load.busy();
-    if presp.on_hover_text("New Design (Ctrl+N)").clicked() && idle {
+    if presp.on_hover_text(crate::i18n::tr("document.new_shortcut")).clicked() && idle {
         new_tab(app);
     }
     match (shut, pick) {

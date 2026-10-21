@@ -143,7 +143,8 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
 /// A value row whose empty value means "from the rule" (or another default).
 fn opt_field(ui: &mut egui::Ui, label: &str, v: &mut String, hint: &str) -> bool {
     row_label(ui, label);
-    let r = ui.add(egui::TextEdit::singleline(v).hint_text(hint));
+    let display_hint = if hint == "solid" { hint } else { crate::i18n::tr_label(hint) };
+    let r = ui.add(egui::TextEdit::singleline(v).hint_text(display_hint));
     crate::params_dialog::complete(ui, &r, v);
     ui.end_row();
     r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -244,7 +245,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Pl, inputs: &[SelInpu
             names.push("New rule…".into());
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
             row_label(ui, "Rule");
-            combo(ui, "pl_rules", &refs, pick);
+            let display: Vec<&str> =
+                refs.iter().enumerate().map(|(i, name)| if i == rules.len() { crate::i18n::tr("rule.new") } else { name }).collect();
+            crate::dialogs::combo_display(ui, "pl_rules", &refs, &display, pick);
             ui.end_row();
             if *loaded != Some(*pick) {
                 let base = rules.get(*pick).or(rules.first()).cloned();
@@ -278,7 +281,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Pl, inputs: &[SelInpu
             names.extend(app.session.doc.plastic_rules().into_iter().map(|r| r.name));
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
             row_label(ui, "Rule");
-            combo(ui, "pl_assign", &refs, rule);
+            let display: Vec<&str> =
+                refs.iter().enumerate().map(|(i, name)| if i == 0 { crate::i18n::tr("plastic.no_rule") } else { name }).collect();
+            crate::dialogs::combo_display(ui, "pl_assign", &refs, &display, rule);
             ui.end_row();
         }
     }

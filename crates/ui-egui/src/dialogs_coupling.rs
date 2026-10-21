@@ -11,13 +11,16 @@ use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 
 use crate::SolveApp;
-use crate::dialogs::{check, combo, field, row_label};
+use crate::dialogs::{check, combo, field, row_label, row_label_display};
 use crate::dialogs_assembly::Asm;
 use crate::selection::{EDGES, FACES, SelInput};
 use crate::theme::Tokens;
 
 /// What a round-face input takes: a face, or an edge of one.
 const ROUND: u16 = FACES | EDGES;
+
+/// Linear travel per revolution, distinct from a joint's angular pitch.
+const PITCH_LABEL: &str = "coupling.pitch";
 
 #[derive(Clone, Debug)]
 pub struct CouplingForm {
@@ -187,7 +190,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, f: &mut CouplingForm, inputs:
         }
         _ => {
             joint_row(ui, role_b, "cp_b", &lb, &mut f.b);
-            row_label(ui, "Pitch");
+            row_label_display(ui, "Pitch", crate::i18n::tr(PITCH_LABEL));
             enter |= field(ui, s0);
             ui.end_row();
         }

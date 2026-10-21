@@ -54,6 +54,43 @@ ROBUSTNESS_GOLDENS_BLESS="why it changed" cargo test --profile ci -p solidcraft-
 
 The changed seeds and the reason are added to the file's `notes`; say why in the pull request too.
 
+
+The common records remain the default on every target. A reviewed numeric difference observed
+on `x86_64-pc-windows-msvc` can be recorded separately under
+`platforms` → `x86_64-pc-windows-msvc` in the same file, with a nonempty `reason`
+and a `seeds` map. Only `area`, `volume`, `faces` and `edges` are accepted there:
+metrics must be finite and nonnegative, and counts must be integers. Each listed seed must
+already have a common record. The qualified values apply only to that exact target and seed;
+every other field stays common. Other architectures, environments and targets keep the common
+record, with no wildcard or runtime fallback. Malformed target metadata fails the check.
+
+The comparison is unchanged: volume and area use the same relative 1e-6, and counts, steps,
+outcomes, errors and refusal counts remain exact. Target records document observed behavior;
+they do not establish the cause of a difference or geometric correctness. Before reviewing one,
+run all 96 seeds through the public fuzzer on clean isolated baseline and candidate graphs,
+preserve the evidence and explain every new delta. Do not round generator inputs or adjust the
+comparator to make a record pass.
+
+Historical qualification: these 96-seed observations, the six Windows overrides and the two
+Trunk passes apply only to the frozen `110d00d` plus PT-BR WIP with Rust 1.99.0. That checkout
+completed `cargo xtask ci` on 2026-10-15 at 01:03:21 UTC. They do not validate the integration
+onto `16c49c3`; native, wasm, corpus and browser checks of the integrated sources are pending.
+
+The recorded Windows observations compare all 96 seeds against the clean `110d00d` base.
+Seeds 1, 13, 23, 67, 92 and 94 already differed from the common records on that base.
+The prism station identity fix removes redundant wall seams in seeds 13 and 71; identical
+accepted-command replays preserve area, volume, centroid, validity and merged topology.
+Seed 94 now matches the common record, including volume. Its final join has a real measured
+volume change even with identical commands; an independent analytic volume calculation
+supports the new result, with remaining tessellation error. It is not a material-equivalence
+claim. Only the six remaining numeric differences have Windows overrides. Linux execution
+is still needed to establish the candidate's behavior on the default CI target.
+
+`ROBUSTNESS_GOLDENS_BLESS` is refused on Windows so it cannot overwrite the common records.
+Review supported target numeric overrides and their reason explicitly; record intended common
+changes on the default CI target. The default-target recorder preserves the entire `platforms`
+block when it updates common seeds and notes.
+
 ## Successful Boolean retries
 
 When an accepted Boolean result needs a retry that can make it differ from the

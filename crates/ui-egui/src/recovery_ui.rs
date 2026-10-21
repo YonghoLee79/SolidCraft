@@ -14,7 +14,7 @@ pub fn tick(app: &mut SolveApp) {
     let big = std::mem::take(&mut app.big_operation);
     let Some(a) = app.autosave.as_mut() else { return };
     if let Err(e) = a.tick(&app.session, big) {
-        let msg = format!("autosave failed: {e}");
+        let msg = app.tr_format("recovery.autosave_failed", &[("error", &e.to_string())]);
         if app.status.as_ref().is_none_or(|(s, _, _)| *s != msg) {
             app.set_status(msg, true);
         }
@@ -28,7 +28,7 @@ pub fn start(app: &mut SolveApp, dir: &std::path::Path, interval: std::time::Dur
             app.recoverable = recovery::orphans(dir);
             app.autosave = Some(a);
         }
-        Err(e) => app.set_status(format!("autosave is off: {e}"), true),
+        Err(e) => app.set_status(app.tr_format("recovery.autosave_off", &[("error", &e.to_string())]), true),
     }
 }
 
@@ -43,10 +43,10 @@ fn ago(secs: u64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(secs);
     let d = now.saturating_sub(secs);
     match d {
-        0..=59 => "just now".into(),
-        60..=3599 => format!("{} min ago", d / 60),
-        3600..=86_399 => format!("{} h ago", d / 3600),
-        _ => format!("{} days ago", d / 86_400),
+        0..=59 => crate::i18n::tr("recovery.just_now").into(),
+        60..=3599 => crate::i18n::format("recovery.minutes_ago", &[("count", &(d / 60).to_string())]),
+        3600..=86_399 => crate::i18n::format("recovery.hours_ago", &[("count", &(d / 3600).to_string())]),
+        _ => crate::i18n::format("recovery.days_ago", &[("count", &(d / 86_400).to_string())]),
     }
 }
 
@@ -67,8 +67,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             ui.add_space(6.0);
             for e in app.recoverable.iter().take(20) {
                 ui.label(RichText::new(&e.name).strong());
-                let file = e.path.clone().unwrap_or_else(|| "never saved".into());
-                ui.label(RichText::new(format!("{file} · {} features · autosaved {}", e.features, ago(e.saved_at))).small().weak());
+                let file = e.path.clone().unwrap_or_else(|| crate::i18n::tr("recovery.never_saved").into());
+                ui.label(
+                    RichText::new(crate::i18n::format(
+                        "recovery.design_details",
+                        &[("file", &file), ("count", &e.features.to_string()), ("age", &ago(e.saved_at))],
+                    ))
+                    .small()
+                    .weak(),
+                );
                 ui.horizontal(|ui| {
                     if ui.button(crate::i18n::tr_label("Recover")).clicked() {
                         act = Some((e.clone(), true));
@@ -80,7 +87,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.separator();
             }
             ui.horizontal(|ui| {
-                if ui.button(crate::i18n::tr_label("Later")).on_hover_text("Keep them; ask again next launch").clicked() {
+                if ui.button(crate::i18n::tr_label("Later")).on_hover_text(crate::i18n::tr("recovery.later_hint")).clicked() {
                     later = true;
                 }
             });
@@ -90,7 +97,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         app.recoverable.retain(|x| x.id != e.id);
         if recover {
             if app.session.is_dirty() {
-                app.set_status("save or discard the open design's changes before recovering another", true);
+                app.set_status(app.tr("recovery.unsaved_open_design").to_string(), true);
                 app.recoverable.insert(0, e);
                 return;
             }

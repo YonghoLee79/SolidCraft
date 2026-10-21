@@ -187,7 +187,8 @@ fn rule_combo(app: &SolveApp, ui: &mut egui::Ui, id: &str, rule: &mut usize) {
     let names = rule_names(app);
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     row_label(ui, "Rule");
-    combo(ui, id, &refs, rule);
+    let display: Vec<&str> = refs.iter().enumerate().map(|(i, name)| if i == 0 { crate::i18n::tr("rule.active") } else { name }).collect();
+    crate::dialogs::combo_display(ui, id, &refs, &display, rule);
     ui.end_row();
 }
 
@@ -211,7 +212,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
         Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size } => {
             *ty = flange_type(inputs);
             row_label(ui, "Type");
-            ui.label(FLANGE_TYPES.get(*ty).copied().unwrap_or(""));
+            ui.label(crate::i18n::tr_label(FLANGE_TYPES.get(*ty).copied().unwrap_or("")));
             ui.end_row();
             match *ty {
                 1 => {
@@ -244,20 +245,32 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     if points.len() > 1 || own.iter().any(|o| !(o.1.trim().is_empty() && o.2.trim().is_empty())) {
                         row_label(ui, "Per Edge");
                         ui.label(RichText::new(crate::i18n::tr_label("angle, height")).weak())
-                            .on_hover_text("An edge's own angle and height. Empty: the values above.");
+                            .on_hover_text(crate::i18n::tr("sheet.edge_override_hint"));
                         ui.end_row();
                         let w = ((ui.spacing().text_edit_width - ui.spacing().item_spacing.x) / 2.0).max(40.0);
                         for (n, p) in points.iter().enumerate() {
                             let slot = own_slot(own, *p);
                             let Some((_, a, h)) = own.get_mut(slot) else { continue };
-                            row_label(ui, &format!("Edge {}", n + 1));
+                            crate::dialogs::row_label_display(
+                                ui,
+                                &format!("Edge {}", n + 1),
+                                &crate::i18n::format("ui.edge_number", &[("number", &(n + 1).to_string())]),
+                            );
                             ui.horizontal(|ui| {
                                 for (text, hint, what, id) in
                                     [(a, angle.as_str(), "angle", "sm_edge_angle"), (h, height.as_str(), "height", "sm_edge_height")]
                                 {
-                                    let r = ui
-                                        .add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(w).id_salt((id, n)))
-                                        .on_hover_text(format!("The {what} of the edge picked at ({:.1}, {:.1}, {:.1})", p.x, p.y, p.z));
+                                    let r = ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(w).id_salt((id, n))).on_hover_text(
+                                        crate::i18n::format(
+                                            "sheet.edge_value_hint",
+                                            &[
+                                                ("property", crate::i18n::tr_label(what)),
+                                                ("x", &format!("{:.1}", p.x)),
+                                                ("y", &format!("{:.1}", p.y)),
+                                                ("z", &format!("{:.1}", p.z)),
+                                            ],
+                                        ),
+                                    );
                                     // For scenarios and the control channel: `dialog:Edge 2 angle`.
                                     crate::scenario::publish_handle(&format!("dialog:Edge {} {what}", n + 1), r.rect.center());
                                     crate::params_dialog::complete(ui, &r, text);
@@ -323,7 +336,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
             names.push("New rule…".into());
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
             row_label(ui, "Rule");
-            combo(ui, "sm_rules", &refs, pick);
+            let display: Vec<&str> =
+                refs.iter().enumerate().map(|(i, name)| if i == rules.len() { crate::i18n::tr("rule.new") } else { name }).collect();
+            crate::dialogs::combo_display(ui, "sm_rules", &refs, &display, pick);
             ui.end_row();
             if *loaded != Some(*pick) {
                 // Show the picked rule (a new one starts from the one shown before).
@@ -411,11 +426,15 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     for b in bends.iter().take(50) {
                         let up = b["direction"] == "up";
                         let (up_col, down_col) = bend_colors();
-                        row_label(ui, &format!("  Bend {}", b["bend"].as_u64().unwrap_or(0)));
+                        crate::dialogs::row_label_display(
+                            ui,
+                            &format!("  Bend {}", b["bend"].as_u64().unwrap_or(0)),
+                            &crate::i18n::format("sheet.bend_number", &[("number", &b["bend"].as_u64().unwrap_or(0).to_string())]),
+                        );
                         ui.label(
                             RichText::new(format!(
                                 "{} {:.1}°  R{}",
-                                if up { "Up" } else { "Down" },
+                                crate::i18n::tr_label(if up { "Up" } else { "Down" }),
                                 b["angle_deg"].as_f64().unwrap_or(0.0),
                                 crate::prefs::show_mm(app, b["radius"].as_f64().unwrap_or(0.0), 1)
                             ))
@@ -424,24 +443,24 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                         ui.end_row();
                     }
                     row_label(ui, "");
-                    if ui.button("Export DXF…").clicked() {
+                    if ui.button(crate::i18n::tr_label("Export DXF…")).clicked() {
                         *status = Some(export_flat(app, v["body"].as_str().unwrap_or(""), "dxf"));
                     }
                     ui.end_row();
                     row_label(ui, "");
-                    if ui.button("Export Bend Table…").clicked() {
+                    if ui.button(crate::i18n::tr("sheet.export_bend_table")).clicked() {
                         *status = Some(export_flat(app, v["body"].as_str().unwrap_or(""), "csv"));
                     }
                     ui.end_row();
                     if let Some(s) = status {
                         row_label(ui, "");
-                        ui.add(egui::Label::new(RichText::new(s.as_str()).color(t.text_dim)).wrap());
+                        ui.add(egui::Label::new(RichText::new(crate::display_error(s.as_str())).color(t.text_dim)).wrap());
                         ui.end_row();
                     }
                 }
                 Some(Err(e)) => {
                     row_label(ui, "");
-                    ui.add(egui::Label::new(RichText::new(e.as_str()).color(t.error)).wrap());
+                    ui.add(egui::Label::new(RichText::new(crate::display_error(e.as_str())).color(t.error)).wrap());
                     ui.end_row();
                 }
                 None => {}
@@ -459,13 +478,13 @@ fn export_flat(app: &mut SolveApp, body: &str, extension: &str) -> String {
         let message = if let Some(path) = path {
             match app.run(command, json!({"body": body, "path": path})) {
                 Ok(_) => {
-                    app.set_status(format!("Exported {path}"), false);
-                    format!("Saved {path}")
+                    app.set_status(app.tr_format("file.exported", &[("path", &path)]), false);
+                    app.tr_format("file.saved", &[("path", &path)])
                 }
                 Err(e) => e,
             }
         } else {
-            "Export cancelled".into()
+            crate::i18n::tr_label("Export cancelled").into()
         };
         if let Some(d) = app.dialog.as_mut()
             && let Kind::Sheet(Sm::FlatPattern { status, .. }) = &mut d.kind
@@ -473,7 +492,7 @@ fn export_flat(app: &mut SolveApp, body: &str, extension: &str) -> String {
             *status = Some(message);
         }
     });
-    "Choose an export file…".into()
+    crate::i18n::tr_label("Choose an export file…").into()
 }
 
 // ---- commands ----
@@ -849,7 +868,7 @@ pub fn overlay(app: &mut SolveApp, painter: &egui::Painter, rect: Rect, d: &Dial
     let (up_col, down_col) = bend_colors();
     painter.rect_filled(rect, 0.0, t.panel);
     let Some(Ok(v)) = data else {
-        painter.text(rect.center(), Align2::CENTER_CENTER, "no sheet metal body", FontId::proportional(14.0), t.text_dim);
+        painter.text(rect.center(), Align2::CENTER_CENTER, crate::i18n::diagnostic("no sheet metal body"), FontId::proportional(14.0), t.text_dim);
         return true;
     };
     let read = |p: &Value| -> Option<(f64, f64)> { Some((p.get(0)?.as_f64()?, p.get(1)?.as_f64()?)) };
@@ -1014,7 +1033,7 @@ fn pocket_label(app: &SolveApp, pocket: &Value) -> Option<String> {
         "internal" => "Internal",
         _ => return None,
     };
-    Some(format!("{side} pocket: {} deep", crate::prefs::show_mm(app, depth, 1)))
+    Some(crate::i18n::format("sheet.pocket_depth", &[("side", crate::i18n::tr_label(side)), ("depth", &crate::prefs::show_mm(app, depth, 1))]))
 }
 
 #[cfg(test)]

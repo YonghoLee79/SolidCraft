@@ -82,7 +82,7 @@ fn run(app: &mut SolveApp, params: &Value) {
             app.tree.picked_components.clear();
             app.tree.picked_canvases.clear();
             if let Some(s) = r["skipped"].as_array().and_then(|a| a.first()).and_then(Value::as_str) {
-                app.set_status(format!("deleted; {s}"), false);
+                app.set_status(app.tr_format("delete.done", &[("details", s)]), false);
             }
         }
         Err(e) => app.set_status(e.replace("selection.delete: ", ""), true),
@@ -123,7 +123,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     ui.label(RichText::new(format!("  • {d}")).color(t.text));
                 }
                 if deleted.len() > 20 {
-                    ui.label(format!("  … and {} more", deleted.len() - 20));
+                    ui.label(crate::i18n::format("delete.more", &[("count", &(deleted.len() - 20).to_string())]));
                 }
             }
             if !fails.is_empty() {
@@ -135,10 +135,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Delete").clicked() {
+                if ui.button(crate::i18n::tr_label("Delete")).clicked() {
                     answer = Some(true);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr_label("Cancel")).clicked() {
                     answer = Some(false);
                 }
             });

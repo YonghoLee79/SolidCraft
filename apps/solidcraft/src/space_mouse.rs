@@ -15,6 +15,7 @@ use hid_descriptor::Layout;
 use hidapi::{DeviceInfo, HidApi};
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use solidcraft_engine::i18n::Locale;
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::space_mouse::{Axes, AxisRule, DriverMapping, WheelGuard, navigate_frame};
 
@@ -138,13 +139,13 @@ fn parse_driver_mapping(xml: &[u8]) -> Option<DriverMapping> {
     found.then_some(mapping)
 }
 
-fn load_driver_mapping() -> Option<DriverMapping> {
+fn load_driver_mapping(locale: Locale) -> Option<DriverMapping> {
     let cfg = std::path::PathBuf::from(std::env::var_os("APPDATA")?).join("3Dconnexion").join("3DxWare").join("Cfg");
     // The driver names the profile after the executable; one made for the pre-rename executable
     // still applies until the driver writes a new one (compatibility shim).
     let profile = ["solidcraft-KMJ.xml", "solvecraft-KMJ.xml"].into_iter().map(|n| cfg.join(n)).find(|p| p.is_file())?;
     if std::fs::metadata(&profile).ok()?.len() > MAX_PROFILE_BYTES {
-        log::warn!("3D mouse: ignoring oversized 3DxWare profile {}", profile.display());
+        log::warn!("{}", locale.protocol_error(&format!("3D mouse: ignoring oversized 3DxWare profile {}", profile.display())));
         return None;
     }
     let xml = std::fs::read(&profile).ok()?;
@@ -234,24 +235,29 @@ fn reset(ctx: &Context, shared: &Mutex<Reading>) {
     ctx.request_repaint();
 }
 
+/// The reader has no UI thread locale scope. Copy the current preference only when logging.
+fn reader_locale(shared: &Mutex<Locale>) -> Locale {
+    shared.lock().map(|locale| *locale).unwrap_or_else(|_| Locale::for_language("en"))
+}
+
 #[cfg(target_os = "windows")]
-fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
+fn reader(ctx: Context, shared: Arc<Mutex<Reading>>, locale: Arc<Mutex<Locale>>) {
     let Ok(mut api) = HidApi::new() else {
-        log::warn!("3D mouse: HID initialization failed");
+        log::warn!("{}", reader_locale(&locale).protocol_error("3D mouse: HID initialization failed"));
         return;
     };
     loop {
         if let Err(error) = api.refresh_devices() {
-            log::warn!("3D mouse: device scan failed: {error}");
+            log::warn!("{}", reader_locale(&locale).protocol_error(&format!("3D mouse: device scan failed: {error}")));
         } else if let Some(device) = api.device_list().find(|info| is_3d_mouse(info)).and_then(|info| info.open_device(&api).ok()) {
-            let layout = device_layout(&device);
+            let layout = device_layout(&device, reader_locale(&locale));
             let mut report = [0_u8; 64];
             loop {
                 match device.read_timeout(&mut report, 100) {
                     Ok(0) => {}
                     Ok(size) => publish(&ctx, &shared, layout, report.get(..size).unwrap_or_default()),
                     Err(error) => {
-                        log::info!("3D mouse disconnected: {error}");
+                        log::info!("{}", reader_locale(&locale).protocol_error(&format!("3D mouse disconnected: {error}")));
                         break;
                     }
                 }
@@ -265,12 +271,15 @@ fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
 /// How the device packs its axes, from its report descriptor; the usual split layout if the
 /// descriptor cannot be read.
 #[cfg(target_os = "windows")]
-fn device_layout(device: &hidapi::HidDevice) -> Layout {
+fn device_layout(device: &hidapi::HidDevice, locale: Locale) -> Layout {
     let mut descriptor = [0_u8; hidapi::MAX_REPORT_DESCRIPTOR_SIZE];
     match device.get_report_descriptor(&mut descriptor) {
         Ok(size) => hid_descriptor::Descriptor::parse(descriptor.get(..size).unwrap_or_default()).layout(),
         Err(error) => {
-            log::info!("3D mouse: no report descriptor, assuming separate translation and rotation reports: {error}");
+            log::info!(
+                "{}",
+                locale.protocol_error(&format!("3D mouse: no report descriptor, assuming separate translation and rotation reports: {error}"))
+            );
             Layout::Split
         }
     }
@@ -280,7 +289,7 @@ fn device_layout(device: &hidapi::HidDevice) -> Layout {
 /// unplugged. Opening needs permission: most distributions grant it to the logged-in user for
 /// devices that carry the `uaccess` udev tag, which a rule for the 3D mouse has to add.
 #[cfg(target_os = "linux")]
-fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
+fn reader(ctx: Context, shared: Arc<Mutex<Reading>>, locale: Arc<Mutex<Locale>>) {
     use std::io::Read;
     let mut denied = None;
     loop {
@@ -288,7 +297,10 @@ fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
             match std::fs::File::open(&device.path) {
                 Ok(mut file) => {
                     denied = None;
-                    log::info!("3D mouse: reading {} ({:?} reports)", device.path.display(), device.layout);
+                    log::info!(
+                        "{}",
+                        reader_locale(&locale).protocol_error(&format!("3D mouse: reading {} ({:?} reports)", device.path.display(), device.layout))
+                    );
                     let mut report = [0_u8; 64];
                     loop {
                         match file.read(&mut report) {
@@ -296,7 +308,7 @@ fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
                             Ok(size) => publish(&ctx, &shared, device.layout, report.get(..size).unwrap_or_default()),
                             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                             Err(error) => {
-                                log::info!("3D mouse disconnected: {error}");
+                                log::info!("{}", reader_locale(&locale).protocol_error(&format!("3D mouse disconnected: {error}")));
                                 break;
                             }
                         }
@@ -305,7 +317,13 @@ fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
                 }
                 // Say so once per device node, not every retry.
                 Err(error) if denied.as_ref() != Some(&device.path) => {
-                    log::warn!("3D mouse: cannot open {}: {error}. A udev rule granting the logged-in user access is needed.", device.path.display());
+                    log::warn!(
+                        "{}",
+                        reader_locale(&locale).protocol_error(&format!(
+                            "3D mouse: cannot open {}: {error}. A udev rule granting the logged-in user access is needed.",
+                            device.path.display()
+                        ))
+                    );
                     denied = Some(device.path);
                 }
                 Err(_) => {}
@@ -317,6 +335,7 @@ fn reader(ctx: Context, shared: Arc<Mutex<Reading>>) {
 
 pub struct SpaceMouse {
     shared: Arc<Mutex<Reading>>,
+    locale: Arc<Mutex<Locale>>,
     last_frame: Instant,
     driver_mapping: DriverMapping,
     mapping_checked_at: Instant,
@@ -326,18 +345,23 @@ pub struct SpaceMouse {
 }
 
 impl SpaceMouse {
-    pub fn start(ctx: &Context) -> Self {
+    pub fn start(ctx: &Context, locale: Locale) -> Self {
         let now = Instant::now();
         let shared = Arc::new(Mutex::new(Reading::new(now)));
+        let shared_locale = Arc::new(Mutex::new(locale));
         let worker_state = Arc::clone(&shared);
+        let worker_locale = Arc::clone(&shared_locale);
         let worker_ctx = ctx.clone();
-        if let Err(error) = std::thread::Builder::new().name("solidcraft-3d-mouse".into()).spawn(move || reader(worker_ctx, worker_state)) {
-            log::warn!("3D mouse: reader could not start: {error}");
+        if let Err(error) =
+            std::thread::Builder::new().name("solidcraft-3d-mouse".into()).spawn(move || reader(worker_ctx, worker_state, worker_locale))
+        {
+            log::warn!("{}", locale.protocol_error(&format!("3D mouse: reader could not start: {error}")));
         }
         Self {
             shared,
+            locale: shared_locale,
             last_frame: now,
-            driver_mapping: load_driver_mapping().unwrap_or_else(without_profile),
+            driver_mapping: load_driver_mapping(locale).unwrap_or_else(without_profile),
             mapping_checked_at: now,
             wheel: WheelGuard::default(),
             started: now,
@@ -356,13 +380,17 @@ impl SpaceMouse {
     }
 
     pub fn tick(&mut self, app: &mut SolveApp, ctx: &Context) {
+        let locale = Locale::for_language(&app.preferences.language);
+        if let Ok(mut shared_locale) = self.locale.lock() {
+            *shared_locale = locale;
+        }
         let now = Instant::now();
         let seconds = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
         if now.duration_since(self.mapping_checked_at) >= RETRY_AFTER {
-            let updated = load_driver_mapping().unwrap_or_else(without_profile);
+            let updated = load_driver_mapping(locale).unwrap_or_else(without_profile);
             if updated != self.driver_mapping {
-                log::info!("3D mouse: applying updated 3DxWare axis profile");
+                log::info!("{}", locale.protocol_error("3D mouse: applying updated 3DxWare axis profile"));
                 self.driver_mapping = updated;
             }
             self.mapping_checked_at = now;
@@ -494,6 +522,7 @@ mod tests {
         reading.axes.rotation = [0, 350, 0];
         let mut mouse = SpaceMouse {
             shared: Arc::new(Mutex::new(reading)),
+            locale: Arc::new(Mutex::new(Locale::for_language("en"))),
             last_frame: now - Duration::from_millis(20),
             driver_mapping: DriverMapping::object_mode(),
             mapping_checked_at: now,
@@ -519,6 +548,7 @@ mod tests {
         let now = Instant::now();
         SpaceMouse {
             shared: Arc::new(Mutex::new(reading)),
+            locale: Arc::new(Mutex::new(Locale::for_language("en"))),
             last_frame: now,
             driver_mapping: DriverMapping::object_mode(),
             mapping_checked_at: now,

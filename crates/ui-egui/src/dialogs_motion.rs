@@ -190,7 +190,7 @@ fn transport(ui: &mut egui::Ui, what: Transport, tip: &str) -> egui::Response {
             p.add(bar(c.x + 6.0));
         }
     }
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr_label(tip))
 }
 
 /// The study command's parameters.
@@ -382,7 +382,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
             let list = app.session.execute("contact.list", &json!({})).unwrap_or(Value::Null);
             row_label(ui, "Contact");
             let mut on = list.get("enabled").and_then(Value::as_bool).unwrap_or(false);
-            if ui.checkbox(&mut on, "enabled").changed() {
+            if ui.checkbox(&mut on, crate::i18n::tr_label("Enabled")).changed() {
                 let _ = app.run("contact.enable_sets", json!({ "enabled": on }));
             }
             ui.end_row();
@@ -392,8 +392,8 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 row_label(ui, &n);
                 ui.horizontal(|ui| {
                     let count = s.get("occurrences").and_then(Value::as_array).map_or(0, Vec::len);
-                    ui.label(RichText::new(format!("{count} components")).color(t.text_dim));
-                    if ui.small_button(if off { "Unsuppress" } else { "Suppress" }).clicked() {
+                    ui.label(RichText::new(crate::i18n::format("ui.count_components", &[("count", &count.to_string())])).color(t.text_dim));
+                    if ui.small_button(crate::i18n::tr_label(if off { "Unsuppress" } else { "Suppress" })).clicked() {
                         let _ = app.run("contact.edit", json!({"set": n, "suppressed": !off}));
                     }
                     if ui.small_button("×").on_hover_text(crate::i18n::tr_label("Delete the set")).clicked() {
@@ -411,9 +411,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 let hits = c.get("collisions").and_then(Value::as_array).cloned().unwrap_or_default();
                 row_label(ui, "Collisions");
                 if let Some(e) = c.get("error").and_then(Value::as_str) {
-                    ui.label(RichText::new(e).color(t.error));
+                    ui.label(RichText::new(crate::display_error(e)).color(t.error));
                 } else if hits.is_empty() {
-                    ui.label(RichText::new("none").color(t.text_dim));
+                    ui.label(RichText::new(crate::i18n::tr("ui.none")).color(t.text_dim));
                 } else {
                     ui.vertical(|ui| {
                         for h in hits {
@@ -504,9 +504,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 let labels: Vec<String> = moving.iter().map(|(_, n, _)| n.clone()).collect();
                 let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
                 let mut pos = moving.iter().position(|(i, _, _)| *i == tr.joint).unwrap_or(0);
-                row_label(ui, &format!("Track {}", ti + 1));
+                crate::dialogs::row_label_display(
+                    ui,
+                    &format!("Track {}", ti + 1),
+                    &crate::i18n::format("ui.track_number", &[("number", &(ti + 1).to_string())]),
+                );
                 ui.horizontal(|ui| {
-                    combo(ui, &format!("ms_joint{ti}"), &refs, &mut pos);
+                    crate::dialogs::combo_raw(ui, &format!("ms_joint{ti}"), &refs, &mut pos);
                     if ui.small_button("×").on_hover_text(crate::i18n::tr_label("Remove the track")).clicked() {
                         remove = Some(ti);
                     }
@@ -518,7 +522,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                     if dofs.len() > 1 {
                         row_label(ui, "  Of");
                         let caps: Vec<&str> = dofs.to_vec();
-                        combo(ui, &format!("ms_idx{ti}"), &caps, &mut tr.index);
+                        let display_labels: Vec<String> = caps.iter().map(|name| crate::dialogs_assembly::dof_display(name).to_lowercase()).collect();
+                        let display: Vec<&str> = display_labels.iter().map(String::as_str).collect();
+                        crate::dialogs::combo_display(ui, &format!("ms_idx{ti}"), &caps, &display, &mut tr.index);
                         ui.end_row();
                     } else {
                         tr.index = 0;
@@ -536,7 +542,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 }
                 row_label(ui, "");
                 ui.horizontal(|ui| {
-                    if ui.small_button("Key here").on_hover_text("Add a key at this step with the joint's value now").clicked()
+                    if ui.small_button(crate::i18n::tr("motion.key_here")).on_hover_text(crate::i18n::tr("motion.key_here_hint")).clicked()
                         && !tr.points.iter().any(|(s, _)| *s == now)
                     {
                         let unit = app
@@ -550,7 +556,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                         tr.points.push((now, format!("0 {unit}")));
                         tr.points.sort_by_key(|p| p.0);
                     }
-                    if ui.small_button("Delete key").clicked() {
+                    if ui.small_button(crate::i18n::tr("motion.delete_key")).clicked() {
                         tr.points.retain(|(s, _)| *s != now);
                     }
                 });
@@ -625,7 +631,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
             }
             if let Some(e) = error {
                 row_label(ui, "");
-                ui.label(RichText::new(e.as_str()).color(t.error));
+                ui.label(RichText::new(crate::display_error(e.as_str())).color(t.error));
                 ui.end_row();
             }
         }
@@ -669,9 +675,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                             ui.allocate_ui_with_layout(vec2(190.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 let (kind, n) = column_parts(c);
                                 let label = match kind {
-                                    "material" => format!("Material: {n}"),
-                                    "appearance" => format!("Appearance: {n}"),
-                                    "suppress" => format!("Suppress: {n}"),
+                                    "material" => crate::i18n::format("configuration.material_label", &[("name", n)]),
+                                    "appearance" => crate::i18n::format("configuration.appearance_label", &[("name", n)]),
+                                    "suppress" => crate::i18n::format("configuration.suppress_label", &[("name", n)]),
                                     _ => n.to_string(),
                                 };
                                 let label = v["targets"]
@@ -705,7 +711,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                             .on_hover_text(name);
                             if active {
                                 ui.label(RichText::new(crate::i18n::tr_label("Active")).color(t.accent));
-                                if v.get("matches").and_then(Value::as_bool) == Some(false) && ui.button("Apply").clicked() {
+                                if v.get("matches").and_then(Value::as_bool) == Some(false) && ui.button(crate::i18n::tr_label("Apply")).clicked() {
                                     run(app, error, "config.activate", json!({ "row": name }));
                                 }
                             } else if ui.button(crate::i18n::tr_label("Activate")).clicked() {
@@ -730,14 +736,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                     let style = kind == "material" || appearance;
                                     if style {
                                         let mut choice = None;
-                                        ui.menu_button("Library", |ui| {
+                                        ui.menu_button(crate::i18n::tr_label("Library"), |ui| {
                                             if ui
                                                 .button(if kind == "appearance" {
-                                                    "Follow material"
+                                                    crate::i18n::tr("configuration.follow_material")
                                                 } else if appearance {
-                                                    "Follow inherited appearance"
+                                                    crate::i18n::tr("configuration.follow_inherited")
                                                 } else {
-                                                    "Default material"
+                                                    crate::i18n::tr("configuration.default_material")
                                                 })
                                                 .clicked()
                                             {
@@ -746,14 +752,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                             }
                                             if kind == "material" {
                                                 for name in material_names.iter().filter(|n| *n != "Default") {
-                                                    if ui.button(name).clicked() {
+                                                    if ui.button(crate::dialogs::material_display(app, name)).clicked() {
                                                         choice = Some(name.to_string());
                                                         ui.close();
                                                     }
                                                 }
                                             } else {
                                                 for (name, _, _) in solidcraft_engine::doc::appearance::LIBRARY {
-                                                    if ui.button(name).clicked() {
+                                                    if ui.button(crate::i18n::tr_label(name)).clicked() {
                                                         choice = Some(name.to_string());
                                                         ui.close();
                                                     }
@@ -811,34 +817,48 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 let mut options: Vec<(String, Value)> = Vec::new();
                 for p in app.session.doc.all_param_exprs() {
                     if !tb.columns.contains(&format!("param:{}", p.0)) {
-                        options.push((format!("{} (parameter)", p.0), json!({ "param": p.0 })));
+                        options.push((crate::i18n::format("configuration.parameter_option", &[("name", &p.0)]), json!({ "param": p.0 })));
                     }
                 }
                 for f in &app.session.doc.features {
                     if !tb.columns.contains(&format!("suppress:{}", f.name)) {
-                        options.push((format!("Suppress {}", f.name), json!({ "feature": f.name })));
+                        options.push((crate::i18n::format("configuration.suppress_option", &[("name", &f.name)]), json!({ "feature": f.name })));
                     }
                 }
                 for body in &app.session.model.state().bodies {
                     for kind in ["material", "appearance"] {
                         if !tb.columns.contains(&format!("{kind}:{}", body.name)) {
-                            options.push((format!("{} ({kind})", body.name), json!({kind: body.name})));
+                            options.push((
+                                crate::i18n::format(
+                                    "configuration.body_option",
+                                    &[
+                                        ("name", &body.name),
+                                        ("kind", &crate::i18n::tr_label(if kind == "material" { "Material" } else { "Appearance" }).to_lowercase()),
+                                    ],
+                                ),
+                                json!({kind: body.name}),
+                            ));
                         }
                     }
                 }
                 for component in &app.session.doc.components {
                     if component.id != 0 && !tb.columns.contains(&format!("component_appearance:{}", component.id)) {
-                        options.push((format!("{} (component appearance)", component.name), json!({"component_appearance":component.id})));
+                        options.push((
+                            crate::i18n::format("configuration.component_appearance_option", &[("name", &component.name)]),
+                            json!({"component_appearance":component.id}),
+                        ));
                     }
                 }
                 for selected in &app.session.selection {
                     if let solidcraft_engine::Sel::Face { body, point, .. } = selected {
-                        options
-                            .push((format!("Selected face on {body} (shared appearance)"), json!({"face_appearance":{"body":body,"point":point}})));
+                        options.push((
+                            crate::i18n::format("configuration.selected_face_option", &[("body", body)]),
+                            json!({"face_appearance":{"body":body,"point":point}}),
+                        ));
                     }
                 }
                 let mut pick: Option<Value> = None;
-                ui.menu_button("Add Column", |ui| {
+                ui.menu_button(crate::i18n::tr_label("Add Column"), |ui| {
                     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                         for (label, p) in &options {
                             if ui.button(label.as_str()).clicked() {
@@ -846,14 +866,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                 ui.close();
                             }
                         }
-                        ui.menu_button("Face Appearance", |ui| {
+                        ui.menu_button(crate::i18n::tr_label("Face Appearance"), |ui| {
                             ui.label(crate::i18n::tr_label("Semantic faces share their appearance across instances."));
                             let state = app.session.model.state();
                             for body in &state.bodies {
                                 if body.body.is_mesh() {
                                     continue;
                                 }
-                                ui.menu_button(format!("Faces on {}", body.name), |ui| {
+                                ui.menu_button(crate::i18n::format("configuration.faces_on", &[("body", &body.name)]), |ui| {
                                     if let Ok(faces) = body.body.faces((body.body.size() * 2e-3).max(1e-3)) {
                                         let mut seen = std::collections::BTreeSet::new();
                                         let mesh = body.mesh();
@@ -922,20 +942,20 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
             if let Some(styles) = v["style_status"].as_array() {
                 for style in styles.iter().filter(|style| style["dormant"].as_bool() == Some(true)) {
                     ui.add(
-                        egui::Label::new(format!(
-                            "{}: appearance dormant while its feature is suppressed",
-                            style["target"].as_str().unwrap_or("Face")
+                        egui::Label::new(crate::i18n::format(
+                            "appearance.dormant_hint",
+                            &[("target", style["target"].as_str().unwrap_or(crate::i18n::tr_label("Face")))],
                         ))
                         .wrap(),
                     );
                 }
             }
             if let Some(message) = v["style_error"].as_str() {
-                ui.add(egui::Label::new(RichText::new(message).color(t.error)).wrap());
+                ui.add(egui::Label::new(RichText::new(crate::display_error(message)).color(t.error)).wrap());
             }
             if let Some(e) = error {
                 ui.label("");
-                ui.label(RichText::new(e.as_str()).color(t.error));
+                ui.label(RichText::new(crate::display_error(e.as_str())).color(t.error));
                 ui.end_row();
             }
         }
@@ -1203,7 +1223,7 @@ mod tests {
                 assert_eq!(h.app.session.doc.appearances.faces[0].look.name, "ABS - Red");
                 assert!(h.app.session.doc.appearances.faces[0].strict_name);
             }
-            h.run(&json!([{"widget":"Library"},{"widget":"Follow inherited appearance"},{"widget":"Apply"}])).unwrap();
+            h.run(&json!([{"widget":"Library"},{"widget":crate::i18n::tr("configuration.follow_inherited")},{"widget":"Apply"}])).unwrap();
             assert!(h.app.session.doc.appearances.components.is_empty());
             assert!(h.app.session.doc.appearances.faces.is_empty());
             crate::scenario::check(&mut h, &json!({"windows_fit":{"max_width":560}})).unwrap();

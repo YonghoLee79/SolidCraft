@@ -426,7 +426,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.menu_button(app.tr("ui.open_recent"), |ui| {
                     for path in app.home.recent.clone() {
                         let missing = !solidcraft_engine::io::vfs::exists(&path);
-                        let label = format!("{path}{}", if missing { " (missing)" } else { "" });
+                        let label = if missing { crate::i18n::format("file.missing", &[("path", &path)]) } else { path.to_string() };
                         if ui.button(label).clicked() {
                             crate::home::open_recent(app, &path);
                             close = true;
@@ -574,7 +574,7 @@ fn export_as(app: &mut SolveApp, ext: &str, format: Option<&str>) {
             params["format"] = json!(format);
         }
         if app.run("file.export", params).is_ok() {
-            app.set_status(format!("Exported {path}"), false);
+            app.set_status(app.tr_format("file.exported", &[("path", &path)]), false);
         }
     });
 }
@@ -790,7 +790,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 let tr_label = app.tr_label(label);
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled() && info.enabled, tr_label));
                 let tip = match &info.disabled_reason {
-                    Some(why) => format!("{}\n{why}", tr_label),
+                    Some(why) => format!("{}\n{}", tr_label, crate::display_error(why)),
                     None => format!("{}{}", tr_label, selected.shortcut.map(|k| format!("  ({k})")).unwrap_or_default()),
                 };
                 if resp.on_hover_text(tip).clicked() && info.enabled {
@@ -806,7 +806,13 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                     painter.text(ar.center() - vec2(4.0, 0.0), Align2::CENTER_CENTER, app.tr_label(f.label), FontId::proportional(10.0), t.text);
                     caret(&painter, pos2(ar.right() - 5.0, ar.center().y), t.text);
-                    arrow.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{} variants", f.label)));
+                    arrow.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            crate::i18n::format("toolbar.variants", &[("command", app.tr_label(f.label))]),
+                        )
+                    });
                     egui::Popup::menu(&arrow).show(|ui| {
                         let variants: Vec<_> = f.commands.iter().filter_map(|id| solidcraft_engine::find_command(id)).collect();
                         dropdown_keys(app, ui, &variants);
@@ -1128,11 +1134,11 @@ fn dropdown_row(app: &SolveApp, ui: &mut egui::Ui, c: &'static solidcraft_engine
         crate::scenario::publish_handle(&format!("dropdown_pin:{}", c.id), pr.center());
     }
     let tip = if pinned { "Remove from Toolbar" } else { "Pin to Toolbar" };
-    if pin.on_hover_text(tip).clicked() {
+    if pin.on_hover_text(crate::i18n::tr_label(tip)).clicked() {
         return RowAction::TogglePin;
     }
     let resp = match &info.disabled_reason {
-        Some(why) if !info.enabled => resp.on_hover_text(why),
+        Some(why) if !info.enabled => resp.on_hover_text(crate::display_error(why)),
         _ => resp,
     };
     if resp.secondary_clicked() {

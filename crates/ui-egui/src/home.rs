@@ -287,7 +287,7 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     for (key, img, session) in done {
         if session.is_none() && key.starts_with("sample:") && app.home.wanted.is_some_and(|w| key == format!("sample:{w}")) {
             app.home.wanted = None;
-            app.set_status(format!("the sample could not be built ({key})"), true);
+            app.set_status(app.tr_format("home.sample_failed", &[("key", &key)]), true);
         }
         let tex = img.map(|i| ctx.load_texture(format!("thumb:{key}"), i, egui::TextureOptions::LINEAR));
         app.home.thumbs.insert(key.clone(), tex);
@@ -329,7 +329,7 @@ pub fn open_sample(app: &mut SolveApp, i: usize) {
 
 pub fn open_recent(app: &mut SolveApp, path: &str) {
     if !solidcraft_engine::io::vfs::exists(path) {
-        app.set_status(format!("{path} is no longer there"), true);
+        app.set_status(app.tr_format("home.file_missing", &[("path", path)]), true);
         return;
     }
     app.home.open = false;

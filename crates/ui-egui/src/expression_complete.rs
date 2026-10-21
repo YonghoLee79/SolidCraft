@@ -121,17 +121,27 @@ pub(crate) fn complete(ui: &mut egui::Ui, resp: &egui::Response, text: &mut Stri
                         "function" => t.accent,
                         _ => t.text_dim,
                     };
-                    let r = ui
-                        .add(egui::Button::new(RichText::new(&suggestion.text).color(colour)).selected(i == popup.selected))
-                        .on_hover_text(&suggestion.detail);
+                    let detail = if suggestion.kind == "unit" {
+                        match suggestion.detail.as_str() {
+                            "length" => crate::i18n::tr("expression.unit_length"),
+                            "angle" => crate::i18n::tr("expression.unit_angle"),
+                            _ => &suggestion.detail,
+                        }
+                    } else if suggestion.kind == "function" {
+                        crate::i18n::tr_label(&suggestion.detail)
+                    } else {
+                        &suggestion.detail
+                    };
+                    let r =
+                        ui.add(egui::Button::new(RichText::new(&suggestion.text).color(colour)).selected(i == popup.selected)).on_hover_text(detail);
                     if i == popup.selected {
-                        ui.label(RichText::new(&suggestion.detail).small().color(t.text_dim));
+                        ui.label(RichText::new(detail).small().color(t.text_dim));
                     }
                     if r.clicked() {
                         pick = Some(suggestion.text.clone());
                     }
                 }
-                ui.label(RichText::new("↑ ↓ choose · Enter / Tab complete · Esc dismiss").small().color(t.text_dim));
+                ui.label(RichText::new(crate::i18n::tr("expression.completion_hint")).small().color(t.text_dim));
             });
         },
     );

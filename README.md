@@ -1,5 +1,7 @@
 # SolidCraft
 
+[Português (Brasil)](docs/pt-BR/README.md)
+
 **An open-source parametric 3D CAD application built in pure Rust.**
 
 Sketch, constrain, and build solids with a parametric feature timeline. Change a dimension

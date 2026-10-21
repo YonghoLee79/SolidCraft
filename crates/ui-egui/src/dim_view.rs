@@ -129,7 +129,7 @@ pub fn begin_dimension(app: &mut SolveApp, entities: Vec<String>, at: Vec2) -> R
     if draft.driven {
         PLACEMENT.with(|preview| *preview.borrow_mut() = None);
         app.run("sketch.dimension", json!({"entities": draft.entities, "text_at": [at.x, at.y], "driven": true}))?;
-        app.set_status("The sketch already determines that dimension, so it was added as a driven (reference) dimension", false);
+        app.set_status(app.tr("dimension.driven_added").to_string(), false);
         return Ok(());
     }
     EDIT.with(|edit| *edit.borrow_mut() = Some(Edit { param, expr, at: None, fresh: FRESH, wait: 10, draft: Some(draft), live: None }));
@@ -347,7 +347,7 @@ pub fn double_click(app: &mut SolveApp, pos: Pos2) -> bool {
         return false;
     };
     let Some(param) = d.param else {
-        app.set_status("A driven dimension measures the sketch; it has no value to edit", false);
+        app.set_status(app.tr("dimension.driven_readonly").to_string(), false);
         return true;
     };
     let expr = app.session.doc.param(&param).map(|p| p.expr.clone()).unwrap_or_default();
@@ -618,7 +618,7 @@ fn edit_box(app: &mut SolveApp, ctx: &egui::Context) {
                 live.typed |= r.changed() || completed;
             }
             if let Some(error) = e.draft.as_ref().and_then(|d| d.error.as_ref()) {
-                ui.add(egui::Label::new(egui::RichText::new(error).color(Tokens::get().error)).wrap());
+                ui.add(egui::Label::new(egui::RichText::new(crate::display_error(error)).color(Tokens::get().error)).wrap());
             }
             if e.fresh == FRESH {
                 // The whole value is selected, so typing replaces it.
@@ -669,7 +669,7 @@ fn edit_box(app: &mut SolveApp, ctx: &egui::Context) {
                 EDIT.with(|x| *x.borrow_mut() = Some(Edit { fresh: FRESH, ..e }));
             } else {
                 clear_picks(app);
-                app.set_status("Dimension applied", false);
+                app.set_status(app.tr("status.dimension_applied").to_string(), false);
             }
         }
         Some(false) if escaped => clear_picks(app),

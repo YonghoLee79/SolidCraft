@@ -128,12 +128,14 @@ pub(crate) fn feature_message(app: &SolveApp, id: u64) -> Option<String> {
         return None;
     }
     let feature = app.session.doc.features.iter().find(|f| f.id == id)?;
-    let mut text = format!("{}  ({})", feature.name, feature.kind.type_name());
+    let locale = crate::i18n::Locale::for_language(&app.preferences.language);
+    let _language = crate::i18n::scope(locale.id());
+    let mut text = format!("{}  ({})", feature.name, locale.label(feature.kind.type_name()));
     if let Some(error) = &result.error {
-        text.push_str(&format!("\nError: {error}"));
+        text.push_str(&format!("\n{}: {}", locale.label("Error"), crate::display_error(error)));
     }
     if let Some(warning) = &result.warning {
-        text.push_str(&format!("\nWarning: {warning}"));
+        text.push_str(&format!("\n{}: {}", locale.label("Warning"), crate::warning_display::feature(warning, &result.boolean_diagnostics)));
     }
     Some(text)
 }
@@ -180,12 +182,12 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             transport_glyph(&p, br.center(), what, t.icon);
             if resp
-                .on_hover_text(match what {
+                .on_hover_text(crate::i18n::tr_label(match what {
                     "first" => "Roll back to the start",
                     "back" => "Step back one feature",
                     "forward" => "Step forward one feature",
                     _ => "Play to the end",
-                })
+                }))
                 .clicked()
             {
                 let pos = match target {
@@ -237,7 +239,7 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let resp = ui.interact(br, ui.id().with(("feat", *id)), Sense::click_and_drag());
                     let res = app.session.model.result(*id);
                     let err = res.and_then(|r| r.error.clone());
-                    let warn = res.and_then(|r| r.warning.clone());
+                    let warn = res.and_then(|r| r.warning.as_deref().map(|warning| crate::warning_display::feature(warning, &r.boolean_diagnostics)));
                     let rolled = i >= marker;
                     let is_it = |s: &solidcraft_engine::Sel| matches!(s, solidcraft_engine::Sel::Feature { id: f } if f == id);
                     let sel = app.session.selection.iter().any(is_it) || app.dialog.as_ref().is_some_and(|d| d.items().iter().any(is_it));
@@ -287,17 +289,18 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                             t.warning,
                         );
                     }
-                    let mut tip = format!("{name}  ({ty})");
+                    let mut tip = format!("{name}  ({})", crate::i18n::tr_label(ty));
                     if let Some(e) = &err {
-                        tip += &format!("\nError: {e}");
+                        tip += &format!("\n{}", crate::i18n::format("ui.error_label", &[("error", &crate::display_error(e))]));
                     }
                     if let Some(w) = &warn {
-                        tip += &format!("\nWarning: {w}");
+                        tip += &format!("\n{}", crate::i18n::format("ui.warning_label", &[("warning", w)]));
                     }
                     if let Some(r) = res {
                         tip += &format!("\n{:.1} ms", r.ms);
                     }
-                    tip += "\nDouble-click to edit · drag to reorder · right-click for more";
+                    tip.push('\n');
+                    tip.push_str(crate::i18n::tr("view.feature_actions_hint"));
                     if resp.drag_started() {
                         drag = Some(Drag::Feature(*id));
                     }
@@ -340,7 +343,10 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                             app.dialog = Some(crate::dialogs::Dialog::rename(*id, name));
                             ui.close();
                         }
-                        if ui.button(if *suppressed { "Unsuppress Features" } else { "Suppress Features" }).clicked() {
+                        if ui
+                            .button(crate::i18n::tr(if *suppressed { "timeline.unsuppress_features" } else { "timeline.suppress_features" }))
+                            .clicked()
+                        {
                             let _ = app.run_heavy("timeline.suppress", json!({"feature": id}));
                             ui.close();
                         }
@@ -356,7 +362,7 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                         clipboard_buttons(app, ui, *id);
                         message_button(app, ui, *id);
                         ui.separator();
-                        if ui.button("Delete").clicked() {
+                        if ui.button(crate::i18n::tr_label("Delete")).clicked() {
                             delete_feature(app, *id);
                             ui.close();
                         }
@@ -375,7 +381,7 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                     let col = if resp.hovered() || drag == Some(Drag::Marker) { t.accent } else { t.timeline_marker };
                     p.rect_filled(mr, 1.0, col);
-                    resp.on_hover_text("History marker: drag to roll the model back; new features go here");
+                    resp.on_hover_text(crate::i18n::tr("timeline.marker_hint"));
                 }
                 let content_end = crate::dialogs_assembly::timeline_joints(app, ui, &p, end + 10.0, r);
                 // The scroll range follows the drawn content (the buttons don't take layout space themselves).

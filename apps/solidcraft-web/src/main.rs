@@ -13,13 +13,18 @@ mod install;
 #[cfg(any(target_arch = "wasm32", test))]
 mod space_mouse;
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn query_language(query: &str) -> Option<&str> {
+    query.trim_start_matches('?').split('&').find_map(|pair| pair.strip_prefix("language=")).filter(|id| solidcraft_engine::i18n::is_supported(id))
+}
+
 #[cfg(target_arch = "wasm32")]
 mod web {
     use std::rc::Rc;
 
     use solidcraft_engine::Session;
     use solidcraft_engine::io::vfs;
-    use solidcraft_ui_egui::{Services, SolveApp};
+    use solidcraft_ui_egui::{Services, SolveApp, i18n};
     use wasm_bindgen::JsCast as _;
 
     use crate::files::{self, Files, Intent};
@@ -27,6 +32,7 @@ mod web {
 
     const CANVAS_ID: &str = "solidcraft_canvas";
     const LOADING_ID: &str = "solidcraft_loading";
+    const LANGUAGE_KEY: &str = "solidcraft-language";
     const DEPTH_BITS: u8 = 24;
 
     /// Seconds between autosaves of unsaved work.
@@ -71,11 +77,41 @@ mod web {
         font: solidcraft_ui_egui::fonts::CjkFontLoader,
         font_result: FontLoadResult,
         space_mouse: SpaceMouse,
+        page_language: String,
     }
 
     impl Shell {
         /// Files from the computer, writes to store, messages and the autosave.
         fn files_tick(&mut self, ctx: &egui::Context) {
+            if self.page_language != self.app.preferences.language {
+                self.page_language = self.app.preferences.language.clone();
+                if let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten()) {
+                    let _ = storage.set_item(LANGUAGE_KEY, &self.page_language);
+                }
+                if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+                    let locale = i18n::Locale::for_language(&self.page_language);
+                    if let Some(root) = document.document_element() {
+                        let _ = root.set_attribute("lang", locale.id());
+                    }
+                    for (selector, source) in [
+                        (
+                            "meta[name=description], meta[property='og:description'], meta[name='twitter:description']",
+                            "Open-source parametric CAD built in Rust. Desktop, browser, and MCP for AI agents.",
+                        ),
+                        ("meta[property='og:title'], meta[name='twitter:title']", "SolidCraft: try it in your browser"),
+                        ("meta[property='og:image:alt'], meta[name='twitter:image:alt']", "SolidCraft: open-source parametric CAD built in Rust"),
+                    ] {
+                        // query_selector finds one node; walk each explicit selector to
+                        // keep this small startup update independent of NodeList support.
+                        for selector in selector.split(", ") {
+                            if let Ok(Some(meta)) = document.query_selector(selector) {
+                                let _ = meta.set_attribute("content", locale.protocol_label(source));
+                            }
+                        }
+                    }
+                }
+            }
+            self.files.set_language(&self.app.preferences.language);
             if self.files.ctx.borrow().is_none() {
                 *self.files.ctx.borrow_mut() = Some(ctx.clone());
             }
@@ -165,12 +201,13 @@ mod web {
 
         /// The stored designs: open, insert, rename, delete, download; open from the computer.
         fn file_panel(&mut self, ctx: &egui::Context) {
+            let _language = i18n::scope(&self.app.preferences.language);
             if !self.files.panel.get() {
                 return;
             }
             let mut open = true;
             let mut act: Option<(&'static str, String)> = None;
-            egui::Window::new("Files in this browser")
+            egui::Window::new(i18n::tr("web.files_title"))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
@@ -179,13 +216,13 @@ mod web {
                 .default_pos(ctx.content_rect().center())
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        if ui.button("Open from computer…").clicked() {
+                        if ui.button(i18n::tr("web.open_computer")).clicked() {
                             files::pick_from_disk(&self.files, Intent::Open);
                         }
-                        if ui.button("Insert from computer…").on_hover_text("STEP, 3MF or STL into the open design").clicked() {
+                        if ui.button(i18n::tr("web.insert_computer")).on_hover_text(i18n::tr("web.insert_hint")).clicked() {
                             files::pick_from_disk(&self.files, Intent::Insert);
                         }
-                        if ui.button("Download open design").clicked() {
+                        if ui.button(i18n::tr("web.download_open")).clicked() {
                             act = Some(("download_open", String::new()));
                         }
                     });
@@ -193,13 +230,13 @@ mod web {
                     if !self.files.ready.get() {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Reading the browser's storage…");
+                            ui.label(i18n::tr("web.reading_storage"));
                         });
                         return;
                     }
                     let entries = self.files.entries.borrow().clone();
                     if entries.is_empty() {
-                        ui.label("Designs you save appear here. They stay in this browser.");
+                        ui.label(i18n::tr("web.files_empty"));
                     }
                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                         egui::Grid::new("opfs_files").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -224,21 +261,23 @@ mod web {
                                 }
                                 ui.label(format!("{:.1} KB", e.size as f64 / 1024.0));
                                 ui.horizontal(|ui| {
-                                    if ui.small_button("Open").clicked() {
+                                    if ui.small_button(i18n::tr_label("Open")).clicked() {
                                         act = Some(("open", e.name.clone()));
                                     }
                                     let design = solidcraft_engine::io::is_design_path(&e.name);
-                                    if !design && ui.small_button("Insert").on_hover_text("Into the open design (STEP, 3MF, STL)").clicked() {
+                                    if !design
+                                        && ui.small_button(i18n::tr_label("Insert")).on_hover_text(i18n::tr("web.insert_stored_hint")).clicked()
+                                    {
                                         act = Some(("insert", e.name.clone()));
                                     }
-                                    if ui.small_button("Rename").clicked() {
+                                    if ui.small_button(i18n::tr_label("Rename")).clicked() {
                                         self.renaming = Some((e.name.clone(), e.name.clone()));
                                         self.rename_focus = true;
                                     }
-                                    if ui.small_button("Download").clicked() {
+                                    if ui.small_button(i18n::tr("web.download")).clicked() {
                                         act = Some(("download", e.name.clone()));
                                     }
-                                    if ui.small_button("Delete").clicked() {
+                                    if ui.small_button(i18n::tr_label("Delete")).clicked() {
                                         act = Some(("delete", e.name.clone()));
                                     }
                                 });
@@ -264,7 +303,7 @@ mod web {
                 }
                 "download" => match vfs::read(&path, solidcraft_engine::io::MAX_DESIGN_BYTES) {
                     Ok(b) => {
-                        if let Err(e) = files::download(&name, &b) {
+                        if let Err(e) = files::download(self.files.locale(), &name, &b) {
                             self.app.set_status(e, true);
                         }
                     }
@@ -277,7 +316,7 @@ mod web {
                         .session
                         .design_container(solidcraft_engine::io::DesignCompression::Fast, false, false)
                         .map_err(|e| e.to_string())
-                        .and_then(|bytes| files::download(&format!("{}.{}", d.name, solidcraft_engine::io::DESIGN_EXT), &bytes));
+                        .and_then(|bytes| files::download(self.files.locale(), &format!("{}.{}", d.name, solidcraft_engine::io::DESIGN_EXT), &bytes));
                     if let Err(e) = result {
                         self.app.set_status(e, true);
                     }
@@ -309,22 +348,24 @@ mod web {
 
         /// Offer the autosave an earlier session left.
         fn recovery_prompt(&mut self, ctx: &egui::Context) {
+            let _language = i18n::scope(&self.app.preferences.language);
             let Some((name, path)) = self.files.recovery.borrow().clone() else { return };
             let mut answer = None;
-            egui::Window::new("Recover unsaved work?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
-                ctx,
-                |ui| {
-                    ui.label(format!("“{name}” had unsaved changes when this page last closed."));
+            egui::Window::new(i18n::tr("web.recover_title"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(i18n::format("web.recovery_detail", &[("name", &name)]));
                     ui.horizontal(|ui| {
-                        if ui.button("Recover").clicked() {
+                        if ui.button(i18n::tr_label("Recover")).clicked() {
                             answer = Some(true);
                         }
-                        if ui.button("Discard").clicked() {
+                        if ui.button(i18n::tr_label("Discard")).clicked() {
                             answer = Some(false);
                         }
                     });
-                },
-            );
+                });
             let Some(recover) = answer else { return };
             *self.files.recovery.borrow_mut() = None;
             if recover {
@@ -341,19 +382,20 @@ mod web {
         /// Fetch and install the CJK font when a CJK language is selected. If that fails, this
         /// session falls back to English (no tofu); the saved language preference is kept.
         fn tick_font(&mut self, ctx: &egui::Context) {
+            let locale = i18n::Locale::for_language(&self.app.preferences.language);
             let done = self.font_result.borrow_mut().take();
             if let Some(res) = done {
                 let installed = match res {
                     Ok(bytes) => solidcraft_ui_egui::fonts::install_cjk_font(ctx, bytes),
                     Err(err) => {
-                        log::warn!("failed to fetch CJK font from {JAPANESE_FONT_PATH}: {err}");
+                        log::warn!("{}", locale.protocol_error(&format!("failed to fetch CJK font from {JAPANESE_FONT_PATH}: {err}")));
                         false
                     }
                 };
                 if installed {
-                    log::info!("loaded web CJK font from {JAPANESE_FONT_PATH}");
+                    log::info!("{}", locale.protocol_error(&format!("loaded web CJK font from {JAPANESE_FONT_PATH}")));
                 } else if solidcraft_ui_egui::fonts::needs_cjk_font(&self.app.preferences.language) {
-                    log::warn!("CJK font unavailable; showing English for this session");
+                    log::warn!("{}", locale.protocol_error("CJK font unavailable; showing English for this session"));
                 }
                 self.font.finished(installed, &mut self.app.preferences.language);
                 ctx.request_repaint();
@@ -391,6 +433,7 @@ mod web {
             UNSAVED.with(|u| u.set(solidcraft_ui_egui::documents::any_dirty(&self.app)));
         }
         fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+            self.files.set_language(&self.app.preferences.language);
             files::take_drops(&self.files, raw);
             // Before the app's own hook, which adds the control channel's events.
             self.space_mouse.raw_input_hook(ctx, self.app.preferences.space_mouse_enabled, raw);
@@ -398,6 +441,7 @@ mod web {
         }
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             self.app.ui(ui);
+            self.files.set_language(&self.app.preferences.language);
             let ctx = ui.ctx().clone();
             self.file_panel(&ctx);
             self.recovery_prompt(&ctx);
@@ -458,8 +502,20 @@ mod web {
             let Some(window) = web_sys::window() else { return };
             ask_before_unload(&window);
             let Some(document) = window.document() else { return };
+            let requested_language = crate::query_language(&query()).map(str::to_string);
+            // The small cache is only for startup prose; eframe's stored preferences
+            // remain authoritative once the application has been created.
+            let cached_language = window
+                .local_storage()
+                .ok()
+                .flatten()
+                .and_then(|storage| storage.get_item(LANGUAGE_KEY).ok().flatten())
+                .filter(|language| i18n::is_supported(language));
+            let startup_language =
+                Rc::new(std::cell::RefCell::new(requested_language.clone().or(cached_language).unwrap_or_else(|| String::from("en"))));
             let Some(canvas) = document.get_element_by_id(CANVAS_ID).and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok()) else {
-                log::error!("missing <canvas id=\"{CANVAS_ID}\">");
+                let locale = i18n::Locale::for_language(&startup_language.borrow());
+                log::error!("{}", locale.protocol_error(&format!("missing <canvas id=\"{CANVAS_ID}\">")));
                 return;
             };
             let mut options = eframe::WebOptions { depth_buffer: DEPTH_BITS, ..Default::default() };
@@ -468,6 +524,7 @@ mod web {
             {
                 create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
             }
+            let created_language = startup_language.clone();
             let result = eframe::WebRunner::new()
                 .start(
                     canvas,
@@ -475,7 +532,6 @@ mod web {
                     Box::new(move |cc| {
                         solidcraft_ui_egui::fonts::setup_fonts(&cc.egui_ctx);
                         let files = Rc::new(Files::default());
-                        files::start(&files);
                         let panel = files.clone();
                         let services = Services {
                             // Open shows the browser's files (and the computer's, from there).
@@ -497,13 +553,19 @@ mod web {
                         if let Some(p) = cc.storage.and_then(|s| solidcraft_ui_egui::prefs::stored(|k| s.get_string(k))) {
                             app.load_prefs(&p);
                         }
+                        if let Some(language) = &requested_language {
+                            app.preferences.language = language.clone();
+                        }
+                        files.set_language(&app.preferences.language);
+                        *created_language.borrow_mut() = app.preferences.language.clone();
+                        files::start(&files);
                         if let Some(rs) = &cc.wgpu_render_state {
                             // eframe's web painter has no stencil buffer.
                             app.set_wgpu(rs, DEPTH_BITS, 0, 1);
                         }
                         if query().contains("sample") {
                             if let Err(e) = app.session.run_script(&solidcraft_engine::sample::script()) {
-                                app.set_status(format!("sample: {e}"), true);
+                                app.set_status(app.tr_format("web.sample_error", &[("error", &e.to_string())]), true);
                             }
                             app.session.doc_mut().name = "Sample Plate".into();
                             app.session.mark_saved();
@@ -526,6 +588,7 @@ mod web {
                             font: Default::default(),
                             font_result: Rc::new(std::cell::RefCell::new(None)),
                             space_mouse: SpaceMouse::default(),
+                            page_language: String::new(),
                         }))
                     }),
                 )
@@ -534,7 +597,8 @@ mod web {
                 match result {
                     Ok(()) => el.remove(),
                     Err(e) => {
-                        el.set_inner_html(&format!("<p>SolidCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>"))
+                        let locale = i18n::Locale::for_language(&startup_language.borrow());
+                        el.set_text_content(Some(&locale.format("web.start_failed", &[("error", &format!("{e:?}"))])))
                     }
                 }
             }
@@ -549,5 +613,19 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    eprintln!("solidcraft-web only runs in the browser: build it with `trunk build --release` in apps/solidcraft-web");
+    let language = solidcraft_engine::geom::env::var("LANGUAGE");
+    let locale = solidcraft_engine::i18n::Locale::for_language(language.as_deref().unwrap_or("en"));
+    eprintln!("{}", locale.protocol_error("solidcraft-web only runs in the browser: build it with `trunk build --release` in apps/solidcraft-web"));
+}
+
+#[cfg(test)]
+mod language_tests {
+    #[test]
+    fn language_query_is_an_exact_supported_option() {
+        assert_eq!(super::query_language("?sample&language=pt-BR&webgl"), Some("pt-BR"));
+        assert_eq!(super::query_language("?language=en"), Some("en"));
+        assert_eq!(super::query_language("?file=language=pt-BR"), None);
+        assert_eq!(super::query_language("?language=pt"), None);
+        assert_eq!(super::query_language("?language=unknown"), None);
+    }
 }
