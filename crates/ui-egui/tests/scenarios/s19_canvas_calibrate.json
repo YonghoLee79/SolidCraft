@@ -25,6 +25,25 @@
   }
  },
  {
+  "call": "engine.execute",
+  "params": {
+   "command": "canvas.edit",
+   "params": {
+    "canvas": 1,
+    "center": [
+     0,
+     0
+    ]
+   }
+  }
+ },
+ {
+  "call": "ui.view",
+  "params": {
+   "view": "top"
+  }
+ },
+ {
   "call": "ui.menu",
   "params": {
    "x": 100,
@@ -42,21 +61,35 @@
   }
  },
  {
-  "widget": "100.00 mm",
-  "near": "Distance"
+  "note": "Calibrate: click A and B 50 mm apart on the image, then type their real distance"
+ },
+ {
+  "click": {
+   "world": [
+    -25,
+    0,
+    0
+   ]
+  }
+ },
+ {
+  "click": {
+   "world": [
+    25,
+    0,
+    0
+   ]
+  }
  },
  {
   "key": "A",
   "cmd": true
  },
  {
-  "text": "50"
+  "text": "25"
  },
  {
   "key": "Enter"
- },
- {
-  "widget": "Calibrate"
  },
  {
   "expect": {

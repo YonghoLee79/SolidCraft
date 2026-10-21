@@ -143,10 +143,17 @@ fn calibrate(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "the points must differ"));
     }
     let k = d / now;
-    let c = s.doc_mut().canvases.get_mut(i).ok_or_else(|| bad(cmd, "canvas"))?;
+    let mut c = s.doc.canvases.get(i).cloned().ok_or_else(|| bad(cmd, "canvas"))?;
     c.width *= k;
     c.center = a + (c.center - a) * k;
-    Ok(json!({"canvas": c.id, "width": c.width}))
+    // The result must stay drawable: finite, and below 10 000 000 mm either way.
+    let (w, h) = (c.width, c.height());
+    if !(k.is_finite() && c.center.x.is_finite() && c.center.y.is_finite() && w > 0.0 && w < 1e7 && h > 0.0 && h < 1e7) {
+        return Err(bad(cmd, "the result is too large"));
+    }
+    let id = c.id;
+    *s.doc_mut().canvases.get_mut(i).ok_or_else(|| bad(cmd, "canvas"))? = c;
+    Ok(json!({"canvas": id, "width": w}))
 }
 
 fn delete_canvas(s: &mut Session, p: &Value) -> Result<Value> {
@@ -168,6 +175,18 @@ mod tests {
         b.extend(h.to_be_bytes());
         b.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
         base64_encode(&b)
+    }
+
+    #[test]
+    fn calibrate_refuses_results_that_are_not_finite_or_too_large() {
+        let mut s = Session::default();
+        let id = s.execute("canvas.insert", &json!({"data": png(4, 4)})).unwrap()["canvas"].clone();
+        let before = s.doc.canvases.clone();
+        for d in [1e9, 1e308] {
+            let r = s.execute("canvas.calibrate", &json!({"canvas": id, "a": [0, 0], "b": [1e-8, 0], "distance": d}));
+            assert!(r.is_err(), "{d}");
+        }
+        assert_eq!(s.doc.canvases, before);
     }
 
     #[test]

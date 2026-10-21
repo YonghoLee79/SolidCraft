@@ -417,7 +417,6 @@
   "appearance.roughness": "Skrovlighet",
   "appearance.surface_response": "Ytrespons",
   "browser.body_name": "Kropp{number}",
-  "browser.calibrate_title": "Kalibrera: {name}",
   "browser.capture_many": "{count} komponenter flyttades men deras lägen har inte fångats.",
   "browser.capture_note": "Fånga behåller det nya läget; Återställ sätter tillbaka det.",
   "browser.capture_one": "En komponent flyttades men dess läge har inte fångats.",

@@ -1288,9 +1288,14 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
                 _ => None,
             };
         }
-        "ui.editCanvas" | "ui.calibrateCanvas" => {
+        "ui.editCanvas" => {
             if let Some(c) = id_of(&p, "canvas") {
-                app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(app, c, item.id == "ui.calibrateCanvas"));
+                app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(app, c));
+            }
+        }
+        "ui.calibrateCanvas" => {
+            if let Some(c) = id_of(&p, "canvas") {
+                crate::canvas_calibrate::start(app, c);
             }
         }
         "ui.newGroup" | "ui.ungroup" | "ui.groupSelected" => crate::browser::group_action(app, &item.id, &p),

@@ -417,7 +417,6 @@
   "appearance.roughness": "Rugozitate",
   "appearance.surface_response": "Răspunsul suprafeței",
   "browser.body_name": "Corp{number}",
-  "browser.calibrate_title": "Calibrare: {name}",
   "browser.capture_many": "{count} componente au fost mutate, dar pozițiile lor nu sunt capturate.",
   "browser.capture_note": "Captura păstrează noua poziție; Revenire o readuce.",
   "browser.capture_one": "O componentă a fost mutată, dar poziția ei nu este capturată.",

@@ -86,8 +86,10 @@ pub struct TreeState {
     pub picked_timeline_groups: Vec<u64>,
     /// Last feature-history item clicked, for Shift ranges (`f:<id>` or `g:<id>`).
     pub timeline_anchor: Option<String>,
-    /// The Edit Canvas / Calibrate panel.
+    /// The Edit Canvas panel.
     pub canvas_panel: Option<CanvasPanel>,
+    /// A canvas being calibrated by clicking two points on it.
+    pub calibration: Option<crate::canvas_calibrate::Calibration>,
     /// A Section Analysis hidden with its eye in the Analysis folder: its plane (origin,
     /// normal), so the eye can bring it back (#822).
     pub hidden_section: Option<(solidcraft_engine::geom::Vec3, solidcraft_engine::geom::Vec3)>,
@@ -1530,7 +1532,7 @@ fn canvas_rows(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize, acts: &mut A
             }
         }
         if r.double {
-            app.tree.canvas_panel = Some(CanvasPanel::new(app, id, false));
+            app.tree.canvas_panel = Some(CanvasPanel::new(app, id));
         }
         if let Some(p) = r.secondary {
             if !selected {
@@ -1555,31 +1557,18 @@ pub fn canvas_items(app: &SolveApp, id: u64) -> Vec<Item> {
     ]
 }
 
-/// Editing a canvas (position, size, angle, opacity, flip) or calibrating it (two points on
-/// the image and their true distance). Live edits of one opening are one undo step.
+/// Editing a canvas (position, size, angle, opacity, flip). Live edits of one opening are one
+/// undo step.
 #[derive(Clone, Debug)]
 pub struct CanvasPanel {
     pub canvas: u64,
-    pub calibrate: bool,
     /// Undo depth when the panel opened.
     pub(crate) depth: usize,
-    pub a: [f64; 2],
-    pub b: [f64; 2],
-    pub distance: f64,
 }
 
 impl CanvasPanel {
-    pub fn new(app: &SolveApp, canvas: u64, calibrate: bool) -> Self {
-        // Calibration starts from the image's left and right edge midpoints.
-        let (a, b, d) = app
-            .session
-            .doc
-            .canvases
-            .iter()
-            .find(|c| c.id == canvas)
-            .map(|c| ([c.center.x - c.width / 2.0, c.center.y], [c.center.x + c.width / 2.0, c.center.y], c.width))
-            .unwrap_or(([0.0, 0.0], [100.0, 0.0], 100.0));
-        CanvasPanel { canvas, calibrate, depth: app.session.undo.len(), a, b, distance: d }
+    pub fn new(app: &SolveApp, canvas: u64) -> Self {
+        CanvasPanel { canvas, depth: app.session.undo.len() }
     }
 }
 

@@ -1880,7 +1880,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 if crate::sketch_text_move::cancel_drag(app) {
                     continue;
                 }
-                if crate::select_other::is_open(app) {
+                if app.tree.calibration.is_some() {
+                    crate::canvas_calibrate::end(app);
+                } else if crate::select_other::is_open(app) {
                     crate::select_other::close(app);
                 } else if app.tool.is_some() {
                     crate::tools::finish(app);

@@ -417,7 +417,6 @@
   "appearance.roughness": "Ruwheid",
   "appearance.surface_response": "Oppervlakrespons",
   "browser.body_name": "Lichaam{number}",
-  "browser.calibrate_title": "Kalibreren: {name}",
   "browser.capture_many": "{count} componenten zijn verplaatst, maar hun posities zijn niet vastgelegd.",
   "browser.capture_note": "Vastleggen behoudt de nieuwe positie; Terugzetten zet deze terug.",
   "browser.capture_one": "Een component is verplaatst, maar de positie ervan is niet vastgelegd.",

@@ -251,6 +251,14 @@ shows the remaining degrees of freedom. A constraint or dimension that would ove
 sketch is refused rather than applied. Drag a point to move it; the solver keeps every
 constraint while you drag.
 
+## Canvases
+
+A canvas is a reference picture on a plane (Insert ▸ Images ▸ Canvas), for tracing over. To give
+it its true size, right-click it in the Browser and pick **Calibrate**: click point A on the
+picture, click point B, type the real distance between them and press Enter. The picture scales
+evenly about A so that A and B are that far apart, as one undo step. Esc stops without changing
+anything.
+
 ## Profiles
 
 Closed loops become profiles automatically, including regions split by crossing lines and

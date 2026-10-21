@@ -420,7 +420,6 @@
   "appearance.roughness": "Rugosità",
   "appearance.surface_response": "Risposta della superficie",
   "browser.body_name": "Corpo{number}",
-  "browser.calibrate_title": "Calibra: {name}",
   "browser.capture_many": "Sono stati spostati {count} componenti, ma le loro posizioni non sono state acquisite.",
   "browser.capture_note": "Acquisisci posizione mantiene la nuova posizione; Ripristina posizione riporta a quella precedente.",
   "browser.capture_one": "Un componente è stato spostato, ma la sua posizione non è stata acquisita.",

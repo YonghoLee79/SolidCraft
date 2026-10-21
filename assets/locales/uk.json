@@ -417,7 +417,6 @@
   "appearance.roughness": "Шорсткість",
   "appearance.surface_response": "Відгук поверхні",
   "browser.body_name": "Тіло{number}",
-  "browser.calibrate_title": "Калібрувати: {name}",
   "browser.capture_many": "Компоненти ({count}) переміщено, але їхні положення не зафіксовано.",
   "browser.capture_note": "«Зафіксувати положення» зберігає нове положення; «Відновити положення» повертає попереднє.",
   "browser.capture_one": "Компонент переміщено, але його положення не зафіксовано.",

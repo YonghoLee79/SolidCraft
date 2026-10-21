@@ -1,6 +1,6 @@
-//! The Edit Canvas / Calibrate card the Browser opens for a reference image: position, size,
-//! angle, opacity and flip (live, one undo step per opening), or two points on the image and
-//! their true distance.
+//! The Edit Canvas card the Browser opens for a reference image: position, size, angle, opacity
+//! and flip (live, one undo step per opening). Calibrating is done on the image itself
+//! ([`crate::canvas_calibrate`]).
 
 use serde_json::{Value, json};
 
@@ -9,50 +9,34 @@ use crate::browser::panel_pos;
 use crate::ui_kit;
 
 pub(crate) fn panel(app: &mut SolveApp, ctx: &egui::Context) {
-    let Some(mut m) = app.tree.canvas_panel.clone() else { return };
+    let Some(m) = app.tree.canvas_panel.clone() else { return };
     let Some(c) = app.session.doc.canvases.iter().find(|c| c.id == m.canvas).cloned() else {
         app.tree.canvas_panel = None;
         return;
     };
     let mut edit: Option<Value> = None;
     let (units, decimals) = (app.session.doc.units.clone(), app.preferences.length_decimals);
-    let title = crate::i18n::format(if m.calibrate { "browser.calibrate_title" } else { "browser.edit_canvas_title" }, &[("name", &c.name)]);
+    let title = crate::i18n::format("browser.edit_canvas_title", &[("name", &c.name)]);
     let at = panel_pos(app);
-    let (calibrate, name) = (m.calibrate, c.id);
-    let (ok, cancel) = if calibrate { (crate::i18n::tr_label("Calibrate"), crate::i18n::tr("ui.cancel")) } else { ("", crate::i18n::tr("ui.close")) };
+    let name = c.id;
     let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_canvas_panel"), "canvas", &title)
         .placed(egui::Align2::LEFT_TOP, at)
         .fields()
-        .actions(ok, cancel, None)
+        .actions("", crate::i18n::tr("ui.close"), None)
         .show(ctx, true, |ui| {
-            if calibrate {
-                for (label, p) in [("Point A", &mut m.a), ("Point B", &mut m.b)] {
-                    ui_kit::row(ui, crate::i18n::tr_label(label), |ui| {
-                        let [x, y] = p;
-                        ui.horizontal(|ui| {
-                            ui_kit::length_field(ui, x, &units, decimals);
-                            ui_kit::length_field(ui, y, &units, decimals);
-                        });
-                    });
-                }
-                ui_kit::row(ui, crate::i18n::tr_label("Distance"), |ui| ui_kit::length_field(ui, &mut m.distance, &units, decimals));
-                m.distance = m.distance.clamp(0.001, 1e6);
-            } else {
-                let (mut x, mut y, mut w, mut ang, mut op, mut flip) = (c.center.x, c.center.y, c.width, c.angle.to_degrees(), c.opacity, c.flip);
-                let mut changed = false;
-                changed |= ui_kit::row(ui, crate::i18n::tr_label("Center X"), |ui| ui_kit::length_field(ui, &mut x, &units, decimals)).changed();
-                changed |= ui_kit::row(ui, crate::i18n::tr_label("Center Y"), |ui| ui_kit::length_field(ui, &mut y, &units, decimals)).changed();
-                changed |= ui_kit::row(ui, crate::i18n::tr_label("Width"), |ui| ui_kit::length_field(ui, &mut w, &units, decimals)).changed();
-                changed |= ui_kit::row(ui, crate::i18n::tr_label("Angle"), |ui| ui_kit::angle_field(ui, &mut ang)).changed();
-                changed |=
-                    ui_kit::row(ui, crate::i18n::tr_label("Opacity"), |ui| ui_kit::slider(ui, &mut op, 0.0..=1.0, Default::default())).changed();
-                if ui_kit::checkbox_row(ui, "flip", crate::i18n::tr_label("Flip"), flip) {
-                    flip = !flip;
-                    changed = true;
-                }
-                if changed {
-                    edit = Some(json!({ "canvas": name, "center": [x, y], "width": w.clamp(0.01, 1e6), "angle": ang, "opacity": op, "flip": flip }));
-                }
+            let (mut x, mut y, mut w, mut ang, mut op, mut flip) = (c.center.x, c.center.y, c.width, c.angle.to_degrees(), c.opacity, c.flip);
+            let mut changed = false;
+            changed |= ui_kit::row(ui, crate::i18n::tr_label("Center X"), |ui| ui_kit::length_field(ui, &mut x, &units, decimals)).changed();
+            changed |= ui_kit::row(ui, crate::i18n::tr_label("Center Y"), |ui| ui_kit::length_field(ui, &mut y, &units, decimals)).changed();
+            changed |= ui_kit::row(ui, crate::i18n::tr_label("Width"), |ui| ui_kit::length_field(ui, &mut w, &units, decimals)).changed();
+            changed |= ui_kit::row(ui, crate::i18n::tr_label("Angle"), |ui| ui_kit::angle_field(ui, &mut ang)).changed();
+            changed |= ui_kit::row(ui, crate::i18n::tr_label("Opacity"), |ui| ui_kit::slider(ui, &mut op, 0.0..=1.0, Default::default())).changed();
+            if ui_kit::checkbox_row(ui, "flip", crate::i18n::tr_label("Flip"), flip) {
+                flip = !flip;
+                changed = true;
+            }
+            if changed {
+                edit = Some(json!({ "canvas": name, "center": [x, y], "width": w.clamp(0.01, 1e6), "angle": ang, "opacity": op, "flip": flip }));
             }
         });
     if let Some(p) = edit
@@ -64,12 +48,6 @@ pub(crate) fn panel(app: &mut SolveApp, ctx: &egui::Context) {
             app.session.undo.truncate(m.depth);
             app.session.undo.extend(keep);
         }
-    }
-    if action == ui_kit::Action::Ok {
-        if app.run("canvas.calibrate", json!({ "canvas": c.id, "a": m.a, "b": m.b, "distance": m.distance })).is_ok() {
-            app.tree.canvas_panel = None;
-        }
-        return;
     }
     app.tree.canvas_panel = if closed || action == ui_kit::Action::Cancel { None } else { Some(m) };
 }
@@ -92,7 +70,7 @@ mod tests {
         let mut h = crate::scenario::Harness::new();
         h.app.home.open = false;
         let id = canvas(&mut h);
-        h.app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(&h.app, id, false));
+        h.app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(&h.app, id));
         h.frames(4);
         assert!(crate::scenario::handle_at("dialog:close").is_some() && h.widget("Close").is_some());
         assert!(h.widget("Calibrate").is_none(), "editing has no Calibrate action");
@@ -103,27 +81,5 @@ mod tests {
         h.frames(2);
         assert!(h.app.tree.canvas_panel.is_none());
         assert_eq!(h.app.session.doc.canvases.len(), 1);
-    }
-
-    #[test]
-    fn calibrate_runs_the_command_and_cancel_leaves_the_canvas_alone() {
-        let mut h = crate::scenario::Harness::new();
-        h.app.home.open = false;
-        let id = canvas(&mut h);
-        let width = |h: &crate::scenario::Harness| h.app.session.doc.canvases[0].width;
-        h.app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(&h.app, id, true));
-        h.frames(4);
-        h.step(&json!({"widget": "Cancel"})).unwrap();
-        h.frames(2);
-        assert!(h.app.tree.canvas_panel.is_none());
-        assert!((width(&h) - 80.0).abs() < 1e-9);
-        let mut panel = crate::browser::CanvasPanel::new(&h.app, id, true);
-        panel.distance = 40.0;
-        h.app.tree.canvas_panel = Some(panel);
-        h.frames(4);
-        h.step(&json!({"widget": "Calibrate"})).unwrap();
-        h.frames(2);
-        assert!(h.app.tree.canvas_panel.is_none());
-        assert!((width(&h) - 40.0).abs() < 1e-6, "calibrating to half the distance halves the image: {}", width(&h));
     }
 }
