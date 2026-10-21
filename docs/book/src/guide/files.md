@@ -35,8 +35,11 @@ mirrored nodes are baked into their meshes. Compressed meshes (Draco, meshopt) a
 message: save the file uncompressed first.
 
 A 3MF project saved by a slicer comes in too, also when it keeps its objects in model parts of
-their own inside the file (the 3MF Production extension): each object on the build plate becomes
-a mesh body, with its parts where the slicer placed them.
+their own inside the file (the 3MF Production extension): each object on the build plates becomes
+one mesh body, with all its volumes merged where the slicer placed them. Slicer-only data
+(modifier, negative and support volumes, painting, per-object settings, and names kept in the
+slicer's metadata) is not read: modifier and negative volumes come in as ordinary solid geometry,
+and objects without a name in the model itself are called Mesh1, Mesh2, …
 
 **File → Export STL…** and **File → Export 3MF…** (also on the Mesh tab under Modify as Save as
 mesh, and in the right-click menu of a body) open the same dialog with that format chosen; it saves
@@ -62,8 +65,9 @@ written as STL files next to the `.urdf`. See [`docs/urdf.md`](https://github.co
 Saves are atomic: a crash at any moment leaves either the old file or the new one, and the
 replaced version is kept as `<file>.bak`. A save keeps the file's permissions, and a design
 opened through a symbolic link (a synced folder linked into a project) is saved into the file the
-link points to, so the link stays. Unsaved changes are autosaved to a recovery folder,
-and the next launch offers to recover them. Older design files are upgraded on open, and files
+link points to, so the link stays. Unsaved changes in every open tab are autosaved to separate
+entries in a recovery folder, and the next launch offers to recover each design. Saving or
+closing one tab removes only its recovery entry. Older design files are upgraded on open, and files
 from a newer version are refused with a message.
 
 **Save** writes a container by default; files named `.json` keep JSON on subsequent saves.
