@@ -257,6 +257,11 @@ Original package sources from https://github.com/emilk/egui/tree/0.36.2/crates/e
 with both original licence texts retained. No images or bundled documentation are copied.
 
 SolidCraft changes:
+- `src/winit.rs`, `src/lib.rs`: on Windows, reconcile the surface's requested size with
+  `Window::inner_size()` before each paint (#3043). Display wake can leave a transient resize
+  cached after egui-winit has already refreshed its size and native DPI. Use the guarded resize
+  path only when a nonzero live size differs; preserve device clamping and configure backoff.
+  Debug logs record configure attempts and reconciliations (including native DPI and egui scale).
 - `src/lib.rs`: use 1x MSAA on the selected OpenGL adapter before creating pipelines,
   exposing the effective sample count so host paint callbacks can match it.
 - `src/winit.rs`: use that same effective count for depth and resolve attachments.
