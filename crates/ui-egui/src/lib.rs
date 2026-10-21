@@ -1826,7 +1826,7 @@ impl SolveApp {
             let viewport = ui.available_rect_before_wrap();
             browser::floating(self, ui, viewport);
         }
-        if !floating && timeline_left::stacked(self) {
+        if !floating && !self.pdm.workspace_active && timeline_left::stacked(self) {
             let width = browser::browser_width(self.preferences.browser_width) + shell::SHELL_GAP * 2.0;
             egui::Panel::left("sc_history_browser_column").exact_size(width).resizable(false).frame(egui::Frame::NONE).show(ui, |_| {});
         }
