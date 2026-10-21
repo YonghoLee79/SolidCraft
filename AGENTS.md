@@ -94,9 +94,7 @@ People trust SolidCraft with their designs; a crash loses their work. **This out
   camera input (a test rejects it).
 - **Application code is Rust only.** Units are millimetres and radians internally; Z is up.
   Local asset authoring, lint and review tools use Python 3.11+ as documented in
-  `assets/AGENTS.md`; Python is not an application runtime dependency. Desktop user macros may
-  spawn a user-built Rust binary (`crates/macro-client`); the CAD binary does not load native
-  plugins. The application exception is
+  `assets/AGENTS.md`; Python is not an application runtime dependency. The application exception is
   JavaScript the browser requires: the service worker `apps/solidcraft-web/sw.js` (browsers only
   run service workers as JavaScript) and the small inline scripts in `apps/solidcraft-web/index.html`.
   Keep them minimal; `cargo xtask web-offline-test` covers the service worker.
