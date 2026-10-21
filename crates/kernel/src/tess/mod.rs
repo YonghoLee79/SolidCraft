@@ -73,6 +73,10 @@ pub(crate) const OFF_SURFACE: f64 = 1e-3;
 /// spacing a mesh can carry, and far above the parameters a projection tells apart. See
 /// [`drop_collapsed`].
 const SAME_NODE: f64 = 1e-6;
+/// How far a face's boundary may lie off its surface and still be planned on it, as a fraction of
+/// the body's extent: ten chord tolerances at Normal display quality, the bound every body had at
+/// Normal, now the same at every quality.
+const ON_SURFACE: f64 = 1e-2;
 /// How much finer a refused face's edges are divided, retry by retry.
 const REFINE_STEPS: [f64; 2] = [3.0, 10.0];
 
@@ -450,10 +454,7 @@ fn divide_collapsed_faces(faces: &[&mt::Face], jobs: &[(&mt::Edge, f64)], rules:
 /// How far a boundary node may lie off its surface and still be projected onto it (see the note
 /// in [`plan_face`]).
 fn off_surface(rules: &size::Rules) -> f64 {
-    match rules.boundary_tol {
-        Some(file) => file.max(1e-6),
-        None => (rules.tol * 10.0).max(rules.extent * OFF_SURFACE).max(1e-6),
-    }
+    (rules.extent * ON_SURFACE).max(rules.boundary_tol.unwrap_or(0.0)).max(1e-6)
 }
 
 /// One face: boundary loops in 3D (shared edge nodes) to parameters and triangles.
@@ -470,17 +471,13 @@ fn plan_face(
     let tol = rules.tol;
     let (h, speed) = size;
     let dom = uv::domain(s);
-    // How far a boundary node may lie off its surface and still be projected onto it. An
-    // imported boundary lies off it by up to the file's own uncertainty, which is a property of
-    // the body, not of the mesh asked for: a finer chord tolerance must not refuse a boundary a
-    // coarser one accepted, or zooming in would drop the face (#1721).
-    //
-    // A file states that uncertainty itself, and it does not grow with the part: the same writer
-    // puts a 2 m part's boundaries on their surfaces as accurately as a 20 mm part's. So a body
-    // read from such a file is held to the file's own figure, at every chord tolerance, and a
-    // scaled copy of a part keeps the accuracy of the original. A body this kernel built
-    // declares nothing, and keeps the bound it has always had: ten chord tolerances, or a
-    // thousandth of the body, whichever is larger.
+    // How far a boundary node may lie off its surface and still be projected onto it: a property
+    // of the body, not of the mesh asked for, so a finer chord tolerance never refuses a boundary
+    // a coarser one accepted, and zooming in never drops a face (#1721). A hundredth of the body
+    // (what Normal quality always allowed), or more where the file it was read from declares
+    // more. A file's declared accuracy is what its writer aimed for, not a bound its edges keep:
+    // held to it, a robot assembly whose edges lie 10 to 30 µm off their surfaces lost the plans
+    // of a third of its bodies.
     let accept = off_surface(rules);
     let fail = |why: &str| unsupported(format!("face {fi}: {why}"));
     // A boundary that runs out and back along itself (a sliver face, as STEP files write one:

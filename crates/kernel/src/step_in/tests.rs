@@ -1183,49 +1183,41 @@ fn band_faces_split_when_ring_edges_run_off_their_surface() {
 }
 
 /// The very same fixture, the very same few micrometres of slop in the file, scaled to a part
-/// about 2 m across: it must still mesh. The accepted off-surface distance used to be a
-/// thousandth of the part, so a big part hid whatever it could not mesh behind a bound 100 times
-/// the small part's; this is the scaled copy that stops the bound from masking anything (#1721).
+/// about 2 m across: it meshes the same way (#1721).
 #[test]
 fn band_faces_split_when_a_scaled_copy_runs_off_its_surface() {
     assert_ring_edge_tube_meshes(&RingEdgeTube::large());
 }
 
-/// How far a boundary may lie off its surface comes from what the file declares about its own
-/// numbers, not from how big the part is. A writer puts a 2 m part's boundaries on their
-/// surfaces as accurately as a 20 mm part's, so a scaled copy must keep the accuracy of the
-/// original: the same slop is accepted at both sizes, and slop the file cannot account for is
-/// refused at both sizes (#1721).
+/// How far a boundary may lie off its surface is a hundredth of the part, at every chord
+/// tolerance, and more only where the file declares more. A writer's declared accuracy is what it
+/// aimed for, not a bound its edges keep (a robot assembly declaring 0.01 µm has edges 10 to
+/// 30 µm off), so it never tightens the bound; and it must not depend on the mesh asked for, or a
+/// face accepted while the model is far away would drop out when the user zooms in (#1721).
 #[test]
-fn off_surface_budget_follows_the_file_not_the_part_size() {
-    // Whether the planner takes the ring edges as lying on the band's surface. Asked at a coarse
-    // chord tolerance and a fine one, because the answer must not depend on the mesh either: a
-    // face accepted while the model is far away must not drop out when the user zooms in.
+fn off_surface_budget_is_a_hundredth_of_the_part_at_every_chord_tolerance() {
     let accepted = |tube: &RingEdgeTube| -> bool {
         let imp = step_import(&tube.step()).unwrap();
         let ib = &imp.bodies[0];
         let size = ib.body.size();
         [2e-3, 4e-6].iter().all(|fraction| ib.body.display_plan(size * fraction).is_ok())
     };
-    // 4 µm of slop against 1 µm of declared uncertainty: the file accounts for it, so it is
-    // accepted at either size.
-    assert!(accepted(&RingEdgeTube::small()), "20 mm part, 4 µm off its surface");
-    assert!(accepted(&RingEdgeTube::large()), "2 m part, 4 µm off its surface");
-    // 2 mm is a thousandth of a 2 m part, which is exactly what the bound used to be: the 2 m
-    // copy projected such a boundary onto its surface without a word, while the 20 mm original
-    // refused it. Nothing in either file accounts for 2 mm, so both refuse it now.
-    for tube in [RingEdgeTube { off: 2.0, ..RingEdgeTube::small() }, RingEdgeTube { off: 2.0, ..RingEdgeTube::large() }] {
-        assert!(!accepted(&tube), "a part {} mm across accepts a boundary 2 mm off its surface", 2.0 * tube.r);
+    // A few micrometres, whatever the file declares, at either size.
+    for uncertainty in [1e-3, 1e-5] {
+        for tube in [RingEdgeTube { uncertainty, ..RingEdgeTube::small() }, RingEdgeTube { uncertainty, ..RingEdgeTube::large() }] {
+            assert!(accepted(&tube), "a part {} mm across, {} mm off on {uncertainty} declared", 2.0 * tube.r, tube.off);
+        }
     }
-    // The file's own figure decides, and only that: one part, one size, half a millimetre of
-    // slop, read twice. A declared micrometre refuses it; a declared 60 µm (ten times which is
-    // 0.6 mm, over the slop) accepts it. The part's size changes neither answer.
-    for r in [10.0, 1000.0] {
-        let tight = RingEdgeTube { r, h: 0.8 * r, off: 0.5, uncertainty: 1e-3 };
-        let loose = RingEdgeTube { uncertainty: 0.06, ..tight };
-        assert!(!accepted(&tight), "a part {} mm across accepts 0.5 mm of slop on 1 µm of declared uncertainty", 2.0 * r);
-        assert!(accepted(&loose), "a part {} mm across refuses 0.5 mm of slop on 60 µm of declared uncertainty", 2.0 * r);
-    }
+    // Within a hundredth of the part: a 20 mm part takes 0.15 mm, a 2 m part 2 mm; past it, no.
+    assert!(accepted(&RingEdgeTube { off: 0.15, ..RingEdgeTube::small() }));
+    assert!(accepted(&RingEdgeTube { off: 2.0, ..RingEdgeTube::large() }));
+    assert!(!accepted(&RingEdgeTube { off: 2.0, ..RingEdgeTube::small() }), "a 20 mm part accepts a boundary 2 mm off its surface");
+    assert!(!accepted(&RingEdgeTube { off: 100.0, ..RingEdgeTube::large() }), "a 2 m part accepts a boundary 100 mm off its surface");
+    // A file declaring more raises it: half a millimetre on a 20 mm part, refused on a declared
+    // micrometre, accepted on a declared 60 µm (ten times which is 0.6 mm).
+    let tight = RingEdgeTube { off: 0.5, ..RingEdgeTube::small() };
+    assert!(!accepted(&tight));
+    assert!(accepted(&RingEdgeTube { uncertainty: 0.06, ..tight }));
 }
 
 /// Revolved faces of a mirrored tool keep their orientation through STEP (the writer used to

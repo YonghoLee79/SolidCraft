@@ -61,8 +61,8 @@ pub(crate) struct Rules {
     pub turn: Option<Turn>,
     /// How far the body's boundaries may lie off their surfaces (mm), as the file the body was
     /// read from declares; `None` for a body this kernel built (see
-    /// [`crate::body::Body::boundary_tol`]). The one tolerance here that is *not* a fraction of
-    /// the extent, on purpose: a file's declared uncertainty does not grow with the part.
+    /// [`crate::body::Body::boundary_tol`]). It raises the planner's bound (a hundredth of the
+    /// extent) where it is larger, never lowers it.
     pub boundary_tol: Option<f64>,
 }
 
