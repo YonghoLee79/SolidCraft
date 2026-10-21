@@ -34,6 +34,12 @@
   in the default and Inventor presets. In every preset, Ctrl+left drag (Cmd on macOS) that starts
   on empty space orbits; a Ctrl+click still adds to the selection. Shift+right-drag snaps to the nearest standard or
   diagonal view; Shift does not request snapping when the preset already requires it to orbit.
+
+  Enable **Preferences → Navigation → Free orbit** to rotate the mouse and 3D mouse continuously
+  through both poles, preserving roll without axis snapping. It defaults to off for every mouse
+  preset. With SolidWorks navigation, right-click a planar face and choose **Normal to Selection**
+  to use Look At (also Ctrl+8); repeat to flip the side, preserving scale and projection.
+
   **Mouse gestures** (Preferences › Navigation, off by default) work with the SolidWorks mouse preset
   only (the wheel orbits, Ctrl + wheel pans) and take over the right button, which then no longer
   orbits: hold it and move the pointer 4 pt to open a ring of tools (280 pt inside, 350 pt outside), even
