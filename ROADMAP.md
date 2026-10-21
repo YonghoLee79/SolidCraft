@@ -45,6 +45,8 @@ In scope, in priority order:
 Deferred until further notice: MESH, FORM (T-splines), SURFACE beyond what solids need (scope proposed in #772), PCB / 3D
 PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
+Manufacture/CAM has an opt-in 2.5D core (tool library, setups, face/contour/pocket/drill, Grbl and Fanuc/Haas posts) as `manufacture.*` commands (docs/manufacture.md); no UI yet.
+
 ## Milestones
 
 | # | Milestone | Status | Hours left |

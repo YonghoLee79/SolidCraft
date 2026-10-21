@@ -142,9 +142,15 @@ impl Setup {
             return invalid("the work offset is 54 to 59 (G54 to G59)");
         }
         finite(self.clearance, "the clearance height")?;
+        if self.clearance.abs() > 1e6 {
+            return invalid("the clearance height is within 1,000,000 mm");
+        }
         let f = &self.frame;
         if !(f.origin.is_finite() && f.x.is_finite() && f.y.is_finite()) {
             return invalid("the setup frame has a number that is not finite");
+        }
+        if f.origin.x.abs().max(f.origin.y.abs()).max(f.origin.z.abs()) > 1e6 {
+            return invalid("the setup origin is within 1,000,000 mm of the model origin");
         }
         let n = f.normal();
         if !(n.len() > 0.5 && (f.x.dot(f.y)).abs() < 1e-6) {
