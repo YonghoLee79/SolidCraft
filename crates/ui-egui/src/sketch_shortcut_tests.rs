@@ -123,3 +123,27 @@ fn construction_key_outside_a_sketch_opens_nothing_and_keys_in_a_sketch_keep_it(
     assert_eq!(h.app.session.world_state().sketches.len(), 1);
     assert_eq!(tool(&h), Some("sketch.circle.center"));
 }
+
+/// Sketches and the model have their own keys: M is Move outside a sketch and Move/Copy Sketch
+/// Entities in one, F (Fillet) does nothing in a sketch, and a key only clashes with commands
+/// that work in the same place.
+#[test]
+fn sketch_and_model_keys_are_kept_apart() {
+    use crate::keymap::{Context, bind, command_for, context};
+    let mut h = Harness::new();
+    assert_eq!(context("sketch.move"), Context::Sketch);
+    assert_eq!(context("solid.fillet"), Context::Model);
+    assert_eq!(context("inspect.measure"), Context::Both);
+    assert_eq!(command_for(&h.app, "M"), Some("solid.move"));
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.settle();
+    assert_eq!(command_for(&h.app, "M"), Some("sketch.move"));
+    assert_eq!(command_for(&h.app, "F"), None, "no model tool from a key pressed in a sketch");
+    press(&mut h, "F");
+    assert!(h.app.dialog.is_none() && h.app.session.active_sketch.is_some(), "F left the sketch alone");
+    // A sketch command may take a model command's key, but not another sketch command's.
+    bind(&mut h.app, "sketch.fillet", "F", false).unwrap();
+    assert_eq!(command_for(&h.app, "F"), Some("sketch.fillet"));
+    let e = bind(&mut h.app, "sketch.fillet", "L", false).unwrap_err();
+    assert!(e.contains("already used"), "{e}");
+}
