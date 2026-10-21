@@ -46,7 +46,7 @@ Work the part out as numbers first. Then build it in a few large `batch` calls, 
 
 ## Verify
 - **Each stage:** run `measure {}` (about 1 KB) and compare the volume, bbox and face count with your numbers. A cut or hole that leaves the volume unchanged has missed, even though it reported success.
-- **Timeline health:** read the `Design feedback` block at the end of a reply. `new_errors` and `failing` name what the call broke, `fixed` what it mended, and `notices` the features whose own report changed (a sketch's dof and profiles, for example); `notices {"features":[...]}` returns their `values` and `issues`, each issue with a `code` and a `suggestion`. A reply without the block changed nothing. `changed_since_your_last_call` means the person at the app, or another client, edited the design between your calls: re-read what you rely on before you continue. `inspect_design {"measure":false,"sketches":false}` is for the first look, not for every stage.
+- **Timeline health:** `inspect_design {"measure":false,"sketches":false}` shows each feature's `error` and `warning`.
 - **Parameter test:** run `set_parameter`. Expect `errors: []`, then `measure` again; the COM and bbox should move by the amounts you computed.
 - **Positions:** `measure` does not say where a feature sits.
   - On an asymmetric part, check the COM shift you computed.
@@ -68,4 +68,3 @@ Work the part out as numbers first. Then build it in a few large `batch` calls, 
 | "Inspect the sketch" | `sketch.solve` returns dof and the profile count in under 100 bytes. Run `sketch.inspect` on its own, never inside a big batch. |
 | "new_design for a clean start" | When the server is bridged, ask first. |
 | "It reported ok, so it worked" | Only a `measure` that matches the computed values counts. |
-| "inspect_design after every step to see what broke" | The `Design feedback` block on the reply already says what broke, mended or changed; `notices` gives a feature's values. |

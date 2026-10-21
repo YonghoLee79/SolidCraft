@@ -47,7 +47,7 @@ Inspect one feature of each kind, not every copy.
    - If it matches to about 0.01%, you are done.
    - If not, restore the checkpoint, then apply the changes one at a time, measuring after each.
    - A cut or chamfer that leaves the volume unchanged has missed.
-2. **Timeline health:** read the `Design feedback` block on the batch's reply. `new_errors` and `new_warnings` must be empty; `failing` lists what is broken now, and each entry of `notices` carries the feature's `issues`, with a `code` and a `suggestion` for the change that clears it. If something broke, restore or `undo` before you try anything else. A `changed_since_your_last_call` entry means the design was edited at the app between your calls (`done`, `undone`, `redone`, `opened`): map it again before relying on what you knew. `inspect_design` is not needed for this check.
+2. **Timeline health:** run `inspect_design {"measure":false,"sketches":false}`. Every `error` and `warning` must be null. If something broke, restore or `undo` before you try anything else.
 3. **Interior features:** take one top-view screenshot, `{"source":"model","view":"top","width":480,"height":320}`. When the server is bridged, `view` also turns the user's camera. The iso view hides standoffs behind the walls.
 4. **Still parametric:** if the user wants it kept parametric, change one driving size, `measure`, then set it back.
 
@@ -67,7 +67,7 @@ Inspect one feature of each kind, not every copy.
 |---|---|
 | "timeline.inspect each feature to understand it" | `parameters.list {"filter":"feature"}` shows every input in one call. |
 | "Delete and remodel the feature" | Change its `dN` input, or use `timeline.edit`. History and downstream picks stay intact. |
-| "The insert worked, done" | Read the reply's `Design feedback` block: `new_errors` lists every later feature that broke. |
+| "The insert worked, done" | Check the errors of every later feature. |
 | "Edge points with expressions, so the chamfer follows the size" | They are rejected, and stored picks already follow size changes. |
 | "Pick all 8 rim edges" | One pick on a tangent chain fillets or chamfers the whole chain. |
 | "Measure after every edit" | One batch, one `measure` against the summed prediction. Split only when it misses. |
