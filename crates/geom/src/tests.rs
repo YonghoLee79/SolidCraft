@@ -51,6 +51,26 @@ fn cube_measure() {
     assert!(m.centroid.dist(Vec3::new(1.0, 1.0, 1.0)) < 1e-12);
 }
 
+/// A mesh whose faces meet only to within its tolerance (a body's faces are meshed one by one)
+/// measures what it encloses about a point near it, wherever it lies: a unit cube half a metre
+/// from the origin with one corner of one face 1e-4 off the others measures 1.0067 about the
+/// origin.
+#[test]
+fn a_mesh_with_a_crack_far_from_the_origin_measures_its_volume_about_a_point_near_it() {
+    let mut m = cube_mesh(1.0);
+    let far = Vec3::new(-300.0, 250.0, 400.0);
+    for p in &mut m.positions {
+        *p += far;
+    }
+    // The top face's own copy of one corner, a little off the corner the sides use.
+    m.positions.push(m.positions[6] + Vec3::new(1e-4, 0.0, 0.0));
+    m.triangles[2] = [4, 5, 8];
+    m.triangles[3] = [4, 8, 7];
+    let v = m.measure_about(m.bounds().center());
+    assert!((v.volume - 1.0).abs() < 1e-4, "{v:?}");
+    assert!(v.centroid.dist(far + Vec3::new(0.5, 0.5, 0.5)) < 1e-4, "{v:?}");
+}
+
 #[test]
 fn raycast_hits_front_face() {
     let m = cube_mesh(2.0);

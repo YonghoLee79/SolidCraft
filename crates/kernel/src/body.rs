@@ -252,6 +252,27 @@ const DISPLAY_ANGLE_FLOOR: f64 = 1e-3;
 /// The finest angle a display mesh is divided by (one degree).
 const MIN_DISPLAY_ANGLE: f64 = std::f64::consts::PI / 180.0;
 
+/// The signed volume of a meshed shell, summed about the middle of its own extent. truck's
+/// `volume` sums about the origin: the same for a closed mesh, but each face is meshed on its own
+/// and a face whose boundary lies on its surface only within tolerance leaves cracks along its
+/// edges, which then count their area times their distance from the origin. For a small part
+/// half a metre out (9 mm³ crossing a plate) that outweighed the part and turned it inside out.
+fn shell_volume(shell: &MeshedShell) -> f64 {
+    let mesh = shell.to_polygon();
+    let xs = || mesh.positions().iter().map(|p| p.x);
+    let (lo, hi) = (xs().fold(f64::INFINITY, f64::min), xs().fold(f64::NEG_INFINITY, f64::max));
+    let mid = if lo.is_finite() && hi.is_finite() { (lo + hi) / 2.0 } else { 0.0 };
+    let p = |v: &StandardVertex| mesh.positions()[v.pos];
+    mesh.faces()
+        .triangle_iter()
+        .map(|[a, b, c]| {
+            let (p, q, r) = (p(&a), p(&b), p(&c));
+            (p.x + q.x + r.x - 3.0 * mid) * ((q.y - p.y) * (r.z - p.z) - (r.y - p.y) * (q.z - p.z))
+        })
+        .sum::<f64>()
+        / 6.0
+}
+
 /// Triangulate each shell (not the solid: truck's solid constructor panics on the open or
 /// non-manifold shells an import can produce). Boundaries that lie on their surface only within
 /// tolerance (imports, boolean results) are projected onto it.
@@ -609,7 +630,7 @@ impl Body {
         let orient = |tol: f64| {
             guard("orient", || {
                 let shells = mesh_shells(&solid, tol);
-                let volume = shells.iter().map(|s| s.to_polygon().volume()).sum::<f64>();
+                let volume = shells.iter().map(shell_volume).sum::<f64>();
                 let missing = shells
                     .iter()
                     .flat_map(|s| s.face_iter())

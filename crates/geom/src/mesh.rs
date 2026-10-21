@@ -568,16 +568,27 @@ impl Mesh {
 
     /// Signed volume (divergence theorem), surface area and volume centroid.
     pub fn measure(&self) -> MeshMeasure {
+        self.measure_about(Vec3::ZERO)
+    }
+
+    /// [`Mesh::measure`], with the volume summed about `o`: the same numbers for a closed mesh,
+    /// but a mesh whose faces meet only to within its tolerance (each face of a body is meshed
+    /// on its own) is off by the gaps' area times their distance from `o`. Measured about the
+    /// origin, a 9 mm³ piece half a metre out came to -19 mm³; meshes compared with each other
+    /// are measured about one point near them.
+    pub fn measure_about(&self, o: Vec3) -> MeshMeasure {
+        let o = if o.x.is_finite() && o.y.is_finite() && o.z.is_finite() { o } else { Vec3::ZERO };
         let (mut v6, mut area, mut c) = (0.0, 0.0, Vec3::ZERO);
         for t in &self.triangles {
             let Some([a, b, cc]) = self.tri(t) else { continue };
+            let (a, b, cc) = (a - o, b - o, cc - o);
             let d = a.dot(b.cross(cc));
             v6 += d;
             c += (a + b + cc) * d;
             area += (b - a).cross(cc - a).len() * 0.5;
         }
         let volume = v6 / 6.0;
-        let centroid = if v6.abs() > 1e-12 { c / (4.0 * v6) } else { self.bounds().center() };
+        let centroid = if v6.abs() > 1e-12 { o + c / (4.0 * v6) } else { self.bounds().center() };
         MeshMeasure { volume, area, centroid }
     }
 
