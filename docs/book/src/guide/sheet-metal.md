@@ -124,7 +124,9 @@ An edge flange can bend more than once: `then` lists further bends, each an `ang
 and undone with one step. It is the way to make a flap with two or more bends that is part of
 the same sheet (a Contour Flange is always a sheet of its own). The example bends the end edge of
 a wall 45° outward, then 45° again, the second leg 80 mm long. Each bend is a flange feature of
-its own in the timeline, so each can be edited there.
+its own in the timeline, so each can be edited there. In the Flange dialog, an edge flange has
+**Further Bends** under Bend Position: **Add bend** adds a row with an angle and a height, and the
+bin beside a row takes it out.
 
 ```json
 {"command":"sheet.flange","params":{"edges":[[1,0,20]],"height":40,"angle":"45 deg",

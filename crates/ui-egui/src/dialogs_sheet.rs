@@ -76,6 +76,9 @@ crate::dialog_descriptor::dialog_descriptors! {
                 /// 0 is the rule's) and its size (empty: the rule's).
                 relief: usize,
                 relief_size: String,
+                /// Edge flanges: further bends (angle, height), each a flange on the far edge of the
+                /// one before it (the command's `then`).
+                then: Vec<(String, String)>,
             },
             Unfold {
                 refold: bool,
@@ -149,6 +152,7 @@ fn new_flange(ty: usize) -> Sm {
         own: Vec::new(),
         relief: 0,
         relief_size: String::new(),
+        then: Vec::new(),
     }
 }
 
@@ -207,7 +211,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
     let t = Tokens::get();
     let mut enter = false;
     match k {
-        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size } => {
+        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, then } => {
             *ty = flange_type(inputs);
             form_row(ui, "Type", |ui| {
                 ui.label(FLANGE_TYPES.get(*ty).copied().unwrap_or(""));
@@ -217,6 +221,43 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     enter |= expr_row(ui, "Height", height);
                     enter |= expr_row(ui, "Angle", angle);
                     choice_row(ui, "Bend Position", "sm_pos", position, &POSITION_LABELS);
+                    // Further bends: each a flange on the far edge of the one before it.
+                    let mut drop = None;
+                    for (n, (a, h)) in then.iter_mut().enumerate() {
+                        form_row(ui, &format!("Bend {}", n + 2), |ui| {
+                            ui.horizontal(|ui| {
+                                let close = Tokens::get().control_height;
+                                let w = ((ui.available_width() - ui.spacing().item_spacing.x * 2.0 - close) / 2.0).max(0.0);
+                                for (text, hint, what, id) in
+                                    [(&mut *a, "angle", "angle", "sm_then_angle"), (&mut *h, "height", "height", "sm_then_height")]
+                                {
+                                    ui.push_id((id, n), |ui| {
+                                        ui.allocate_ui_with_layout(
+                                            vec2(w, Tokens::get().control_height),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                enter |= crate::ui_kit::hint_field(ui, text, hint);
+                                            },
+                                        );
+                                        crate::scenario::publish_handle(&format!("dialog:Bend {} {what}", n + 2), ui.min_rect().center());
+                                    });
+                                }
+                                if crate::ui_kit::bin_button(ui, crate::i18n::tr_label("Remove this bend")).clicked() {
+                                    drop = Some(n);
+                                }
+                            });
+                        });
+                    }
+                    if let Some(n) = drop {
+                        then.remove(n);
+                    }
+                    form_row(ui, "Further Bends", |ui| {
+                        let add = crate::ui_kit::button(ui, "Add bend", crate::ui_kit::Button::Normal)
+                            .on_hover_text(crate::i18n::tr_label("Another bend on the far edge of the last flange"));
+                        if add.clicked() && then.len() < 16 {
+                            then.push(("45 deg".into(), "20 mm".into()));
+                        }
+                    });
                     crate::ui_kit::section(ui, "flange_advanced", "Advanced", false, |ui| {
                         enter |= hint_row(ui, "Bend Radius", radius, crate::i18n::tr_label("from the rule"));
                         // The relief at the corners these flanges make: the rule's unless set here.
@@ -476,7 +517,7 @@ fn flange_edges(inputs: &[SelInput], own: &[(Vec3, String, String)]) -> Vec<Valu
 pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String, Value>) -> Result<Vec<(String, Value)>, String> {
     let s = &app.session;
     let (cmd, mut p): (&str, Value) = match k {
-        Sm::Flange { height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, .. } => {
+        Sm::Flange { height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, then, .. } => {
             let mut p = match flange_type(inputs) {
                 1 => {
                     let mut p = json!({"type": "edge", "edges": flange_edges(inputs, own), "height": height, "angle": angle,
@@ -486,6 +527,18 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
                         p["corner_relief_shape"] = json!(shape);
                     }
                     put(&mut p, &[("corner_relief", relief_size)]);
+                    if !then.is_empty() {
+                        let mut bends = Vec::with_capacity(then.len());
+                        for (n, (a, h)) in then.iter().enumerate() {
+                            if h.trim().is_empty() {
+                                return Err(format!("bend {} needs a height", n + 2));
+                            }
+                            let mut b = json!({"height": h});
+                            put(&mut b, &[("angle", a)]);
+                            bends.push(b);
+                        }
+                        p["then"] = json!(bends);
+                    }
                     p
                 }
                 2 => {
@@ -647,6 +700,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
                     .and_then(|name| RELIEF_SHAPES.iter().position(|s| s.eq_ignore_ascii_case(name.trim())))
                     .map_or(0, |i| i + 1),
                 relief_size: corner_relief.as_deref().map(str::to_string).unwrap_or_default(),
+                then: Vec::new(),
             };
             (f, picked)
         }
