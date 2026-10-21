@@ -176,7 +176,32 @@ fn knot_vec(mults: Option<&Param>, knots: Option<&Param>, expected: usize) -> R<
     if m.len() > expected || m.iter().try_fold(0usize, |a, v| a.checked_add(*v)) != Some(expected) {
         return Err("knot multiplicities do not match the control points".into());
     }
-    mt::KnotVec::from_single_multi(k, m).map_err(|e| format!("knot vector: {e}"))
+    mt::KnotVec::from_single_multi(spanning_one(k), m).map_err(|e| format!("knot vector: {e}"))
+}
+
+/// Shortest parameter range a spline is read with.
+const MIN_KNOT_RANGE: f64 = 1.0;
+
+/// `knots` stretched, when they span less than [`MIN_KNOT_RANGE`], to span exactly that from the
+/// same first knot. A STEP writer may parameterize a spline over any range (some write a few
+/// millionths, as if in metres of a part drawn in millimetres), and the kernel tells parameters
+/// apart only to a fixed tolerance (1e-6): over such a range it took distinct knots for one, and
+/// trimming an edge to its vertices dropped a control point. Stretching the knots changes the
+/// parameters, never the curve (every point is where it was), and nothing read from the file
+/// refers to them: edges are trimmed by their vertices.
+fn spanning_one(knots: Vec<f64>) -> Vec<f64> {
+    let (Some(&first), Some(&last)) = (knots.first(), knots.last()) else { return knots };
+    let range = last - first;
+    if !(range > 0.0 && range < MIN_KNOT_RANGE) {
+        return knots;
+    }
+    let scale = MIN_KNOT_RANGE / range;
+    let mut out: Vec<f64> = knots.iter().map(|k| first + (k - first) * scale).collect();
+    // The last knot exactly at the end of the range (the product can miss it by a rounding).
+    if let Some(k) = out.last_mut() {
+        *k = first + MIN_KNOT_RANGE;
+    }
+    out
 }
 
 fn generated_knots(kind: &str, n_ctrl: usize, degree: usize) -> R<mt::KnotVec> {

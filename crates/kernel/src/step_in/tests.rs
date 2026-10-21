@@ -1530,6 +1530,50 @@ fn knot_multiplicities_are_checked_before_they_are_expanded() {
     assert!(read(&curve(2, 3)).is_err());
 }
 
+/// A spline written over a parameter range of a few millionths (as if in metres of a part drawn
+/// in millimetres: piecewise cubic Bézier over 5.4e-6, as a STEP part of a humanoid robot
+/// writes its edges) is read over a range of 1. Over the file's own range the kernel took knots
+/// a millionth apart for one, so trimming an edge to its vertices dropped a control point and
+/// left a curve no exact store could keep (every reopen of that design imported it again).
+#[test]
+fn a_spline_over_a_tiny_parameter_range_is_read_over_one() {
+    use mt::{BoundedCurve, Cut, MetricSpace, ParametricCurve};
+    let a = 1.8024e-6;
+    let knots = [0.0, a, 3.0304e-6, 3.8749e-6, 4.7103e-6, 5.0653e-6, 5.4274e-6];
+    let n = 3 * (knots.len() - 1) + 1;
+    let points: String = (0..n).map(|i| format!("#{}=CARTESIAN_POINT('',({}.,{}.,0.));\n", 10 + i, i, (i * i) % 7)).collect();
+    let refs: Vec<String> = (0..n).map(|i| format!("#{}", 10 + i)).collect();
+    let mults: Vec<String> = (0..knots.len()).map(|i| if i == 0 || i + 1 == knots.len() { "4".into() } else { "3".into() }).collect();
+    let text = format!(
+        "{HEAD}{points}#3=B_SPLINE_CURVE_WITH_KNOTS('',3,({}),.UNSPECIFIED.,.F.,.F.,({}),({}),.UNSPECIFIED.);\n{TAIL}",
+        refs.join(","),
+        mults.join(","),
+        knots.iter().map(|k| format!("{k:e}")).collect::<Vec<_>>().join(",")
+    );
+    let ex = p21::parse(&text).unwrap();
+    let cx = Ctx { ex: &ex, len: 1.0, ang: 1.0, tol: 1e-6 };
+    let Ok(geom::CurveGeo::BSpline(c)) = geom::curve(&cx, 3, 0) else { panic!("a B-spline") };
+    let (t0, t1) = c.range_tuple();
+    assert_eq!((t0, t1), (0.0, 1.0));
+    // The same curve: its ends are the first and last control points.
+    assert!(c.subs(t0).distance(mt::Point3::new(0.0, 0.0, 0.0)) < 1e-12);
+    assert!(c.subs(t1).distance(mt::Point3::new((n - 1) as f64, ((n - 1) * (n - 1) % 7) as f64, 0.0)) < 1e-12);
+    // Cut between knots, as an edge is trimmed to its vertices: both pieces keep clamped ends
+    // and every control point, and meet where the curve was cut.
+    for t in [0.3, 0.33, 0.9, 0.95] {
+        let mut head = c.clone();
+        let tail = head.cut(t);
+        for piece in [&head, &tail] {
+            let k: Vec<f64> = piece.knot_vec().iter().copied().collect();
+            let d = piece.degree();
+            assert_eq!(piece.control_points().len() + d + 1, k.len());
+            assert!(k.iter().take(d + 1).all(|x| *x == k[0]) && k.iter().rev().take(d + 1).all(|x| Some(x) == k.last()), "{t}: {k:?}");
+        }
+        assert!(head.subs(head.range_tuple().1).distance(c.subs(t)) < 1e-9);
+        assert!(tail.subs(tail.range_tuple().0).distance(c.subs(t)) < 1e-9);
+    }
+}
+
 /// One `ADVANCED_FACE` may list any number of bounds, and each one clones its edge handles into
 /// a new wire that the face extent then samples. A face naming the same loop a million times
 /// held 1e11 handles.
@@ -1969,7 +2013,8 @@ fn periodic_knot_bsplines_are_read_on_their_domain() {
     let surface_id = ex.get(face).and_then(|e| e.params().get(2)).and_then(Param::as_ref_id).unwrap();
     let surface = geom::bspline_surface(&cx, ex.get(surface_id).unwrap()).unwrap();
     let (Some((u0, u1)), Some((v0, v1))) = surface.try_range_tuple() else { panic!("unbounded surface") };
-    assert!(u0.abs() < 1e-12 && (u1 - h / r).abs() < 1e-12, "u range {u0} .. {u1}");
+    // Along the tube the file's range (h / r) is shorter than one: it is read over one.
+    assert!(h / r < 1.0 && u0.abs() < 1e-12 && (u1 - 1.0).abs() < 1e-12, "u range {u0} .. {u1}");
     assert!((v0 + pi).abs() < 1e-9 && (v1 - pi).abs() < 1e-9, "v range {v0} .. {v1}");
     for i in 0..=8 {
         for j in 0..=16 {
