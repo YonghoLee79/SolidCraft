@@ -1101,8 +1101,8 @@ pub fn refresh_sketch_links(
                     let back = m.inverse();
                     geom = geom.iter().map(|g| back.geom(g)).collect();
                 }
-                match sk.update_link(&l.id, &geom) {
-                    Ok(rebuilt) => {
+                match sk.update_link_detail(&l.id, &geom) {
+                    Ok(update) => {
                         if let Some(m) = &motion {
                             for i in sk.link_points(&l.id) {
                                 if let Some(p) = sk.points.get_mut(i) {
@@ -1115,8 +1115,13 @@ pub fn refresh_sketch_links(
                         {
                             placement.seen = Some(now);
                         }
-                        if rebuilt {
-                            warn.push(format!("projected {} changed shape and was rebuilt", l.source.describe()));
+                        if update.rebuilt && !update.dropped.is_empty() {
+                            warn.push(format!(
+                                "projected {} changed shape; removed {} on geometry that is gone ({})",
+                                l.source.describe(),
+                                if update.dropped.len() == 1 { "1 constraint".to_string() } else { format!("{} constraints", update.dropped.len()) },
+                                update.dropped.join(", ")
+                            ));
                         } else if r.moved {
                             warn.push(format!("projected {} was re-found on the nearest geometry", l.source.describe()));
                         }

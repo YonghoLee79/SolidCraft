@@ -836,8 +836,13 @@ fn sketch_link_items(app: &SolveApp, sketch: u64, link: &str) -> Vec<Item> {
         } else {
             cmd(app, "sketch.freeze_link", "Freeze Link").with(one.clone())
         },
-        cmd(app, "sketch.link_visibility", "Show/Hide").with(one.clone()),
+        cmd(app, "sketch.link_visibility", if l.hidden { "Show" } else { "Hide" }).with(json!({"sketch": sketch, "link": link, "visible": l.hidden})),
     ];
+    // A lost projection (as the model shows it) takes a new source, picked in the model.
+    let lost = app.session.model.result(sketch).and_then(|r| r.state.sketch(sketch)).and_then(|ss| ss.sketch.link(link).map(|l| l.lost));
+    if lost.unwrap_or(l.lost) {
+        v.insert(0, act("ui.repairLink", "Repair Link…", "project").with(json!({"link": link})).on(editing));
+    }
     // Line type and Break Link work on the sketch being edited.
     v.push(cmd(app, "sketch.construction", "Normal/Construction").with(json!({"curves": curves})).on(editing && !curves.is_empty()));
     v.push(Item::sep());
@@ -958,15 +963,29 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         v.push(Item::heading("Projection"));
         v.push(cmd(app, "sketch.update_references", "Update References").with(json!({"sketch": sid})));
         v.push(if frozen { cmd(app, "sketch.resume_link", "Resume Link") } else { cmd(app, "sketch.freeze_link", "Freeze Link") }.with(p.clone()));
-        v.push(cmd(app, "sketch.link_visibility", "Show/Hide").with(json!({"links": links, "visible": false})));
+        if let [link] = links.as_slice()
+            && ss.sketch.link(link).is_some_and(|l| l.lost)
+        {
+            v.push(act("ui.repairLink", "Repair Link…", "project").with(json!({"link": link})));
+        }
+        v.push(cmd(app, "sketch.link_visibility", "Hide Projection").with(json!({"links": links, "visible": false})));
         v.push(cmd(app, "sketch.remove_link", "Remove Projection").with(p));
-        v.push(cmd(app, "sketch.break_link", "Break Link").with(json!({"entities": ents})));
+        // Break Link frees every member of the projection, not only the ones selected.
+        let partial = links.iter().any(|l| ss.sketch.link_curves(l).iter().filter_map(|c| ss.sketch.curves.get(*c)).any(|c| !ents.contains(&c.id)));
+        v.push(cmd(app, "sketch.break_link", if partial { "Break Link (whole projection)" } else { "Break Link" }).with(json!({"entities": ents})));
         v.push(Item::sep());
     }
     if curves.len() == 1 && ss.sketch.freeform_offsets.iter().any(|offset| offset.output == curves[0]) {
         v.push(cmd(app, "sketch.offset.break", "Break Offset Association").with(json!({"curve":curves[0]})));
     }
-    v.push(act("ui.fix", "Fix/Unfix", "c_fix").with(json!({ "entities": ents })));
+    // Projected geometry is fixed by its source already.
+    let projected = ents.iter().all(|e| {
+        ss.sketch.curve_index(e).map_or_else(
+            || ss.sketch.point_index(e).is_some_and(|i| ss.sketch.points.get(i).is_some_and(|p| p.link.is_some())),
+            |c| ss.sketch.is_linked_curve(c),
+        )
+    });
+    v.push(act("ui.fix", "Fix/Unfix", "c_fix").with(json!({ "entities": ents })).on(!projected));
     v.push(act("ui.delete", "Delete", "delete").key("Del"));
     v.push(cmd(app, "sketch.dimension", "Sketch Dimension").with(json!({ "entities": ents })).on(ents.len() <= 2));
     let mut c = Vec::new();
@@ -1173,6 +1192,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.home" => app.animate_view("home"),
         // One command for the whole selection: all fixed unless all already are.
         "ui.fix" => drop(app.run("sketch.constraint.fix", json!({ "entities": strs(&p, "entities") }))),
+        "ui.repairLink" => {
+            if let Some(link) = p.get("link").and_then(Value::as_str) {
+                crate::sketch_tools::start_repair(app, link);
+            }
+        }
         "ui.editSketch" => {
             if let Some(id) = id_of(&p, "sketch") {
                 app.edit_sketch(id);
