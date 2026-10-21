@@ -336,6 +336,8 @@ fn scene_key(app: &SolveApp) -> u64 {
     crate::theme::is_dark().hash(&mut h);
     crate::theme::vision().hash(&mut h);
     app.session.active_sketch.hash(&mut h);
+    // A flow result drawn in the view (and the see-through bodies it brings).
+    crate::simulation_workspace::scene_key(app).hash(&mut h);
     h.finish()
 }
 
@@ -683,6 +685,8 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
         let col = if faded { c4(base.gamma_multiply(0.35)) } else { c4(base) };
         // Appearances: the body's opacity, and faces with looks of their own.
         let opacity = s.doc.model_body_opacity(b);
+        // A flow result is drawn inside the bodies: they turn see-through while it shows.
+        let opacity = if crate::simulation_workspace::see_through(app) { opacity.min(0.25) } else { opacity };
         let face_looks: std::collections::HashMap<usize, solidcraft_engine::doc::appearance::Look> =
             if shaded { s.doc.face_colors(b).into_iter().collect() } else { Default::default() };
         let opaque = !faded && opacity >= 0.999 && face_looks.values().all(|l| l.opacity >= 0.999);
@@ -738,6 +742,7 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
             *k = made;
         }
     }
+    crate::simulation_workspace::draw(app, &mut sc);
     // Continuity analysis: each seam `inspect.continuity` measured, drawn over the model in the
     // colour of its worst verdict.
     for seam in &s.continuity {

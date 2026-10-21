@@ -88,8 +88,9 @@ fn put_view(app: &mut SolveApp, v: DocView) {
 
 /// Put `slot` into the app and return what was there.
 fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
-    if crate::render_workspace::active(app) {
-        let _ = crate::render_workspace::enter(app, false);
+    // Another document opens in Design.
+    if crate::workspace_switch::current(app) != crate::workspace_switch::Workspace::Design {
+        let _ = crate::workspace_switch::enter(app, crate::workspace_switch::Workspace::Design);
     }
     // Whatever was going on in the design leaves with it.
     crate::sketch_text_move::cancel_drag(app);
@@ -177,6 +178,7 @@ pub fn adopt(app: &mut SolveApp, session: Session) {
         crate::sketch_attachment_ui::clear(app);
         app.session.replace_design(session);
         crate::render_workspace::reset_document(app);
+        crate::simulation_workspace::reset_document(app);
         app.sketch_choices = crate::sketch_families::Choices::default();
         app.session.invalidate_view(rev);
         app.cam = Camera::default();

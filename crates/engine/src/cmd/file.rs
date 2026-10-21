@@ -273,6 +273,10 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.replace_design(Session::opened(doc, saved.as_ref()));
     s.path = Some(path.to_string());
+    // Its studies, kept beside it.
+    for note in crate::flow::load_sidecar(s) {
+        log::warn!("airflow studies: {note}");
+    }
     let errors = s.model.results.iter().filter(|r| r.error.is_some()).count();
     Ok(json!({"path": path, "features": s.doc.features.len(), "errors": errors, "name": s.doc.name}))
 }
@@ -340,6 +344,12 @@ fn write(s: &mut Session, path: &str, format: &str, compression: &str, preview: 
     {
         rename_design(s, to, from);
     }
+    // The design's studies go beside it (`<design>.sim.json`), never in it.
+    if r.is_ok()
+        && let Err(e) = crate::flow::save_sidecar(s)
+    {
+        log::warn!("airflow studies: {e}");
+    }
     r
 }
 
@@ -396,6 +406,10 @@ impl Session {
         }
         self.path.clone_from(&done.path);
         self.mark_saved();
+        // The copy that saved has no studies: this session writes them beside the design.
+        if let Err(e) = crate::flow::save_sidecar(self) {
+            log::warn!("airflow studies: {e}");
+        }
     }
 
     /// Container bytes for desktop and browser saves. Only already evaluated bodies
