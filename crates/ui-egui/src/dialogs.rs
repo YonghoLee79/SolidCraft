@@ -386,11 +386,13 @@ pub struct HoleOpts {
     /// Tap type: tapped (a cosmetic thread) instead of simple.
     pub tapped: bool,
     pub thread: String,
+    /// Custom nominal diameter and pitch being edited, separate from the saved designation.
+    pub custom_thread: Option<crate::dialogs_thread::HoleThreadDraft>,
 }
 
 impl Default for HoleOpts {
     fn default() -> Self {
-        HoleOpts { multiple: false, all: false, angled: true, tip_angle: "118 deg".into(), tapped: false, thread: "M5".into() }
+        HoleOpts { multiple: false, all: false, angled: true, tip_angle: "118 deg".into(), tapped: false, thread: "M5".into(), custom_thread: None }
     }
 }
 
@@ -424,6 +426,15 @@ pub struct Dialog {
     pub(crate) picked_edges: Vec<Sel>,
     /// Whether `inputs[0]` currently includes the tangent chains of `picked_edges`.
     pub(crate) chain_applied: bool,
+    /// Shell feedback is derived from the picks, never saved as additional face references.
+    shell_chain: std::cell::RefCell<Option<ShellChain>>,
+}
+
+#[derive(Clone, Debug)]
+struct ShellChain {
+    revision: u64,
+    picks: Vec<Sel>,
+    faces: Vec<Sel>,
 }
 
 /// OK computing off the window thread: the dialog's commands evaluated on a scratch copy of the
@@ -436,12 +447,22 @@ pub struct Applying {
     pub(crate) started: f64,
     /// The commands being computed.
     pub(crate) cmds: Vec<(String, Value)>,
+    /// The job has been in a frame. A job that has just started is not taken up in the frame it
+    /// starts, so the dialog says it is computing before the feature appears.
+    pub(crate) seen: bool,
 }
 
 impl Applying {
     /// The evaluation is in (or its worker ended).
     fn finished(&self) -> bool {
         !matches!(self.done.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
+    }
+
+    /// The evaluation is in and the job has been in a frame. A job that has just started waits
+    /// one frame: the window thread may be held up between starting it and the check, and the
+    /// feature must not appear where the dialog says it is computing.
+    fn ready(&self) -> bool {
+        self.seen && self.finished()
     }
 }
 
@@ -477,7 +498,7 @@ fn begin_applying(app: &SolveApp, d: &Dialog) -> Option<Applying> {
         })
         .ok()?;
     match rx.recv_timeout(wait) {
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Some(Applying { done: rx, started: crate::now_ms(), cmds }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Some(Applying { done: rx, started: crate::now_ms(), cmds, seen: false }),
         _ => None,
     }
 }
@@ -547,6 +568,7 @@ impl Dialog {
             then_start: None,
             picked_edges: Vec::new(),
             chain_applied,
+            shell_chain: Default::default(),
         }
     }
 
@@ -607,8 +629,8 @@ impl Dialog {
                 Kind::Align { flip: false },
                 vec![
                     SelInput::new("Bodies", BODIES, true),
-                    SelInput::new("From", FACES | EDGES | selection::VERTICES, false),
-                    SelInput::new("To", FACES | EDGES | selection::VERTICES, false),
+                    SelInput::new("From", FACES | EDGES | selection::VERTICES | PLANES | selection::ORIGIN, false),
+                    SelInput::new("To", FACES | EDGES | selection::VERTICES | PLANES | selection::ORIGIN, false),
                 ],
             ),
             "solid.remove" => Dialog::new(Kind::Remove, vec![SelInput::new("Bodies", BODIES, true)]),
@@ -831,7 +853,9 @@ impl Dialog {
         }
         *of = picks.to_vec();
         *suggested = picks.first().and_then(|sel| match sel {
-            Sel::Face { point, .. } => solidcraft_engine::doc::suggested_thread(&s.world_state(), *point).ok(),
+            Sel::Face { point, .. } => solidcraft_engine::doc::suggested_thread(&s.world_state(), *point).ok().map(|value| {
+                solidcraft_engine::doc::parse_metric_thread(&value).map(|(d, p)| crate::dialogs_thread::designation(d, p)).unwrap_or(value)
+            }),
             _ => None,
         });
         *designation = suggested.clone().unwrap_or_default();
@@ -929,7 +953,12 @@ impl Dialog {
             }
             Kind::Shell { thickness } => ("Thickness", ValueKind::Length, thickness),
             Kind::Draft { angle } => ("Angle", ValueKind::Angle, angle),
-            Kind::Hole { diameter, .. } => ("Diameter", ValueKind::Length, diameter),
+            Kind::Hole { diameter, opts, .. } => {
+                if opts.tapped {
+                    return None;
+                }
+                ("Diameter", ValueKind::Length, diameter)
+            }
             // A move's main value follows its type: a distance along X for the ones that
             // translate, the angle for Rotate. Point to Point is two picks with nothing to type.
             Kind::Move { mode, x, angle, .. } => match *mode {
@@ -975,6 +1004,47 @@ impl Dialog {
     /// Everything the inputs hold (for highlighting).
     pub fn items(&self) -> Vec<Sel> {
         self.inputs.iter().flat_map(|i| i.items.iter().cloned()).collect()
+    }
+
+    /// Faces Shell will open, including the tangent chain. Keep the input itself as the
+    /// user's picks so switching the option off, clearing, and editing all remain reversible.
+    fn shell_faces(&self, s: &Session) -> Option<Vec<Sel>> {
+        if !matches!(self.kind, Kind::Shell { .. }) || self.extra.get("tangent_chain").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        let picks = sels(self, 0);
+        if let Ok(cache) = self.shell_chain.try_borrow()
+            && let Some(chain) = cache.as_ref()
+            && chain.revision == s.revision
+            && chain.picks == picks
+        {
+            return Some(chain.faces.clone());
+        }
+        let state = s.world_state();
+        let mut by_body = std::collections::BTreeMap::<&str, Vec<Vec3>>::new();
+        for pick in picks {
+            if let Sel::Face { body, point, .. } = pick {
+                by_body.entry(body).or_default().push(*point);
+            }
+        }
+        let mut faces = Vec::new();
+        for (name, points) in by_body {
+            if let Some(body) = state.body(name) {
+                faces.extend(solidcraft_engine::doc::tangent_face_chain(body, &points).into_iter().map(|(index, point)| Sel::Face {
+                    body: name.to_string(),
+                    index,
+                    point,
+                }));
+            }
+        }
+        if let Ok(mut cache) = self.shell_chain.try_borrow_mut() {
+            *cache = Some(ShellChain { revision: s.revision, picks: picks.to_vec(), faces: faces.clone() });
+        }
+        Some(faces)
+    }
+
+    pub(crate) fn highlighted(&self, s: &Session) -> Vec<Sel> {
+        self.shell_faces(s).unwrap_or_else(|| self.items())
     }
 
     pub fn highlight_key(&self) -> u64 {
@@ -1831,6 +1901,7 @@ fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, range: std::
     let mut clear: Option<usize> = None;
     let mut activate: Option<usize> = None;
     let mut remove = None;
+    let shell_count = d.shell_faces(s).map(|faces| faces.len());
     for (i, inp) in d.inputs.iter().enumerate().skip(range.start).take(range.end.saturating_sub(range.start)) {
         let stored_reference = feature_pattern_reference_key(d, i).and_then(|key| d.extra.get(key)).filter(|_| inp.items.is_empty());
         form_row(ui, inp.label, |ui| {
@@ -1845,7 +1916,8 @@ fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, range: std::
                     } else if !inp.multi {
                         inp.items.first().map(|item| selection_label(s, item)).unwrap_or_default()
                     } else {
-                        crate::i18n::format("dialog.selected_count", &[("count", &inp.items.len().to_string())])
+                        let count = if i == 0 { shell_count.unwrap_or(inp.items.len()) } else { inp.items.len() };
+                        crate::i18n::format("dialog.selected_count", &[("count", &count.to_string())])
                     })
                     .color(t.on_accent)
                 } else {
@@ -1854,6 +1926,13 @@ fn input_rows_range(d: &mut Dialog, ui: &mut egui::Ui, s: &Session, range: std::
                 let selected_text = text.text().strip_prefix("↖ ").unwrap_or_else(|| text.text());
                 let prompt = if !filled && inp.label == "Edges" { tr("Select edges") } else { selected_text };
                 let chip = crate::ui_kit::selection_field(ui, prompt, crate::ui_kit::Selection { active, filled });
+                if matches!(d.kind, Kind::Shell { .. }) && i == 0 {
+                    chip.widget_info(|| {
+                        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tr(inp.label));
+                        info.current_text_value = Some(prompt.to_string());
+                        info
+                    });
+                }
                 let chip_rect = chip.rect;
                 let tooltip = if let Some(reference) = stored_reference {
                     reference.to_string()
@@ -2416,7 +2495,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     // OK's evaluation is in: run it, the feature taken from the cache. Inputs changed meanwhile
     // (nothing should change them) are computed in turn, off the window thread too: run here,
     // they would hold the window for the whole boolean.
-    if app.applying.as_ref().is_some_and(Applying::finished) && !cancel {
+    // A job that has just started is not in yet: it waits a frame, so the dialog says it is
+    // computing before the feature appears.
+    let ready = app.applying.as_ref().is_some_and(Applying::ready);
+    if let Some(job) = &mut app.applying {
+        job.seen = true;
+    }
+    if ready && !cancel {
         let computed = app.applying.take().map(|job| job.cmds);
         let current = apply_commands(app, &d).ok();
         let again = if current.is_some() && current != computed { begin_applying(app, &d) } else { None };
@@ -2704,9 +2789,8 @@ pub fn start_sketch(app: &mut SolveApp, sel: &Sel) -> Result<(), String> {
     look_at_sketch(app);
     // On a face: look at the picked point, not the plane's origin (a corner of the face),
     // which left the face filling the view off-centre like a big square.
-    if let Sel::Face { point, .. } = sel
-        && let Some(mut to) = app.cam_anim.as_ref().map(|a| a.to)
-    {
+    if let Sel::Face { point, .. } = sel {
+        let mut to = app.cam;
         to.target = *point;
         app.animate_to(to);
     }
@@ -2835,7 +2919,43 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
             }
         }
     }
+    if let Kind::Section { offset, flip } = &d.kind
+        && let Some(cut) = app.session.section
+    {
+        app.tree.section_dialog = Some(SectionDraft { offset: offset.clone(), flip: *flip, plane: sels(d, 0).to_vec(), cut });
+    }
     Ok(())
+}
+
+/// Edit Section Analysis: its dialog, where the dialog that made the section shown (or hidden)
+/// now left it, so the cut moves on from there. A section made some other way opens it afresh,
+/// as the toolbar always does (a new section, in place of the old).
+pub fn edit_section(app: &mut SolveApp) {
+    app.start("inspect.section");
+    let cut = app.session.section.or(app.tree.hidden_section);
+    let Some(last) = app.tree.section_dialog.clone().filter(|last| cut.is_some_and(|c| same_cut(c, last.cut))) else { return };
+    if let Some(d) = app.dialog.as_mut().filter(|d| matches!(d.kind, Kind::Section { .. })) {
+        d.kind = Kind::Section { offset: last.offset, flip: last.flip };
+        if let Some(plane) = d.inputs.first_mut() {
+            plane.items = last.plane;
+        }
+    }
+}
+
+/// What the Section Analysis dialog's OK made: its distance, flip and plane pick, and the cut
+/// (origin, normal) they made, so Edit reopens the dialog where it was while that cut stands.
+#[derive(Clone, Debug)]
+pub struct SectionDraft {
+    pub offset: String,
+    pub flip: bool,
+    pub plane: Vec<Sel>,
+    pub cut: (Vec3, Vec3),
+}
+
+/// The same cut, up to rounding (hiding and showing a section runs it again from its plane).
+fn same_cut(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
+    let tol = 1e-9 * (1.0 + a.0.len().max(b.0.len()));
+    (a.0 - b.0).len() <= tol && (a.1 - b.1).len() <= 1e-9
 }
 
 /// Placement used to edit a definition in the selected authoring occurrence.
@@ -3333,8 +3453,12 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                     }
                     (Some(Sel::Face { point, .. }), _) => p[format!("{key}_face")] = pt(*point),
                     (Some(Sel::Edge { point, .. }), _) => p[key] = json!({"snap": "edge_mid", "at": pt(*point)}),
+                    // The origin point (a vertex of no body) stays the origin.
+                    (Some(Sel::Vertex { body, .. }), _) if body.is_empty() => p[key] = json!("origin"),
                     (Some(Sel::Vertex { point, .. }), _) => p[key] = pt(*point),
-                    _ => return Err("pick faces, edges or vertices".into()),
+                    // A plane stays a plane, so the bodies follow it when it moves.
+                    (Some(Sel::Plane { name }), _) => p[format!("{key}_plane")] = json!(name),
+                    _ => return Err("pick faces, edges, vertices or planes".into()),
                 }
             }
             ("solid.align", p)
@@ -3492,7 +3616,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let mut out = Vec::new();
             for place in places {
                 let mut params = place;
-                params["diameter"] = json!(diameter);
+                if !opts.tapped {
+                    params["diameter"] = json!(diameter);
+                }
                 params["type"] = json!(ty);
                 if to_object_on(&d.inputs) {
                     params["to"] = to_object_point(&d.inputs).ok_or("select the object to drill to")?;
@@ -3502,7 +3628,11 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 if ty == "drilled" {
                     params["tip_angle"] = json!(opts.tip_angle);
                 }
-                if opts.tapped && !opts.thread.trim().is_empty() {
+                if opts.tapped {
+                    if let Some(error) = opts.custom_thread.as_ref().and_then(|draft| draft.error.as_ref()) {
+                        return Err(error.clone());
+                    }
+                    solidcraft_engine::doc::parse_metric_thread(&opts.thread).ok_or("select a valid metric thread size")?;
                     params["thread"] = json!(opts.thread.trim());
                 }
                 match *kind {
