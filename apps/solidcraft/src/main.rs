@@ -258,6 +258,7 @@ fn services(cc: &eframe::CreationContext<'_>) -> Services {
             Box::pin(async move { future.await.map(|p| p.path().to_string_lossy().into_owned()) })
         })),
         graphics_path: graphics_path().map(|p| p.to_string_lossy().to_string()),
+        window_system: window_system_now(),
         http_get: Some(std::sync::Arc::new(http_get)),
         http_download: Some(std::sync::Arc::new(http_download)),
         // Already an installed app: only the browser build offers to install.
@@ -623,12 +624,24 @@ fn main() -> eframe::Result {
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut options = options;
     #[cfg(all(unix, not(target_os = "macos")))]
-    if prefer_x11(
-        std::env::var_os("DISPLAY").is_some(),
-        std::env::var_os("WAYLAND_DISPLAY").is_some(),
-        std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
-        solidcraft_engine::geom::env::var("WAYLAND").as_deref(),
-    ) {
+    let x11 = {
+        // SOLIDCRAFT_WAYLAND wins over Preferences › Graphics › Window system (#3083).
+        let environment = solidcraft_engine::geom::env::var("WAYLAND");
+        let preference = window_system_preference();
+        let wayland_override = environment.as_deref().or(window_system_override(preference.as_deref()));
+        let wayland_display = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let x11 = prefer_x11(
+            std::env::var_os("DISPLAY").is_some(),
+            wayland_display,
+            std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+            wayland_override,
+        );
+        // Without a Wayland socket winit opens on X11 anyway.
+        let _ = WINDOW_SYSTEM.set(if x11 || !wayland_display { "x11" } else { "wayland" });
+        x11
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if x11 {
         options.event_loop_builder = Some(Box::new(|b| {
             use winit::platform::x11::EventLoopBuilderExtX11;
             b.with_x11();
@@ -815,6 +828,36 @@ fn no_window(error: eframe::Error, tried_cpu: bool, settings: Option<&std::path:
     Err(error)
 }
 
+/// Linux: the window system this run opened with (`wayland` or `x11`), for Preferences (#3083).
+#[cfg(all(unix, not(target_os = "macos")))]
+static WINDOW_SYSTEM: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// The window system this run uses, where there is a choice (Linux).
+fn window_system_now() -> Option<&'static str> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return WINDOW_SYSTEM.get().copied();
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    None
+}
+
+/// Preferences › Graphics › Window system (`graphics.json`'s `window_system`), read before the
+/// window opens.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn window_system_preference() -> Option<String> {
+    graphics().and_then(|v| v.get("window_system").and_then(serde_json::Value::as_str).map(str::to_string))
+}
+
+/// The window system preference as the `SOLIDCRAFT_WAYLAND` value it stands for: `wayland` is
+/// `1`, `x11` is `0`, and `auto` (or anything else) leaves the choice to [`prefer_x11`].
+#[cfg(all(unix, not(target_os = "macos")))]
+fn window_system_override(preference: Option<&str>) -> Option<&'static str> {
+    match preference.map(str::trim) {
+        Some("wayland") => Some("1"),
+        Some("x11") => Some("0"),
+        _ => None,
+    }
+}
+
 /// Whether to run through XWayland rather than native Wayland. winit has no file drag-and-drop
 /// on Wayland (only on X11), so dropping files from the file manager showed a "no" cursor: use
 /// XWayland when it's there. Except on niri, whose XWayland (xwayland-satellite) breaks window
@@ -851,6 +894,19 @@ mod backend_tests {
         assert!(!prefer_x11(true, true, Some("GNOME"), Some("")));
         assert!(prefer_x11(true, true, Some("niri"), Some("0")));
         assert!(!prefer_x11(false, true, Some("niri"), Some("0")));
+    }
+
+    /// Preferences › Graphics › Window system stands for the same values (#3083).
+    #[test]
+    fn the_window_system_preference_maps_to_the_override() {
+        use super::window_system_override as over;
+        assert_eq!(
+            (over(Some("wayland")), over(Some("x11")), over(Some("auto")), over(None), over(Some("junk"))),
+            (Some("1"), Some("0"), None, None, None)
+        );
+        // Wayland chosen on GNOME keeps native Wayland; X11 chosen on niri goes through XWayland.
+        assert!(!prefer_x11(true, true, Some("GNOME"), over(Some("wayland"))));
+        assert!(prefer_x11(true, true, Some("niri"), over(Some("x11"))));
     }
 }
 

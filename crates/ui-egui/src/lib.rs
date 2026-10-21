@@ -325,6 +325,8 @@ pub struct Services {
     pub show_in_folder: Option<Box<dyn Fn(&str)>>,
     /// Where the host reads the anti-aliasing preference at start (a small JSON file).
     pub graphics_path: Option<String>,
+    /// Linux: the window system this run uses, `wayland` or `x11` (Preferences shows it, #3083).
+    pub window_system: Option<&'static str>,
     /// HTTPS GET for the update check (`update`); None: never check (browser, tests).
     pub http_get: Option<update::HttpGet>,
     /// HTTPS download to a file, with progress, for one-click updates (`update::install`).
