@@ -333,7 +333,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     format!("{} mm", each.join(" · "))
                 });
             });
-            crate::ui_kit::caption(ui, "Flanges", crate::i18n::tr_label("the path's line lengths: dimension the sketch to change them"));
+            crate::ui_kit::caption(ui, "Flanges", crate::i18n::tr_label("set by the sketch's lines"));
             enter |= hint_row(ui, "Bend Radius", radius, crate::i18n::tr_label("from the rule"));
         }
         Sm::Unfold { .. } => {}
