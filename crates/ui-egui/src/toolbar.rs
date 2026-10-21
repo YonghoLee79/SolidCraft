@@ -1009,11 +1009,13 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             })
             .collect();
         let right = r.right();
-        // Keep the Sketch exit group at the far right and reachable at every width.
+        // The Sketch exit group follows the last sketch panel, and is always kept room for so it
+        // stays reachable at every width; when panels go into the » menu it moves to the far right.
         let finish_plan = sizes.last().filter(|_| tab == "SKETCH").map(Plan::full);
         let finish_width = finish_plan.as_ref().map_or(0.0, |p| p.width().max(80.0));
         let normal_count = sizes.len().saturating_sub(usize::from(finish_plan.is_some()));
         let mut plans = fit(sizes.get(..normal_count).unwrap_or_default(), right - 4.0 - px - finish_width);
+        let finish_right = plans.iter().any(|p| p.fit == Fit::More);
         plans.extend(finish_plan);
         crate::scenario::publish_count("toolbar_collapsed", plans.iter().filter(|p| p.fit == Fit::Collapsed).count() as f64);
         crate::scenario::publish_count("toolbar_more", plans.iter().filter(|p| p.fit == Fit::More).count() as f64);
@@ -1031,7 +1033,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             let trimmed = plan.shown < plan.widths.len();
             let finish = tab == "SKETCH" && *panel == "FINISH SKETCH";
             let width = if finish { finish_width } else { plan.width() };
-            if finish {
+            if finish && finish_right {
                 px = right - finish_width;
                 painter.line_segment([pos2(px, top), pos2(px, r.bottom() - 1.0)], Stroke::new(1.0, t.border));
             }
@@ -2778,7 +2780,8 @@ mod fill_width_tests {
                 let at = format!("{tab} at {w}");
                 let bar = crate::scenario::rect_of("toolbar").unwrap();
                 let finish = crate::scenario::rect_of("panel:SKETCH:FINISH SKETCH");
-                let right = finish.map_or(bar.right() - 4.0, |f| f.left() - 4.0);
+                // The room for the other panels: the bar less the Finish group kept for it.
+                let right = bar.right() - 4.0 - finish.map_or(0.0, |f| f.width() + 4.0);
                 let count = |name: &str| crate::scenario::count_of(name).unwrap_or(-1.0);
                 let (collapsed, trimmed, more) = (count("toolbar_collapsed"), count("toolbar_trimmed"), count("toolbar_more"));
                 let lists = crate::toolbar_custom::panel_lists(tab);
@@ -2825,7 +2828,11 @@ mod fill_width_tests {
                 }
                 if sketch {
                     let finish = finish.expect("Finish group stays visible");
-                    assert_eq!(finish.right(), bar.right(), "{at}: Finish stays anchored right");
+                    if more > 0.0 {
+                        assert_eq!(finish.right(), bar.right(), "{at}: Finish moves right of the » menu");
+                    } else {
+                        assert!((finish.left() - end).abs() < 0.5, "{at}: Finish follows the last panel ({} vs {end})", finish.left());
+                    }
                     assert!(crate::scenario::handle_at("button:sketch.finish").is_some(), "{at}: Finish stays reachable");
                 }
                 // The assistant lives in the title bar; visible ribbon tabs fit before search.
