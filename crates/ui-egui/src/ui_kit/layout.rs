@@ -257,6 +257,13 @@ pub(crate) enum Text<'a> {
 }
 
 pub(crate) fn text(ui: &mut Ui, text: &str, style: Text<'_>) -> Response {
+    let translated;
+    let text = if matches!(style, Text::Error(_) | Text::Report(_, true) | Text::Value(_, true)) {
+        translated = crate::i18n::diagnostic(text);
+        translated.as_str()
+    } else {
+        text
+    };
     let t = Tokens::get();
     let fixed = matches!(style, Text::Cell | Text::NameCell(_) | Text::MonoCell | Text::Value(_, _));
     let ink = match style {

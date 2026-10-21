@@ -136,7 +136,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 for m in app.messages.iter().rev() {
                     ui.horizontal_top(|ui| {
                         ui.add_sized(vec2(70.0, 14.0), egui::Label::new(RichText::new(ago(now, m.at)).small().color(t.text_dim)));
-                        let text = RichText::new(line(m)).color(if m.error { t.error } else { t.text });
+                        let displayed = if m.error {
+                            let repeats = if m.count > 1 { format!(" (×{})", m.count) } else { String::new() };
+                            format!("{}{repeats}", crate::i18n::diagnostic(&format!("Error: {}", m.text)))
+                        } else {
+                            line(m)
+                        };
+                        let text = RichText::new(displayed).color(if m.error { t.error } else { t.text });
                         ui.add(egui::Label::new(text).wrap().selectable(true));
                     });
                 }

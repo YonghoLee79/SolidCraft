@@ -295,7 +295,7 @@ pub fn panel(app: &mut SolveApp, ctx: &egui::Context) {
                     });
                 }
                 if let Some(error) = draft.error.as_ref().or(app.preview.error.as_ref()) {
-                    ui.label(RichText::new(error).color(t.error));
+                    ui.label(RichText::new(crate::i18n::diagnostic(error)).color(t.error));
                 }
                 ui_kit::ComputeStatus { text: None, busy: app.preview.busy, applying: false }
             },

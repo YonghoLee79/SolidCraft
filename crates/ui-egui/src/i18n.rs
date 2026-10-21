@@ -5,6 +5,9 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+#[path = "i18n_diagnostics.rs"]
+mod diagnostics;
+
 type Messages = BTreeMap<String, String>;
 
 /// Register locales here after adding their catalogs. Missing translations use English.
@@ -13,11 +16,12 @@ pub struct Catalog {
     pub name: &'static str,
     source: &'static str,
     messages: OnceLock<Messages>,
+    diagnostics: OnceLock<diagnostics::Diagnostics>,
 }
 
 impl Catalog {
     const fn new(id: &'static str, name: &'static str, source: &'static str) -> Self {
-        Self { id, name, source, messages: OnceLock::new() }
+        Self { id, name, source, messages: OnceLock::new(), diagnostics: OnceLock::new() }
     }
 
     fn messages(&'static self) -> &'static Messages {
@@ -122,6 +126,24 @@ impl Locale {
             ENGLISH.messages().iter().filter(|(_, text)| !text.contains('{')).map(|(id, text)| (text.as_str(), id.as_str())).collect()
         });
         ids.get(label).map_or_else(|| self.text(label), |id| self.text(id))
+    }
+
+    /// Translate only the displayed diagnostic. Raw engine/API errors remain unchanged.
+    pub fn diagnostic(self, message: &str) -> String {
+        let translated = self
+            .0
+            .diagnostics
+            .get_or_init(|| {
+                diagnostics::Diagnostics::new(
+                    ENGLISH
+                        .messages()
+                        .iter()
+                        .filter(|(id, _)| id.starts_with("error."))
+                        .filter_map(|(id, english)| self.0.messages().get(id).map(|translation| (english.as_str(), translation.as_str()))),
+                )
+            })
+            .translate(message);
+        if translated == message { self.label(message).to_string() } else { translated }
     }
 
     pub fn format(self, id: &str, args: &[(&str, &str)]) -> String {
@@ -231,6 +253,11 @@ pub fn language() -> &'static str {
 pub fn tr(id: &str) -> &str {
     CURRENT.with(|current| current.get().text(id))
 }
+/// Display-only diagnostic translation in the current render scope.
+pub fn diagnostic(message: &str) -> String {
+    CURRENT.with(|current| current.get().diagnostic(message))
+}
+
 pub fn tr_label(label: &str) -> &str {
     CURRENT.with(|current| current.get().label(label))
 }
@@ -765,6 +792,19 @@ mod tests {
             assert_eq!(locale.dynamic("Sketch1"), sketch1);
             assert_eq!(locale.dynamic("Sketch of bracket"), "Sketch of bracket");
         }
+    }
+
+    #[test]
+    fn diagnostics_translate_in_danish_and_fall_back_without_changing_arguments() {
+        let da = Locale::for_language("da");
+        let english = "the Z axis does not lie in the sketch plane";
+        assert_eq!(da.diagnostic(english), "Z-aksen ligger ikke i skitseplanet");
+        assert_eq!(Locale::for_language("en").diagnostic(english), english);
+        assert_eq!(da.diagnostic("an unknown third-party error {name}"), "an unknown third-party error {name}");
+        assert_eq!(
+            da.diagnostic(&format!("invalid parameters for `solid.revolve`: {english}")),
+            "Ugyldige parametre til `solid.revolve`: Z-aksen ligger ikke i skitseplanet"
+        );
     }
 
     #[test]

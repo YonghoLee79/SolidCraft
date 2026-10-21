@@ -109,3 +109,51 @@ number/date formatting, or right-to-left layout and shaping. Add those capabilit
 introducing messages or languages that need them; use an established message formatter for
 plural rules instead of adding language branches to panels. The catalogs cover the UI surfaces
 introduced by this PR, not every engine error or every newer command dialog.
+
+## Interactive tool diagnostics
+
+`error.*` messages cover validation and selection feedback in interactive sketch tools,
+feature dialogs and dimension editing. They intentionally exclude kernel/import diagnostics,
+control-channel validation and scenario assertions. The two revolve-axis plane diagnostics
+are included because they are shown directly while using Revolve.
+
+`scripts/i18n_errors.py` inventories this scope from Rust syntax, skipping test code,
+comments and logging. Install `scripts/requirements-i18n-errors.txt`, then use
+`python scripts/i18n_errors.py --check` or `--add-missing`. The ignored report at
+`target/error-messages.json` gives each template's source locations. This is scoped coverage,
+not a guarantee that every error reachable from the engine has been localized.
+
+The UI translates diagnostics at display time, in dialog error rows, status toasts,
+message history and feature tooltips. Stored engine errors and issue-report input retain their
+original English text. Templates use named fields; numeric formatting has already happened
+before display, so the substituted text keeps its original values and units. Argument text is
+inserted literally, including braces and user-supplied names. Unknown, malformed and ambiguous
+templates retain their original diagnostic. Missing translations fall back to English.
+
+Only the explicitly named `reason`, `error`, `msg` and `why` fields are interpreted as nested
+diagnostics. Other arguments, such as command IDs and model names, are preserved. This is an
+adapter for existing text errors, not a new engine error format. New code should prefer stable
+message IDs and structured arguments over adding further formatted-text matching.
+
+New English messages must also be translated in the complete Japanese and Chinese catalogs;
+the existing completeness checks remain unchanged. Partial catalogs may add translations
+incrementally. Do not fill a translated catalog with English solely to satisfy the checks.
+
+## Adding tool descriptions on hover
+
+The existing ribbon help uses `help.<command id>` messages and the sorted `DOCUMENTED`
+list in `crates/ui-egui/src/command_help.rs`. To document a tool:
+
+1. Verify its actual command ID in the engine registry.
+2. Add the ID to `DOCUMENTED`, keeping the list sorted.
+3. Add `help.<command id>` in `assets/locales/en.json`: two short sentences describing
+   what the tool does and when to use it. Keep the command's name separate from the explanation.
+4. Add the same key to the Japanese and Chinese catalogs, which require complete coverage.
+   Add the Danish explanation in `da.json` when available; other missing translations fall
+   back to English.
+5. Run the command-help tests and localization checks. Toolbar buttons and panel menu rows
+   already call the shared tooltip renderer; they do not need separate tooltip text.
+
+For example, documenting `solid.loft` requires an entry named `help.solid.loft` plus
+`solid.loft` in `DOCUMENTED`. Adding the JSON entry alone does not enable the tooltip.
+This example describes the extension point; it does not add a Loft description.

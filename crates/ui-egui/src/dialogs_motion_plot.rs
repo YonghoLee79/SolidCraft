@@ -317,7 +317,7 @@ fn collision_rows(
         }
         Some(Err(e)) => {
             ui.vertical(|ui| {
-                ui.add(egui::Label::new(RichText::new(e.as_str()).color(t.error)).wrap());
+                ui.add(egui::Label::new(RichText::new(crate::i18n::diagnostic(e.as_str())).color(t.error)).wrap());
             });
         }
         None => {}
