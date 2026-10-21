@@ -94,6 +94,7 @@ fn handshake_and_tools_list() {
         "inspect_design",
         "measure",
         "body_topology",
+        "notices",
         "set_parameter",
         "screenshot",
         "export",
@@ -1636,6 +1637,90 @@ fn batch_reports_timings_and_profile() {
     let (_, body, _) = recorded_batch(Err("unknown method `engine.batch`".into()), json!({"commands": [{"command": "a.one"}], "profile": true}));
     assert_eq!(body["timings"][0]["command"], "a.one", "{body}");
     assert!(body["timings"][0].get("profile").is_none(), "{body}");
+}
+
+/// The `Design feedback:` block of a tool reply, parsed.
+fn feedback(r: &Value) -> Option<Value> {
+    r["result"]["content"]
+        .as_array()?
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .find_map(|t| t.strip_prefix(crate::FEEDBACK_PREFIX))
+        .map(|t| serde_json::from_str(t).unwrap())
+}
+
+#[test]
+fn tool_results_tell_the_agent_what_changed_in_the_design() {
+    // Off by default: the replies, and the instructions, are as they always were.
+    let mut plain = server();
+    let init = call(
+        &mut plain,
+        1,
+        "initialize",
+        json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}),
+    );
+    assert!(!init["result"]["instructions"].as_str().unwrap_or_default().contains("Design feedback"), "{init}");
+    tool(&mut plain, "execute", json!({"command": "parameters.add", "params": {"name": "L", "expression": "20", "unit": "mm"}}));
+    assert_eq!(
+        feedback(&raw_tool(&mut plain, "execute", json!({"command": "solid.box", "params": {"length": "L", "width": 10, "height": 10}}))),
+        None
+    );
+
+    let mut s = server().with_design_feedback(true);
+    let init =
+        call(&mut s, 1, "initialize", json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    assert!(init["result"]["instructions"].as_str().unwrap_or_default().contains("Design feedback"), "{init}");
+    assert_eq!(feedback(&raw_tool(&mut s, "inspect_design", json!({"measure": false}))), None, "nothing to tell");
+    tool(&mut s, "execute", json!({"command": "parameters.add", "params": {"name": "L", "expression": "20", "unit": "mm"}}));
+    let r = raw_tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": "L", "width": 10, "height": 10}}));
+    let f = feedback(&r).unwrap();
+    assert!(f["features"].as_u64().is_some() && f.get("new_errors").is_none(), "{f}");
+    tool(&mut s, "execute", json!({"command": "solid.fillet", "params": {"edges": [[20, 5, 10]], "radius": 3}}));
+    // A parameter that breaks the fillet: the call says so.
+    let f = feedback(&raw_tool(&mut s, "set_parameter", json!({"name": "L", "value": "2"}))).unwrap();
+    assert!(f["new_errors"][0]["name"].as_str().is_some_and(|n| n.starts_with("Fillet")), "{f}");
+    assert_eq!(f["failing"], 1, "{f}");
+    let f = feedback(&raw_tool(&mut s, "set_parameter", json!({"name": "L", "value": "20"}))).unwrap();
+    assert!(f["fixed"][0].as_str().is_some_and(|n| n.starts_with("Fillet")), "{f}");
+    // Someone at the app adds a cylinder between two of the agent's calls.
+    s.backend().call("engine.execute", json!({"command": "solid.cylinder", "params": {"radius": 2, "height": 5, "base": [50, 0, 0]}})).unwrap();
+    let f = feedback(&raw_tool(&mut s, "inspect_design", json!({"measure": false}))).unwrap();
+    assert_eq!(f["changed_since_your_last_call"]["done"], json!(["Cylinder"]), "{f}");
+    assert!(f.get("features").is_none(), "inspecting changed nothing: {f}");
+    assert_eq!(feedback(&raw_tool(&mut s, "inspect_design", json!({"measure": false}))), None, "told once");
+    // A feature's own report comes back too: a sketch's degrees of freedom, read in full with `notices`.
+    let r = raw_tool(
+        &mut s,
+        "batch",
+        json!({"commands": [
+            {"command": "sketch.create", "params": {"plane": "XY", "name": "Plate"}},
+            {"command": "sketch.rectangle.two_point", "params": {"p0": [0, 0], "p1": [30, 20]}},
+            {"command": "sketch.finish", "params": {}}
+        ]}),
+    );
+    let f = feedback(&r).unwrap();
+    assert!(
+        f["notices"]
+            .as_array()
+            .is_some_and(|n| n.iter().any(|x| x["name"] == "Plate" && x["info"].as_str().is_some_and(|i| i.contains("degrees of freedom")))),
+        "{f}"
+    );
+    let plate = f["notices"].as_array().unwrap().iter().find(|x| x["name"] == "Plate").unwrap();
+    assert_eq!(plate["issues"][0]["code"], "sketch_underconstrained", "a structured issue, not a sentence: {f}");
+    let n = tool(&mut s, "notices", json!({"features": ["Plate"]}));
+    assert_eq!(n["notices"][0]["values"]["profiles"], 1, "{n}");
+    // The `notices` tool is a plain read-only tool: it answers without the block too.
+    tool(
+        &mut plain,
+        "batch",
+        json!({"commands": [
+            {"command": "sketch.create", "params": {"plane": "XY", "name": "Plate"}},
+            {"command": "sketch.rectangle.two_point", "params": {"p0": [0, 0], "p1": [30, 20]}},
+            {"command": "sketch.finish", "params": {}}
+        ]}),
+    );
+    let n = tool(&mut plain, "notices", json!({"features": ["Plate"]}));
+    assert_eq!(n["notices"][0]["values"]["profiles"], 1, "{n}");
 }
 
 /// `describe_command` serves a converted command's schemas, and a headless session set to strict

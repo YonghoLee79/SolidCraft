@@ -24,6 +24,20 @@ pub static COMMANDS: &[CommandSpec] = &[
          taken wherever a face name is, and it holds while sizes change and flanges come and go)",
     ),
     CommandSpec::new("model.threads", "List Threads", model_threads).icon("inspect").noundo(),
+    CommandSpec::new("model.health", "Design Health", model_health).icon("inspect").noundo().params(
+        "→ revision (moves with every change to the design or the view), features, \
+         errors: [{feature, name, error}], warnings: [{feature, name, warning}], parameter_errors: {name: why}, \
+         undo: [the last 20 undo steps' labels, oldest first], undo_depth, redo_depth, rolled_back (timeline marker or null), \
+         dirty (changes not saved), path. Cheap: nothing is measured. The MCP server reads it around every tool call",
+    ),
+    CommandSpec::new("model.notices", "Feature Notices", model_notices).icon("inspect").noundo().params(
+        "features?: [ids or names] (default: every feature) → notices: [{feature, name, status: ok|warning|error|skipped, \
+         info?, values?, issues?}]: what each feature reports about itself, for an agent. `info` one line; `values` structured, \
+         keys naming their unit (span_mm, area_cm2); `issues` [{severity: error|warning|info, code, message, parameter?, value?, \
+         limit?, suggestion?: {parameter: value} that clears it, entities?: sketch ids, at?}]. A sketch reports its solve, \
+         degrees of freedom, profiles and open or untied ends; every feature its error and warning (feature_error, \
+         feature_warning). Read only. The MCP server's feedback block names the features whose notice a change altered",
+    ),
     CommandSpec::new("material.assign", "Physical Material", physical_material)
         .at("SOLID", "MODIFY")
         .icon("material")
@@ -220,6 +234,207 @@ fn sketch_inspect(s: &mut Session, p: &Value) -> Result<Value> {
     }
     .ok_or_else(|| bad("sketch.inspect", "no such sketch (and none is active)"))?;
     sketch_json(s, id).ok_or_else(|| EngineError::Other("that sketch is not evaluated (rolled back or not a sketch)".into()))
+}
+
+/// How many undo labels `model.health` reports.
+const HEALTH_UNDO: usize = 20;
+
+/// The design's state in brief: what fails or warns, and the history, so that a client can tell what changed between two calls (and who changed it).
+fn model_health(s: &mut Session, _p: &Value) -> Result<Value> {
+    let results = &s.model.results;
+    let errors: Vec<Value> = results.iter().filter_map(|r| r.error.as_ref().map(|e| json!({"feature": r.id, "name": r.name, "error": e}))).collect();
+    let warnings: Vec<Value> =
+        results.iter().filter_map(|r| r.warning.as_ref().map(|w| json!({"feature": r.id, "name": r.name, "warning": w}))).collect();
+    let undo: Vec<&str> = s.undo.iter().rev().take(HEALTH_UNDO).rev().map(|u| u.label.as_str()).collect();
+    Ok(json!({
+        "revision": s.revision,
+        "features": s.doc.features.len(),
+        "errors": errors,
+        "warnings": warnings,
+        "parameter_errors": s.model.param_errors,
+        "undo": undo,
+        "notices": notice_digests(s),
+        "undo_depth": s.undo.len(),
+        "redo_depth": s.redo.len(),
+        "rolled_back": s.doc.marker,
+        "dirty": s.is_dirty(),
+        "path": s.path,
+    }))
+}
+
+/// What a feature reports about itself, for an agent first: a one-line `info`, structured
+/// `values` (keys name their unit: `span_mm`, `area_cm2`, `angle_deg`; counts and ratios have
+/// none) and `issues`, each an object an agent can act on:
+/// `{severity: error|warning|info, code, message, parameter?, value?, limit?, suggestion?, entities?, at?}`.
+/// `suggestion` is the change that would clear it (`{parameter: value}`), `entities` the sketch
+/// ids involved and `at` where (sketch coordinates). Every feature's error and warning are issues
+/// (codes `feature_error`, `feature_warning`); a sketch adds its solve. A feature kind with more
+/// to say adds it here (it may read the session, e.g. a stored evaluation).
+#[derive(Default)]
+pub(crate) struct Notice {
+    pub info: Option<String>,
+    pub values: serde_json::Map<String, Value>,
+    pub issues: Vec<Value>,
+}
+
+impl Notice {
+    fn is_empty(&self) -> bool {
+        self.info.is_none() && self.values.is_empty() && self.issues.is_empty()
+    }
+}
+
+/// An issue of a notice (see [`Notice`]).
+pub(crate) fn issue(severity: &str, code: &str, message: impl Into<String>) -> Value {
+    json!({"severity": severity, "code": code, "message": message.into()})
+}
+
+/// The issue codes every feature gets from its error and warning text (the feedback block lists
+/// those as `new_errors` / `new_warnings` already).
+const GENERIC_CODES: [&str; 2] = ["feature_error", "feature_warning"];
+
+pub(crate) fn feature_notice(_s: &Session, r: &solidcraft_doc::FeatureResult) -> Notice {
+    let mut n = Notice::default();
+    if r.skipped {
+        return n;
+    }
+    for (severity, code, text) in [("error", "feature_error", &r.error), ("warning", "feature_warning", &r.warning)] {
+        for m in text.iter().flat_map(|t| t.split("; ")).filter(|m| !m.trim().is_empty()) {
+            n.issues.push(issue(severity, code, m.trim()));
+        }
+    }
+    if r.error.is_some() {
+        return n;
+    }
+    if let Some(ss) = r.state.sketch(r.id) {
+        sketch_notice(ss, &mut n);
+    }
+    n
+}
+
+/// A sketch's solve: solved or not, degrees of freedom, profiles, and where its profile is open.
+fn sketch_notice(ss: &solidcraft_doc::SolvedSketch, n: &mut Notice) {
+    let rep = &ss.report;
+    let sk = &ss.sketch;
+    let solved = matches!(rep.status, solidcraft_sketch::SolveStatus::Solved);
+    let profiles = ss.profiles.len();
+    let state = if !solved {
+        format!("constraints conflict ({})", rep.failing.join(", "))
+    } else if rep.dof == 0 {
+        "fully constrained".to_string()
+    } else {
+        format!("{} degrees of freedom left", rep.dof)
+    };
+    n.info = Some(format!("{state}; {profiles} profile{}", if profiles == 1 { "" } else { "s" }));
+    n.values.insert("solved".into(), json!(solved));
+    n.values.insert("dof".into(), json!(rep.dof));
+    n.values.insert("profiles".into(), json!(profiles));
+    if !solved {
+        let mut i = issue("error", "sketch_conflict", format!("the constraints conflict: {}", rep.failing.join(", ")));
+        i["entities"] = json!(rep.failing);
+        n.issues.push(i);
+    } else if rep.dof > 0 {
+        let mut i = issue("info", "sketch_underconstrained", format!("{} degrees of freedom left", rep.dof));
+        i["value"] = json!(rep.dof);
+        i["limit"] = json!(0);
+        n.issues.push(i);
+    }
+    let point = |pi: usize| sk.points.get(pi).map(|q| (q.id.clone(), [q.pos.x, q.pos.y]));
+    let open: Vec<(String, [f64; 2])> = ss.ends.open.iter().filter_map(|&pi| point(pi)).collect();
+    if !open.is_empty() {
+        let mut i = issue(
+            "warning",
+            "sketch_open_profile",
+            format!("{} open end{} in the profile curves", open.len(), if open.len() == 1 { "" } else { "s" }),
+        );
+        i["entities"] = json!(open.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        i["at"] = json!(open.iter().map(|(_, at)| at).collect::<Vec<_>>());
+        n.issues.push(i);
+    }
+    for u in &ss.ends.untied {
+        let (Some((pid, at)), Some(curve)) = (point(u.point), sk.curves.get(u.curve).map(|c| c.id.clone())) else { continue };
+        let mut i = issue("warning", "sketch_untied_end", format!("the end {pid} of {curve} touches another curve without a constraint"));
+        i["entities"] = json!([pid, curve]);
+        i["at"] = json!(at);
+        i["suggestion"] = json!({"constraint": "coincident", "point": pid});
+        n.issues.push(i);
+    }
+    n.values.insert("open_ends".into(), json!(open.len()));
+}
+
+/// `model.health`'s notices: each feature with something to report, its `info`, its issues
+/// beyond the error and warning text, and a digest of the whole notice, so a client can tell
+/// which notices changed without reading them all.
+fn notice_digests(s: &Session) -> Vec<Value> {
+    use std::hash::{Hash, Hasher};
+    s.model
+        .results
+        .iter()
+        .filter_map(|r| {
+            let n = feature_notice(s, r);
+            if n.is_empty() {
+                return None;
+            }
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            json!([n.info, n.values, n.issues]).to_string().hash(&mut h);
+            let issues: Vec<&Value> = n.issues.iter().filter(|i| !GENERIC_CODES.contains(&i["code"].as_str().unwrap_or_default())).collect();
+            let mut o = json!({"feature": r.id, "name": r.name, "digest": h.finish()});
+            if let Some(info) = &n.info {
+                o["info"] = json!(info);
+            }
+            if !issues.is_empty() {
+                o["issues"] = json!(issues);
+            }
+            Some(o)
+        })
+        .collect()
+}
+
+/// Every feature's status and notice, or those named in `features`.
+fn model_notices(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "model.notices";
+    let want: Vec<String> = match p.get("features") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string())))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| bad(cmd, "`features` must list feature ids or names"))?,
+        Some(_) => return Err(bad(cmd, "`features` must list feature ids or names")),
+    };
+    let named = |r: &solidcraft_doc::FeatureResult, w: &str| w == r.name || w.parse::<u64>().ok() == Some(r.id);
+    if let Some(w) = want.iter().find(|w| !s.model.results.iter().any(|r| named(r, w))) {
+        return Err(bad(cmd, format!("no feature `{w}`")));
+    }
+    let notices: Vec<Value> = s
+        .model
+        .results
+        .iter()
+        .filter(|r| want.is_empty() || want.iter().any(|w| named(r, w)))
+        .map(|r| {
+            let status = if r.skipped {
+                "skipped"
+            } else if r.error.is_some() {
+                "error"
+            } else if r.warning.is_some() {
+                "warning"
+            } else {
+                "ok"
+            };
+            let n = feature_notice(s, r);
+            let mut o = json!({"feature": r.id, "name": r.name, "status": status});
+            if let Some(info) = n.info {
+                o["info"] = json!(info);
+            }
+            if !n.values.is_empty() {
+                o["values"] = Value::Object(n.values);
+            }
+            if !n.issues.is_empty() {
+                o["issues"] = json!(n.issues);
+            }
+            o
+        })
+        .collect();
+    Ok(json!({"notices": notices}))
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
@@ -644,3 +859,7 @@ fn material_list(s: &mut Session, _p: &Value) -> Result<Value> {
     );
     Ok(json!({"materials": built_in.chain(user).collect::<Vec<_>>()}))
 }
+
+#[cfg(test)]
+#[path = "health_tests.rs"]
+mod health_tests;

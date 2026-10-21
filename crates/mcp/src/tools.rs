@@ -172,6 +172,20 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "notices",
+            "Read feature notices",
+            "What each feature reports about itself, for an agent: its status (ok, warning, error, skipped), a one-line `info`, \
+             structured `values` (keys name their unit: span_mm, area_cm2) and `issues`, each {severity: error|warning|info, code, \
+             message, parameter?, value?, limit?, suggestion?: the change that clears it, entities?, at?}. A sketch reports its \
+             solve, degrees of freedom and open or untied ends; every feature its error and warning. Without `features`: every \
+             feature. The feedback block after a call names the features whose notice changed; read their values here.",
+            obj(
+                json!({"features": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Feature names or ids (default: all)"}}),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "set_parameter",
             "Set a parameter",
             "Create or change a user parameter and re-evaluate the timeline. `value` is a number (mm) or an expression \
@@ -454,6 +468,7 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
             let faces = exec(b, "model.faces", p)?;
             Ok(json!({"body": a.get("body"), "edges": edges["edges"], "faces": faces["faces"]}))
         }
+        "notices" => exec(b, "model.notices", pick(a, &["features"])),
         "set_parameter" => {
             let mut p = pick(a, &["name", "unit", "comment"]);
             p["expression"] = parameter_value(a)?;
