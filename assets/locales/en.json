@@ -1154,6 +1154,7 @@
   "ui.agent_chat_key_in_env": "key set",
   "ui.agent_chat_left": "Left",
   "ui.agent_chat_limit": "The agent reached the limit of {limit} changes for one message. Send another message to let it go on.",
+  "ui.agent_chat_login_found": "login found",
   "ui.agent_chat_minimize": "Minimise to a strip",
   "ui.agent_chat_model_tip": "The model the agent uses. Your choice is remembered for this agent.",
   "ui.agent_chat_new": "New chat",
