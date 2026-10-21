@@ -53,8 +53,13 @@ impl Colors {
 
 pub struct SketchPreview {
     pub sketch: std::sync::Arc<solidcraft_engine::doc::SolvedSketch>,
+    /// New curves and points.
     pub curves: Vec<usize>,
     pub points: Vec<usize>,
+    /// Curves and points that kept their ids but moved: drawn only for Move/Copy, whose whole
+    /// result they are (other tools' previews show what they add).
+    pub moved_curves: Vec<usize>,
+    pub moved_points: Vec<usize>,
 }
 
 /// A computed preview: the scene to draw and the bodies it stands in for.
@@ -441,7 +446,9 @@ pub fn compute(s: &Session, cmds: &[(String, Value)], colors: Colors) -> Job {
 /// error. Other features: their whole preview ([`compute`]).
 fn compute_tool(s: &Session, cmds: &[(String, Value)], colors: Colors) -> Job {
     let Some((alt, op)) = as_new_body(cmds) else { return compute(s, cmds, colors) };
-    let tool = match s.preview(&alt) {
+    // Where the view shows it: in a component placed away from its own frame (an imported
+    // part stood upright) the model's frame would draw the tool at right angles to the face.
+    let tool = match s.preview_world(&alt) {
         Ok(t) => t,
         Err(e) => return Err(s.preview(cmds).err().map_or_else(|| e.to_string(), |r| r.to_string())),
     };
@@ -656,25 +663,31 @@ pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
         .filter_map(|sketch| {
             let old = before.sketch(sketch.feature);
             let old_curves = old.into_iter().flat_map(|s| s.sketch.curves.iter().map(|c| c.id.as_str())).collect::<std::collections::HashSet<_>>();
-            let old_points = old.into_iter().flat_map(|s| s.sketch.points.iter().map(|p| p.id.as_str())).collect::<std::collections::HashSet<_>>();
-            let indices = sketch
-                .sketch
-                .curves
-                .iter()
-                .enumerate()
-                .filter_map(|(index, curve)| {
-                    let unchanged = old_curves.contains(curve.id.as_str());
-                    if unchanged { None } else { Some(index) }
-                })
-                .collect::<Vec<_>>();
-            let points = sketch
-                .sketch
-                .points
-                .iter()
-                .enumerate()
-                .filter_map(|(i, p)| if old_points.contains(p.id.as_str()) { None } else { Some(i) })
-                .collect::<Vec<_>>();
-            if indices.is_empty() && points.is_empty() { None } else { Some(SketchPreview { sketch: sketch.clone(), curves: indices, points }) }
+            let old_points =
+                old.into_iter().flat_map(|s| s.sketch.points.iter().map(|p| (p.id.as_str(), p.pos))).collect::<std::collections::HashMap<_, _>>();
+            // Kept its id but not its place (Move/Copy keeps the ids of what it moves).
+            let moved = |p: &solidcraft_engine::sketch::SPoint| old_points.get(p.id.as_str()).is_some_and(|was| was.dist(p.pos) > 1e-9);
+            let (mut indices, mut moved_curves) = (Vec::new(), Vec::new());
+            for (index, curve) in sketch.sketch.curves.iter().enumerate() {
+                if !old_curves.contains(curve.id.as_str()) {
+                    indices.push(index);
+                } else if curve.kind.point_ids().into_iter().any(|i| sketch.sketch.points.get(i).is_some_and(moved)) {
+                    moved_curves.push(index);
+                }
+            }
+            let (mut points, mut moved_points) = (Vec::new(), Vec::new());
+            for (i, p) in sketch.sketch.points.iter().enumerate() {
+                if !old_points.contains_key(p.id.as_str()) {
+                    points.push(i);
+                } else if moved(p) {
+                    moved_points.push(i);
+                }
+            }
+            if indices.is_empty() && points.is_empty() && moved_curves.is_empty() && moved_points.is_empty() {
+                None
+            } else {
+                Some(SketchPreview { sketch: sketch.clone(), curves: indices, points, moved_curves, moved_points })
+            }
         })
         .collect();
     Built { scene: sc, sketches, replaced, error: None, bounds: Aabb3::EMPTY, applied: None, tapered: Vec::new(), stopped: None }
@@ -805,15 +818,18 @@ pub fn paint_sketches(app: &SolveApp, painter: &egui::Painter, proj: &crate::vie
         return;
     }
     let stroke = egui::Stroke::new(2.5, Tokens::get().preview_sketch);
+    let moving = app.dialog.as_ref().is_some_and(|d| matches!(d.kind, crate::dialogs::Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { .. })));
     let mut budget = solidcraft_engine::render::SamplingBudget::new(32_768, 65_536);
     let mut curves = 0;
     for preview in &app.preview.sketches {
         let sketch = &preview.sketch;
-        for index in &preview.curves {
+        let moved: &[usize] = if moving { &preview.moved_curves } else { &[] };
+        for index in preview.curves.iter().chain(moved) {
             crate::tools::paint_curve(&sketch.sketch, *index, &sketch.plane, painter, proj, stroke, &mut budget);
             curves += 1;
         }
-        for index in &preview.points {
+        let moved: &[usize] = if moving { &preview.moved_points } else { &[] };
+        for index in preview.points.iter().chain(moved) {
             if let Some(point) = sketch.sketch.point(*index).and_then(|p| proj.to_screen(sketch.plane.to_world(p))) {
                 painter.circle_filled(point, 3.0, stroke.color);
             }
@@ -1021,6 +1037,23 @@ mod tests {
             let built = compute(&s, &[cmd], colors()).unwrap_or_else(|e| panic!("{op}: {e}"));
             assert!(built.error.is_none(), "{op}: {:?}", built.error);
         }
+    }
+
+    /// A plate in its own component, stood up by its placement (an imported part set upright)
+    /// and edited with that component active: the extrusion's tool is drawn where the plate is
+    /// shown, on its top face, not at right angles to it in the component's own frame.
+    #[test]
+    fn a_tool_on_a_turned_component_previews_where_it_is_shown() {
+        let mut s = Session::default();
+        let made = s.execute("component.create", &json!({"name": "Plate"})).unwrap();
+        s.execute("solid.box", &json!({"length": 20, "width": 8, "height": 30, "corner": [0, 0, -30], "body_name": "Plate"})).unwrap();
+        s.execute("occurrence.move", &json!({"occurrence": made["occurrence"], "axis": [1, 0, 0], "angle": "90 deg"})).unwrap();
+        s.execute("component.activate", &json!({"component": made["component"], "occurrence": made["occurrence"], "path": [made["occurrence"]]}))
+            .unwrap();
+        // Shown lying flat: 20 × 30, 8 high. Its top face pulled up 10.
+        let cmd = ("solid.extrude".to_string(), json!({"face": [10, 15, 8], "face_body": "Plate", "distance": "10 mm", "operation": "join"}));
+        let b = compute_tool(&s, &[cmd], colors()).unwrap().bounds;
+        assert!((b.max.z - 18.0).abs() < 1e-6 && (b.max.y - 30.0).abs() < 1e-6, "on top, not at right angles: {b:?}");
     }
 
     fn count(bytes: &[u8], stride: usize, col: [u8; 4]) -> usize {

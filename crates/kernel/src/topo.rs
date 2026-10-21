@@ -200,19 +200,30 @@ fn cone_signature(verts: &[(Vec3, Vec3)]) -> Option<(Vec3, f64)> {
 
 /// Do adjacent faces `a` and `b` (sharing the edge polyline `edge`) lie on one surface?
 /// Analytic classes compare parameters; other faces must join smoothly along the edge and have
-/// the same cone signature (or both have none).
+/// the same cone signature (or both have none). An analytic face and another one are one
+/// surface when they join smoothly and the other lies on the analytic one.
 fn same_surface(surfs: &[Surf], verts: &[Vec<(Vec3, Vec3)>], edge: Option<&Vec<Vec3>>, a: usize, b: usize, tol: f64) -> bool {
     let (Some(sa), Some(sb)) = (surfs.get(a), surfs.get(b)) else { return false };
+    let smooth = || {
+        let (Some(va), Some(vb), Some(e)) = (verts.get(a), verts.get(b), edge) else { return false };
+        e.iter().all(|p| match (normal_near(va, *p), normal_near(vb, *p)) {
+            (Some(na), Some(nb)) => na.dot(nb) > 1.0 - 2e-3,
+            _ => false,
+        })
+    };
     match (sa, sb) {
         (Surf::Other(_), Surf::Other(_)) => {}
+        // One half analytic and the other not (an imported hole whose two halves were written
+        // as a cone and a spline surface).
+        (Surf::Other(_), s) | (s, Surf::Other(_)) if !matches!(s, Surf::Plane { .. }) => {
+            let (known, other) = if matches!(sa, Surf::Other(_)) { (b, a) } else { (a, b) };
+            let (Some(vk), Some(vo)) = (verts.get(known), verts.get(other)) else { return false };
+            return smooth() && on_surface(s, vk, vo, tol);
+        }
         _ => return sa.same(sb, tol),
     }
-    let (Some(va), Some(vb), Some(e)) = (verts.get(a), verts.get(b), edge) else { return false };
-    let smooth = e.iter().all(|p| match (normal_near(va, *p), normal_near(vb, *p)) {
-        (Some(na), Some(nb)) => na.dot(nb) > 1.0 - 2e-3,
-        _ => false,
-    });
-    if !smooth {
+    let (Some(va), Some(vb)) = (verts.get(a), verts.get(b)) else { return false };
+    if !smooth() {
         return false;
     }
     match (cone_signature(va), cone_signature(vb)) {
@@ -220,6 +231,32 @@ fn same_surface(surfs: &[Surf], verts: &[Vec<(Vec3, Vec3)>], edge: Option<&Vec<V
         (None, None) => true,
         _ => false,
     }
+}
+
+/// Do the points of `other` lie on the analytic surface `s` of the face whose points are
+/// `known`? Each surface has one measure every point on it shares (a cylinder's distance from
+/// its axis, a sphere's from its centre, a cone's angle about its axis from the apex), read off
+/// `known` so the surface's own parameter conventions don't matter.
+fn on_surface(s: &Surf, known: &[(Vec3, Vec3)], other: &[(Vec3, Vec3)], tol: f64) -> bool {
+    let measure = |q: Vec3| -> Option<f64> {
+        match *s {
+            Surf::Cylinder { axis, p, .. } => {
+                let d = q - p;
+                Some((d - *axis * d.dot(*axis)).len())
+            }
+            Surf::Sphere { c, .. } => Some(q.dist(c)),
+            Surf::Cone { axis, apex, .. } => Some((q - apex).normalized()?.dot(axis.normalized()?).clamp(-1.0, 1.0).acos()),
+            Surf::Plane { .. } | Surf::Other(_) => None,
+        }
+    };
+    let within = if matches!(s, Surf::Cone { .. }) { 2e-3 } else { tol };
+    let values = |v: &[(Vec3, Vec3)]| v.iter().filter_map(|(q, _)| measure(*q)).collect::<Vec<f64>>();
+    let (k, o) = (values(known), values(other));
+    if k.is_empty() || o.is_empty() {
+        return false;
+    }
+    let mean = k.iter().sum::<f64>() / k.len() as f64;
+    k.iter().chain(&o).all(|x| (x - mean).abs() <= within)
 }
 
 /// Solve a 3×3 system (Cramer's rule).
@@ -285,6 +322,9 @@ pub fn seam_flags(b: &Body, mesh: &Mesh) -> Vec<bool> {
                 (!matches!(surfs.get(*a), Some(Surf::Plane { .. })) && same_surface(&surfs, &verts, mesh.edges.get(ei), *a, *b2, tol * 10.0))
                     || (surf_keys.get(*a).is_some_and(|k| Some(k) == surf_keys.get(*b2)) && !matches!(surfs.get(*a), Some(Surf::Plane { .. })))
             }
+            // An edge with one face on it is where a closed surface meets itself (an imported
+            // hole's wall drawn as one face): a seam, unless the face is flat.
+            Some([a]) => !matches!(surfs.get(*a), Some(Surf::Plane { .. })),
             _ => false,
         })
         .collect()

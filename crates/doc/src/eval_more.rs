@@ -116,7 +116,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             }
             Ok(())
         }
-        FeatureKind::Align { bodies, from, to, from_normal, to_normal, flip, from_plane, to_plane } => {
+        FeatureKind::Align { bodies, from, to, from_normal, to_normal, flip, from_plane, to_plane, normal_only } => {
             // A plane on either side is worked out now, so the bodies follow it when it moves.
             let (mut from, mut from_normal) = (from.0, from_normal.and_then(|n| n.normalized()));
             if let Some(p) = from_plane {
@@ -140,9 +140,11 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 }
             }
             // Onto a plane the point goes straight along the plane's normal (nothing slides
-            // across it); onto a point it lands on it.
+            // across it), and so does a face onto a face asked to move only along its normal;
+            // onto a point it lands on it.
             let d = match (&target, to_normal) {
                 (Some(_), Some(n)) => n * (to - from).dot(n),
+                (None, Some(n)) if *normal_only && from_normal.is_some() => n * (to - from).dot(n),
                 _ => to - from,
             };
             m[3][0] += d.x;

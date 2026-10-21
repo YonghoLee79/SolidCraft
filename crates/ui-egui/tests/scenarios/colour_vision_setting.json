@@ -3,7 +3,7 @@
   {"click": {"handle": "titlebar:preferences"}},
   {"expect": {"prefs": {"dialog": "General", "color_vision": "off"}, "same_width": "prefs:window"}},
   {"widget": "Graphics"},
-  {"expect": {"shown": "Colour vision", "prefs": {"dialog": "Graphics"}, "same_width": "prefs:window"}},
+  {"expect": {"shown": "Color vision", "prefs": {"dialog": "Graphics"}, "same_width": "prefs:window"}},
   {"click": {"handle": "prefs:color_vision"}},
   {"widget": "Deutan"},
   {"expect": {"prefs": {"color_vision": "deutan"}, "same_width": "prefs:window"}},

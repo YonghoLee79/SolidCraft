@@ -961,6 +961,11 @@ pub enum FeatureKind {
         /// bodies follow. Replaces `to`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to_plane: Option<PlaneRef>,
+        /// Face onto face, the bodies move only along the target face's normal until the faces
+        /// are in one plane (turned to meet it first), without sliding across it: the picked
+        /// points line up in that one direction only.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        normal_only: bool,
     },
     /// A helical coil: a circular or square section swept `turns` times about `axis`, rising
     /// `pitch` per turn, on a helix of `diameter` (the section's centre, or its inside or outside).

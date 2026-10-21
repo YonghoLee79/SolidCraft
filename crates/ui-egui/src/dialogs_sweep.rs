@@ -10,7 +10,7 @@ use solidcraft_engine::doc::{Expr, Mat, RailFit, SweepOrientation, SweepRail};
 use solidcraft_engine::geom::Vec3;
 
 use crate::SolveApp;
-use crate::selection::{AXES, CURVES, EDGES, SelInput};
+use crate::selection::{AXES, CURVES, EDGES, ROUND_FACES, SelInput};
 
 /// The orientation choices, in combo order: perpendicular, parallel, a direction.
 const ORIENTATIONS: [&str; 3] = ["Turn with Path", "Keep as Drawn", "Follow Direction"];
@@ -81,10 +81,10 @@ fn world_axis(d: Vec3) -> Option<&'static str> {
     [("X", Vec3::X), ("Y", Vec3::Y), ("Z", Vec3::Z)].into_iter().find(|(_, a)| d.cross(*a).len() < 1e-9 && d.dot(*a) > 0.0).map(|(n, _)| n)
 }
 
-/// The input that picks a Follow Direction sweep's direction: an axis, a sketch line or a
-/// straight edge.
+/// The input that picks a Follow Direction sweep's direction: an axis, a sketch line, a
+/// straight or circular edge, or a round face (its axis).
 pub fn direction_input() -> SelInput {
-    SelInput::new("Direction", AXES | EDGES, false)
+    SelInput::new("Direction", AXES | EDGES | ROUND_FACES, false)
 }
 
 /// The inputs that pick a sweep's guide rails: the first rail's curves and the second's, in order
@@ -164,7 +164,11 @@ pub fn params(app: &SolveApp, o: &SweepOpts, picked: Option<&Sel>, rails: [&[Sel
         1 => p["orientation"] = json!("parallel"),
         _ => {
             let d = match (picked, o.direction) {
-                (Some(x), _) => crate::dialogs::axis_of(app, x).ok_or("the direction must be an axis, a sketch line or a straight edge")?.1,
+                (Some(x), _) => {
+                    crate::dialogs::axis_of(app, x)
+                        .ok_or("the direction must be an axis, a sketch line, a straight or circular edge, or a round face")?
+                        .1
+                }
                 (None, Some(d)) => d,
                 (None, None) => return Err("select a direction (an axis, a sketch line or a straight edge) for the profile to follow".into()),
             };
