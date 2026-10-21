@@ -194,13 +194,25 @@ pub(crate) fn rest(ui: &mut egui::Ui, kind: Kind) {
     draw(ui, "rest", rect, kind, [0.0; 6], [false; 6]);
 }
 
+const CORNER: egui::Vec2 = egui::vec2(160.0, 120.0);
+
+/// Where the corner picture sits: the lower left of `view`, or, when `above` (the History bar)
+/// would cover it, just above that.
+pub(crate) fn corner_rect(view: egui::Rect, above: Option<egui::Rect>) -> egui::Rect {
+    const MARGIN: f32 = 12.0;
+    let rect = egui::Rect::from_min_size(view.left_bottom() + egui::vec2(MARGIN, -MARGIN - CORNER.y), CORNER);
+    match above {
+        Some(bar) if bar.is_positive() && bar.intersects(rect) => rect.translate(egui::vec2(0.0, bar.top() - MARGIN - rect.bottom())),
+        _ => rect,
+    }
+}
+
 /// The device in the 3D view's lower left corner, see-through so it doesn't hide the design:
 /// cap or trackball as `calibration` says, moving as the device does. A device without a
 /// calibration is read as it reports: each axis as a share of the full deflection a reading is
 /// scaled to (`FULL_SCALE`).
-pub(crate) fn corner(ui: &mut egui::Ui, view: egui::Rect, calibration: Option<&Calibration>, raw: [i16; 6]) {
-    const CORNER: egui::Vec2 = egui::vec2(160.0, 120.0);
-    let rect = egui::Rect::from_min_size(view.left_bottom() + egui::vec2(12.0, -12.0 - CORNER.y), CORNER);
+pub(crate) fn corner(ui: &mut egui::Ui, view: egui::Rect, above: Option<egui::Rect>, calibration: Option<&Calibration>, raw: [i16; 6]) {
+    let rect = corner_rect(view, above);
     let (kind, travel, moving) = match calibration {
         Some(calibration) => (calibration.kind, calibration.travel(raw), calibration.apply(raw).map(|value| value != 0)),
         None => {

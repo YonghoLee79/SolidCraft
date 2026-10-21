@@ -128,3 +128,20 @@ fn each_step_starts_at_rest_and_eases_out_to_full() {
         assert_eq!(demo_swing(seconds), 0.0);
     }
 }
+
+#[test]
+fn the_corner_picture_sits_above_the_history_bar_when_it_would_be_covered() {
+    let view = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+    let free = corner_rect(view, None);
+    assert_eq!(free.left_bottom(), egui::pos2(12.0, 588.0));
+    // A bar along the bottom (the History bar is 40 px high here) pushes it up to clear the bar.
+    let bar = egui::Rect::from_min_max(egui::pos2(100.0, 556.0), egui::pos2(700.0, 596.0));
+    let above = corner_rect(view, Some(bar));
+    assert_eq!(above.size(), free.size());
+    assert!(above.bottom() <= bar.top() - 12.0 + f32::EPSILON && !above.intersects(bar));
+    // A bar that does not reach under the picture leaves it where it was.
+    let elsewhere = egui::Rect::from_min_max(egui::pos2(300.0, 556.0), egui::pos2(700.0, 596.0));
+    assert_eq!(corner_rect(view, Some(elsewhere)), free);
+    // So does a bar that is not drawn (empty).
+    assert_eq!(corner_rect(view, Some(egui::Rect::NOTHING)), free);
+}

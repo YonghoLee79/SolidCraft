@@ -2981,7 +2981,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         && let Some(device) = &app.space_mouse.device
     {
         let calibration = app.preferences.space_mouse_calibrations.get(device);
-        crate::space_mouse_model::corner(ui, rect, calibration, app.space_mouse.raw.into());
+        // In the content area, and above the History bar that floats over its bottom.
+        let area = crate::shell::content_rect(app, rect);
+        let bar = app.shell.history.filter(|_| app.ui.layout == crate::shell::LayoutMode::Floating);
+        crate::space_mouse_model::corner(ui, area, bar, calibration, app.space_mouse.raw.into());
     }
     transient_messages(app, ui, rect);
 }
