@@ -2988,8 +2988,37 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::select_other::show(app, ui.ctx());
     axis_view(app, ui, rect);
     nav_bar(app, ui, rect);
+    // Under the notices that share the corner, so they still read on top of it.
+    let mut ghost = None;
+    if app.preferences.space_mouse_in_view
+        && app.space_mouse.calibrating.is_none()
+        && let Some(device) = &app.space_mouse.device
+    {
+        use crate::prefs::SpaceMouseGhost;
+        let calibration = app.preferences.space_mouse_calibrations.get(device);
+        let position = app.preferences.space_mouse_ghost_position;
+        let bar = app.shell.history.filter(|_| app.ui.layout == crate::shell::LayoutMode::Floating);
+        // The agent chip (an agent command computing off the window thread) sits at the lower left
+        // too: the picture stays clear of it.
+        let chip = app.agent_computing().map(|_| Rect::from_min_size(agent_chip_anchor(app, rect), vec2(400.0, 34.0)));
+        let picture = if position == SpaceMouseGhost::Current {
+            // In the content area, and above the History bar that floats over its bottom.
+            crate::space_mouse_model::corner_rect(
+                crate::shell::content_rect(app, rect),
+                position,
+                &[bar, chip].into_iter().flatten().collect::<Vec<_>>(),
+            )
+        } else {
+            // In the corner of the whole view, clear of the History bar and the navigation bar.
+            let navigation = app.viewport.layout.as_ref().map(|layout| layout.navigation);
+            crate::space_mouse_model::corner_rect(rect, position, &[bar, navigation, chip].into_iter().flatten().collect::<Vec<_>>())
+        };
+        crate::space_mouse_model::corner(ui, picture, calibration, app.space_mouse.raw.into());
+        // At the lower right, where the notices go: they stack above it.
+        ghost = (position == SpaceMouseGhost::Right).then_some(picture);
+    }
     agent_chip(app, ui, rect);
-    transient_messages(app, ui, rect);
+    transient_messages(app, ui, rect, ghost);
 }
 
 fn paint_box_selection(painter: &egui::Painter, bx: BoxSel, sketch: bool) {
@@ -3012,6 +3041,13 @@ fn paint_box_selection(painter: &egui::Painter, bx: BoxSel, sketch: bool) {
     }
 }
 
+/// Where the agent chip's top left is: above the History bar, and above the computing notice when
+/// that is up too.
+fn agent_chip_anchor(app: &SolveApp, rect: Rect) -> Pos2 {
+    let above = if app.computing_since().is_some() { 106.0 } else { 76.0 };
+    pos2(rect.left() + 12.0, rect.bottom() - above)
+}
+
 /// An agent's command computing off the window thread (#1989): which one, in the agent cursor's
 /// colour, and a button that stops waiting for it.
 fn agent_chip(app: &mut SolveApp, ui: &egui::Ui, rect: Rect) {
@@ -3020,8 +3056,7 @@ fn agent_chip(app: &mut SolveApp, ui: &egui::Ui, rect: Rect) {
     if let Some((since, label)) = app.agent_computing().map(|(since, label)| (since, label.to_string())) {
         let seconds = ((crate::now_ms() - since) / 1000.0).floor().max(0.0);
         let computing = crate::i18n::format("dialog.computing", &[("seconds", &format!("{seconds:.0}"))]);
-        let above = if app.computing_since().is_some() { 106.0 } else { 76.0 };
-        let pos = pos2(rect.left() + 12.0, rect.bottom() - above);
+        let pos = agent_chip_anchor(app, rect);
         let galley = painter.layout_no_wrap(format!("{label} · {computing}"), FontId::proportional(t.font_label), t.text);
         let stop = painter.layout_no_wrap(crate::i18n::tr("ui.agent_chat_stop").to_string(), FontId::proportional(t.font_label), t.text);
         let r = Rect::from_min_size(pos, vec2(galley.size().x + stop.size().x + 54.0, galley.size().y.max(stop.size().y) + 8.0));
@@ -3045,16 +3080,24 @@ fn agent_chip(app: &mut SolveApp, ui: &egui::Ui, rect: Rect) {
 }
 
 /// A single visual pattern for ongoing work and the existing six-second status.
-fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect) {
-    if app.status.is_none() && app.computing_since().is_none() {
-        return;
-    }
+/// The status and calibration notices, bottom right of the free view; `below` is the 3D mouse picture
+/// when it sits there, and the notices stack above it.
+fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect, below: Option<Rect>) {
+    let quiet = app.status.is_none() && app.computing_since().is_none();
     let t = Tokens::get();
     let mut obstacles = crate::shell::covered_rects(app);
     if let Some(layout) = &app.viewport.layout {
         obstacles.extend([layout.navigation, layout.axis_view]);
     }
     let mut free = crate::viewport_layout::free_rect(crate::shell::content_rect(app, viewport), &obstacles).shrink(t.space_8);
+    if let Some(picture) = below.filter(|picture| picture.right() > free.right() - 400.0) {
+        free.max.y = free.max.y.min(picture.top() - t.space_8);
+    }
+    // The calibration notice first, so the status toast stacks above it.
+    crate::space_mouse_offer::toast(app, ui, &mut free);
+    if quiet {
+        return;
+    }
     if let Some((msg, at, error)) = app.status.clone() {
         if crate::now_ms() - at < 6000.0 {
             if let Some(r) = paint_toast(ui, free, msg, error, false) {

@@ -51,6 +51,210 @@ pub struct Input {
     pub raw: Axes,
     /// The guided calibration while its window is open, and the device it is for.
     pub calibrating: Option<(String, solidcraft_space_mouse::Wizard)>,
+    /// Drops readings that have stopped changing close to the dead zone.
+    pub settle: solidcraft_space_mouse::Settle,
+    /// The buttons down as of the last frame, one bit each (bit N for button N + 1).
+    pub buttons: u32,
+    /// Every button pressed since the app started, so Preferences can list the ones the device has.
+    pub seen: u32,
+    /// The modifiers the buttons hold down, as of the last frame.
+    pub held: egui::Modifiers,
+    /// The modifiers the keyboard holds, as the window last reported them (without `held`).
+    pub keyboard: egui::Modifiers,
+    /// The device `seen` is about, and the device and calibration `settle` is about.
+    pub read_device: Option<String>,
+    pub settled_for: Option<Calibration>,
+    /// The device the calibration notice is up for and when it was shown or last pointed at
+    /// (egui time), and the devices it went away from for this run ().
+    pub offer_since: Option<(String, f64)>,
+    pub offer_hidden: std::collections::BTreeSet<String>,
+    /// The driver mapping navigation used last frame, which says what each axis does to the view.
+    pub mapping: Option<DriverMapping>,
+    /// Which of the Linux readers exist, as the app's reader last saw them; none where there is
+    /// only one way to read the device.
+    pub drivers: Option<DriversPresent>,
+}
+
+/// What the Linux reader found: the spacenavd socket and a direct (hidraw) 3D mouse.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DriversPresent {
+    pub spacenavd: bool,
+    pub direct: bool,
+}
+
+/// A key a 3D mouse button can stand in for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ButtonKey {
+    Esc,
+    Shift,
+    Ctrl,
+    Alt,
+}
+
+/// What a 3D mouse button does.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ButtonJob {
+    /// Opens Preferences at Navigation, where the 3D mouse's settings are.
+    Settings,
+    /// A view as `SolveApp::animate_view` takes it: `fit`, `home` or a standard view (`top`, …).
+    View(String),
+    /// Stands in for a key: Esc when pressed, Shift, Ctrl and Alt for as long as it's held.
+    Key(ButtonKey),
+    /// Runs a command, as its keyboard shortcut would.
+    Command(String),
+}
+
+/// What each of `device`'s buttons does, by number from 1: what the user set, else for a device
+/// we have measured, its printed keys' jobs.
+pub fn button_jobs(app: &SolveApp, device: &str) -> std::collections::BTreeMap<u8, ButtonJob> {
+    app.preferences.space_mouse_buttons.get(device).cloned().unwrap_or_else(|| default_button_jobs(device))
+}
+
+/// The printed keys' jobs on a device we have measured (`solidcraft_space_mouse::buttons`), from
+/// its key (`hid 046d:c62b`, `web 046d:c62b`). Only a key with vendor and product ids gets them,
+/// which in practice is a raw HID device: the `spacenavd` and `3dxware` keys carry no ids, and
+/// spacenavd numbers its buttons from 0, not 1 as the table here does. Keys with no job here (Roll,
+/// the rotation lock) start empty.
+pub fn default_button_jobs(device: &str) -> std::collections::BTreeMap<u8, ButtonJob> {
+    use solidcraft_space_mouse::buttons::{Action, defaults};
+    let ids = device.split_once(' ').and_then(|(_, ids)| ids.split_once(':'));
+    let table = ids.and_then(|(vendor, product)| Some((u16::from_str_radix(vendor, 16).ok()?, u16::from_str_radix(product, 16).ok()?)));
+    let Some(table) = table.and_then(|(vendor, product)| defaults(vendor, product)) else { return Default::default() };
+    table
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| {
+            let job = match (*action)? {
+                Action::Menu => ButtonJob::Settings,
+                Action::Fit => ButtonJob::View("fit".into()),
+                Action::ViewTop => ButtonJob::View("top".into()),
+                Action::ViewRight => ButtonJob::View("right".into()),
+                Action::ViewFront => ButtonJob::View("front".into()),
+                Action::Esc => ButtonJob::Key(ButtonKey::Esc),
+                Action::Shift => ButtonJob::Key(ButtonKey::Shift),
+                Action::Ctrl => ButtonJob::Key(ButtonKey::Ctrl),
+                Action::Alt => ButtonJob::Key(ButtonKey::Alt),
+                Action::Roll | Action::RotationLock => return None,
+            };
+            Some((u8::try_from(index + 1).ok()?, job))
+        })
+        .collect()
+}
+
+/// Whether a button may do anything now: only where navigation and the keyboard shortcuts would
+/// work (`navigate_frame`, `toolbar::shortcuts`), so a press in the background, with a picker open
+/// or while a field takes the keyboard doesn't move the view or run a command.
+fn buttons_active(app: &SolveApp, ctx: &egui::Context, focused: bool) -> bool {
+    app.preferences.space_mouse_enabled
+        && focused
+        && !app.prefs_window.open
+        && app.space_mouse.calibrating.is_none()
+        && !app.home.open
+        && !app.file_picker_busy()
+        && !app.file_load.busy()
+        && !crate::keymap::capturing(app)
+        && !egui::Popup::is_any_open(ctx)
+        && !ctx.egui_wants_keyboard_input()
+        && !crate::dim_view::editing()
+        && !crate::dialogs_save_mesh::popup_open(ctx)
+        && crate::toolbar::design_shown(app)
+}
+
+/// The 3D mouse's buttons this frame (`buttons`, bit N for button N + 1), before the app sees the
+/// frame's input: each button just pressed does its job, and those standing in for Shift, Ctrl or
+/// Alt hold them while down. Nothing runs where navigation wouldn't (`buttons_active`), so pressing
+/// a button in Preferences finds it in the list instead, and a press made then isn't run later.
+pub fn buttons_hook(app: &mut SolveApp, ctx: &egui::Context, buttons: u32, raw: &mut egui::RawInput) {
+    let pressed = buttons & !app.space_mouse.buttons;
+    app.space_mouse.buttons = buttons;
+    app.space_mouse.seen |= buttons;
+    // The keyboard's own modifiers, from what the window was told before anything is added to it.
+    // egui drops its modifiers when the window loses focus, so those go too.
+    let mut focused = ctx.input(|i| i.focused);
+    for event in &raw.events {
+        match event {
+            egui::Event::ModifiersChanged(modifiers) => app.space_mouse.keyboard = *modifiers,
+            egui::Event::WindowFocused(now) => {
+                focused = *now;
+                if !now {
+                    app.space_mouse.keyboard = egui::Modifiers::NONE;
+                }
+            }
+            _ => {}
+        }
+    }
+    let keyboard = app.space_mouse.keyboard;
+    let mut held = egui::Modifiers::NONE;
+    let device = app.space_mouse.device.clone().filter(|_| buttons_active(app, ctx, focused));
+    let jobs = device.map(|device| button_jobs(app, &device)).unwrap_or_default();
+    let before = std::mem::replace(&mut app.space_mouse.held, egui::Modifiers::NONE);
+    for (number, job) in jobs {
+        let Some(bit) = number.checked_sub(1).and_then(|index| 1_u32.checked_shl(u32::from(index))) else { continue };
+        if buttons & bit == 0 {
+            continue;
+        }
+        match job {
+            ButtonJob::Key(ButtonKey::Shift) => held.shift = true,
+            ButtonJob::Key(ButtonKey::Alt) => held.alt = true,
+            ButtonJob::Key(ButtonKey::Ctrl) => {
+                held.ctrl = true;
+                // Ctrl is the command key everywhere but on a Mac.
+                held.command |= !cfg!(target_os = "macos");
+            }
+            _ => {}
+        }
+        if pressed & bit != 0 {
+            run_button_job(app, &job, keyboard, raw);
+        }
+    }
+    app.space_mouse.held = held;
+    let add = |modifiers: &mut egui::Modifiers| {
+        modifiers.shift |= held.shift;
+        modifiers.alt |= held.alt;
+        modifiers.ctrl |= held.ctrl;
+        modifiers.command |= held.command;
+    };
+    // egui keeps modifiers from frame to frame and takes new ones from `ModifiersChanged`: the
+    // keyboard's get the held ones added, and a change in what's held is one of its own.
+    let mut changed = false;
+    for event in &mut raw.events {
+        match event {
+            egui::Event::ModifiersChanged(modifiers) => {
+                add(modifiers);
+                changed = true;
+            }
+            egui::Event::PointerButton { modifiers, .. } | egui::Event::Key { modifiers, .. } | egui::Event::MouseWheel { modifiers, .. } => {
+                add(modifiers);
+            }
+            _ => {}
+        }
+    }
+    if !changed && held != before {
+        let mut modifiers = keyboard;
+        add(&mut modifiers);
+        raw.events.insert(0, egui::Event::ModifiersChanged(modifiers));
+    }
+}
+
+fn run_button_job(app: &mut SolveApp, job: &ButtonJob, modifiers: egui::Modifiers, raw: &mut egui::RawInput) {
+    match job {
+        // Navigation, where the 3D mouse's section is.
+        ButtonJob::Settings => crate::prefs::open_at(app, 1),
+        ButtonJob::View(view) => app.animate_view(view),
+        ButtonJob::Key(ButtonKey::Esc) => {
+            for pressed in [true, false] {
+                raw.events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed, repeat: false, modifiers });
+            }
+        }
+        ButtonJob::Key(_) => {}
+        ButtonJob::Command(id) => {
+            if solidcraft_engine::find_command(id).is_some_and(|c| c.info(&app.session).enabled) {
+                app.start(id);
+            }
+        }
+    }
 }
 
 /// Seconds after the cap last moved that wheel events are still taken for 3DxWare's: one can be
@@ -173,6 +377,69 @@ pub fn calibrated(axes: Axes, calibration: Option<Calibration>) -> Axes {
     calibration.map_or(axes, |calibration| calibration.apply(axes.into()).into())
 }
 
+/// The device's six calibrated motions, in the order of a reading: what each axis can be driven
+/// by. They name no kind of device, since calibration defined them: Translation X is whatever the
+/// user did for "slide right".
+pub const MOTIONS: [&str; 6] = [
+    "ui.space_mouse_motion_translation_x",
+    "ui.space_mouse_motion_translation_y",
+    "ui.space_mouse_motion_translation_z",
+    "ui.space_mouse_motion_rotation_x",
+    "ui.space_mouse_motion_rotation_y",
+    "ui.space_mouse_motion_rotation_z",
+];
+
+/// What each logical axis does to the view, as `navigation::device_camera` applies it.
+const VIEW_AXES: [&str; 6] = [
+    "ui.space_mouse_view_pan_sideways",
+    "ui.space_mouse_view_zoom",
+    "ui.space_mouse_view_pan_up_down",
+    "ui.space_mouse_view_orbit_up_down",
+    "ui.space_mouse_view_orbit_sideways",
+    "ui.space_mouse_view_roll",
+];
+
+/// The label of axis row `row`: what it does to the view through `mapping`, the mapping
+/// navigation really uses, or "off" when that mapping leaves it out. Without a mapping (a build
+/// with no 3D mouse reader, since the apps run navigation every frame before drawing), a plain
+/// "Axis {n}": neither a guess at the view nor a motion name, which the dropdown already uses.
+/// Two rows a driver profile sends to the same output both get its label; that's what they do.
+pub fn row_label(mapping: Option<DriverMapping>, row: usize) -> &'static str {
+    match mapping.and_then(|mapping| mapping.axes.get(row).copied()) {
+        Some(rule) if rule.enabled => VIEW_AXES.get(rule.output).copied().unwrap_or("ui.space_mouse_view_off"),
+        Some(_) => "ui.space_mouse_view_off",
+        None => "ui.space_mouse_view_unmapped",
+    }
+}
+
+/// Which of the cap's motions drives each of its axes (`Prefs::space_mouse_axis_source`): row
+/// `r` reads motion `source[r]`. Each motion drives exactly one row.
+pub const SAME_AXES: [usize; 6] = [0, 1, 2, 3, 4, 5];
+
+/// The reading with its rows reassigned: row `r` takes motion `source[r]`. A `source` that
+/// isn't one motion per row reads as [`SAME_AXES`].
+pub fn reassigned(axes: Axes, source: [usize; 6]) -> Axes {
+    let source = if drives_each_once(source) { source } else { SAME_AXES };
+    let raw: [i16; 6] = axes.into();
+    source.map(|from| raw.get(from).copied().unwrap_or(0)).into()
+}
+
+/// Makes `row` read motion `from`. The row that read `from` before takes this row's old motion,
+/// so each motion still drives exactly one row.
+pub fn reassign(source: &mut [usize; 6], row: usize, from: usize) {
+    if let Some(other) = source.iter().position(|&s| s == from)
+        && row < source.len()
+    {
+        source.swap(row, other);
+    }
+}
+
+/// Whether each of the six motions drives exactly one row.
+pub fn drives_each_once(source: [usize; 6]) -> bool {
+    let mut seen = [false; 6];
+    source.iter().all(|&from| seen.get_mut(from).is_some_and(|seen| !std::mem::replace(seen, true)))
+}
+
 /// Hands one frame of 3D mouse input, `seconds` after the previous frame, to the page showing
 /// the camera. Nothing happens with navigation switched off, on the start page or while a file
 /// picker is open, or while the reading is inside the dead zone (after calibration, which takes
@@ -182,6 +449,18 @@ pub fn calibrated(axes: Axes, calibration: Option<Calibration>) -> Axes {
 /// calibration window is open, the reading goes to it instead and the view stays put.
 pub fn navigate_frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMapping, axes: Axes, seconds: f64) -> bool {
     app.space_mouse.raw = axes;
+    app.space_mouse.mapping = Some(mapping);
+    if app.space_mouse.read_device != app.space_mouse.device {
+        // Another device: its buttons and its resting hand are not the last one's.
+        app.space_mouse.read_device = app.space_mouse.device.clone();
+        app.space_mouse.seen = 0;
+        app.space_mouse.settle = Default::default();
+    }
+    let calibration = calibration(app);
+    if app.space_mouse.settled_for != calibration {
+        app.space_mouse.settled_for = calibration;
+        app.space_mouse.settle = Default::default();
+    }
     if let Some((device, wizard)) = &mut app.space_mouse.calibrating {
         if app.space_mouse.device.as_ref() == Some(device) {
             wizard.feed(axes.into(), seconds);
@@ -191,7 +470,18 @@ pub fn navigate_frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMa
         // Another device is being read now, or none: what was recorded isn't its.
         app.space_mouse.calibrating = None;
     }
-    let axes = calibrated(axes, calibration(app));
+    let axes = calibrated(axes, calibration);
+    // A hand leaning on a cap, holding it just past the dead zone, doesn't creep the view. A
+    // trackball's slow roll is steady and meant, and a device without a calibration is read as it reports.
+    let axes: Axes = match calibration {
+        Some(calibration) if calibration.kind == solidcraft_space_mouse::Kind::ReturnToCenter => {
+            app.space_mouse.settle.filter(axes.into(), seconds).into()
+        }
+        _ => axes,
+    };
+    // Then the user's choice of which motion drives which axis (invert and speed then go with the
+    // axis, not the motion). After the settle: that works on the device's own calibrated axes.
+    let axes = reassigned(axes, app.preferences.space_mouse_axis_source);
     // Only the window with focus: with two windows open, the cap moves the one being used, not both.
     if !app.preferences.space_mouse_enabled || app.home.open || app.file_picker_busy() || !axes.moving() || !ctx.input(|i| i.focused) {
         return false;
@@ -256,6 +546,196 @@ mod tests {
         let mut app = SolveApp::new(Session::default(), Services::default());
         app.home.open = false;
         app
+    }
+
+    #[test]
+    fn a_measured_device_starts_with_its_printed_keys() {
+        let jobs = default_button_jobs("hid 046d:c62b");
+        assert_eq!(jobs.get(&1), Some(&ButtonJob::Settings));
+        assert_eq!(jobs.get(&3), Some(&ButtonJob::View("top".into())));
+        assert_eq!(jobs.get(&25), Some(&ButtonJob::Key(ButtonKey::Shift)));
+        // Roll and the rotation lock have nothing to do here yet; the numbered keys start empty.
+        assert_eq!((jobs.get(&9), jobs.get(&27), jobs.get(&13)), (None, None, None));
+        // Unmeasured, spacenavd (its own numbers) and nonsense keys start empty.
+        for device in ["hid 256f:c63a", "spacenavd", "web 046d", "hid zz:c62b", ""] {
+            assert!(default_button_jobs(device).is_empty(), "{device}");
+        }
+    }
+
+    /// One frame of the window: the hook sees the frame's input, then egui runs it, as the app does.
+    fn press(app: &mut SolveApp, ctx: &egui::Context, buttons: u32, events: Vec<egui::Event>) -> egui::RawInput {
+        let mut raw = egui::RawInput { focused: true, events, ..Default::default() };
+        buttons_hook(app, ctx, buttons, &mut raw);
+        ctx.run_ui(raw.clone(), |_| {}).textures_delta.clear();
+        raw
+    }
+
+    fn escapes(raw: &egui::RawInput) -> usize {
+        raw.events.iter().filter(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. })).count()
+    }
+
+    const ESC: u32 = 1 << 22;
+    const SHIFT: u32 = 1 << 24;
+
+    #[test]
+    fn a_button_does_its_job_once_per_press_and_holds_its_modifier() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        let shifted = || ctx.input(|i| i.modifiers.shift);
+        // Esc (button 23) presses Escape once, not again while it's held.
+        assert_eq!(escapes(&press(&mut app, &ctx, ESC, vec![])), 1);
+        assert_eq!(escapes(&press(&mut app, &ctx, ESC, vec![])), 0);
+        // Shift (button 25) holds Shift for as long as it's down.
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(shifted());
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(shifted());
+        press(&mut app, &ctx, 0, vec![]);
+        assert!(!shifted());
+        // Menu (button 1) opens Preferences; there, buttons only light up their rows.
+        press(&mut app, &ctx, 1, vec![]);
+        assert!(app.prefs_window.open);
+        press(&mut app, &ctx, 0, vec![]);
+        assert_eq!(escapes(&press(&mut app, &ctx, ESC, vec![])), 0);
+        assert_eq!(app.space_mouse.seen & ESC, ESC);
+        // A job the user set replaces the defaults.
+        app.prefs_window.open = false;
+        press(&mut app, &ctx, 0, vec![]);
+        app.preferences.space_mouse_buttons.insert("hid 046d:c62b".into(), [(23, ButtonJob::Key(ButtonKey::Alt))].into());
+        let raw = press(&mut app, &ctx, ESC, vec![]);
+        assert_eq!((escapes(&raw), ctx.input(|i| i.modifiers.alt)), (0, true));
+    }
+
+    /// The keyboard and a button hold the same modifier: it stays down until both let go, whichever
+    /// lets go first, for each of Shift, Ctrl and Alt.
+    #[test]
+    fn a_modifier_the_keyboard_and_a_button_share_stays_down_until_both_let_go() {
+        for key in [ButtonKey::Shift, ButtonKey::Ctrl, ButtonKey::Alt] {
+            let down = |ctx: &egui::Context| {
+                let m = ctx.input(|i| i.modifiers);
+                match key {
+                    ButtonKey::Shift => m.shift,
+                    ButtonKey::Ctrl => m.ctrl,
+                    _ => m.alt,
+                }
+            };
+            let keyboard = |on: bool| {
+                let mut m = egui::Modifiers::NONE;
+                match key {
+                    ButtonKey::Shift => m.shift = on,
+                    ButtonKey::Ctrl => m.ctrl = on,
+                    _ => m.alt = on,
+                }
+                vec![egui::Event::ModifiersChanged(m)]
+            };
+            for button_first in [true, false] {
+                let mut app = app();
+                app.space_mouse.device = Some("hid 046d:c62b".into());
+                app.preferences.space_mouse_buttons.insert("hid 046d:c62b".into(), [(1, ButtonJob::Key(key))].into());
+                let ctx = window(true);
+                press(&mut app, &ctx, 0, keyboard(true));
+                press(&mut app, &ctx, 1, vec![]);
+                assert!(down(&ctx), "{key:?} both");
+                if button_first {
+                    press(&mut app, &ctx, 0, vec![]);
+                    assert!(down(&ctx), "{key:?} the keyboard still holds it");
+                    press(&mut app, &ctx, 0, keyboard(false));
+                } else {
+                    press(&mut app, &ctx, 1, keyboard(false));
+                    assert!(down(&ctx), "{key:?} the button still holds it");
+                    press(&mut app, &ctx, 0, vec![]);
+                }
+                assert!(!down(&ctx), "{key:?} neither");
+            }
+        }
+    }
+
+    #[test]
+    fn buttons_do_nothing_where_navigation_would_not() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        app.preferences
+            .space_mouse_buttons
+            .insert("hid 046d:c62b".into(), [(1, ButtonJob::Key(ButtonKey::Esc)), (2, ButtonJob::Key(ButtonKey::Shift))].into());
+        let (focused, unfocused) = (window(true), window(false));
+        // A press while the window is in the background does nothing, and isn't run on refocus.
+        assert_eq!(escapes(&press(&mut app, &unfocused, 1, vec![])), 0);
+        assert_eq!(escapes(&press(&mut app, &focused, 1, vec![])), 0, "still held: not a new press");
+        press(&mut app, &focused, 0, vec![]);
+        assert_eq!(escapes(&press(&mut app, &focused, 1, vec![])), 1, "a press that is its own");
+        // A held modifier button lets go in the background, and takes hold again on refocus.
+        press(&mut app, &focused, 2, vec![]);
+        assert!(focused.input(|i| i.modifiers.shift));
+        press(&mut app, &unfocused, 2, vec![]);
+        assert!(!unfocused.input(|i| i.modifiers.shift));
+        // A file picker being open is no place for one either.
+        press(&mut app, &focused, 0, vec![]);
+        let slot: crate::picker_test_support::Slot = Default::default();
+        crate::picker_test_support::open(&mut app, &slot);
+        app.pick_open(|_, _| {});
+        assert_eq!(escapes(&press(&mut app, &focused, 1, vec![])), 0);
+        app.file_picker = None;
+        press(&mut app, &focused, 0, vec![]);
+        assert_eq!(escapes(&press(&mut app, &focused, 1, vec![])), 1);
+    }
+
+    #[test]
+    fn preferences_and_calibration_let_go_of_a_held_modifier_button() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(ctx.input(|i| i.modifiers.shift));
+        app.prefs_window.open = true;
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(!ctx.input(|i| i.modifiers.shift), "Preferences open");
+        app.prefs_window.open = false;
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(ctx.input(|i| i.modifiers.shift));
+        crate::space_mouse_calibration::start(&mut app);
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(!ctx.input(|i| i.modifiers.shift), "calibrating");
+    }
+
+    #[test]
+    fn losing_focus_clears_what_the_buttons_hold_and_the_keyboard_is_remembered_again_on_regain() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        press(&mut app, &ctx, SHIFT, vec![]);
+        assert!(app.space_mouse.held.shift);
+        press(&mut app, &ctx, SHIFT, vec![egui::Event::WindowFocused(false)]);
+        assert_eq!(app.space_mouse.held, egui::Modifiers::NONE);
+        assert!(!ctx.input(|i| i.modifiers.shift));
+        // Back, the button still down: it holds Shift again, and a keyboard Shift lost with the
+        // focus stays lost until the window says it is down.
+        press(&mut app, &ctx, SHIFT, vec![egui::Event::WindowFocused(true)]);
+        assert!(ctx.input(|i| i.modifiers.shift));
+        assert_eq!(escapes(&press(&mut app, &ctx, SHIFT, vec![])), 0);
+    }
+
+    #[test]
+    fn wheel_events_carry_the_held_modifiers() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        let raw = press(&mut app, &ctx, SHIFT, vec![wheel(1.0)]);
+        assert!(raw.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { modifiers, .. } if modifiers.shift)));
+    }
+
+    #[test]
+    fn another_device_starts_with_no_buttons_seen_and_no_settling() {
+        let mut app = app();
+        let ctx = window(true);
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.016);
+        app.space_mouse.seen = 0b101;
+        frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.016);
+        assert_eq!(app.space_mouse.seen, 0b101);
+        app.space_mouse.device = Some("hid 256f:c63a".into());
+        frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.016);
+        assert_eq!(app.space_mouse.seen, 0);
     }
 
     #[test]
@@ -372,6 +852,65 @@ mod tests {
         // Translations and the forward tilt are the raw axes.
         let all = Axes { translation: [100, -200, 300], rotation: [-150, 0, 0] };
         assert_eq!(DriverMapping::object_mode().apply(all), DriverMapping::default().apply(all));
+    }
+
+    /// A steady lean of 60 on X for two seconds, 20 ms a frame: whether the cap still moves the view at the end.
+    fn still_moving_after_a_steady_lean(calibration: Option<Calibration>) -> bool {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        if let Some(calibration) = calibration {
+            app.preferences.space_mouse_calibrations.insert("hid 046d:c62b".into(), calibration);
+        }
+        let ctx = window(true);
+        let lean = Axes { translation: [60, 0, 0], rotation: [0; 3] };
+        (0..100).map(|_| frame(&mut app, &ctx, DriverMapping::default(), lean, 0.02)).last().unwrap()
+    }
+
+    #[test]
+    fn only_a_calibrated_cap_settles() {
+        let axes = std::array::from_fn(|source| AxisCalibration { source, reversed: false, rest: 0, dead_zone: 0, full: [350; 2] });
+        let calibration = |kind| Calibration { dead_zone_share: 0.0, kind, axes };
+        assert!(!still_moving_after_a_steady_lean(Some(calibration(solidcraft_space_mouse::Kind::ReturnToCenter))), "a leaning hand on a cap");
+        assert!(still_moving_after_a_steady_lean(Some(calibration(solidcraft_space_mouse::Kind::Trackball))), "a slow steady roll");
+        assert!(still_moving_after_a_steady_lean(None), "a device read as it reports");
+    }
+
+    #[test]
+    fn a_new_calibration_starts_settling_afresh() {
+        let mut app = app();
+        app.space_mouse.device = Some("hid 046d:c62b".into());
+        let ctx = window(true);
+        let axes = std::array::from_fn(|source| AxisCalibration { source, reversed: false, rest: 0, dead_zone: 0, full: [350; 2] });
+        app.preferences
+            .space_mouse_calibrations
+            .insert("hid 046d:c62b".into(), Calibration { dead_zone_share: 0.0, kind: solidcraft_space_mouse::Kind::ReturnToCenter, axes });
+        let lean = Axes { translation: [60, 0, 0], rotation: [0; 3] };
+        for _ in 0..30 {
+            frame(&mut app, &ctx, DriverMapping::default(), lean, 0.02);
+        }
+        assert!(!frame(&mut app, &ctx, DriverMapping::default(), lean, 0.02), "settled");
+        app.preferences.space_mouse_calibrations.get_mut("hid 046d:c62b").unwrap().dead_zone_share = 0.01;
+        assert!(frame(&mut app, &ctx, DriverMapping::default(), lean, 0.02), "a changed calibration is a fresh start");
+    }
+
+    #[test]
+    fn the_driver_choice_is_saved_and_an_older_file_reads_automatic() {
+        use crate::prefs::SpaceMouseDriver;
+        let mut saved = serde_json::to_value(crate::prefs::Prefs::default()).unwrap();
+        assert_eq!(saved["space_mouse_driver"], "automatic");
+        for driver in SpaceMouseDriver::ALL {
+            saved["space_mouse_driver"] = serde_json::to_value(driver).unwrap();
+            assert_eq!(crate::prefs::lenient(&saved).space_mouse_driver, driver);
+            assert_eq!(SpaceMouseDriver::from_u8(driver.to_u8()), driver);
+        }
+        saved["space_mouse_driver"] = "direct".into();
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_driver, SpaceMouseDriver::Direct);
+        // One saved before the setting existed, or with a driver this version doesn't know.
+        saved.as_object_mut().unwrap().remove("space_mouse_driver");
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_driver, SpaceMouseDriver::Automatic);
+        saved["space_mouse_driver"] = "evdev".into();
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_driver, SpaceMouseDriver::Automatic);
+        assert_eq!(SpaceMouseDriver::from_u8(200), SpaceMouseDriver::Automatic);
     }
 
     #[test]
@@ -527,6 +1066,7 @@ mod tests {
         let axis = |source, reversed| solidcraft_space_mouse::AxisCalibration { source, reversed, rest: 0, dead_zone: 0, full: [3500; 2] };
         solidcraft_space_mouse::Calibration {
             dead_zone_share: 0.0,
+            kind: Default::default(),
             axes: [axis(0, false), axis(4, true), axis(2, false), axis(3, false), axis(1, false), axis(5, false)],
         }
     }
@@ -558,6 +1098,10 @@ mod tests {
         assert!(app.space_mouse.calibrating.is_none(), "nothing to calibrate without a device");
         app.space_mouse.device = Some("hid 256f:c63a".into());
         crate::space_mouse_calibration::start(&mut app);
+        // It asks what kind of device it is first.
+        let Some((_, wizard)) = &mut app.space_mouse.calibrating else { panic!("calibration didn't start") };
+        assert_eq!(wizard.stage(), solidcraft_space_mouse::Stage::Choose);
+        wizard.choose(solidcraft_space_mouse::Kind::ReturnToCenter);
         let before = app.cam;
         assert!(!frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
         assert_eq!(app.cam, before);
@@ -627,5 +1171,197 @@ mod tests {
         older.as_object_mut().unwrap().remove("dead_zone_share");
         saved["space_mouse_calibrations"]["hid 1234:5678"] = older;
         assert_eq!(crate::prefs::lenient(&saved), prefs);
+    }
+
+    #[test]
+    fn picking_a_motion_another_axis_uses_swaps_the_two() {
+        let mut source = SAME_AXES;
+        reassign(&mut source, 1, 2);
+        assert_eq!(source, [0, 2, 1, 3, 4, 5], "Y and Z swapped");
+        reassign(&mut source, 4, 5);
+        assert_eq!(source, [0, 2, 1, 3, 5, 4], "then roll and twist");
+        reassign(&mut source, 1, 1);
+        assert_eq!(source, [0, 1, 2, 3, 5, 4], "back again");
+        assert!(drives_each_once(source));
+        // A row or a motion that doesn't exist changes nothing.
+        reassign(&mut source, 9, 0);
+        reassign(&mut source, 0, 9);
+        assert_eq!(source, [0, 1, 2, 3, 5, 4]);
+        assert!(!drives_each_once([0, 0, 2, 3, 4, 5]) && !drives_each_once([0, 1, 2, 3, 4, 9]));
+        // A value that doesn't drive each axis once is read as the default.
+        let reading = Axes { translation: [1, 2, 3], rotation: [4, 5, 6] };
+        assert_eq!(reassigned(reading, [0, 2, 1, 3, 5, 4]), Axes { translation: [1, 3, 2], rotation: [4, 6, 5] });
+        assert_eq!(reassigned(reading, [0, 0, 2, 3, 4, 5]), reading);
+    }
+
+    #[test]
+    fn a_reassigned_motion_drives_its_new_axis_and_invert_stays_with_the_axis() {
+        let ctx = window(true);
+        let press = Axes { translation: [0, 0, 350], rotation: [0; 3] };
+        // With Y and Z swapped, pressing the cap does what pushing it back would.
+        let mut reference = app();
+        frame(&mut reference, &ctx, DriverMapping::default(), PUSH, 0.02);
+        let mut swapped = app();
+        swapped.preferences.space_mouse_axis_source = [0, 2, 1, 3, 4, 5];
+        assert!(frame(&mut swapped, &ctx, DriverMapping::default(), press, 0.02));
+        assert_eq!(swapped.cam, reference.cam);
+        // Inverting the Y axis inverts whatever motion drives it now, not the Y motion.
+        let mut inverted = app();
+        inverted.preferences.space_mouse_reverse[1] = true;
+        frame(&mut inverted, &ctx, DriverMapping::default(), PUSH, 0.02);
+        let mut swapped_inverted = app();
+        swapped_inverted.preferences.space_mouse_axis_source = [0, 2, 1, 3, 4, 5];
+        swapped_inverted.preferences.space_mouse_reverse[1] = true;
+        frame(&mut swapped_inverted, &ctx, DriverMapping::default(), press, 0.02);
+        assert_eq!(swapped_inverted.cam, inverted.cam);
+        assert_ne!(swapped_inverted.cam, reference.cam);
+        // The same for the axis's speed.
+        let mut slowed = app();
+        slowed.preferences.space_mouse_axis_speed[1] = 0.5;
+        frame(&mut slowed, &ctx, DriverMapping::default(), PUSH, 0.02);
+        let mut swapped_slowed = app();
+        swapped_slowed.preferences.space_mouse_axis_source = [0, 2, 1, 3, 4, 5];
+        swapped_slowed.preferences.space_mouse_axis_speed[1] = 0.5;
+        frame(&mut swapped_slowed, &ctx, DriverMapping::default(), press, 0.02);
+        assert_eq!(swapped_slowed.cam, slowed.cam);
+        assert_ne!(swapped_slowed.cam, reference.cam);
+    }
+
+    #[test]
+    fn a_motion_swapped_into_a_row_the_driver_turns_off_moves_nothing_until_swapped_back() {
+        let ctx = window(true);
+        let mut pan_up_down_off = DriverMapping::default();
+        pan_up_down_off.axes[2].enabled = false;
+        let mut slowed = app();
+        slowed.preferences.space_mouse_axis_speed[1] = 0.5;
+        frame(&mut slowed, &ctx, pan_up_down_off, PUSH, 0.02);
+        // Picking the push motion in the off row swaps the off row's motion into row 1.
+        let mut app = app();
+        app.preferences.space_mouse_axis_speed[1] = 0.5;
+        reassign(&mut app.preferences.space_mouse_axis_source, 2, 1);
+        assert_eq!(app.preferences.space_mouse_axis_source, [0, 2, 1, 3, 4, 5]);
+        let still = app.cam;
+        assert_ne!(slowed.cam, still);
+        frame(&mut app, &ctx, pan_up_down_off, PUSH, 0.02);
+        assert_eq!(app.cam, still);
+        // Picking it back in row 1 recovers it, at the speed row 1 kept.
+        reassign(&mut app.preferences.space_mouse_axis_source, 1, 1);
+        assert_eq!(app.preferences.space_mouse_axis_source, SAME_AXES);
+        frame(&mut app, &ctx, pan_up_down_off, PUSH, 0.02);
+        assert_eq!(app.cam, slowed.cam);
+    }
+
+    #[test]
+    fn the_choice_is_between_calibrated_motions_on_a_device_whose_calibration_shuffles_its_channels() {
+        // `homemade()` reads Y from raw channel 4, reversed, and Ry from raw 1. With Y and Z
+        // swapped, the choices are calibrated motions: pressing the cap (calibrated Z, raw 2)
+        // drives Y, and pushing it back (calibrated Y, raw 4 the other way) drives Z.
+        let ctx = window(true);
+        let device = "hid 1234:5678";
+        let setup = |source: [usize; 6]| {
+            let mut app = app();
+            app.space_mouse.device = Some(device.into());
+            app.preferences.space_mouse_calibrations.insert(device.into(), homemade());
+            app.preferences.space_mouse_axis_source = source;
+            app
+        };
+        // Mixed motion: a press and a push back together, on the device's own channels.
+        // A press at full travel, where the calibration's feather no longer shows, so the comparison is exact.
+        let mixed = Axes { translation: [0, 0, 3500], rotation: [0; 3] };
+        let expected = Axes { translation: [0, 350, 0], rotation: [0; 3] };
+        let mut reference = app();
+        frame(&mut reference, &ctx, DriverMapping::default(), expected, 0.02);
+        let mut swapped = setup([0, 2, 1, 3, 4, 5]);
+        assert!(frame(&mut swapped, &ctx, DriverMapping::default(), mixed, 0.02));
+        assert_eq!(swapped.cam, reference.cam, "calibrated first, then the motions swapped, once");
+        // Saved and loaded, it's the same choice; reset, the device reads as calibrated.
+        let saved = serde_json::to_value(&swapped.preferences).unwrap();
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_axis_source, [0, 2, 1, 3, 4, 5]);
+        let mut unswapped_reference = app();
+        frame(&mut unswapped_reference, &ctx, DriverMapping::default(), Axes { translation: [0, 0, 350], rotation: [0; 3] }, 0.02);
+        let mut reset = setup(SAME_AXES);
+        frame(&mut reset, &ctx, DriverMapping::default(), mixed, 0.02);
+        assert_eq!(reset.cam, unswapped_reference.cam);
+    }
+
+    #[test]
+    fn rows_say_what_they_do_to_the_view_through_the_mapping_navigation_uses() {
+        let labels = |mapping| (0..6).map(|row| row_label(mapping, row)).collect::<Vec<_>>();
+        assert_eq!(labels(Some(DriverMapping::default())), VIEW_AXES);
+        // Linux, and Windows without a 3DxWare profile: object mode swaps the last two rows'
+        // effect, so their labels swap with it.
+        let object = labels(Some(DriverMapping::object_mode()));
+        assert_eq!((object[4], object[5]), (VIEW_AXES[5], VIEW_AXES[4]));
+        // An axis the mapping switches off says so.
+        let mut off = DriverMapping::default();
+        off.axes[2].enabled = false;
+        assert_eq!(row_label(Some(off), 2), "ui.space_mouse_view_off");
+        // Without a mapping, rows claim no view effect and name none of the dropdown's motions.
+        assert_eq!(labels(None), ["ui.space_mouse_view_unmapped"; 6]);
+    }
+
+    #[test]
+    fn each_frame_records_the_mapping_it_navigated_with() {
+        let ctx = window(true);
+        let mut app = app();
+        assert!(app.space_mouse.mapping.is_none());
+        frame(&mut app, &ctx, DriverMapping::object_mode(), Axes::default(), 0.02);
+        assert_eq!(app.space_mouse.mapping, Some(DriverMapping::object_mode()));
+        // A changed profile shows on the next frame, calibrating or not; a reassignment changes
+        // which motion drives a row, never the row's label.
+        app.space_mouse.device = Some("hid 1234:5678".into());
+        app.preferences.space_mouse_axis_source = [0, 2, 1, 3, 4, 5];
+        crate::space_mouse_calibration::start(&mut app);
+        frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.02);
+        assert_eq!(app.space_mouse.mapping, Some(DriverMapping::default()));
+        assert_eq!(row_label(app.space_mouse.mapping, 1), VIEW_AXES[1]);
+    }
+
+    #[test]
+    fn calibrating_records_the_device_before_the_axis_choice() {
+        // With Y and Z swapped, a new calibration still learns the device's own channels.
+        // Recorded after the swap, it would bake the swap in, and the swap would then apply twice.
+        let ctx = window(true);
+        let mut app = app();
+        app.space_mouse.device = Some("hid 1234:5678".into());
+        app.preferences.space_mouse_axis_source = [0, 2, 1, 3, 4, 5];
+        crate::space_mouse_calibration::start(&mut app);
+        // The calibration asks what kind of device it is first.
+        app.space_mouse.calibrating.as_mut().unwrap().1.choose(solidcraft_space_mouse::Kind::ReturnToCenter);
+        let feed = |app: &mut SolveApp, axes: Axes, seconds: f64| {
+            for _ in 0..(seconds / 0.02).round() as usize {
+                frame(app, &ctx, DriverMapping::default(), axes, 0.02);
+            }
+        };
+        feed(&mut app, Axes::default(), 1.6);
+        // And a hand resting on the cap, before the steps.
+        feed(&mut app, Axes::default(), 2.6);
+        for step in solidcraft_space_mouse::STEPS {
+            let mut raw = [0_i16; 6];
+            raw[step.axis] = if step.positive { 300 } else { -300 };
+            feed(&mut app, raw.into(), 0.5);
+            feed(&mut app, Axes::default(), 0.1);
+        }
+        let (_, wizard) = app.space_mouse.calibrating.as_ref().unwrap();
+        let calibration = wizard.result().unwrap().unwrap();
+        assert!(calibration.axes.iter().enumerate().all(|(c, axis)| axis.source == c && !axis.reversed), "{calibration:?}");
+    }
+
+    #[test]
+    fn a_saved_axis_assignment_that_doesnt_drive_each_axis_once_loads_as_the_default() {
+        let mut saved = serde_json::to_value(crate::prefs::Prefs::default()).unwrap();
+        saved["space_mouse_axis_source"] = serde_json::json!([0, 2, 1, 3, 4, 5]);
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_axis_source, [0, 2, 1, 3, 4, 5]);
+        saved["space_mouse_axis_source"] = serde_json::json!([1, 1, 2, 3, 4, 5]);
+        assert_eq!(crate::prefs::lenient(&saved).space_mouse_axis_source, SAME_AXES);
+        // An older file without it, or one with the wrong length, loads with the default and
+        // keeps every other setting.
+        saved["space_mouse_speed"] = serde_json::json!(2.0);
+        saved.as_object_mut().unwrap().remove("space_mouse_axis_source");
+        let older = crate::prefs::lenient(&saved);
+        assert_eq!((older.space_mouse_axis_source, older.space_mouse_speed), (SAME_AXES, 2.0));
+        saved["space_mouse_axis_source"] = serde_json::json!([0, 1, 2, 3, 4]);
+        let short = crate::prefs::lenient(&saved);
+        assert_eq!((short.space_mouse_axis_source, short.space_mouse_speed), (SAME_AXES, 2.0));
     }
 }
