@@ -623,10 +623,9 @@ pub(crate) fn snapped_axis_camera(cam: Camera) -> Camera {
 /// direction at once; the unsnapped orbit is kept in `orbit_free` so many small deltas still
 /// cross snap boundaries. A small angular margin avoids flicker at a boundary.
 pub(crate) fn orbit_drag(app: &mut SolveApp, rect: Rect, dx: f64, dy: f64, press: Option<Pos2>, snap: bool, around_cursor: bool) {
-    // Free rotation must not enter the yaw/pitch snap spring: it discards roll at the poles.
+    // Free rotation must not enter the yaw/pitch snap: it discards roll at the poles.
     if app.preferences.free_orbit {
         app.viewport.orbit_free = None;
-        app.viewport.orbit_snap = None;
         if around_cursor {
             orbit(app, rect, dx, dy, press);
         } else {
@@ -846,7 +845,7 @@ mod tests {
                         assert!(app.cam.pitch > before.pitch && app.cam.pitch < std::f64::consts::FRAC_PI_2);
                     }
                     assert_eq!((app.cam.target, app.cam.distance, app.cam.fov), (before.target, before.distance, before.fov));
-                    assert!(app.viewport.orbit_snap.is_none());
+                    assert!(app.viewport.orbit_free.is_none());
                     assert!(!ctx.input(|i| i.pointer.any_down()));
                     assert_eq!(app.session.doc.to_json(), design);
                     assert!(app.session.undo.is_empty() && app.session.selection.is_empty());
@@ -934,10 +933,10 @@ mod tests {
                 orbit_drag(&mut h.app, rect, 0.0, 80.0, None, true, false);
                 if enabled {
                     assert!((h.app.cam.back().dot(initial.back()) - 0.64_f64.cos()).abs() < 1e-9);
-                    assert!(h.app.viewport.orbit_snap.is_none());
+                    assert!(h.app.viewport.orbit_free.is_none());
                 } else {
                     assert!(h.app.cam.pitch < std::f64::consts::FRAC_PI_2);
-                    assert!(h.app.viewport.orbit_snap.is_some(), "{} keeps Shift snap", preset.id);
+                    assert!(h.app.viewport.orbit_free.is_some(), "{} keeps Shift snap", preset.id);
                 }
                 h.app.cam = initial;
                 h.app.viewport.device_motion =
@@ -966,11 +965,11 @@ mod tests {
                 let before = h.app.cam;
                 h.call("ui.drag", json!({"x0":800,"y0":400,"x1":800,"y1":480,"button":button,"steps":40}));
                 assert!((h.app.cam.back().dot(before.back()) - 0.64_f64.cos()).abs() < 1e-6, "{up:?} {button}: {:?}", h.app.cam);
-                assert!(h.app.viewport.orbit_snap.is_none() && h.app.viewport.orbit_free.is_none());
+                assert!(h.app.viewport.orbit_free.is_none());
                 let before = h.app.cam;
                 h.call("ui.drag", json!({"x0":800,"y0":400,"x1":850,"y1":400,"button":"right","shift":true,"steps":20}));
                 assert!((h.app.cam.back().dot(before.back()) - 0.4_f64.cos()).abs() < 1e-6);
-                assert!(h.app.viewport.orbit_snap.is_none());
+                assert!(h.app.viewport.orbit_free.is_none());
             }
         }
     }
