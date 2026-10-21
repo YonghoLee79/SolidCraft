@@ -2634,12 +2634,13 @@ fn body_at(st: &ModelState, body: &Option<crate::BodyName>, points: &[Vec3]) -> 
 }
 
 /// A hole stays on its face when the model changes: a position now inside a body moves back
-/// against the drilling direction to the surface, one now above it moves down onto it.
-fn hole_on_surface(st: &ModelState, p: Vec3, dir: Vec3) -> Vec3 {
+/// against the drilling direction to the surface, one now above it moves down onto it. Only the
+/// bodies in `scope` count (every body when it is empty, see [`hole_scope`]).
+fn hole_on_surface(st: &ModelState, p: Vec3, dir: Vec3, scope: &[String]) -> Vec3 {
     let size = st.bodies.iter().map(|b| b.body.size()).fold(1.0, f64::max);
     let eps = size * 1e-6;
     let mut best: Option<Vec3> = None;
-    for b in &st.bodies {
+    for b in st.bodies.iter().filter(|b| in_hole_scope(scope, b)) {
         let m = b.mesh();
         // Already on the surface: the drill enters right here.
         if let Some((t, _)) = m.raycast(p - dir * eps, dir)
@@ -2920,12 +2921,12 @@ pub(crate) fn revolve_axis(ss: &SolvedSketch, axis: &AxisRef) -> Result<(Vec2, V
 
 /// Whether a drill from `p` along `d` reaches material: it starts into a body (`touches`), or,
 /// when `ahead` is set, a body lies further along `d`. A spot exactly on a surface counts only
-/// when the drill enters there, not when it leaves.
-fn hole_reaches(st: &ModelState, p: Vec3, d: Vec3, ahead: bool) -> bool {
+/// when the drill enters there, not when it leaves. Only the bodies in `scope` count.
+fn hole_reaches(st: &ModelState, p: Vec3, d: Vec3, ahead: bool, scope: &[String]) -> bool {
     let size = st.bodies.iter().map(|b| b.body.size()).fold(1.0, f64::max);
     let eps = size * 1e-6;
     let q = p + d * eps;
-    st.bodies.iter().any(|b| {
+    st.bodies.iter().filter(|b| in_hole_scope(scope, b)).any(|b| {
         let m = b.mesh();
         m.contains(q) || (ahead && m.raycast(q, d).is_some())
     })
@@ -2943,13 +2944,13 @@ pub fn sketch_hole_direction(st: &ModelState, sketch: u64, ids: &[String], flip:
     let ss = st.sketch(sketch)?;
     let spots: Vec<Vec3> =
         ids.iter().map(|id| ss.sketch.points.iter().find(|p| &p.id == id).map(|p| ss.plane.to_world(p.pos))).collect::<Option<_>>()?;
-    let dir = sketch_hole_dir(st, &spots, ss.plane.normal());
+    let dir = sketch_hole_dir(st, &spots, ss.plane.normal(), &[]);
     Some(if flip { -dir } else { dir })
 }
 
-fn sketch_hole_dir(st: &ModelState, spots: &[Vec3], n: Vec3) -> Vec3 {
+fn sketch_hole_dir(st: &ModelState, spots: &[Vec3], n: Vec3, scope: &[String]) -> Vec3 {
     let down = -n;
-    let any = |d: Vec3, ahead: bool| spots.iter().any(|p| hole_reaches(st, *p, d, ahead));
+    let any = |d: Vec3, ahead: bool| spots.iter().any(|p| hole_reaches(st, *p, d, ahead, scope));
     if any(down, false) {
         down
     } else if any(n, false) {
@@ -2959,6 +2960,20 @@ fn sketch_hole_dir(st: &ModelState, spots: &[Vec3], n: Vec3) -> Vec3 {
     } else {
         n
     }
+}
+
+/// The bodies a hole at sketch points finds its side and its faces on: the bodies it cuts when it
+/// names them (a hole from a sketch on a body's face cuts that body, #2882), so a body further
+/// along can't take the holes meant for it. Empty (every body) otherwise.
+fn hole_scope(f: &Feature) -> &[String] {
+    match &f.kind {
+        FeatureKind::Hole { points: Some(sp), .. } if !sp.single && !f.participants.iter().any(|b| b == "*") => &f.participants,
+        _ => &[],
+    }
+}
+
+fn in_hole_scope(scope: &[String], b: &ModelBody) -> bool {
+    scope.is_empty() || scope.contains(&b.name)
 }
 
 /// Where a hole feature drills (each on the surface) and in which direction: at its sketch
@@ -2974,21 +2989,21 @@ fn hole_spots(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature) -> R
                 let p = ss.sketch.points.iter().find(|p| &p.id == id).ok_or_else(|| DocError::Unknown(format!("sketch point `{id}`")))?;
                 v.push(ss.plane.to_world(p.pos));
             }
-            let dir = sketch_hole_dir(st, &v, ss.plane.normal());
+            let dir = sketch_hole_dir(st, &v, ss.plane.normal(), hole_scope(f));
             let dir = if sp.flip { -dir } else { dir };
             (v, dir)
         }
         _ => {
             let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
-            let at = hole_on_surface(st, single_hole_position(vals, st, position, at, points)?, dir);
+            let at = hole_on_surface(st, single_hole_position(vals, st, position, at, points)?, dir, &[]);
             let dir = hole_dir_into_face(st, at, dir);
-            return Ok((vec![hole_on_surface(st, at, dir)], dir));
+            return Ok((vec![hole_on_surface(st, at, dir, &[])], dir));
         }
     };
     if spots.is_empty() || spots.len() > 10_000 {
         return Err(DocError::Invalid("a hole needs 1…10000 points".into()));
     }
-    Ok((spots.into_iter().map(|p| hole_on_surface(st, p, dir)).collect(), dir))
+    Ok((spots.into_iter().map(|p| hole_on_surface(st, p, dir, hole_scope(f))).collect(), dir))
 }
 
 /// A hole's depth: down to the To Object (where the hole's axis meets the face there, else the
@@ -3021,14 +3036,14 @@ fn hole_spots_raw(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature) 
             let ss = st.sketch(sp.sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {}", sp.sketch)))?;
             let v: Vec<Vec3> =
                 sp.ids.iter().filter_map(|id| ss.sketch.points.iter().find(|p| &p.id == id)).map(|p| ss.plane.to_world(p.pos)).take(10_000).collect();
-            let dir = sketch_hole_dir(st, &v, ss.plane.normal());
+            let dir = sketch_hole_dir(st, &v, ss.plane.normal(), hole_scope(f));
             let dir = if sp.flip { -dir } else { dir };
             Ok((v, dir))
         }
         _ => {
             let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
             let p = single_hole_position(vals, st, position, at, points)?;
-            Ok((vec![p], hole_dir_into_face(st, hole_on_surface(st, p, dir), dir)))
+            Ok((vec![p], hole_dir_into_face(st, hole_on_surface(st, p, dir, &[]), dir)))
         }
     }
 }
@@ -3587,14 +3602,14 @@ fn feature_tools_with_constructor(
             // The face names follow `face_points`: To, then From.
             let name = |k: usize| f.face_names.get(k).map(String::as_str);
             let (to_name, from_name) = if extent.to.is_some() { (name(0), name(1)) } else { (None, name(0)) };
-            let to_face = extent.to.and_then(|p| object_face(&tst, to_name, p.0));
+            let to_face = extent.to.and_then(|p| object_face(&tst, to_name, p.0, Some(n)));
             let centre = {
                 let pts: Vec<Vec2> = regions.iter().flat_map(|r| r.outer.polyline(1e-2)).collect();
                 let c = pts.iter().fold(Vec2::default(), |a, p| a + *p) * (1.0 / pts.len().max(1) as f64);
                 ss.plane.to_world(c)
             };
             let from = match extent.from {
-                Some(p) => height_at(&tst, object_face(&tst, from_name, p.0), &ss.plane, centre, p.0),
+                Some(p) => height_at(&tst, object_face(&tst, from_name, p.0, Some(n)), &ss.plane, centre, p.0),
                 None => 0.0,
             };
             let d = match extent.to {
@@ -4011,7 +4026,7 @@ fn feature_tools_with_constructor(
                 .collect::<Result<Vec<_>>>()?;
             // To a curved face: turn past the whole target body, then cut back to its surface
             // (the piece that starts at the profile).
-            let curved = curved_face(&tst, to.and_then(|p| object_face(&tst, f.face_names.first().map(String::as_str), p.0)), None);
+            let curved = curved_face(&tst, to.and_then(|p| object_face(&tst, f.face_names.first().map(String::as_str), p.0, None)), None);
             let curved_body = curved.and_then(|bi| tst.bodies.get(bi));
             // Each region's body: its sides named by the sketch curves, its caps start and end.
             let tool = |r: &Region2, body: Body, built: Option<&Body>| crate::lineage::ProfileRoles::swept(Some(&ss), Some(r)).tool(body, built);
@@ -4822,7 +4837,7 @@ fn replay(
             for (k, m) in mats.iter().enumerate() {
                 let d = crate::apply_vector(m, dir).normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
                 for p in &spots {
-                    let at = hole_on_surface(st, crate::apply_point(m, *p), d);
+                    let at = hole_on_surface(st, crate::apply_point(m, *p), d, hole_scope(src));
                     let to = to.map(|t| crate::apply_point(m, t.0));
                     let depth = hole_depth_to(st, &at, d, &to, depth)?;
                     // Each copy's faces are named as the hole's, with the instance.
@@ -4867,7 +4882,7 @@ mod surface;
 /// there if it is planar and parallel (its plane), else where a ray from `centre` along the
 /// normal meets the body there, else the point itself.
 pub fn object_height(st: &ModelState, plane: &Plane, centre: Vec3, p: Vec3) -> f64 {
-    height_at(st, face_at(st, p), plane, centre, p)
+    height_at(st, face_at(st, p, Some(plane.normal())), plane, centre, p)
 }
 
 /// [`object_height`] of the point `p` on `face` (`(body index, face index)`, see [`object_face`]).
@@ -4899,31 +4914,63 @@ fn height_at(st: &ModelState, face: Option<(usize, usize)>, plane: &Plane, centr
 /// face index)`, within that body's pick tolerance. Not the first body with any face within
 /// its tolerance: that is 5 % of the body's size, so a large body beside a small target (a
 /// plate under a post, a frame around a pin) would otherwise take a pick made on the target.
-fn face_at(st: &ModelState, p: Vec3) -> Option<(usize, usize)> {
+fn face_at(st: &ModelState, p: Vec3, normal: Option<Vec3>) -> Option<(usize, usize)> {
     st.bodies
         .iter()
         .enumerate()
         .filter(|(_, b)| !b.body.is_mesh())
         .filter_map(|(bi, b)| {
-            let (d, fi) = crate::appearance::nearest_face(b, p)?;
+            let (d, fi) = nearest_object_face(b, p, normal)?;
             (d <= crate::appearance::pick_tolerance(b)).then_some((d, bi, fi))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, bi, fi)| (bi, fi))
 }
 
+/// At a shared edge or corner an extrusion's end plane and side wall can be equally near.
+/// Prefer the plane square to the extrusion: choosing the wall would instead extend the tool
+/// past the whole body and try to trim it, even when the tool never intersects that body.
+/// Only settle a distance tie; a nearby plane must not steal a pick on another face.
+fn nearest_object_face(b: &ModelBody, p: Vec3, normal: Option<Vec3>) -> Option<(f64, usize)> {
+    let nearest = crate::appearance::nearest_face(b, p)?;
+    let Some(n) = normal else { return Some(nearest) };
+    if nearest.0 > crate::appearance::pick_tolerance(b) {
+        return Some(nearest);
+    }
+    let tol = (b.body.size() * 1e-3).max(1e-3);
+    let Ok(faces) = b.body.faces(tol) else { return Some(nearest) };
+    let caps: std::collections::BTreeSet<usize> =
+        faces.iter().filter(|f| f.plane_normal.is_some_and(|fnrm| fnrm.cross(n).len() < 1e-6)).map(|f| f.index).collect();
+    if caps.is_empty() || caps.contains(&nearest.1) {
+        return Some(nearest);
+    }
+    let tie = (b.body.size() * 1e-9).max(1e-7);
+    let mesh = b.mesh();
+    mesh.triangles
+        .iter()
+        .zip(&mesh.tri_face)
+        .filter(|(_, fi)| caps.contains(&(**fi as usize)))
+        .filter_map(|(tri, fi)| {
+            let [a, b, c] = mesh.tri(tri)?;
+            let d = crate::appearance::closest_on_triangle(p, a, b, c).dist(p);
+            (d <= nearest.0 + tie).then_some((d, *fi as usize))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .or(Some(nearest))
+}
+
 /// The face a To / From Object point stands for, `(body index, face index)`: the face its
 /// stored `name` finds when the point lies on it (evaluation has moved the point onto its named
 /// face), else the nearest face at the point. The name settles a tie: in an assembly a part of
 /// another component may rest on the target and touch it at the point.
-fn object_face(st: &ModelState, name: Option<&str>, p: Vec3) -> Option<(usize, usize)> {
+fn object_face(st: &ModelState, name: Option<&str>, p: Vec3, normal: Option<Vec3>) -> Option<(usize, usize)> {
     if let Some(n) = name.filter(|n| !n.is_empty())
         && let Some(hit) = crate::naming::locate_face(st, n, p)
         && hit.on_point
     {
         return Some((hit.body, hit.face));
     }
-    face_at(st, p)
+    face_at(st, p, normal)
 }
 
 /// The body of `face` when that face is not a plane (with `n`: not a plane square to `n`), so To
@@ -4942,7 +4989,7 @@ fn curved_face(st: &ModelState, face: Option<(usize, usize)>, n: Option<Vec3>) -
 
 /// The body at `p` when the face there is not planar.
 fn curved_target_any(st: &ModelState, p: Vec3) -> Option<usize> {
-    curved_face(st, face_at(st, p), None)
+    curved_face(st, face_at(st, p, None), None)
 }
 
 /// Tools run through `target`, cut back to its surface: each tool less the body, keeping the
@@ -4986,8 +5033,10 @@ fn face_samples(b: &ModelBody) -> Vec<Vec3> {
     out.into_iter().flatten().collect()
 }
 
-/// The picked faces and every face joined to them smoothly (across tangent edges), as points.
-fn smooth_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<Vec3> {
+/// The picked faces and every face joined to them smoothly (across tangent edges).
+/// Each face appears once, with a point on it. Shell evaluation and selection feedback use
+/// the same expansion; callers keep the original picks when saving the feature.
+pub fn tangent_face_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<(usize, Vec3)> {
     let m = b.mesh();
     let samples = face_samples(b);
     let face_of = |p: Vec3| crate::appearance::face_index_at(b, p);
@@ -5004,6 +5053,8 @@ fn smooth_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<Vec3> {
             .and_then(|(_, n)| n.normalized())
     };
     let mut chosen: Vec<u32> = picks.iter().filter_map(|p| face_of(*p).map(|f| f as u32)).collect();
+    chosen.sort_unstable();
+    chosen.dedup();
     let mut k = 0;
     while k < chosen.len() && chosen.len() < 10_000 {
         let f = chosen[k];
@@ -5028,12 +5079,18 @@ fn smooth_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<Vec3> {
             }
         }
     }
-    let mut out = picks.to_vec();
+    let mut out = Vec::new();
     for f in chosen {
-        if let Some(p) = samples.iter().find(|p| face_of(**p) == Some(f as usize)) {
-            out.push(*p);
+        if let Some(p) = picks.iter().chain(&samples).find(|p| face_of(**p) == Some(f as usize)) {
+            out.push((f as usize, *p));
         }
     }
+    out
+}
+
+fn smooth_chain(b: &ModelBody, picks: &[Vec3]) -> Vec<Vec3> {
+    let mut out = picks.to_vec();
+    out.extend(tangent_face_chain(b, picks).into_iter().map(|(_, point)| point));
     out
 }
 
@@ -5334,7 +5391,23 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             let t = val(vals, thickness, Kind::Length)?;
             let i = body_at(st, body, &crate::plain(faces))?;
             let Some(mb) = st.bodies.get(i).cloned() else { return Err(DocError::Invalid("body".into())) };
-            let open = if *tangent_chain { smooth_chain(&mb, &crate::plain(faces)) } else { crate::plain(faces) };
+            let picks = crate::plain(faces);
+            let open = if *tangent_chain {
+                let chain = tangent_face_chain(&mb, &picks);
+                if !chain.is_empty() && chain.len() == mb.body.face_count() {
+                    return Err(DocError::Invalid(
+                        "Tangent Chain opens every face of this body, leaving no walls; turn off Tangent Chain to remove only the picked faces"
+                            .into(),
+                    ));
+                }
+                // Keep every authored pick, including any the kernel must reject, as before
+                // chain expansion. The derived samples must not silently drop a bad input.
+                let mut open = picks;
+                open.extend(chain.into_iter().map(|(_, point)| point));
+                open
+            } else {
+                picks
+            };
             let input = mb.traced();
             // The shell, and the operands of the operation that made it.
             let (nb, operands) = match direction.as_str() {
@@ -6205,13 +6278,19 @@ pub fn face_point_names(doc: &Document, st: &ModelState, kind: &FeatureKind, com
         return crate::naming::face_names_at(st, &pts);
     }
     let fst = face_point_state(doc, st, kind, comp);
+    let normal = match kind {
+        FeatureKind::Extrude { sketch, .. } => {
+            st.sketch(sketch.0).and_then(|ss| sketch_in_feature_frame(doc, ss, comp).ok()).map(|ss| ss.plane.normal())
+        }
+        _ => None,
+    };
     pts.iter()
         .map(|p| {
             fst.bodies
                 .iter()
                 .filter(|b| !b.body.is_mesh())
                 .filter_map(|b| {
-                    let (d, fi) = crate::appearance::nearest_face(b, *p)?;
+                    let (d, fi) = nearest_object_face(b, *p, normal)?;
                     (d <= (b.body.size() * 1e-3).max(1e-3)).then_some((d, b, fi))
                 })
                 .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -6576,9 +6655,14 @@ mod chain_tests {
         m.evaluate(&doc);
         let st = m.state();
         let b = &st.bodies[0];
-        let pts = smooth_chain(b, &[Vec3::new(20.0, 15.0, 20.0)]);
-        let faces: std::collections::BTreeSet<usize> = pts.iter().filter_map(|p| crate::appearance::face_index_at(b, *p)).collect();
+        let pts = tangent_face_chain(b, &[Vec3::new(20.0, 15.0, 20.0)]);
+        let faces: std::collections::BTreeSet<usize> = pts.iter().map(|(index, _)| *index).collect();
         assert_eq!(faces.len(), 3, "{faces:?}");
+        assert_eq!(pts.len(), faces.len());
+        for (index, point) in &pts {
+            assert_eq!(crate::appearance::face_index_at(b, *point), Some(*index));
+        }
+        assert_eq!(tangent_face_chain(b, &[Vec3::new(20.0, 15.0, 20.0); 2]), pts);
     }
 }
 

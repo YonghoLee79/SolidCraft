@@ -1141,7 +1141,7 @@ impl SolveApp {
     pub fn highlighted(&self) -> Vec<solidcraft_engine::Sel> {
         let mut v = self.session.selection.clone();
         if let Some(d) = &self.dialog {
-            v.extend(d.items());
+            v.extend(d.highlighted(&self.session));
         }
         v.extend(sketch_text::highlighted(self));
         v.extend(sketch_text_move::highlighted(self));
@@ -1731,6 +1731,7 @@ impl SolveApp {
                 }
                 continue;
             }
+            req.started.store(true, std::sync::atomic::Ordering::Relaxed);
             // Opening or importing a file: answered when the file is in, without freezing the window.
             let Some(req) = file_load::control(self, req) else {
                 ctx.request_repaint();

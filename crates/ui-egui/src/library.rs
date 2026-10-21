@@ -340,11 +340,18 @@ fn rows(app: &mut SolveApp, ui: &mut egui::Ui) -> Option<Entry> {
 /// Keep import shortcuts fixed below the scrolling cards, level with the timeline.
 fn insert_footer(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get();
-    egui::Panel::bottom("sc_library_insert").exact_size(40.0).frame(egui::Frame::NONE.fill(t.timeline)).show(ui, |ui| {
+    let gap = crate::shell::SHELL_GAP;
+    egui::Panel::bottom("sc_library_insert").exact_size(40.0 + gap * 2.0).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
+        let card = crate::timeline::floating_rect(ui.max_rect()).shrink2(egui::vec2(t.space_4, 0.0));
+        ui.painter().add(crate::frame::shell_card(t.timeline).paint(card));
+        crate::scenario::publish_rect("library:import_card", card);
+        let mut controls = ui.new_child(egui::UiBuilder::new().id_salt("library_import_card").max_rect(card));
+        controls.set_clip_rect(card);
+        let ui = &mut controls;
         let enabled = app.services.pick_open.is_some() && !app.file_picker_busy() && !app.file_load.busy();
         let (mesh, step) = ui
             .add_enabled_ui(enabled, |ui| {
-                crate::ui_kit::button_pair(
+                crate::ui_kit::button_pair_in_card(
                     ui,
                     "library",
                     [false; 2],
@@ -369,7 +376,13 @@ fn contents(app: &mut SolveApp, ui: &mut egui::Ui) -> Option<Entry> {
         if home.hovered() || home.has_focus() {
             ui.painter().rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
         }
-        crate::icons::paint_on(ui.painter(), rect.shrink(2.0), "home", None, 1.0);
+        crate::icons::paint_ink(ui.painter(), rect.shrink(2.0), "home", crate::theme::Tokens::get().text);
+        ui.painter().rect_stroke(
+            rect,
+            crate::theme::Tokens::get().control_radius,
+            egui::Stroke::new(1.0, crate::theme::Tokens::get().border),
+            egui::StrokeKind::Inside,
+        );
         home.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Document library Home"));
         crate::scenario::publish_handle("library:home", home.rect.center());
         if home.on_hover_text("Return to CAD folder").clicked() {
@@ -387,13 +400,19 @@ fn contents(app: &mut SolveApp, ui: &mut egui::Ui) -> Option<Entry> {
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
         let mut label_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
         label_ui
-            .add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
+            .add(egui::Label::new(egui::RichText::new(name).color(crate::theme::Tokens::get().text).strong()).truncate())
             .on_hover_text(app.library.root.as_deref().unwrap_or(Path::new("")).display().to_string());
         let (rect, settings) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
         if settings.hovered() || settings.has_focus() {
             ui.painter().rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
         }
-        crate::icons::paint_on(ui.painter(), rect.shrink(4.0), "settings", None, 1.0);
+        crate::icons::paint_ink(ui.painter(), rect.shrink(4.0), "settings", crate::theme::Tokens::get().text);
+        ui.painter().rect_stroke(
+            rect,
+            crate::theme::Tokens::get().control_radius,
+            egui::Stroke::new(1.0, crate::theme::Tokens::get().border),
+            egui::StrokeKind::Inside,
+        );
         let settings = settings.on_hover_text("Change CAD directory");
         settings.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Change CAD directory"));
         crate::scenario::publish_handle("library:settings", settings.rect.center());
@@ -406,34 +425,59 @@ fn contents(app: &mut SolveApp, ui: &mut egui::Ui) -> Option<Entry> {
             ui.label("Sample designs only. Use the gear above to choose your CAD folder.");
         });
         ui.add_space(6.0);
-        sample_rows(app, ui);
+        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 0)).show(ui, |ui| sample_rows(app, ui));
         return None;
     }
-    ui.horizontal_wrapped(|ui| {
-        if let Some(root) = app.library.root.clone() {
-            let relative = app.library.current.strip_prefix(&root).unwrap_or(Path::new(""));
-            let parts: Vec<_> = relative.components().map(|c| c.as_os_str().to_owned()).collect();
-            let mut path = root;
-            for part in parts {
-                path.push(&part);
-                ui.label("/");
-                if crate::ui_kit::button(ui, part.to_string_lossy(), crate::ui_kit::Button::Small).clicked() {
-                    app.library.navigate(path.clone());
+    if app.library.root.as_ref().is_some_and(|root| &app.library.current != root) {
+        ui.horizontal_wrapped(|ui| {
+            if let Some(root) = app.library.root.clone() {
+                let relative = app.library.current.strip_prefix(&root).unwrap_or(Path::new(""));
+                let parts: Vec<_> = relative.components().map(|c| c.as_os_str().to_owned()).collect();
+                let mut path = root;
+                for part in parts {
+                    path.push(&part);
+                    ui.label("/");
+                    if crate::ui_kit::button(ui, part.to_string_lossy(), crate::ui_kit::Button::Small).clicked() {
+                        app.library.navigate(path.clone());
+                    }
                 }
             }
-        }
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
-        let refresh = crate::ui_kit::icon_button_at(ui, rect, "refresh", "Refresh");
-        refresh.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Refresh"));
-        if refresh.on_hover_text("Refresh").clicked() {
+        });
+    }
+    let t = crate::theme::Tokens::get();
+    ui.horizontal(|ui| {
+        let button_size = 32.0;
+        let width = (ui.available_width() - button_size - ui.spacing().item_spacing.x).max(1.0);
+        let search = ui
+            .allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                egui::Frame::NONE
+                    .fill(t.field)
+                    .stroke(egui::Stroke::new(1.0, t.border))
+                    .corner_radius(t.control_radius)
+                    .inner_margin(egui::Margin::symmetric(t.space_6 as i8, t.space_4 as i8))
+                    .show(ui, |ui| {
+                        let response =
+                            crate::ui_kit::shell_search_field(ui, ui.id().with("library_search"), &mut app.library.search, "Search this folder");
+                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search documents"));
+                    })
+                    .response
+                    .rect
+            })
+            .inner;
+        crate::scenario::publish_rect("library:search_card", search);
+        let rect =
+            egui::Rect::from_center_size(egui::pos2(ui.cursor().left() + button_size / 2.0, search.center().y), egui::vec2(button_size, button_size));
+        ui.allocate_rect(rect, egui::Sense::hover());
+        let refresh = crate::ui_kit::icon_button_colored(ui, rect, "refresh", "Refresh", Some(t.text));
+        crate::scenario::publish_rect("library:refresh", rect);
+        ui.painter().rect_stroke(rect, t.control_radius, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+        if refresh.clicked() {
             app.library.refresh();
         }
     });
-    let response = crate::ui_kit::search_field(ui, ui.id().with("library_search"), &mut app.library.search, "Search this folder");
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search documents"));
-    ui.separator();
+    ui.add_space(t.space_6);
     messages(&app.library, ui);
-    rows(app, ui)
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 0)).show(ui, |ui| rows(app, ui)).inner
 }
 
 /// Persistent title-bar control, available even when the whole document panel is hidden.
@@ -700,13 +744,20 @@ mod tests {
         let before = crate::scenario::handle_at("library:insert_mesh").unwrap();
         let step = crate::scenario::handle_at("library:insert_step").unwrap();
         assert!(step.x - before.x > 100.0, "import controls overlap: {before:?} {step:?}");
-        // Same 40-point row as the bottom timeline, even before a folder is chosen.
-        assert!((before.y - 980.0).abs() < 2.0, "{before:?}");
+        // The contained row has the same bottom inset and height as floating History.
+        let card = crate::scenario::rect_of("library:import_card").unwrap();
+        assert!((card.height() - 40.0).abs() < 0.5, "card={card:?}, controls={before:?}/{step:?}");
+        assert!((card.bottom() - (1000.0 - crate::shell::SHELL_GAP)).abs() < 0.5);
+        assert!(card.contains(before) && card.contains(step));
         h.app.library.root = Some(h.dir.clone());
         h.app.library.current = h.dir.clone();
         h.app.library.listing.entries =
             (0..1000).map(|i| Entry { path: h.dir.join(format!("Project {i}")), name: format!("Project {i}"), folder: true }).collect();
         h.frames(3);
+        let search = crate::scenario::rect_of("library:search_card").unwrap();
+        let refresh = crate::scenario::rect_of("library:refresh").unwrap();
+        assert!(search.right() < refresh.left(), "search and refresh overlap");
+        assert!((search.center().y - refresh.center().y).abs() < 0.5, "search and refresh must share a row");
         assert_eq!(crate::scenario::handle_at("library:insert_mesh"), Some(before));
         assert!(h.widget("Insert Mesh").is_some());
         assert!(h.widget("Insert STEP").is_some());
@@ -732,6 +783,47 @@ mod tests {
         assert_eq!(h.app.library.root.as_ref(), Some(&h.dir));
         assert!(h.app.home.open);
         assert!(h.widget("SolidCraft").is_some());
+    }
+
+    #[test]
+    fn browser_chrome_uses_shell_colors_in_builtin_and_custom_themes() {
+        let mut h = Harness::new();
+        folder_picker(&mut h, None);
+        h.app.library.root = Some(h.dir.join("CAD Files"));
+        h.app.library.current = h.app.library.root.clone().unwrap();
+        h.app.home.open = false;
+        for theme in ["light", "dark", "gruvbox-dark", "gruvbox-light"] {
+            h.app.preferences.theme = theme.into();
+            h.frames(3);
+            let ctx = h.ctx.clone();
+            let output = crate::test_support::frame(
+                &ctx,
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))), ..Default::default() },
+                |ui| {
+                    h.app.logic(ui.ctx());
+                    h.app.ui(ui);
+                },
+            );
+            let t = crate::theme::Tokens::get();
+            for label in ["CAD Files", "Insert Mesh", "Insert STEP"] {
+                let text = output
+                    .shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => Some(text),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {label} in {theme}"));
+                assert!(text.galley.job.sections.iter().all(|s| s.format.color == t.text), "{label} in {theme}");
+            }
+            for key in ["library:insert_mesh", "library:insert_step", "library:search_card", "library:refresh"] {
+                let rect = crate::scenario::rect_of(key).unwrap();
+                assert!(
+                    output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.rect == rect && r.stroke.color == t.border)),
+                    "{key} in {theme}"
+                );
+            }
+        }
     }
 
     #[test]
