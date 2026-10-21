@@ -1571,8 +1571,8 @@ fn colour_vision_sample(ui: &mut egui::Ui, t: &Tokens) {
                 // X along and Y up from one corner, as the view triad draws them.
                 p.rect_filled(cell, 3.0, t.viewport_top);
                 let o = cell.left_bottom() + egui::vec2(12.0, -7.0);
-                p.line_segment([o, egui::pos2(cell.right() - 10.0, o.y)], line(t.triad[0]));
-                p.line_segment([o, egui::pos2(o.x, cell.top() + 6.0)], line(t.triad[1]));
+                p.line_segment([o, egui::pos2(cell.right() - 10.0, o.y)], line(t.axis_x));
+                p.line_segment([o, egui::pos2(o.x, cell.top() + 6.0)], line(t.axis_y));
             }
             3 => {
                 // Dashed, as the flat pattern draws them.

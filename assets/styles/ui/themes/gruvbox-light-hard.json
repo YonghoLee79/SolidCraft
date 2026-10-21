@@ -86,16 +86,6 @@
     "bend_up": "#79740e",
     "bend_down": "#af3a03",
     "interference": "#cc241d",
-    "triad": [
-      "#cc241d",
-      "#98971a",
-      "#458588"
-    ],
-    "gizmo": [
-      "#cc241d",
-      "#98971a",
-      "#458588"
-    ],
     "app_bar_icon": [
       "#fbf1c7",
       "#a89984",
