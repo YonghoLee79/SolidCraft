@@ -1,4 +1,4 @@
-// Chamfer holes
+// Chamfer holes by size
 // @param min_dia Minimum diameter | 5 mm
 // @param max_dia Maximum diameter | 20 mm
 // @param chamfer Chamfer distance | 1 mm

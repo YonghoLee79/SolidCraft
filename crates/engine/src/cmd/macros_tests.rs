@@ -1,5 +1,5 @@
-//! `macro.*`: recording captures design commands, pause skips, replay rolls back a failure,
-//! and a Rhai macro can flatten a sheet, build a plate, or chamfer holes by size.
+//! `macro.*`: recording writes Rhai, pause skips, replay rolls back a failure,
+//! and the example macros build a fixture plate, flatten a sheet, or generate a gear.
 
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,6 +25,11 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
+fn play_example(s: &mut Session, name: &str, params: Value) -> Value {
+    s.macros.loaded = Some(example(name));
+    run(s, "macro.play", params)
+}
+
 #[test]
 fn recording_captures_design_commands_and_pause_skips() {
     let mut s = Session::default();
@@ -41,9 +46,10 @@ fn recording_captures_design_commands_and_pause_skips() {
     let stop = run(&mut s, "macro.stop", json!({}));
     assert_eq!(stop["steps"], 3, "{stop}");
     let src = s.macros.loaded.as_ref().map(|m| m.source.as_str()).unwrap_or("");
-    assert!(src.contains("select.set"), "{src}");
-    assert!(src.contains("solid.sphere"), "{src}");
-    assert!(src.contains("parameters.add"), "{src}");
+    assert!(src.contains("run(\"select.set\""), "{src}");
+    assert!(src.contains("run(\"solid.sphere\""), "{src}");
+    assert!(src.contains("run(\"parameters.add\""), "{src}");
+    assert!(!src.contains("\"command\""), "recording is Rhai, not JSON: {src}");
     assert!(error(&mut s, "macro.stop", json!({})).contains("nothing is being recorded"));
     assert!(error(&mut s, "macro.pause", json!({})).contains("nothing is being recorded"));
 }
@@ -157,7 +163,7 @@ fn saved_macros_write_and_hostile_names_are_refused() {
     let saved = run(&mut s, "macro.save", json!({"path": path.display().to_string()}));
     assert!(saved["steps"].as_u64().unwrap() >= 1, "{saved}");
     let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.contains("solid.box"), "{text}");
+    assert!(text.contains("run(\"solid.box\""), "{text}");
     for name in ["../evil.rhai", "a/b.rhai", "", "no extension"] {
         assert!(error(&mut s, "macro.save", json!({"name": name})).contains("name"), "{name}");
     }
@@ -179,86 +185,72 @@ fn chamfer_of_no_edges_is_a_no_op() {
 }
 
 #[test]
-fn the_start_parts_build() {
-    let mut holes = Session::default();
-    load_start(&mut holes, "chamfer-holes.start.json");
-    let found = run(&mut holes, "inspect.find_holes", json!({"max_diameter": "20 mm"}));
-    assert_eq!(found["count"], 3, "{found}");
-    let mut names: Vec<_> = found["holes"].as_array().unwrap().iter().filter_map(|h| h["feature"]["name"].as_str()).collect();
-    names.sort_unstable();
-    assert_eq!(names, ["Big", "Small", "Wide"], "{found}");
-
-    let mut sheet = Session::default();
-    load_start(&mut sheet, "flatten-export-dxf.start.json");
-    let m = run(&mut sheet, "inspect.measure", json!({}));
-    assert_eq!(m["body_count"], 1, "{m}");
-    assert_eq!(m["bodies"][0]["sheet_metal"], true, "{m}");
-
-    let mut cube = Session::default();
-    load_start(&mut cube, "batch-mass/cube.start.json");
-    assert!((volume(&mut cube) - 1000.0).abs() < 1e-6, "{}", volume(&mut cube));
-    let mut cyl = Session::default();
-    load_start(&mut cyl, "batch-mass/cylinder.start.json");
-    assert!(volume(&mut cyl) > 0.0, "{}", volume(&mut cyl));
-
-    let mut enclosure = Session::default();
-    load_start(&mut enclosure, "enclosure.start.json");
-    let m = run(&mut enclosure, "inspect.measure", json!({}));
-    assert!(m["body_count"].as_u64().unwrap() >= 1, "{m}");
-    let holes = run(&mut enclosure, "inspect.find_holes", json!({"min_diameter": "2 mm"}));
-    assert_eq!(holes["count"], 2, "two Ø2.5 bosses: {holes}");
-
-    let mut flange = Session::default();
-    load_start(&mut flange, "flange-blank.start.json");
-    let m = run(&mut flange, "inspect.measure", json!({}));
-    assert_eq!(m["body_count"], 1, "{m}");
-    let bolts = run(&mut flange, "inspect.find_holes", json!({"max_diameter": "12 mm"}));
-    assert_eq!(bolts["count"], 0, "no bolt holes: {bolts}");
-    let bore = run(&mut flange, "inspect.find_holes", json!({"min_diameter": "20 mm"}));
-    assert_eq!(bore["count"], 1, "the Ø24 bore: {bore}");
-}
-
-#[test]
 fn the_example_macros_run() {
     let mut s = Session::default();
-    s.macros.loaded = Some(example("plate-generator.rhai"));
-    let r = run(&mut s, "macro.play", json!({}));
+    let r = play_example(&mut s, "setup_fixtureplate.rhai", json!({}));
     assert_eq!(r["ran"], true, "{r}");
-    let found = run(&mut s, "inspect.find_holes", json!({"max_diameter": "7 mm"}));
-    assert_eq!(found["count"], 4, "a hole in each corner: {found}");
+    let info = run(&mut s, "document.inspect", json!({}));
+    let sketches = info["sketches"].as_array().unwrap();
+    assert!(sketches.iter().any(|sk| sk["name"] == "clearance_hole"), "{info}");
+
+    let r = play_example(&mut s, "example_fixtureplate.rhai", json!({"params": {"nx": 1, "ny": 1}}));
+    assert_eq!(r["ran"], true, "{r}");
+    let found = run(&mut s, "inspect.find_holes", json!({"type": "Hole"}));
+    assert_eq!(found["count"], 6, "six Ø8 holes: {found}");
     let v = volume(&mut s);
-    let expected = 120.0 * 80.0 * 8.0 - 4.0 * std::f64::consts::PI * 3.25_f64.powi(2) * 8.0;
-    assert!((v - expected).abs() < 4000.0, "{v} vs {expected} holes={found}");
+    let solid = 500.0 * 350.0 * 8.0;
+    assert!(v < solid, "holes and the C cut remove material: {v} vs {solid}");
+    assert!(v > solid * 0.7, "the tray is still mostly there: {v}");
 
     let mut holes = Session::default();
-    load_start(&mut holes, "chamfer-holes.start.json");
-    holes.macros.loaded = Some(example("chamfer-holes.rhai"));
+    run(&mut holes, "solid.box", json!({"length": 80, "width": 50, "height": 10, "name": "Plate"}));
+    run(&mut holes, "solid.hole", json!({"position": [15, 15, 10], "diameter": "4 mm", "name": "Small"}));
+    run(&mut holes, "solid.hole", json!({"position": [65, 15, 10], "diameter": "8 mm", "name": "Wide"}));
+    run(&mut holes, "solid.hole", json!({"position": [40, 35, 10], "diameter": "12 mm", "name": "Big"}));
     let before = volume(&mut holes);
-    let r = run(&mut holes, "macro.play", json!({}));
+    let r = play_example(&mut holes, "chamfer_holes.rhai", json!({}));
     assert_eq!(r["ran"], true, "{r}");
     assert!(volume(&mut holes) < before, "the holes between 5 mm and 20 mm were chamfered");
     let tiny = run(&mut holes, "inspect.find_holes", json!({"feature": "Small"}));
     assert_eq!(tiny["count"], 1, "the 4 mm hole is still a hole: {tiny}");
 
     let dir = temp_dir("dxf");
-    let mut s = Session::default();
-    load_start(&mut s, "flatten-export-dxf.start.json");
-    s.macros.loaded = Some(example("flatten-export-dxf.rhai"));
+    let mut sheet = Session::default();
+    let r = play_example(&mut sheet, "setup_flatten_export.rhai", json!({}));
+    assert_eq!(r["ran"], true, "{r}");
+    let m = run(&mut sheet, "inspect.measure", json!({}));
+    assert_eq!(m["body_count"], 1, "{m}");
+    assert_eq!(m["bodies"][0]["sheet_metal"], true, "{m}");
     let path = dir.join("flat.dxf");
-    let r = run(&mut s, "macro.play", json!({"params": {"path": path.display().to_string()}}));
+    let r = play_example(&mut sheet, "flatten_export_dxf.rhai", json!({"params": {"path": path.display().to_string()}}));
     assert_eq!(r["ran"], true, "{r}");
     let dxf = std::fs::read_to_string(&path).unwrap();
     std::fs::remove_dir_all(&dir).ok();
     assert!(dxf.contains("ENTITIES"), "{dxf}");
-}
 
-#[test]
-fn the_mounting_plate_even_spacing_count() {
-    let mut s = Session::default();
-    s.macros.loaded = Some(example("mounting-plate.rhai"));
-    run(&mut s, "macro.play", json!({"params": {"length": 200, "width": 150}}));
-    let found = run(&mut s, "inspect.find_holes", json!({"min_diameter": "8 mm"}));
-    assert_eq!(found["count"], 14, "even M8 ring: {found}");
+    let mut gear = Session::default();
+    let r = play_example(&mut gear, "gear_generator.rhai", json!({"params": {"teeth": 12, "gear_module": 2, "bore": 8, "thickness": 8}}));
+    assert_eq!(r["ran"], true, "{r}");
+    let m = run(&mut gear, "inspect.measure", json!({}));
+    assert_eq!(m["body_count"], 1, "{m}");
+    assert!(volume(&mut gear) > 0.0, "{}", volume(&mut gear));
+
+    let dir = temp_dir("stl");
+    let step = dir.join("cube.step");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cube = Session::default();
+    run(&mut cube, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut cube, "file.export", json!({"path": step.display().to_string()}));
+    let mut batch = Session::default();
+    let r = play_example(
+        &mut batch,
+        "batch_export_stl.rhai",
+        json!({"params": {"dir": dir.display().to_string(), "out_dir": out.display().to_string()}}),
+    );
+    assert_eq!(r["ran"], true, "{r}");
+    assert!(out.join("cube.stl").is_file(), "missing STL in {}", out.display());
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 fn examples_dir() -> String {
@@ -269,10 +261,4 @@ fn example(name: &str) -> super::macros::Macro {
     let file = format!("{}/{}", examples_dir(), name);
     let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file}: {e}"));
     super::macros::parse_rhai_macro("macro.open", &text).unwrap()
-}
-
-fn load_start(s: &mut Session, name: &str) {
-    let file = format!("{}/{}", examples_dir(), name);
-    let raw: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file}: {e}"))).unwrap();
-    s.run_script(&raw).unwrap_or_else(|e| panic!("{name}: {e}"));
 }

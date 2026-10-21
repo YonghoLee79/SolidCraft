@@ -31,9 +31,6 @@ pub struct Macro {
     /// Rhai source `macro.play` evaluates.
     #[serde(default)]
     pub source: String,
-    /// Commands captured while recording, before they are written as Rhai.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub commands: Vec<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,33 +65,28 @@ impl Recorder {
         if !self.recording || self.paused || self.playing || !recordable(id) {
             return;
         }
-        if self.captured.commands.len() >= MAX_STEPS {
+        if run_count(&self.captured.source) >= MAX_STEPS {
             self.recording = false;
             self.paused = false;
-            if !self.captured.commands.is_empty() {
-                self.captured.source = rhai_from_commands(&self.captured);
+            if run_count(&self.captured.source) > 0 {
                 self.loaded = Some(self.captured.clone());
             }
             return;
         }
-        let mut step = serde_json::Map::new();
-        step.insert("command".into(), json!(id));
-        if let Some(obj) = params.as_object() {
-            let mut p = obj.clone();
-            p.remove("live");
-            if !p.is_empty() {
-                step.insert("params".into(), Value::Object(p));
+        let params = match params.as_object() {
+            Some(obj) => {
+                let mut p = obj.clone();
+                p.remove("live");
+                if p.is_empty() { Value::Null } else { Value::Object(p) }
             }
-        }
-        self.captured.commands.push(Value::Object(step));
+            None => Value::Null,
+        };
+        append_run(&mut self.captured.source, id, &params);
     }
 
     pub fn steps(&self) -> usize {
-        if !self.captured.commands.is_empty() {
-            self.captured.commands.len()
-        } else {
-            self.loaded.as_ref().map(|m| m.source.matches("run(").count()).unwrap_or(0)
-        }
+        let n = run_count(&self.captured.source);
+        if n > 0 { n } else { self.loaded.as_ref().map(|m| run_count(&m.source)).unwrap_or(0) }
     }
 }
 
@@ -126,7 +118,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .noundo()
         .doc_only()
         .enabled(recording)
-        .params("→ {recording: false, steps}: the recording is turned into Rhai and loaded"),
+        .params("→ {recording: false, steps}: the recording is loaded as Rhai"),
     CommandSpec::new("macro.play", "Play Macro", play)
         .at("MACRO", "PLAYBACK")
         .icon("play")
@@ -193,8 +185,8 @@ fn ready(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn has_steps(s: &Session) -> std::result::Result<(), String> {
-    let loaded = s.macros.loaded.as_ref().is_some_and(|m| !m.source.is_empty() || !m.commands.is_empty());
-    if s.macros.captured.commands.is_empty() && !loaded { Err("nothing has been recorded yet".into()) } else { Ok(()) }
+    let loaded = s.macros.loaded.as_ref().is_some_and(|m| run_count(&m.source) > 0);
+    if run_count(&s.macros.captured.source) == 0 && !loaded { Err("nothing has been recorded yet".into()) } else { Ok(()) }
 }
 
 fn record(s: &mut Session, p: &Value) -> Result<Value> {
@@ -206,7 +198,13 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "`name` must be text"));
     }
     let name = str_(p, "name").map(str::to_string).or_else(|| Some(s.doc.name.clone()));
-    s.macros.captured = Macro { name, ..Default::default() };
+    let mut source = String::new();
+    if let Some(n) = name.as_ref().filter(|n| !n.is_empty()) {
+        source.push_str("// ");
+        source.push_str(n);
+        source.push('\n');
+    }
+    s.macros.captured = Macro { name, source, ..Default::default() };
     s.macros.recording = true;
     s.macros.paused = false;
     Ok(json!({"recording": true, "paused": false, "steps": 0}))
@@ -225,9 +223,8 @@ fn resume(s: &mut Session, _p: &Value) -> Result<Value> {
 fn stop(s: &mut Session, _p: &Value) -> Result<Value> {
     s.macros.recording = false;
     s.macros.paused = false;
-    let steps = s.macros.captured.commands.len();
+    let steps = run_count(&s.macros.captured.source);
     if steps > 0 {
-        s.macros.captured.source = rhai_from_commands(&s.macros.captured);
         s.macros.loaded = Some(s.macros.captured.clone());
     }
     Ok(json!({"recording": false, "paused": false, "steps": steps}))
@@ -307,7 +304,7 @@ pub(crate) fn parse_rhai_macro(cmd: &str, text: &str) -> Result<Macro> {
             description = Some(rest.to_string());
         }
     }
-    Ok(Macro { name, description, params, source: text.to_string(), commands: Vec::new() })
+    Ok(Macro { name, description, params, source: text.to_string() })
 }
 
 fn open(s: &mut Session, p: &Value) -> Result<Value> {
@@ -332,18 +329,12 @@ fn play(s: &mut Session, p: &Value) -> Result<Value> {
         (Some(src), None, None) => parse_rhai_macro(cmd, src)?,
         (None, Some(name), None) => parse_rhai_macro(cmd, &read_macro_file(cmd, &named(cmd, name)?)?)?,
         (None, None, Some(path)) => parse_rhai_macro(cmd, &read_macro_file(cmd, Path::new(path))?)?,
-        (None, None, None) => {
-            let mut m = s
-                .macros
-                .loaded
-                .clone()
-                .filter(|m| !m.source.is_empty() || !m.commands.is_empty())
-                .ok_or_else(|| bad(cmd, "nothing has been recorded; give source, a path or a saved macro's name"))?;
-            if m.source.is_empty() {
-                m.source = rhai_from_commands(&m);
-            }
-            m
-        }
+        (None, None, None) => s
+            .macros
+            .loaded
+            .clone()
+            .filter(|m| run_count(&m.source) > 0)
+            .ok_or_else(|| bad(cmd, "nothing has been recorded; give source, a path or a saved macro's name"))?,
         _ => return Err(bad(cmd, "give source, name or path — one of them")),
     };
     let given = match p.get("params") {
@@ -480,16 +471,13 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     if name.is_some() && path.is_some() {
         return Err(bad(cmd, "give a name or a path, not both"));
     }
-    let mut m = if !s.macros.captured.commands.is_empty() || !s.macros.captured.source.is_empty() {
+    let m = if run_count(&s.macros.captured.source) > 0 {
         s.macros.captured.clone()
-    } else if let Some(m) = s.macros.loaded.clone().filter(|m| !m.source.is_empty() || !m.commands.is_empty()) {
+    } else if let Some(m) = s.macros.loaded.clone().filter(|m| run_count(&m.source) > 0) {
         m
     } else {
         return Err(bad(cmd, "nothing has been recorded yet"));
     };
-    if m.source.is_empty() {
-        m.source = rhai_from_commands(&m);
-    }
     let path = match (name, path) {
         (Some(name), None) => {
             let name = name.as_str().ok_or_else(|| bad(cmd, "`name` must be text"))?;
@@ -545,39 +533,20 @@ fn delete(_: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"deleted": name}))
 }
 
-fn rhai_from_commands(m: &Macro) -> String {
-    let mut out = String::new();
-    if let Some(n) = &m.name {
-        out.push_str("// ");
-        out.push_str(n);
-        out.push('\n');
+fn run_count(src: &str) -> usize {
+    src.matches("run(").count()
+}
+
+fn append_run(source: &mut String, id: &str, params: &Value) {
+    source.push_str("run(\"");
+    source.push_str(id);
+    if params.is_null() || params.as_object().is_some_and(|o| o.is_empty()) {
+        source.push_str("\");\n");
+    } else {
+        source.push_str("\", ");
+        source.push_str(&json_to_rhai(params));
+        source.push_str(");\n");
     }
-    for p in &m.params {
-        out.push_str("// @param ");
-        out.push_str(&p.name);
-        if let Some(l) = &p.label {
-            out.push(' ');
-            out.push_str(l);
-        }
-        if let Some(d) = &p.default {
-            out.push_str(" | ");
-            match d {
-                Value::String(s) => out.push_str(s),
-                other => out.push_str(&other.to_string()),
-            }
-        }
-        out.push('\n');
-    }
-    for step in &m.commands {
-        let id = step.get("command").and_then(Value::as_str).unwrap_or("");
-        let params = step.get("params").cloned().unwrap_or(Value::Null);
-        out.push_str("run(\"");
-        out.push_str(id);
-        out.push_str("\", ");
-        out.push_str(&json_to_rhai(&params));
-        out.push_str(");\n");
-    }
-    out
 }
 
 fn json_to_rhai(v: &Value) -> String {

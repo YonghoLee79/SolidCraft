@@ -77,7 +77,7 @@ fn play_button(app: &mut SolveApp) {
     let loaded = app.session.macros.loaded.clone();
     match loaded {
         Some(m) if !m.params.is_empty() => crate::macro_run::open(app),
-        Some(m) if !m.source.is_empty() || !m.commands.is_empty() => play(app, json!({})),
+        Some(m) if !m.source.is_empty() => play(app, json!({})),
         _ => {
             app.pick_open_for(&["rhai"], |app, path| {
                 let Some(path) = path else { return };

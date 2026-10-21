@@ -1,9 +1,0 @@
-{
-  "commands": [
-    {"command": "sketch.create", "params": {"plane": "XY", "name": "Base"}},
-    {"command": "sketch.rectangle.two_point", "params": {"p0": [0, 0], "p1": [50, 30]}},
-    {"command": "sketch.finish", "params": {}},
-    {"command": "sheet.flange", "params": {"sketch": "Base"}},
-    {"command": "sheet.flange", "params": {"edges": [[50, 0, 2.5]], "height": 20}}
-  ]
-}

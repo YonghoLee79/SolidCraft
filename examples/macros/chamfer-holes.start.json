@@ -1,8 +1,0 @@
-{
-  "commands": [
-    {"command": "solid.box", "params": {"length": 80, "width": 50, "height": 10, "name": "Plate"}},
-    {"command": "solid.hole", "params": {"position": [15, 15, 10], "diameter": "4 mm", "name": "Small"}},
-    {"command": "solid.hole", "params": {"position": [65, 15, 10], "diameter": "8 mm", "name": "Wide"}},
-    {"command": "solid.hole", "params": {"position": [40, 35, 10], "diameter": "12 mm", "name": "Big"}}
-  ]
-}
