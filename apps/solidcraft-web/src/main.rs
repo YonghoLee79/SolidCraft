@@ -580,6 +580,9 @@ mod web {
                             // (the file keeps its handle, so Save writes back to it); otherwise,
                             // and for inserting STEP or meshes, the browser's files window.
                             pick_open: Some(Box::new(move |exts: &[&str]| {
+                                if disk::opens_image(exts) {
+                                    return Box::pin(disk::pick_image(&opener, exts));
+                                }
                                 if disk::handles_open(exts) {
                                     return Box::pin(disk::pick_open(&opener));
                                 }
