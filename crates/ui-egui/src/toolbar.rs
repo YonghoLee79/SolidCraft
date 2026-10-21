@@ -555,8 +555,12 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     close = true;
                 }
                 ui.separator();
-                if item_if(ui, "Save as mesh…", "", "mesh_export", shown) {
-                    app.start("file.save_mesh");
+                if item_if(ui, "Export STL…", "", "mesh_export", shown) {
+                    crate::dialogs_save_mesh::start_with_format(app, "stl");
+                    close = true;
+                }
+                if item_if(ui, "Export 3MF…", "", "mesh_export", shown) {
+                    crate::dialogs_save_mesh::start_with_format(app, "3mf");
                     close = true;
                 }
                 if item_if(ui, "Export STEP…", "", "export", shown) {
@@ -771,6 +775,12 @@ fn ribbon_text(ui: &egui::Ui, at: egui::Pos2, text: &str, size: f32, color: Colo
     ui.painter().galley(origin, galley, color);
 }
 
+/// SKETCH while editing a sketch and SHEET METAL while a sheet body is active take the contextual
+/// tab style; SHEET METAL is an ordinary tab otherwise.
+fn contextual_tab(app: &SolveApp, tab: &str) -> bool {
+    tab == "SKETCH" || (tab == "SHEET METAL" && crate::workspace::sheet_body(app).is_some())
+}
+
 fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
     let t = Tokens::get();
     let tabs = crate::workspace::visible_tabs(app);
@@ -783,7 +793,7 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
         .collect();
     let tabs_width: f32 = widths.iter().sum::<f32>()
         + tabs.len().saturating_sub(1) as f32 * 2.0
-        + tabs.iter().filter(|tab| matches!(**tab, "SKETCH" | "SHEET METAL")).count() as f32 * 6.0;
+        + tabs.iter().filter(|tab| contextual_tab(app, tab)).count() as f32 * 6.0;
     let search_width = crate::ui_kit::CommandSearch::closed_width(ui.ctx());
     // The first tab and the search field sit the same distance from the card's top, left and right
     // edges, so their outer corners are concentric with the card's corners.
@@ -813,7 +823,7 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
                 let (all, _) = ui.allocate_exact_size(vec2(tabs_width, TAB_ROW_HEIGHT), Sense::hover());
                 let mut x = all.left();
                 for (tab, width) in tabs.into_iter().zip(widths) {
-                    let contextual = matches!(tab, "SKETCH" | "SHEET METAL");
+                    let contextual = contextual_tab(app, tab);
                     if contextual {
                         x += 6.0;
                     }
@@ -1000,11 +1010,13 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             })
             .collect();
         let right = r.right();
-        // Keep the Sketch exit group at the far right and reachable at every width.
+        // The Sketch exit group follows the last sketch panel, and is always kept room for so it
+        // stays reachable at every width; when panels go into the » menu it moves to the far right.
         let finish_plan = sizes.last().filter(|_| tab == "SKETCH").map(Plan::full);
         let finish_width = finish_plan.as_ref().map_or(0.0, |p| p.width().max(80.0));
         let normal_count = sizes.len().saturating_sub(usize::from(finish_plan.is_some()));
         let mut plans = fit(sizes.get(..normal_count).unwrap_or_default(), right - 4.0 - px - finish_width);
+        let finish_right = plans.iter().any(|p| p.fit == Fit::More);
         plans.extend(finish_plan);
         crate::scenario::publish_count("toolbar_collapsed", plans.iter().filter(|p| p.fit == Fit::Collapsed).count() as f64);
         crate::scenario::publish_count("toolbar_more", plans.iter().filter(|p| p.fit == Fit::More).count() as f64);
@@ -1022,7 +1034,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             let trimmed = plan.shown < plan.widths.len();
             let finish = tab == "SKETCH" && *panel == "FINISH SKETCH";
             let width = if finish { finish_width } else { plan.width() };
-            if finish {
+            if finish && finish_right {
                 px = right - finish_width;
                 painter.line_segment([pos2(px, top), pos2(px, r.bottom() - 1.0)], Stroke::new(1.0, t.border));
             }
@@ -1524,6 +1536,10 @@ fn ribbon_tooltip(app: &SolveApp, response: egui::Response, command: &solidcraft
         if let Some(description) = description {
             ui.add(egui::Label::new(description).wrap());
         }
+        // The tool's own help, when it has one (#2758).
+        if let Some(help) = crate::command_help::help(command.id) {
+            ui.add(egui::Label::new(egui::RichText::new(help).color(t.text_dim)).wrap());
+        }
         if let Some(reason) = disabled {
             ui.add(egui::Label::new(egui::RichText::new(reason).color(t.text_dim)).wrap());
         }
@@ -1625,9 +1641,11 @@ fn dropdown_row(app: &SolveApp, ui: &mut egui::Ui, c: &'static solidcraft_engine
     if pin.on_hover_text(tip).clicked() {
         return RowAction::TogglePin;
     }
-    let resp = match &info.disabled_reason {
-        Some(why) if !info.enabled => resp.on_hover_text(why),
-        _ => resp,
+    // A disabled row says why; a documented command also shows its help (#2758).
+    let reason = info.disabled_reason.as_deref().filter(|_| !info.enabled);
+    let resp = match crate::command_help::row_tip(c.id, &label, c.shortcut, reason) {
+        Some(tip) => crate::command_help::tooltip(resp, c.id, tip),
+        None => resp,
     };
     if resp.secondary_clicked() {
         return RowAction::Menu(resp.interact_pointer_pos().unwrap_or(rect.left_bottom()));
@@ -1772,6 +1790,9 @@ pub(crate) fn selection_filter(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
+/// Two Esc presses within this many seconds finish the open sketch.
+pub const ESCAPE_TWICE_S: f64 = 0.4;
+
 /// Global keyboard shortcuts (when no text field has focus).
 pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     if app.file_load.busy() {
@@ -1800,6 +1821,10 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     }
     for k in keys {
         use egui::Key;
+        // Only Esc pressed twice in a row finishes a sketch: any other key in between resets it.
+        if k != Key::Escape {
+            app.last_escape = None;
+        }
         if shown && crate::navigation::view_key(app, ctx, k, mods) {
             continue;
         }
@@ -1830,6 +1855,29 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         match k {
             Key::Escape => {
                 app.esc_handled = true;
+                // Two quick presses in a sketch finish it (keeping it, like Finish Sketch);
+                // the first one has already cancelled whatever was active.
+                let now = ctx.input(|i| i.time);
+                let again = app.last_escape.is_some_and(|t| now - t <= ESCAPE_TWICE_S);
+                app.last_escape = Some(now);
+                // Not while a tool is still out (its first Esc only ended a chain): this press
+                // puts it down, and the next quick one finishes.
+                if again
+                    && app.tool.is_none()
+                    && app.dialog.is_none()
+                    && let Some(sketch) = app.session.active_sketch
+                {
+                    app.last_escape = None;
+                    // A sketch left blank is taken away instead, in one undo step, so no empty
+                    // sketch stays behind.
+                    let blank = app.session.doc.sketch(sketch).is_ok_and(crate::sketch_palette::is_blank);
+                    let depth = app.session.undo.len();
+                    app.finish_sketch();
+                    if blank && app.session.active_sketch.is_none() && app.run("timeline.delete", json!({ "feature": sketch.to_string() })).is_ok() {
+                        app.session.undo.truncate(depth + 1);
+                    }
+                    continue;
+                }
                 if crate::sketch_text_move::cancel_drag(app) {
                     continue;
                 }
@@ -1843,8 +1891,8 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                     app.tree.picked_joints.clear();
                     let _ = app.run("select.clear", json!({}));
                 }
-                // An open sketch with nothing left to cancel stays open (#1804). Finish Sketch
-                // is what leaves it, so a second Escape after putting a tool down is harmless.
+                // A single Esc with nothing left to cancel keeps the sketch open (#1804); a quick
+                // second press finishes it (above).
             }
             Key::S if !mods.shift && !mods.alt => {
                 app.start("ui.palette");
@@ -1896,6 +1944,27 @@ mod header_report_tests {
         assert!(h.dir.join("Exported copy.json").is_file());
         h.app.run("file.save", json!({})).unwrap();
         assert!(!solidcraft_engine::io::is_design_container(&std::fs::read(saved).unwrap()), "subsequent Save keeps a .json choice");
+    }
+
+    /// File › Export STL… and Export 3MF… both open the Save as mesh dialog with their format
+    /// chosen (whatever was used last), and command search finds the export by format or purpose.
+    #[test]
+    fn file_menu_has_export_stl_and_3mf_that_open_the_mesh_dialog_with_that_format() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
+        h.app.preferences.save_mesh_format = "3mf".into();
+        for (item, format) in [("Export STL…", "stl"), ("Export 3MF…", "3mf")] {
+            h.frames(3);
+            h.step(&json!({"click":{"handle":"appbar:file"}})).unwrap();
+            h.step(&json!({"widget": item})).unwrap();
+            let Some(crate::dialogs::Kind::SaveMesh(k)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("{item}: no Save as mesh dialog") };
+            assert_eq!(k.format_name(), format, "{item}");
+            crate::dialogs::cancel(&mut h.app);
+        }
+        for q in ["3mf", "stl", "export 3mf", "print"] {
+            let found = crate::shortcut_box::search(&h.app, q);
+            assert!(found.iter().any(|r| r.0 == "file.save_mesh"), "{q}: {:?}", found.iter().map(|r| r.0).collect::<Vec<_>>());
+        }
     }
 
     /// The browser build's File > Download design hands the open design to the host as a
@@ -2349,7 +2418,7 @@ mod home_tests {
     fn needs_design_tooltip_is_translated() {
         let english = crate::i18n::Locale::for_language("en").text("ui.needs_design");
         assert!(english.contains("{command}"));
-        for catalog in crate::i18n::LOCALES.iter().filter(|c| c.id != "en") {
+        for catalog in crate::i18n::LOCALES.iter().filter(|c| !matches!(c.id, "en" | "en-GB")) {
             let text = crate::i18n::Locale::for_language(catalog.id).text("ui.needs_design");
             assert!(text != english && text.contains("{command}"), "{} must translate ui.needs_design", catalog.id);
         }
@@ -2712,7 +2781,8 @@ mod fill_width_tests {
                 let at = format!("{tab} at {w}");
                 let bar = crate::scenario::rect_of("toolbar").unwrap();
                 let finish = crate::scenario::rect_of("panel:SKETCH:FINISH SKETCH");
-                let right = finish.map_or(bar.right() - 4.0, |f| f.left() - 4.0);
+                // The room for the other panels: the bar less the Finish group kept for it.
+                let right = bar.right() - 4.0 - finish.map_or(0.0, |f| f.width() + 4.0);
                 let count = |name: &str| crate::scenario::count_of(name).unwrap_or(-1.0);
                 let (collapsed, trimmed, more) = (count("toolbar_collapsed"), count("toolbar_trimmed"), count("toolbar_more"));
                 let lists = crate::toolbar_custom::panel_lists(tab);
@@ -2759,7 +2829,11 @@ mod fill_width_tests {
                 }
                 if sketch {
                     let finish = finish.expect("Finish group stays visible");
-                    assert_eq!(finish.right(), bar.right(), "{at}: Finish stays anchored right");
+                    if more > 0.0 {
+                        assert_eq!(finish.right(), bar.right(), "{at}: Finish moves right of the » menu");
+                    } else {
+                        assert!((finish.left() - end).abs() < 0.5, "{at}: Finish follows the last panel ({} vs {end})", finish.left());
+                    }
                     assert!(crate::scenario::handle_at("button:sketch.finish").is_some(), "{at}: Finish stays reachable");
                 }
                 // The assistant lives in the title bar; visible ribbon tabs fit before search.

@@ -1177,6 +1177,7 @@ pub(crate) fn pick_cached(app: &mut SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit
     app.dialog.as_ref().and_then(|d| d.active_input()).map(|i| i.accept).hash(&mut h);
     app.session.visibility.hidden_bodies.hash(&mut h);
     app.session.visibility.hidden_occurrences.hash(&mut h);
+    origin_point_shown(app).hash(&mut h);
     app.perspective_view().hash(&mut h);
     (proj.rect.width().to_bits(), proj.rect.height().to_bits()).hash(&mut h);
     crate::sketch_display::projection_key(proj, app.viewport.pixels_per_point()).hash(&mut h);
@@ -1415,6 +1416,16 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
             if dd < 6.0 && beste.wants(dd) && visible(ray_segment_closest(o, d, *p0, *p1)) {
                 beste.offer(dd, Hit::Edge { body: b.name.clone(), index: ei, mid: polyline_mid(e) });
             }
+        }
+    }
+    // The origin point, for an input that takes it: a vertex of no body, drawn over everything.
+    if app.dialog.as_ref().and_then(|d| d.active_input()).is_some_and(|i| i.accept & crate::selection::ORIGIN != 0)
+        && origin_point_shown(app)
+        && let Some(sp) = proj.to_screen(Vec3::ZERO)
+    {
+        let dd = sp.distance(pos);
+        if dd < 7.0 && bestv.wants(dd) {
+            bestv.offer(dd, Hit::Vertex { body: String::new(), point: Vec3::ZERO });
         }
     }
     hits.extend(bestv.hits());
@@ -3369,11 +3380,15 @@ fn box_select(app: &mut SolveApp, proj: &Proj, bx: BoxSel, add: bool) {
     let _ = app.run("select.set", json!({"items": items, "add": add}));
 }
 
+/// Whether the origin point is drawn (the Origin shown and its point not hidden).
+fn origin_point_shown(app: &SolveApp) -> bool {
+    app.origin_visible() && !app.session.visibility.hidden_origin.iter().any(|h| h == "O")
+}
+
 /// Screen-space dots: the origin point, and hovered or selected body vertices.
 fn points_2d(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     let t = Tokens::get();
-    if app.origin_visible()
-        && !app.session.visibility.hidden_origin.iter().any(|h| h == "O")
+    if origin_point_shown(app)
         && let Some(o) = proj.to_screen(Vec3::ZERO)
     {
         painter.circle(o, 4.5, t.origin_point, Stroke::new(1.0, Color32::from_gray(110)));
