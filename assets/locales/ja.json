@@ -1,4 +1,8 @@
 {
+  "Flip left to right": "左右反転",
+  "Flip top to bottom": "上下反転",
+  "Scale X": "尺度 X",
+  "Scale Y": "尺度 Y",
   "0 turns it off": "0で無効化",
   "1. Open GitHub draft below, then paste the report copied to your clipboard.": "1. 下のボタンでGitHubの下書きを開き、クリップボードにコピーされたレポートを貼り付けます。",
   "1. Open GitHub draft below. Your title and report will be filled in.": "1. 下のボタンでGitHubの下書きを開きます。タイトルとレポートは入力済みです。",

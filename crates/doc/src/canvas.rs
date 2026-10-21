@@ -22,8 +22,15 @@ pub struct Canvas {
     pub plane: PlaneRef,
     /// Centre of the image on the plane (plane coordinates, mm).
     pub center: Vec2,
-    /// Width on the plane (mm); the height follows the image's aspect.
+    /// Width on the plane before the sideways stretch (mm); the height follows the image's
+    /// aspect. The width shown is `width * scale_x` (see `size`).
     pub width: f64,
+    /// Sideways stretch of the shown width.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale_x: f64,
+    /// Lengthways stretch of the shown height.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale_y: f64,
     /// Rotation on the plane (radians).
     #[serde(default)]
     pub angle: f64,
@@ -32,6 +39,9 @@ pub struct Canvas {
     /// Mirrored left to right.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub flip: bool,
+    /// Mirrored top to bottom.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_v: bool,
     #[serde(default = "yes")]
     pub visible: bool,
     /// The component it belongs to (its plane is in that component's frame, so it moves with
@@ -44,6 +54,14 @@ fn is_root(c: &u64) -> bool {
     *c == 0
 }
 
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
+}
+
+fn one() -> f64 {
+    1.0
+}
+
 fn half() -> f64 {
     0.5
 }
@@ -52,18 +70,25 @@ fn yes() -> bool {
 }
 
 impl Canvas {
-    pub fn height(&self) -> f64 {
+    /// Shown width and height on the plane (mm), with the stretches applied.
+    pub fn size(&self) -> Vec2 {
         let [w, h] = self.pixels;
-        if w == 0 { self.width } else { self.width * f64::from(h) / f64::from(w) }
+        let shown = self.width * self.scale_x;
+        if w == 0 { Vec2::new(shown, shown) } else { Vec2::new(shown, self.width * f64::from(h) / f64::from(w) * self.scale_y) }
+    }
+    pub fn height(&self) -> f64 {
+        self.size().y
     }
     /// The four corners on the plane (plane coordinates): bottom-left, bottom-right, top-right,
-    /// top-left of the image.
+    /// top-left of the image; the flips swap them about the centre.
     pub fn corners(&self) -> [Vec2; 4] {
-        let (hw, hh) = (self.width / 2.0, self.height() / 2.0);
+        let size = self.size();
+        let (hw, hh) = (size.x / 2.0, size.y / 2.0);
         let (s, c) = self.angle.sin_cos();
         let rot = |x: f64, y: f64| self.center + Vec2::new(x * c - y * s, x * s + y * c);
         let f = if self.flip { -1.0 } else { 1.0 };
-        [rot(-hw * f, -hh), rot(hw * f, -hh), rot(hw * f, hh), rot(-hw * f, hh)]
+        let g = if self.flip_v { -1.0 } else { 1.0 };
+        [rot(-hw * f, -hh * g), rot(hw * f, -hh * g), rot(hw * f, hh * g), rot(-hw * f, hh * g)]
     }
     /// Corners on `plane` (in whatever frame the plane is given).
     pub fn world_corners(&self, plane: &Plane) -> [Vec3; 4] {
@@ -162,6 +187,40 @@ pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A canvas as saved before the stretches and the top-to-bottom flip.
+    fn old_canvas_json(width: f64) -> serde_json::Value {
+        serde_json::json!({
+            "id": 1, "name": "Canvas1", "format": "png", "data": "", "pixels": [400, 200],
+            "plane": {"type": "origin", "name": "XY"}, "center": [0.0, 0.0], "width": width,
+            "angle": 0.0, "opacity": 0.5, "visible": true
+        })
+    }
+
+    #[test]
+    fn an_older_canvas_loads_unstretched_and_saves_as_before() {
+        let c: Canvas = serde_json::from_value(old_canvas_json(80.0)).unwrap();
+        assert_eq!((c.scale_x, c.scale_y, c.flip_v), (1.0, 1.0, false));
+        assert_eq!(c.size(), Vec2::new(80.0, 40.0));
+        // Defaults are not written back, so an untouched canvas saves exactly as before.
+        assert_eq!(serde_json::to_value(&c).unwrap(), old_canvas_json(80.0));
+    }
+
+    #[test]
+    fn size_follows_the_stretches_and_flips_mirror_the_corners() {
+        let mut c: Canvas = serde_json::from_value(old_canvas_json(100.0)).unwrap();
+        c.scale_x = 1.5;
+        c.scale_y = 0.5;
+        assert_eq!(c.size(), Vec2::new(150.0, 25.0));
+        assert_eq!(c.height(), 25.0);
+        c.center = Vec2::new(10.0, 0.0);
+        let [bl, ..] = c.corners();
+        assert_eq!(bl, Vec2::new(-65.0, -12.5));
+        c.flip = true;
+        assert_eq!(c.corners()[0], Vec2::new(85.0, -12.5));
+        c.flip_v = true;
+        assert_eq!(c.corners()[0], Vec2::new(85.0, 12.5));
+    }
 
     #[test]
     fn base64_round_trip_and_headers() {

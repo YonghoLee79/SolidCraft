@@ -38,20 +38,34 @@ pub(crate) fn panel(app: &mut SolveApp, ctx: &egui::Context) {
                 ui_kit::row(ui, crate::i18n::tr_label("Distance"), |ui| ui_kit::length_field(ui, &mut m.distance, &units, decimals));
                 m.distance = m.distance.clamp(0.001, 1e6);
             } else {
-                let (mut x, mut y, mut w, mut ang, mut op, mut flip) = (c.center.x, c.center.y, c.width, c.angle.to_degrees(), c.opacity, c.flip);
+                // Width is the width shown, stretch included.
+                let (mut x, mut y, mut w, mut ang, mut op) = (c.center.x, c.center.y, c.size().x, c.angle.to_degrees(), c.opacity);
+                let (mut sx, mut sy, mut flip, mut flip_v) = (c.scale_x, c.scale_y, c.flip, c.flip_v);
                 let mut changed = false;
                 changed |= ui_kit::row(ui, crate::i18n::tr_label("Center X"), |ui| ui_kit::length_field(ui, &mut x, &units, decimals)).changed();
                 changed |= ui_kit::row(ui, crate::i18n::tr_label("Center Y"), |ui| ui_kit::length_field(ui, &mut y, &units, decimals)).changed();
-                changed |= ui_kit::row(ui, crate::i18n::tr_label("Width"), |ui| ui_kit::length_field(ui, &mut w, &units, decimals)).changed();
+                let width = ui_kit::row(ui, crate::i18n::tr_label("Width"), |ui| ui_kit::length_field(ui, &mut w, &units, decimals)).changed();
+                let stretch = ui_kit::row(ui, crate::i18n::tr_label("Scale X"), |ui| ui_kit::scalar_field(ui, &mut sx, 0.01..=100.0)).changed()
+                    | ui_kit::row(ui, crate::i18n::tr_label("Scale Y"), |ui| ui_kit::scalar_field(ui, &mut sy, 0.01..=100.0)).changed();
                 changed |= ui_kit::row(ui, crate::i18n::tr_label("Angle"), |ui| ui_kit::angle_field(ui, &mut ang)).changed();
                 changed |=
                     ui_kit::row(ui, crate::i18n::tr_label("Opacity"), |ui| ui_kit::slider(ui, &mut op, 0.0..=1.0, Default::default())).changed();
-                if ui_kit::checkbox_row(ui, "flip", crate::i18n::tr_label("Flip"), flip) {
+                if ui_kit::checkbox_row(ui, "flip", crate::i18n::tr_label("Flip left to right"), flip) {
                     flip = !flip;
                     changed = true;
                 }
-                if changed {
-                    edit = Some(json!({ "canvas": name, "center": [x, y], "width": w.clamp(0.01, 1e6), "angle": ang, "opacity": op, "flip": flip }));
+                if ui_kit::checkbox_row(ui, "flip_v", crate::i18n::tr_label("Flip top to bottom"), flip_v) {
+                    flip_v = !flip_v;
+                    changed = true;
+                }
+                if changed || width || stretch {
+                    let mut p = json!({ "canvas": name, "center": [x, y], "angle": ang, "opacity": op, "flip": flip, "flip_v": flip_v, "scale_x": sx, "scale_y": sy });
+                    // A new width sets the size; a new stretch keeps the unstretched size, so the
+                    // shown width follows Scale X.
+                    if width {
+                        p["width"] = json!(w.clamp(0.01, 1e6));
+                    }
+                    edit = Some(p);
                 }
             }
         });

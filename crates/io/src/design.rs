@@ -1004,9 +1004,12 @@ mod tests {
             plane: solidcraft_doc::PlaneRef::Origin { name: "XY".into() },
             center: Vec2::new(0.0, 0.0),
             width: 10.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
             angle: 0.0,
             opacity: 0.5,
             flip: false,
+            flip_v: false,
             visible: true,
             component: 0,
         });
