@@ -194,8 +194,9 @@ impl Builder {
         let sense = p.get(4).and_then(Param::as_bool).unwrap_or(true);
         let g = geom::curve(cx, rid(p.get(3), "edge geometry")?, 0)?;
         let closed = vs_id == ve_id;
-        let pieces = guard("step edge", || geom::edge_pieces(&g, vs.point(), ve.point(), sense, closed, cx.tol).map_err(crate::KernelError::Failed))
-            .map_err(|e| e.to_string())?;
+        let pieces =
+            guard("step edge", || geom::edge_pieces(&g, vs.point(), ve.point(), sense, closed, cx.tol, cx.snap).map_err(crate::KernelError::Failed))
+                .map_err(|e| e.to_string())?;
         let n = pieces.len();
         let mut out = Vec::with_capacity(n);
         let mut cur = vs.clone();
@@ -503,7 +504,7 @@ impl Builder {
             origin = vec![file_face; patches.len()];
             out = patches;
         }
-        let out = super::split::split_bands(out, &mut origin, failed);
+        let out = super::split::split_bands(out, &mut origin, failed, cx.tol);
         Ok((out.into(), closed, read, origin))
     }
 }
@@ -640,6 +641,23 @@ pub(crate) fn read_item(cx: &Ctx, id: u64) -> R<BrepOut> {
     });
     if checked.is_err() {
         closed = false;
+    }
+    // A void's faces face into the cavity, out of the material: it encloses volume of the
+    // opposite sign to the outer shell. The ORIENTED_CLOSED_SHELL flag alone doesn't say so:
+    // some exporters write .F. over a shell already facing into the cavity (#3730), others .T.
+    // A void enclosing volume of the outer shell's sign is turned inside out.
+    if e.name() == "BREP_WITH_VOIDS"
+        && checked.is_ok()
+        && let Some((outer, voids)) = shells.split_first_mut()
+        && let Some(outside) = crate::body::shell_volume(outer)
+    {
+        for void in voids {
+            if crate::body::shell_volume(void).is_some_and(|v| v * outside > 0.0) {
+                for face in void.face_iter_mut() {
+                    face.invert();
+                }
+            }
+        }
     }
     Ok(BrepOut { solid: mt::Solid::new_unchecked(shells), failed, closed, file_faces, face_origin })
 }
