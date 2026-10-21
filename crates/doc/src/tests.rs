@@ -280,6 +280,44 @@ fn a_cut_of_several_bodies_cuts_again_only_those_that_changed() {
     assert_eq!(summary(&st), from_scratch(&doc));
 }
 
+/// A parameter that drives the first feature of the timeline, with the bodies after it each cut
+/// by a combine: only the first body and its cut are recomputed, every other cut is restored.
+#[test]
+fn a_combine_reads_only_its_target_and_tools() {
+    let mut doc = Document::new("rows");
+    doc.set_param("w", "20 mm", None, None).unwrap();
+    let c = doc.add_component(Some("Rows"), 0).unwrap();
+    for i in 0..3 {
+        let x = (i * 30) as f64;
+        let (body, tool, cut) = (format!("Body{i}"), format!("Tool{i}"), format!("Cut{i}"));
+        let length = if i == 0 { "w".to_string() } else { "20".to_string() };
+        add_in(
+            &mut doc,
+            c,
+            &body,
+            serde_json::json!({"type": "box", "corner": [x.to_string(), "0", "0"], "length": length, "width": "15", "height": "5", "operation": "new_body"}),
+        );
+        add_in(
+            &mut doc,
+            c,
+            &tool,
+            serde_json::json!({"type": "cylinder", "base": [(x + 7.0).to_string(), "7.5", "-1"], "axis": [0.0, 0.0, 1.0], "radius": "1.5", "height": "7", "operation": "new_body"}),
+        );
+        for f in doc.features.iter_mut().filter(|f| f.name == body || f.name == tool) {
+            f.body_names = vec![f.name.clone()];
+        }
+        add_in(&mut doc, c, &cut, serde_json::json!({"type": "combine", "target": body, "tools": [tool], "operation": "cut"}));
+    }
+    let mut m = Model::new();
+    m.evaluate(&doc);
+    assert!(m.results.iter().all(|r| r.error.is_none()), "{:?}", m.results.iter().map(|r| &r.error).collect::<Vec<_>>());
+    assert_eq!(m.last_recomputed, 9);
+    doc.set_param("w", "32 mm", None, None).unwrap();
+    m.evaluate(&doc);
+    assert_eq!((m.last_recomputed, m.last_restored), (2, 7), "the first body and its cut");
+    assert_eq!(summary(&m.state()), from_scratch(&doc));
+}
+
 #[test]
 fn box_fillet_cut_timeline() {
     let (mut doc, _) = plate_doc();

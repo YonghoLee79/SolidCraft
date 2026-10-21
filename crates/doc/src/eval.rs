@@ -1450,6 +1450,11 @@ impl Feature {
                 bodies(read)
             }
             FeatureKind::Move { bodies: moved, .. } => bodies(named(&crate::plain::<String, _>(moved))?),
+            FeatureKind::Combine { target, tools, .. } => {
+                let mut names = vec![target.0.clone()];
+                names.extend(crate::plain::<String, _>(tools));
+                bodies(named(&names)?)
+            }
             FeatureKind::Sketch { plane, sketch } => (fixed_plane(plane) && sketch.links.is_empty()).then(Reads::default),
             FeatureKind::Extrude { sketch: s, extent, operation: Operation::NewBody, .. }
                 if extent.to.is_none() && extent.from.is_none() && !extent.through_all && extent.taper.is_none() =>
