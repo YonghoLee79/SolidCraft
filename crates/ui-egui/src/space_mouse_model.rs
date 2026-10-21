@@ -196,23 +196,29 @@ pub(crate) fn rest(ui: &mut egui::Ui, kind: Kind) {
 
 const CORNER: egui::Vec2 = egui::vec2(160.0, 120.0);
 
-/// Where the corner picture sits: the lower left of `view`, or, when `above` (the History bar)
-/// would cover it, just above that.
-pub(crate) fn corner_rect(view: egui::Rect, above: Option<egui::Rect>) -> egui::Rect {
+/// Where the corner picture sits in `view`: `Current` and `Left` at its lower left, `Right` at its
+/// lower right, each a margin in from the edge. Any of `obstacles` (the History bar, the navigation
+/// bar) that would cover it moves it up to just above them, and it stays inside `view` sideways.
+pub(crate) fn corner_rect(view: egui::Rect, position: crate::prefs::SpaceMouseGhost, obstacles: &[egui::Rect]) -> egui::Rect {
+    use crate::prefs::SpaceMouseGhost;
     const MARGIN: f32 = 12.0;
-    let rect = egui::Rect::from_min_size(view.left_bottom() + egui::vec2(MARGIN, -MARGIN - CORNER.y), CORNER);
-    match above {
-        Some(bar) if bar.is_positive() && bar.intersects(rect) => rect.translate(egui::vec2(0.0, bar.top() - MARGIN - rect.bottom())),
-        _ => rect,
+    let x = match position {
+        SpaceMouseGhost::Current | SpaceMouseGhost::Left => view.left() + MARGIN,
+        SpaceMouseGhost::Right => (view.right() - MARGIN - CORNER.x).max(view.left() + MARGIN),
+    };
+    let mut rect = egui::Rect::from_min_size(egui::pos2(x, view.bottom() - MARGIN - CORNER.y), CORNER);
+    for _ in 0..obstacles.len() {
+        let Some(blocking) = obstacles.iter().find(|bar| bar.is_positive() && bar.intersects(rect)) else { break };
+        rect = rect.translate(egui::vec2(0.0, blocking.top() - MARGIN - rect.bottom()));
     }
+    rect
 }
 
-/// The device in the 3D view's lower left corner, see-through so it doesn't hide the design:
+/// The device in a corner of the 3D view (`rect`, from `corner_rect`), see-through so it doesn't hide the design:
 /// cap or trackball as `calibration` says, moving as the device does. A device without a
 /// calibration is read as it reports: each axis as a share of the full deflection a reading is
 /// scaled to (`FULL_SCALE`).
-pub(crate) fn corner(ui: &mut egui::Ui, view: egui::Rect, above: Option<egui::Rect>, calibration: Option<&Calibration>, raw: [i16; 6]) {
-    let rect = corner_rect(view, above);
+pub(crate) fn corner(ui: &mut egui::Ui, rect: egui::Rect, calibration: Option<&Calibration>, raw: [i16; 6]) {
     let (kind, travel, moving) = match calibration {
         Some(calibration) => (calibration.kind, calibration.travel(raw), calibration.apply(raw).map(|value| value != 0)),
         None => {

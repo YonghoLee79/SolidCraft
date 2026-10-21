@@ -2976,17 +2976,28 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     axis_view(app, ui, rect);
     nav_bar(app, ui, rect);
     // Under the notices that share the corner, so they still read on top of it.
+    let mut ghost = None;
     if app.preferences.space_mouse_in_view
         && app.space_mouse.calibrating.is_none()
         && let Some(device) = &app.space_mouse.device
     {
+        use crate::prefs::SpaceMouseGhost;
         let calibration = app.preferences.space_mouse_calibrations.get(device);
-        // In the content area, and above the History bar that floats over its bottom.
-        let area = crate::shell::content_rect(app, rect);
+        let position = app.preferences.space_mouse_ghost_position;
         let bar = app.shell.history.filter(|_| app.ui.layout == crate::shell::LayoutMode::Floating);
-        crate::space_mouse_model::corner(ui, area, bar, calibration, app.space_mouse.raw.into());
+        let picture = if position == SpaceMouseGhost::Current {
+            // In the content area, and above the History bar that floats over its bottom.
+            crate::space_mouse_model::corner_rect(crate::shell::content_rect(app, rect), position, bar.as_slice())
+        } else {
+            // In the corner of the whole view, clear of the History bar and the navigation bar.
+            let navigation = app.viewport.layout.as_ref().map(|layout| layout.navigation);
+            crate::space_mouse_model::corner_rect(rect, position, &[bar, navigation].into_iter().flatten().collect::<Vec<_>>())
+        };
+        crate::space_mouse_model::corner(ui, picture, calibration, app.space_mouse.raw.into());
+        // At the lower right, where the notices go: they stack above it.
+        ghost = (position == SpaceMouseGhost::Right).then_some(picture);
     }
-    transient_messages(app, ui, rect);
+    transient_messages(app, ui, rect, ghost);
 }
 
 fn paint_box_selection(painter: &egui::Painter, bx: BoxSel, sketch: bool) {
@@ -3010,7 +3021,9 @@ fn paint_box_selection(painter: &egui::Painter, bx: BoxSel, sketch: bool) {
 }
 
 /// A single visual pattern for ongoing work and the existing six-second status.
-fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect) {
+/// The status and calibration notices, bottom right of the free view; `below` is the 3D mouse picture
+/// when it sits there, and the notices stack above it.
+fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect, below: Option<Rect>) {
     let quiet = app.status.is_none() && app.computing_since().is_none();
     let t = Tokens::get();
     let mut obstacles = crate::shell::covered_rects(app);
@@ -3018,6 +3031,9 @@ fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect) {
         obstacles.extend([layout.navigation, layout.axis_view]);
     }
     let mut free = crate::viewport_layout::free_rect(crate::shell::content_rect(app, viewport), &obstacles).shrink(t.space_8);
+    if let Some(picture) = below.filter(|picture| picture.right() > free.right() - 400.0) {
+        free.max.y = free.max.y.min(picture.top() - t.space_8);
+    }
     // The calibration notice first, so the status toast stacks above it.
     crate::space_mouse_offer::toast(app, ui, &mut free);
     if quiet {

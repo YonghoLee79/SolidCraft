@@ -130,18 +130,38 @@ fn each_step_starts_at_rest_and_eases_out_to_full() {
 }
 
 #[test]
-fn the_corner_picture_sits_above_the_history_bar_when_it_would_be_covered() {
+fn the_corner_picture_goes_where_it_is_told_and_clears_the_bars() {
+    use crate::prefs::SpaceMouseGhost::{Current, Left, Right};
     let view = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
-    let free = corner_rect(view, None);
-    assert_eq!(free.left_bottom(), egui::pos2(12.0, 588.0));
-    // A bar along the bottom (the History bar is 40 px high here) pushes it up to clear the bar.
-    let bar = egui::Rect::from_min_max(egui::pos2(100.0, 556.0), egui::pos2(700.0, 596.0));
-    let above = corner_rect(view, Some(bar));
-    assert_eq!(above.size(), free.size());
-    assert!(above.bottom() <= bar.top() - 12.0 + f32::EPSILON && !above.intersects(bar));
-    // A bar that does not reach under the picture leaves it where it was.
-    let elsewhere = egui::Rect::from_min_max(egui::pos2(300.0, 556.0), egui::pos2(700.0, 596.0));
-    assert_eq!(corner_rect(view, Some(elsewhere)), free);
-    // So does a bar that is not drawn (empty).
-    assert_eq!(corner_rect(view, Some(egui::Rect::NOTHING)), free);
+    let size = egui::vec2(160.0, 120.0);
+    // Free: lower left for Current and Left, lower right for Right.
+    assert_eq!(corner_rect(view, Current, &[]).left_bottom(), egui::pos2(12.0, 588.0));
+    assert_eq!(corner_rect(view, Left, &[]).left_bottom(), egui::pos2(12.0, 588.0));
+    assert_eq!(corner_rect(view, Right, &[]).right_bottom(), egui::pos2(788.0, 588.0));
+    // The History bar along the bottom pushes each one up to clear it.
+    let history = egui::Rect::from_min_max(egui::pos2(0.0, 556.0), egui::pos2(800.0, 596.0));
+    for position in [Current, Left, Right] {
+        let rect = corner_rect(view, position, &[history]);
+        assert_eq!(rect.size(), size);
+        assert!(!rect.intersects(history) && rect.bottom() <= history.top() - 12.0 + f32::EPSILON, "{position:?}");
+    }
+    // A bar that does not reach the picture leaves it where it was.
+    let elsewhere = egui::Rect::from_min_max(egui::pos2(300.0, 556.0), egui::pos2(500.0, 596.0));
+    for position in [Current, Left, Right] {
+        assert_eq!(corner_rect(view, position, &[elsewhere]), corner_rect(view, position, &[]));
+    }
+    // The navigation bar in the middle of a narrow view is not covered either, nor is anything else stacked.
+    let narrow = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(420.0, 600.0));
+    let navigation = egui::Rect::from_min_max(egui::pos2(100.0, 520.0), egui::pos2(330.0, 560.0));
+    let history = egui::Rect::from_min_max(egui::pos2(0.0, 566.0), egui::pos2(420.0, 600.0));
+    for position in [Left, Right] {
+        let rect = corner_rect(narrow, position, &[history, navigation]);
+        assert!(narrow.contains_rect(rect), "{position:?} stays inside the view");
+        assert!(!rect.intersects(history) && !rect.intersects(navigation), "{position:?} clears both bars: {rect:?}");
+    }
+    // A view narrower than the picture keeps it at the left edge rather than outside.
+    let tiny = egui::Rect::from_min_size(egui::pos2(50.0, 0.0), egui::vec2(100.0, 400.0));
+    assert!(corner_rect(tiny, Right, &[]).left() >= tiny.left());
+    // An empty bar is no bar.
+    assert_eq!(corner_rect(view, Left, &[egui::Rect::NOTHING]), corner_rect(view, Left, &[]));
 }

@@ -294,6 +294,23 @@ pub enum SpaceMouseDriver {
     Direct,
 }
 
+/// Where the small 3D mouse picture sits in the 3D view (Preferences: "Position").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceMouseGhost {
+    /// Lower left of the free view, beside the browser (how it was first made).
+    #[default]
+    Current,
+    /// The lower left corner of the view.
+    Left,
+    /// The lower right corner of the view.
+    Right,
+}
+
+impl SpaceMouseGhost {
+    pub const ALL: [Self; 3] = [Self::Current, Self::Left, Self::Right];
+}
+
 impl SpaceMouseDriver {
     pub const ALL: [Self; 3] = [Self::Automatic, Self::Spacenavd, Self::Direct];
 
@@ -409,6 +426,8 @@ preference_settings! {
     space_mouse_axis_source: [usize; 6] = crate::space_mouse::SAME_AXES, 1;
     /// Which program reads the 3D mouse when spacenavd and the device itself are both there (Linux).
     space_mouse_driver: SpaceMouseDriver = SpaceMouseDriver::default(), 1;
+    /// Where the 3D mouse picture sits in the 3D view, when it is shown there (`space_mouse_in_view`).
+    space_mouse_ghost_position: SpaceMouseGhost = SpaceMouseGhost::default(), 1;
     /// Per 3D mouse (`space_mouse::Input::device`), the calibration that puts its axes on
     /// 3Dconnexion's. A device without one is read as it reports. Page resets keep calibrations.
     #[serde(deserialize_with = "calibrations_that_read")]
@@ -1420,6 +1439,29 @@ fn space_mouse_section(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui_kit::section(ui, "sc_prefs_space_mouse", crate::i18n::tr("ui.space_mouse_section"), open, |ui| {
         setting::space_mouse_enabled(app, ui);
         setting::space_mouse_in_view(app, ui).on_hover_text(crate::i18n::tr("ui.space_mouse_show_in_view_tip"));
+        // Where the picture goes, a choice that waits on the checkbox above.
+        let names: Vec<(SpaceMouseGhost, String)> = [
+            (SpaceMouseGhost::Current, "ui.space_mouse_ghost_current"),
+            (SpaceMouseGhost::Left, "ui.space_mouse_ghost_left"),
+            (SpaceMouseGhost::Right, "ui.space_mouse_ghost_right"),
+        ]
+        .map(|(position, key)| (position, app.tr(key).to_owned()))
+        .into();
+        let (in_view, position) = (app.preferences.space_mouse_in_view, &mut app.preferences.space_mouse_ghost_position);
+        ui_kit::row(ui, crate::i18n::tr("ui.space_mouse_ghost_position"), |ui| {
+            ui.add_enabled_ui(in_view, |ui| {
+                ui.allocate_ui(egui::vec2(AXIS_DRIVEN_WIDTH.min(ui.available_width()), ui_kit::row_height()), |ui| {
+                    let current = names.iter().find(|(choice, _)| choice == position).map_or("", |(_, name)| name.as_str());
+                    ui_kit::dropdown_menu(ui, "sc_space_mouse_ghost", current, |ui| {
+                        for (choice, name) in &names {
+                            if ui_kit::list_picker(ui, name, name, choice == position).clicked() {
+                                *position = *choice;
+                            }
+                        }
+                    });
+                });
+            });
+        });
         setting::space_mouse_speed(app, ui);
         // Rows say what they do to the view, through the mapping navigation uses; the choices
         // are the device's calibrated motions. Neither names a kind of device.
@@ -2088,6 +2130,20 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_ghost_position_defaults_round_trips_and_reads_tolerantly() {
+        use super::SpaceMouseGhost::{Current, Left, Right};
+        assert_eq!(serde_json::from_value::<super::Prefs>(serde_json::json!({})).unwrap().space_mouse_ghost_position, Current);
+        for position in [Current, Left, Right] {
+            let prefs = super::Prefs { space_mouse_ghost_position: position, ..Default::default() };
+            let again: super::Prefs = serde_json::from_value(serde_json::to_value(&prefs).unwrap()).unwrap();
+            assert_eq!(again.space_mouse_ghost_position, position);
+        }
+        // A value from a newer build costs that setting only.
+        let read = super::lenient(&serde_json::json!({ "space_mouse_ghost_position": "top", "space_mouse_speed": 2.0 }));
+        assert_eq!((read.space_mouse_ghost_position, read.space_mouse_speed), (Current, 2.0));
+    }
+
+    #[test]
     fn the_calibration_offer_record_round_trips_and_reads_tolerantly() {
         let prefs: super::Prefs =
             serde_json::from_value(serde_json::json!({ "space_mouse_offered": ["spacenavd", 7, null, "hid 046d:c62b"] })).unwrap();
@@ -2106,6 +2162,7 @@ mod tests {
             let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
             app.space_mouse.device = Some("hid 046d:c62b".into());
             app.space_mouse.drivers = Some(crate::space_mouse::DriversPresent { spacenavd: true, direct: true });
+            app.preferences.space_mouse_in_view = true;
             let ctx = crate::fonts::test_context();
             let panel = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(width, 1400.0));
             for frame in 0..4 {
