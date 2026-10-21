@@ -109,20 +109,31 @@ pub(crate) fn dead_zone_pads(ui: &mut egui::Ui, calibration: &Calibration, raw: 
     });
 }
 
-/// The device's six raw axes as they come, each name above its number, so the jitter at rest is there to see.
+/// The device's six raw axes as they come, so the jitter at rest is there to see: six equal
+/// columns, each axis name centred on one line and its number centred under it, the group centred
+/// like the dead-zone pads. Painted in one go so every name and number shares its column and baseline.
 fn reading_grid(ui: &mut egui::Ui, raw: [i16; 6]) {
     const NAMES: [&str; 6] = ["X", "Y", "Z", "Rx", "Ry", "Rz"];
-    const CELL: f32 = 44.0;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        for (name, value) in NAMES.into_iter().zip(raw) {
-            ui.allocate_ui(egui::vec2(CELL, 0.0), |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                crate::ui_kit::text(ui, name, crate::ui_kit::Text::Note("space_mouse_reading_axis"));
-                crate::ui_kit::text(ui, &value.to_string(), crate::ui_kit::Text::MonoNote("space_mouse_reading_value"));
-            });
-        }
-    });
+    const CELL: f32 = 48.0;
+    let t = crate::theme::Tokens::get();
+    let (name_font, number_font) = (egui::FontId::proportional(t.font_small), egui::FontId::monospace(t.font_small));
+    let painter = ui.painter().clone();
+    let line = |font: &egui::FontId| painter.layout_no_wrap("0".into(), font.clone(), t.text_dim).size().y;
+    let (name_height, number_height) = (line(&name_font), line(&number_font));
+    let (area, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), name_height + number_height + t.space_4), egui::Sense::hover());
+    crate::scenario::publish_rect("space_mouse:reading_block", area);
+    let left = area.left() + ((area.width() - CELL * 6.0) / 2.0).max(0.0);
+    for (i, (name, value)) in NAMES.into_iter().zip(raw).enumerate() {
+        let centre = left + (i as f32 + 0.5) * CELL;
+        let cell = |text: &str, font: &egui::FontId, colour: egui::Color32, top: f32, key: &str| {
+            let galley = painter.layout_no_wrap(text.to_owned(), font.clone(), colour);
+            let rect = egui::Rect::from_center_size(egui::pos2(centre, top + galley.size().y / 2.0), galley.size());
+            painter.galley(rect.min, galley, colour);
+            crate::scenario::publish_rect(&format!("space_mouse:reading_{key}:{i}"), rect);
+        };
+        cell(name, &name_font, t.text_dim, area.top(), "name");
+        cell(&value.to_string(), &number_font, t.form_ink, area.top() + name_height + t.space_4, "value");
+    }
 }
 
 /// Starts calibrating the device being read, if there is one.

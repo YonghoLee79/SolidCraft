@@ -2168,6 +2168,94 @@ mod tests {
         }
     }
 
+    /// The six readings in the calibration window are a clean grid whatever the values: each name
+    /// and its number are in their own column, never wrap or overlap, each number is centred under
+    /// its name, and the block is the same height for every value, so the window does not jitter.
+    #[test]
+    fn the_calibration_readings_are_a_clean_grid_of_constant_height() {
+        let sets: [[i16; 6]; 6] = [[0; 6], [-1; 6], [350; 6], [-350; 6], [i16::MAX; 6], [i16::MIN; 6]];
+        for width in [360.0_f32, 520.0, 900.0] {
+            let mut heights = Vec::new();
+            for values in sets {
+                let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+                app.space_mouse.device = Some("hid 046d:c62b".into());
+                app.space_mouse.raw = values.into();
+                crate::space_mouse_calibration::start(&mut app);
+                let ctx = crate::fonts::test_context();
+                for _ in 0..4 {
+                    crate::scenario::clear_handles();
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 900.0))),
+                        focused: true,
+                        ..Default::default()
+                    };
+                    let mut output = ctx.run_ui(input, |ui| crate::space_mouse_calibration::show(&mut app, ui.ctx()));
+                    output.textures_delta.clear();
+                }
+                let rect = |kind: &str, i: usize| crate::scenario::rect_of(&format!("space_mouse:reading_{kind}:{i}")).expect("drawn");
+                let all: Vec<egui::Rect> = (0..6).flat_map(|i| [rect("name", i), rect("value", i)]).collect();
+                for (a, first) in all.iter().enumerate() {
+                    for second in &all[a + 1..] {
+                        assert!(!first.intersects(*second), "width {width} {values:?}: {first:?} overlaps {second:?}");
+                    }
+                }
+                for i in 0..6 {
+                    let (name, value) = (rect("name", i), rect("value", i));
+                    assert!((name.center().x - value.center().x).abs() <= 1.0, "width {width} {values:?}: number {i} is not under its name");
+                    assert!(value.top() >= name.bottom(), "number {i} is not on the line below");
+                    assert_eq!(name.top(), rect("name", 0).top(), "the names share a baseline");
+                    assert_eq!(value.top(), rect("value", 0).top(), "the numbers share a baseline");
+                    assert!(value.width() <= 48.0, "{values:?}: number {i} is wider than its column");
+                }
+                heights.push(crate::scenario::rect_of("space_mouse:reading_block").expect("block").height());
+            }
+            assert!(heights.windows(2).all(|pair| pair[0] == pair[1]), "width {width}: the block's height depends on the values: {heights:?}");
+        }
+    }
+
+    /// On the last screen, with the pictures and pads, the window is the same size for any live reading.
+    #[test]
+    fn the_calibration_window_keeps_its_size_while_the_cap_moves() {
+        let mut windows = Vec::new();
+        for values in [[0_i16; 6], [-1; 6], [350; 6], [-350; 6], [i16::MAX; 6], [i16::MIN; 6], [159, -5, 0, 32, -17, 5]] {
+            let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+            app.space_mouse.device = Some("hid 046d:c62b".into());
+            crate::space_mouse_calibration::start(&mut app);
+            {
+                let wizard = &mut app.space_mouse.calibrating.as_mut().unwrap().1;
+                wizard.choose(solidcraft_space_mouse::Kind::ReturnToCenter);
+                let hold = |wizard: &mut solidcraft_space_mouse::Wizard, reading: [i16; 6], seconds: f64| {
+                    for _ in 0..(seconds / 0.02).round() as usize {
+                        wizard.feed(reading, 0.02);
+                    }
+                };
+                hold(wizard, [0; 6], 1.6);
+                hold(wizard, [0; 6], 2.6);
+                for step in solidcraft_space_mouse::STEPS {
+                    let mut raw = [0_i16; 6];
+                    raw[step.axis] = if step.positive { 300 } else { -300 };
+                    hold(wizard, raw, 0.5);
+                    hold(wizard, [0; 6], 0.1);
+                }
+                assert!(matches!(wizard.result(), Some(Ok(_))), "the calibration reached its result screen");
+            }
+            app.space_mouse.raw = values.into();
+            let ctx = crate::fonts::test_context();
+            for _ in 0..4 {
+                crate::scenario::clear_handles();
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 900.0))),
+                    focused: true,
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| crate::space_mouse_calibration::show(&mut app, ui.ctx()));
+                output.textures_delta.clear();
+            }
+            windows.push(crate::scenario::rect_of("dialog:window").expect("the window is drawn"));
+        }
+        assert!(windows.windows(2).all(|pair| pair[0] == pair[1]), "the window changes with the readings: {windows:?}");
+    }
+
     /// One button job this build can't read (a newer release's) costs that button, not the lot.
     #[test]
     fn one_unreadable_button_job_keeps_the_others() {
