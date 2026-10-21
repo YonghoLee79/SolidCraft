@@ -1128,7 +1128,14 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled() && info.enabled, &tr_label));
                 if ribbon_tooltip(app, resp, selected, info.disabled_reason.as_deref()).clicked() && info.enabled {
                     let id = selected.id;
-                    app.start(id);
+                    // A pin of its own is a separate button. Clicking it must not steal the
+                    // family's main button (#4023). The main button, and the menu under it, still
+                    // follow the last variant chosen there.
+                    if family.is_none() && crate::sketch_families::family(c.id).is_some() {
+                        app.start_pinned_variant(id);
+                    } else {
+                        app.start(id);
+                    }
                 }
                 if let Some(f) = family {
                     let ar = Rect::from_min_max(pos2(whole.left(), whole.top() + 30.0), pos2(whole.right(), whole.top() + 48.0));
@@ -2747,6 +2754,30 @@ mod ribbon_gallery_tests {
         crate::toolbar_custom::pin(&mut h.app, "SKETCH", "sketch.constraint.equal").unwrap();
         h.frames(2);
         assert!(rect_of("ribbon:constraint:sketch.constraint.equal").is_some());
+    }
+
+    /// #4023: a pinned rectangle variant is its own button. Clicking it draws that rectangle
+    /// and leaves the Rectangle button on the variant it already showed.
+    #[test]
+    fn a_pinned_sketch_tool_leaves_the_family_button_alone() {
+        let mut h = Harness::new();
+        h.call("ui.resize", json!({"width":1800,"height":900}));
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        h.frames(3);
+        let family = crate::sketch_families::family("sketch.rectangle.two_point").unwrap();
+        assert_eq!(h.app.sketch_choices.selected(family).unwrap().id, "sketch.rectangle.two_point");
+        crate::toolbar_custom::pin(&mut h.app, "SKETCH", "sketch.rectangle.center").unwrap();
+        h.frames(2);
+        let pinned = rect_of("button:sketch.rectangle.center").unwrap();
+        let primary = rect_of("button:sketch.rectangle.two_point").unwrap();
+        assert_ne!(pinned.center(), primary.center(), "the pin is a second button, not the Rectangle one");
+        h.step(&json!({"click": {"handle": "button:sketch.rectangle.center"}})).unwrap();
+        assert_eq!(h.app.tool.as_ref().map(|t| t.cmd), Some("sketch.rectangle.center"));
+        assert_eq!(h.app.sketch_choices.selected(family).unwrap().id, "sketch.rectangle.two_point");
+        h.frames(1);
+        let primary_after = rect_of("button:sketch.rectangle.two_point").unwrap();
+        assert_eq!(primary_after.center(), primary.center());
+        assert_ne!(rect_of("button:sketch.rectangle.center").unwrap().center(), primary_after.center());
     }
 }
 
