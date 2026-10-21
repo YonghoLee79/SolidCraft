@@ -452,8 +452,6 @@ preference_settings! {
     timeline_under_browser: bool = false, 0;
     /// Fold the shared-column history to its header.
     timeline_collapsed: bool = false, 0;
-    /// Legacy shared-column height, retained for preference compatibility.
-    timeline_left_height: f32 = 360.0, 0;
     /// Whether the browser beside the vertical history is collapsed to its rail.
     timeline_left_browser_collapsed: bool = false, 0;
     /// Width of the browser sidebar, which
@@ -2439,7 +2437,6 @@ mod tests {
 
         // Switch language to Japanese
         set(&mut app, &json!({"language": "ja", "timeline_left": true})).unwrap();
-        app.preferences.timeline_left_height = 275.0;
         app.preferences.timeline_left_browser_collapsed = true;
         assert_eq!(app.preferences.language, "ja");
         assert!(app.preferences.timeline_left);
@@ -2451,7 +2448,6 @@ mod tests {
         other.load_prefs(&app.prefs());
         assert_eq!(other.preferences.language, "ja");
         assert!(other.preferences.timeline_left);
-        assert_eq!(other.preferences.timeline_left_height, 275.0);
         assert!(other.preferences.timeline_left_browser_collapsed);
         assert_eq!(other.tr("ui.preferences"), "環境設定");
     }

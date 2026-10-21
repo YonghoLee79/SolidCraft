@@ -6,6 +6,7 @@
 //! viewport, a double-click on a sketch edits it, and a right-click opens the item's menu
 //! ([`crate::context_menu`]).
 
+use crate::ui_kit::{Container, Edge, Surface};
 #[cfg(test)]
 #[path = "occurrence_ui_tests.rs"]
 mod occurrence_ui_tests;
@@ -681,10 +682,11 @@ fn browser_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     OCCURRENCES.with(|d| d.borrow_mut().clear());
     let mut acts = Actions::default();
     let width = browser_width(app.preferences.browser_width);
-    let panel = egui::Panel::left("sc_browser")
+    let panel = Container::new(ui.ctx(), Surface::Panel)
+        .edge("sc_browser", Edge::Left)
         .exact_size(width)
         .resizable(false)
-        .frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(t.space_6 as i8, t.space_6 as i8)))
+        .frame(Container::new(ui.ctx(), Surface::Panel).edge_frame(t.panel).inner_margin(egui::Margin::symmetric(t.space_6 as i8, t.space_6 as i8)))
         .show(ui, |ui| {
             browser_contents(app, ui, &mut acts, false);
         });
@@ -719,11 +721,14 @@ pub fn floating(app: &mut SolveApp, ui: &mut egui::Ui, available: Rect) {
     OCCURRENCES.with(|d| d.borrow_mut().clear());
     let mut acts = Actions::default();
     let gap = crate::shell::SHELL_GAP;
-    let top_gap = if app.ui.layout == crate::shell::LayoutMode::Docked { gap } else { 0.0 };
+    let top_gap = if !Container::for_layout(app.ui.layout, Surface::Panel).floating() { gap } else { 0.0 };
     let width = browser_width(app.preferences.browser_width);
     let vertical = app.ui.show_timeline && app.preferences.timeline_left;
     let mut available = available;
     let stacked = crate::timeline_left::stacked(app);
+    if !stacked {
+        available.min.x += crate::agent_chat::left_inset(app, available);
+    }
     if vertical
         && !stacked
         && let Some(history) = app.shell.history
@@ -740,27 +745,31 @@ pub fn floating(app: &mut SolveApp, ui: &mut egui::Ui, available: Rect) {
     let min_height = HEADER_H + 2.0 * (CARD_INSET + 1.0);
     if bounds.is_positive() && bounds.height() >= min_height {
         let fill = if app.preferences.browser_float { t.panel.gamma_multiply(BROWSER_FLOAT_ALPHA) } else { t.panel };
-        let frame = crate::frame::shell_card(fill).inner_margin(CARD_INSET as i8);
+        let frame = Container::new(ui.ctx(), Surface::Panel).frame(ui.ctx(), fill, crate::frame::Side::Left).inner_margin(CARD_INSET as i8);
         let inner_width = (bounds.width() - frame.total_margin().sum().x).max(0.0);
         let inner_height = (bounds.height() - frame.total_margin().sum().y).max(0.0);
-        let card = crate::frame::area(egui::Id::new("sc_browser_card")).fixed_pos(bounds.min).order(egui::Order::Middle).show(ui.ctx(), |ui| {
-            let response = frame.show(ui, |ui| {
-                ui.set_width(inner_width);
-                ui.set_max_height(inner_height);
-                if stacked {
-                    ui.set_min_height(inner_height);
-                    ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_size(ui.max_rect().min, vec2(inner_width, inner_height))));
-                }
-                if collapsed {
-                    browser_collapsed_rail(app, ui);
-                } else {
-                    browser_contents(app, ui, &mut acts, true);
+        let card = Container::new(ui.ctx(), Surface::Panel)
+            .area(egui::Id::new("sc_browser_card"))
+            .fixed_pos(bounds.min)
+            .order(egui::Order::Middle)
+            .show(ui.ctx(), |ui| {
+                let response = frame.show(ui, |ui| {
+                    ui.set_width(inner_width);
+                    ui.set_max_height(inner_height);
+                    if stacked {
+                        ui.set_min_height(inner_height);
+                        ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_size(ui.max_rect().min, vec2(inner_width, inner_height))));
+                    }
+                    if collapsed {
+                        browser_collapsed_rail(app, ui);
+                    } else {
+                        browser_contents(app, ui, &mut acts, true);
+                    }
+                });
+                if !collapsed {
+                    resize_column(app, ui, response.response.rect, width, "left-browser-rail");
                 }
             });
-            if !collapsed {
-                resize_column(app, ui, response.response.rect, width, "left-browser-rail");
-            }
-        });
         let rect = card.response.rect;
         app.shell.browser = Some(rect);
         crate::scenario::publish_rect("browser:card", rect);

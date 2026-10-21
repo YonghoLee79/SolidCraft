@@ -11,16 +11,16 @@ pub(crate) fn panel_header_hover(painter: &egui::Painter, rect: egui::Rect) {
 
 /// Feature title/icon/close band. Tokens: `form_header_height, form_icon_size, form_close_size, form_inset, font_label, text, dialog_rule, space_8/10; icon_button_at tokens`.
 pub(crate) fn header(ui: &mut Ui, icon: &str, title: &str, on_close: impl FnOnce()) {
-    header_impl(ui, icon, title, None, on_close);
+    header_impl(ui, icon, title, None, true, on_close);
 }
 
 /// Optional fold action for managers which historically hide their inputs without losing edits.
 /// Tokens: header tokens and space_4; retains the dialog:collapse scenario handle.
 pub(crate) fn collapsible_header(ui: &mut Ui, icon: &str, title: &str, collapsed: &mut bool, on_close: impl FnOnce()) {
-    header_impl(ui, icon, title, Some(collapsed), on_close);
+    header_impl(ui, icon, title, Some(collapsed), true, on_close);
 }
 
-fn header_impl(ui: &mut Ui, icon: &str, title: &str, collapsed: Option<&mut bool>, on_close: impl FnOnce()) {
+fn header_impl(ui: &mut Ui, icon: &str, title: &str, collapsed: Option<&mut bool>, closeable: bool, on_close: impl FnOnce()) {
     let t = Tokens::get();
     let (rect, _) = ui.allocate_exact_size(vec2(dimension(ui.available_width()), header_height()), egui::Sense::hover());
     // Shared card chrome: 12 pt left inset, 19 pt icon, 8 pt gap and 26 pt close target.
@@ -33,10 +33,12 @@ fn header_impl(ui: &mut Ui, icon: &str, title: &str, collapsed: Option<&mut bool
         egui::pos2((rect.right() - t.space_8 - t.form_close_size / 2.0).max(rect.left()), rect.center().y),
         vec2(t.form_close_size, t.form_close_size),
     );
-    let close = icon_button_at(ui, close_rect, "close", "Close");
-    scenario::publish_handle("dialog:close", close.rect.center());
-    if close.clicked() {
-        on_close();
+    if closeable {
+        let close = icon_button_at(ui, close_rect, "close", "Close");
+        scenario::publish_handle("dialog:close", close.rect.center());
+        if close.clicked() {
+            on_close();
+        }
     }
     let right = if let Some(collapsed) = collapsed {
         let fold = egui::Rect::from_min_size(egui::pos2(close_rect.left() - t.form_close_size - t.space_4, close_rect.top()), close_rect.size());
@@ -46,8 +48,10 @@ fn header_impl(ui: &mut Ui, icon: &str, title: &str, collapsed: Option<&mut bool
             *collapsed = !*collapsed;
         }
         fold.left()
-    } else {
+    } else if closeable {
         close_rect.left()
+    } else {
+        rect.right() - t.space_8
     };
     let left = (icon_rect.right() + t.space_8).min(right);
     let title_rect = egui::Rect::from_min_max(egui::pos2(left, rect.top()), egui::pos2(right.max(left), rect.bottom()));
@@ -97,29 +101,22 @@ pub(crate) enum Part {
 
 impl<'a> Panel<'a> {
     /// Shared floating card surface for panels, windows and modal confirmations.
-    pub(super) fn card_frame() -> egui::Frame {
+    pub(super) fn card_frame(ctx: &egui::Context) -> egui::Frame {
         let t = Tokens::get();
-        crate::frame::shell_card(t.dialog_body).stroke(egui::Stroke::new(1.0, t.dialog_border)).corner_radius(t.radius_xl).inner_margin(0.0)
+        super::Container::new(ctx, super::Surface::Window).frame(ctx, t.dialog_body, crate::frame::Side::Right).inner_margin(0.0)
     }
 
-    /// Feature surface; Tokens: dialog_body and shell_card/dock_frame's border/shadow tokens.
+    /// Feature surface; shared container policy supplies the border and shadow.
     pub(crate) fn feature_frame(ctx: &egui::Context, layout: crate::shell::LayoutMode, side: crate::frame::Side) -> egui::Frame {
-        let t = Tokens::get();
-        if layout == crate::shell::LayoutMode::Floating {
-            Self::card_frame()
-        } else {
-            crate::frame::dock_frame(ctx, side).fill(t.dialog_body).inner_margin(0.0)
-        }
+        super::Container::for_layout(layout, super::Surface::Feature).frame(ctx, Tokens::get().dialog_body, side).inner_margin(0.0)
     }
 
-    /// Palette surface; Tokens: panel, sketch_palette_alpha, radius_xl and shell/dock tokens.
+    /// Sketch palette uses the same layout policy as every other workspace panel.
     pub(crate) fn palette_frame(ctx: &egui::Context, layout: crate::shell::LayoutMode) -> egui::Frame {
         let t = Tokens::get();
-        if layout == crate::shell::LayoutMode::Floating {
-            crate::frame::shell_card(t.panel.gamma_multiply(t.sketch_palette_alpha)).corner_radius(t.radius_xl).inner_margin(0.0)
-        } else {
-            crate::frame::dock_frame(ctx, crate::frame::Side::Right).fill(t.panel.gamma_multiply(t.sketch_palette_alpha)).inner_margin(0.0)
-        }
+        super::Container::for_layout(layout, super::Surface::Palette)
+            .frame(ctx, t.panel.gamma_multiply(t.sketch_palette_alpha), crate::frame::Side::Right)
+            .inner_margin(0.0)
     }
 
     pub(crate) fn new(title: &'a str, id: egui::Id, anchor: egui::Pos2, viewport: egui::Rect, side: crate::frame::Side, frame: egui::Frame) -> Self {
@@ -164,7 +161,7 @@ impl<'a> Panel<'a> {
         egui::pos2(x, self.anchor.y.clamp(viewport.top(), (viewport.bottom() - chrome).max(viewport.top())))
     }
 
-    pub(crate) fn window(&self) -> egui::Window<'a> {
+    pub(crate) fn window(&self, ctx: &egui::Context) -> egui::Window<'a> {
         let gap = crate::shell::SHELL_GAP;
         let frame = self.frame;
         let viewport = self.viewport;
@@ -176,8 +173,8 @@ impl<'a> Panel<'a> {
         let height = (viewport.bottom() - anchor.y - gap).max(0.0);
         // Keep drawing safe when even the header/footer cannot fit. egui clips the contents to
         // the remaining viewport; the normal small-height case still keeps both actions visible.
-        egui::Window::new(self.title)
-            .enabled(!crate::issue_report::cad_input_blocked())
+        super::Container::new(ctx, super::Surface::Feature)
+            .window(self.title)
             .id(self.id)
             .title_bar(false)
             .pivot(match side {
@@ -354,7 +351,7 @@ impl<'a> Panel<'a> {
 /// System window built on Panel's shared floating card: 40 pt header, bounded content,
 /// optional page list, and 48 pt actions with a left slot. Existing IDs and editor policies
 /// survive the migration. All geometry and colours derive from Tokens.
-pub(crate) struct Window<'a> {
+pub struct Window<'a> {
     id: egui::Id,
     icon: &'a str,
     title: &'a str,
@@ -365,6 +362,7 @@ pub(crate) struct Window<'a> {
     apply: Option<&'a str>,
     enter_submits: bool,
     escape_closes: bool,
+    closeable: bool,
     width: f32,
     body_padding: bool,
     left_slot: bool,
@@ -372,7 +370,7 @@ pub(crate) struct Window<'a> {
 
 impl<'a> Window<'a> {
     /// A card with OK and Cancel, centred and movable.
-    pub(crate) fn new(id: egui::Id, icon: &'a str, title: &'a str) -> Self {
+    pub fn new(id: egui::Id, icon: &'a str, title: &'a str) -> Self {
         Self {
             id,
             icon,
@@ -384,6 +382,7 @@ impl<'a> Window<'a> {
             apply: None,
             enter_submits: true,
             escape_closes: true,
+            closeable: true,
             width: Tokens::get().form_card_width * 1.5,
             body_padding: true,
             left_slot: false,
@@ -424,11 +423,26 @@ impl<'a> Window<'a> {
     }
 
     /// `cards` times the card width instead of one and a half, for wide footers.
-    pub(crate) fn cards(mut self, cards: f32) -> Self {
+    pub fn cards(mut self, cards: f32) -> Self {
         if cards.is_finite() && cards > 0.0 {
             self.width = Tokens::get().form_card_width * cards.min(16.0);
         }
         self
+    }
+
+    /// A required choice, such as web recovery, has no dismiss action. Existing data remains
+    /// pending until the body explicitly handles a choice.
+    pub fn required(mut self) -> Self {
+        self.closeable = false;
+        self.escape_closes = false;
+        self
+    }
+
+    /// A standard closable window for platform content and reports. Uses the same header,
+    /// bounded scrolling body and fixed outer chrome as every other system window.
+    /// Returns whether the shared header's close action was clicked.
+    pub fn show_body(self, ctx: &egui::Context, body: impl FnOnce(&mut Ui)) -> bool {
+        self.fields().actions("", "", None).show(ctx, true, body).0
     }
 
     /// Draw shared header, content and optional footer, retaining the caller's IDs.
@@ -453,7 +467,7 @@ impl<'a> Window<'a> {
             let t = Tokens::get();
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut close = false;
-            header(ui, self.icon, self.title, || close = true);
+            header_impl(ui, self.icon, self.title, None, self.closeable, || close = true);
             egui::Frame::NONE.inner_margin(if self.body_padding { t.space_12 } else { 0.0 }).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = t.form_gap_y;
                 if self.body_padding {
@@ -499,11 +513,11 @@ impl<'a> Window<'a> {
 
     /// The same bounded card frame, either movable or an input-blocking modal.
     pub(super) fn surface(&self, ctx: &egui::Context, modal: bool, add: impl FnOnce(&mut Ui) -> (bool, super::Action)) -> (bool, super::Action) {
-        let frame = Panel::card_frame();
+        let frame = Panel::card_frame(ctx);
         let inner_width = (self.width.min(dimension(ctx.content_rect().width())) - frame.total_margin().sum().x).max(0.0);
         if modal {
-            let shown = egui::Modal::new(self.id)
-                .area(egui::Modal::default_area(self.id).fade_in(false))
+            let shown = super::Container::new(ctx, super::Surface::Window)
+                .modal(self.id)
                 .backdrop_color(Tokens::get().tab_on_fill_dark.gamma_multiply(0.35))
                 .frame(frame)
                 .show(ctx, |ui| {
@@ -513,8 +527,8 @@ impl<'a> Window<'a> {
             scenario::publish_rect("dialog:window", shown.response.rect);
             return shown.inner;
         }
-        let window = egui::Window::new(self.title)
-            .enabled(!crate::issue_report::cad_input_blocked())
+        let window = super::Container::new(ctx, super::Surface::Window)
+            .window(self.title)
             .id(self.id)
             .title_bar(false)
             .collapsible(false)

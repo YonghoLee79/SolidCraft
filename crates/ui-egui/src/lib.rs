@@ -7,6 +7,7 @@
 //! right of the viewport, the command palette and a bottom or left-sidebar feature timeline.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
+use crate::ui_kit::{Container, Edge, Surface};
 
 pub mod access;
 pub mod agent_chat;
@@ -1522,6 +1523,7 @@ impl SolveApp {
     }
 
     fn cad_ui(&mut self, ui: &mut egui::Ui, report_input: &mut Option<issue_report::CadInput>) {
+        self.ui.layout.publish(ui.ctx());
         scenario::clear_handles();
         self.poll_deferred(ui.ctx());
         self.poll_delete_check(ui.ctx());
@@ -1544,7 +1546,7 @@ impl SolveApp {
                 return;
             }
         }
-        let floating = self.ui.layout == shell::LayoutMode::Floating;
+        let floating = ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
         let show_timeline = self.ui.show_timeline && !render_workspace::active(self);
         let left_timeline = show_timeline && self.preferences.timeline_left;
         timeline_left::animate_folds(self, ui.ctx());
@@ -1598,6 +1600,10 @@ impl SolveApp {
         if floating && show_timeline && !left_timeline {
             timeline::timeline(self, ui);
         }
+        let chat_first = !floating && self.preferences.agent_chat_side == "left";
+        if chat_first {
+            agent_chat::show(self, ui);
+        }
         if left_timeline {
             timeline_left::left_panel(self, ui);
         }
@@ -1607,43 +1613,56 @@ impl SolveApp {
         if render_workspace::active(self) {
             render_workspace::panel(self, ui);
         }
-        agent_chat::show(self, ui);
+        if !floating && !chat_first {
+            agent_chat::show(self, ui);
+        }
         if browser_float {
             // The remaining content starts below the ribbon in either shell layout.
             let viewport = ui.available_rect_before_wrap();
             browser::floating(self, ui, viewport);
         }
+        if floating {
+            agent_chat::show(self, ui);
+        }
         if !floating && timeline_left::stacked(self) {
             let width = browser::browser_width(self.preferences.browser_width) + shell::SHELL_GAP * 2.0;
-            egui::Panel::left("sc_history_browser_column").exact_size(width).resizable(false).frame(egui::Frame::NONE).show(ui, |_| {});
+            Container::new(ui.ctx(), Surface::Panel)
+                .edge("sc_history_browser_column", Edge::Left)
+                .exact_size(width)
+                .resizable(false)
+                .frame(Container::new(ui.ctx(), Surface::Viewport).edge_frame(egui::Color32::TRANSPARENT))
+                .show(ui, |_| {});
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            if floating {
-                let panel_content = ui.max_rect();
-                let mut content = panel_content;
-                if let Some(history) = self.shell.history.filter(|_| !left_timeline) {
-                    content.max.y = (history.top() - shell::SHELL_GAP).max(content.top());
+        Container::new(ui.ctx(), Surface::Viewport)
+            .central()
+            .frame(Container::new(ui.ctx(), Surface::Viewport).edge_frame(egui::Color32::TRANSPARENT))
+            .show(ui, |ui| {
+                if floating {
+                    let panel_content = ui.max_rect();
+                    let mut content = panel_content;
+                    if let Some(history) = self.shell.history.filter(|_| !left_timeline) {
+                        content.max.y = (history.top() - shell::SHELL_GAP).max(content.top());
+                    }
+                    if left_timeline && let Some(history) = self.shell.history {
+                        content.min.x = (history.right() + shell::SHELL_GAP).min(content.right());
+                    }
+                    if let Some(browser) = self.shell.browser {
+                        content.min.x = (browser.right() + shell::SHELL_GAP).min(content.right());
+                    }
+                    self.shell.content = Some(content);
+                    self.shell.panels = [
+                        egui::Rect::from_min_max(egui::pos2(full.left(), panel_content.top()), egui::pos2(panel_content.left(), full.bottom())),
+                        egui::Rect::from_min_max(egui::pos2(panel_content.right(), panel_content.top()), full.max),
+                    ]
+                    .into_iter()
+                    .filter(|r| r.is_positive())
+                    .collect();
+                    viewport::refresh_layout(self, ui.ctx().pixels_per_point());
+                } else {
+                    preview::update(self, ui.ctx());
+                    self.show_workspace(ui);
                 }
-                if left_timeline && let Some(history) = self.shell.history {
-                    content.min.x = (history.right() + shell::SHELL_GAP).min(content.right());
-                }
-                if let Some(browser) = self.shell.browser {
-                    content.min.x = (browser.right() + shell::SHELL_GAP).min(content.right());
-                }
-                self.shell.content = Some(content);
-                self.shell.panels = [
-                    egui::Rect::from_min_max(egui::pos2(full.left(), panel_content.top()), egui::pos2(panel_content.left(), full.bottom())),
-                    egui::Rect::from_min_max(egui::pos2(panel_content.right(), panel_content.top()), full.max),
-                ]
-                .into_iter()
-                .filter(|r| r.is_positive())
-                .collect();
-                viewport::refresh_layout(self, ui.ctx().pixels_per_point());
-            } else {
-                preview::update(self, ui.ctx());
-                self.show_workspace(ui);
-            }
-        });
+            });
         dialogs::show(self, ui.ctx());
         issue_report::CadInput::block(self, ui, report_input);
         sketch_palette::show(self, ui.ctx());

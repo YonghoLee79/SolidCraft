@@ -220,16 +220,14 @@ pub(crate) fn button_pair(ui: &mut egui::Ui, key: &str, states: [bool; 2], butto
                 let left = rect.center().x - (galley.size().x + icon_width) / 2.0;
                 let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
                 if let Some(icon) = button.icon {
-                    crate::icons::paint(
+                    crate::icons::paint_icon(
                         &painter,
                         egui::Rect::from_center_size(
                             egui::pos2(left + t.sketch_footer_icon_size / 2.0, rect.center().y),
                             vec2(t.sketch_footer_icon_size, t.sketch_footer_icon_size),
                         ),
                         icon,
-                        t.icon,
-                        t.icon_fill,
-                        t.form_primary,
+                        f32::from(t.icon.a()) / 255.0,
                     );
                 }
                 painter.galley(egui::pos2(left + icon_width, rect.center().y - galley.size().y / 2.0), galley, t.form_ink);
@@ -246,13 +244,13 @@ pub(crate) fn button_pair(ui: &mut egui::Ui, key: &str, states: [bool; 2], butto
 }
 
 /// Secondary button variants preserve native sizing and enabled-button translation.
-pub(crate) enum Button {
+pub enum Button {
     Normal,
     Small,
     Enabled(bool),
 }
 
-pub(crate) fn button(ui: &mut Ui, label: impl Into<egui::WidgetText>, options: Button) -> Response {
+pub fn button(ui: &mut Ui, label: impl Into<egui::WidgetText>, options: Button) -> Response {
     let label = label.into();
     let key = label.text().to_owned();
     let draw = |ui: &mut Ui, label| match options {

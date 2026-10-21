@@ -133,6 +133,9 @@ pills when `on_accent` has less than 4.5:1 contrast with the fill. See the
   point for your own theme.
 - **Remove** deletes the selected imported theme.
 
+Retired window-band and procedural icon colours in older exports are discarded on import.
+Command icons use the shared SVG palette.
+
 Imported themes are kept with your preferences, so they work in the browser app too. Colour
 vision modes still apply on top of any theme.
 

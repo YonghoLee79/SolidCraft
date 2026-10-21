@@ -1,4 +1,5 @@
 //! Transient shell geometry shared by automation, drawing and viewport occlusion.
+use crate::ui_kit::{Container, Surface};
 use egui::{Rect, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,16 @@ pub enum LayoutMode {
     #[default]
     Floating,
     Docked,
+}
+
+impl LayoutMode {
+    pub(crate) fn publish(self, ctx: &egui::Context) {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("sc_container_layout"), self));
+    }
+
+    pub(crate) fn current(ctx: &egui::Context) -> Self {
+        ctx.data(|data| data.get_temp(egui::Id::new("sc_container_layout"))).unwrap_or_default()
+    }
 }
 
 /// The gap from the viewport edge to the floating cards and between the cards.
@@ -59,14 +70,17 @@ pub(crate) struct Cards {
 
 impl Cards {
     pub fn new(available: Rect, mode: LayoutMode) -> Self {
-        let margin = if mode == LayoutMode::Floating { SHELL_GAP } else { 0.0 };
-        let gap = if mode == LayoutMode::Floating { SHELL_GAP } else { 1.0 };
+        let margin = if Container::for_layout(mode, Surface::Chrome).floating() { SHELL_GAP } else { 0.0 };
+        let gap = if Container::for_layout(mode, Surface::Chrome).floating() { SHELL_GAP } else { 1.0 };
         let left = available.left() + margin;
         let top = available.top() + margin;
         let right = (available.right() - margin).max(left);
         let workspace = Rect::from_min_size(
             pos2(left, top),
-            vec2(toolbar::WORKSPACE_WIDTH.min((right - left).max(0.0)), toolbar::RIBBON_HEIGHT - if mode == LayoutMode::Docked { 1.0 } else { 0.0 }),
+            vec2(
+                toolbar::WORKSPACE_WIDTH.min((right - left).max(0.0)),
+                toolbar::RIBBON_HEIGHT - if !Container::for_layout(mode, Surface::Chrome).floating() { 1.0 } else { 0.0 },
+            ),
         );
         let ribbon = Rect::from_min_max(pos2((workspace.right() + gap).min(right), top), pos2(right, top + toolbar::RIBBON_HEIGHT));
         Self { workspace, ribbon, bottom: ribbon.bottom() + margin }
@@ -93,10 +107,13 @@ pub(crate) struct State {
 /// One source of occlusion for navigation, picking, overlays and fit.
 pub(crate) fn covered_rects(app: &SolveApp) -> Vec<Rect> {
     let mut rects = Vec::new();
-    if app.ui.layout == LayoutMode::Floating {
+    if Container::for_layout(app.ui.layout, Surface::Panel).floating() {
         rects.extend(app.shell.cards.iter().copied());
         rects.extend(app.shell.panels.iter().copied());
         rects.extend(app.shell.history);
+        if crate::agent_chat::shown(app) && app.agent_chat.open && !app.preferences.agent_chat_popped {
+            rects.extend(app.agent_chat.panel_rect);
+        }
     }
     if app.ui.show_timeline && app.preferences.timeline_left {
         rects.extend(app.shell.history.map(|card| crate::ui_kit::HistorySeam::new(card).pill));
@@ -114,12 +131,26 @@ pub(crate) fn covered(app: &SolveApp, p: egui::Pos2) -> bool {
 
 /// The former central panel remains the anchor for controls and docked panels.
 pub(crate) fn content_rect(app: &SolveApp, viewport: Rect) -> Rect {
-    if app.ui.layout == LayoutMode::Floating { app.shell.content.unwrap_or(viewport).intersect(viewport) } else { viewport }
+    if Container::for_layout(app.ui.layout, Surface::Panel).floating() { app.shell.content.unwrap_or(viewport).intersect(viewport) } else { viewport }
+}
+
+/// Tool sheets may cover Browser and History, while shell chrome and Assistant stay clear.
+/// Assistant's outside-rail exception stays in its owner.
+pub(crate) fn tool_drag_rect(app: &SolveApp, placement: Rect) -> Rect {
+    if Container::for_layout(app.ui.layout, Surface::Feature).floating() {
+        let mut bounds = crate::agent_chat::tool_space(app, app.viewport.rect.unwrap_or(placement));
+        for card in app.shell.cards.iter().filter(|r| r.is_finite() && r.is_positive()) {
+            bounds.min.y = (card.bottom() + SHELL_GAP).clamp(bounds.top(), bounds.bottom());
+        }
+        bounds
+    } else {
+        placement
+    }
 }
 
 pub(crate) fn panel_top(app: &SolveApp, viewport: Rect, bottom: f32, side: crate::frame::Side) -> f32 {
     let content = content_rect(app, viewport);
-    if app.ui.layout == LayoutMode::Floating && side == crate::frame::Side::Right {
+    if Container::for_layout(app.ui.layout, Surface::Panel).floating() && side == crate::frame::Side::Right {
         // Preserve measured compass clearance when there is room; reclaim it on short
         // views with the same 360 px panel budget as Docked.
         app.viewport
