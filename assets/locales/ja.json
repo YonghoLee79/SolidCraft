@@ -632,6 +632,7 @@
   "cmd.sheet_fold": "折り曲げ",
   "cmd.sheet_hem": "ヘミング",
   "cmd.sheet_manage_rules": "板金ルール",
+  "cmd.sheet_path_flange": "パスフランジ",
   "cmd.sheet_perforate": "パンチング",
   "cmd.sheet_refold": "折り戻し",
   "cmd.sheet_rules": "板金ルールを一覧表示",

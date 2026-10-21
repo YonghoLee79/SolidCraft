@@ -632,6 +632,7 @@
   "cmd.sheet_fold": "Plier",
   "cmd.sheet_hem": "Ourlet",
   "cmd.sheet_manage_rules": "Règles de tôlerie",
+  "cmd.sheet_path_flange": "Bord tombé sur trajectoire",
   "cmd.sheet_perforate": "Perforer",
   "cmd.sheet_refold": "Replier",
   "cmd.sheet_rules": "Lister les règles de tôlerie",

@@ -632,6 +632,7 @@
   "cmd.sheet_fold": "Гиб",
   "cmd.sheet_hem": "Кромка",
   "cmd.sheet_manage_rules": "Правила листового металла",
+  "cmd.sheet_path_flange": "Фланец по траектории",
   "cmd.sheet_perforate": "Перфорация",
   "cmd.sheet_refold": "Повторный гиб",
   "cmd.sheet_rules": "Список правил листового металла",

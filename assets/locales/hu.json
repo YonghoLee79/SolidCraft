@@ -632,6 +632,7 @@
   "cmd.sheet_fold": "Hajlítás",
   "cmd.sheet_hem": "Visszahajtás (szegés)",
   "cmd.sheet_manage_rules": "Lemezszabályok",
+  "cmd.sheet_path_flange": "Útvonal-perem",
   "cmd.sheet_perforate": "Perforálás",
   "cmd.sheet_refold": "Újrahajlítás",
   "cmd.sheet_rules": "Lemezszabályok listázása",

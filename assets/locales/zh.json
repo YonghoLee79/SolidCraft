@@ -632,6 +632,7 @@
   "cmd.sheet_fold": "折叠",
   "cmd.sheet_hem": "卷边",
   "cmd.sheet_manage_rules": "钣金规则",
+  "cmd.sheet_path_flange": "路径法兰",
   "cmd.sheet_perforate": "冲孔",
   "cmd.sheet_refold": "重新折弯",
   "cmd.sheet_rules": "列出钣金规则",

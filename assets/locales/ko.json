@@ -632,6 +632,7 @@
   "cmd.sheet_fold": "접기",
   "cmd.sheet_hem": "헴",
   "cmd.sheet_manage_rules": "판금 규칙",
+  "cmd.sheet_path_flange": "경로 플랜지",
   "cmd.sheet_perforate": "타공",
   "cmd.sheet_refold": "다시 접기",
   "cmd.sheet_rules": "판금 규칙 목록",

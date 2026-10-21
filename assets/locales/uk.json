@@ -632,6 +632,7 @@
   "cmd.sheet_fold": "Зігнути",
   "cmd.sheet_hem": "Загин",
   "cmd.sheet_manage_rules": "Правила листового металу",
+  "cmd.sheet_path_flange": "Фланець за траєкторією",
   "cmd.sheet_perforate": "Перфорація",
   "cmd.sheet_refold": "Зігнути назад",
   "cmd.sheet_rules": "Список правил листового металу",

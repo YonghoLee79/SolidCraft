@@ -632,6 +632,7 @@
   "cmd.sheet_fold": "Gập tấm kim loại",
   "cmd.sheet_hem": "Mép viền gấp đôi",
   "cmd.sheet_manage_rules": "Quy tắc kim loại tấm",
+  "cmd.sheet_path_flange": "Chấn gập mép theo đường dẫn",
   "cmd.sheet_perforate": "Đục lỗ tấm kim loại",
   "cmd.sheet_refold": "Gập lại tấm kim loại",
   "cmd.sheet_rules": "Danh sách quy tắc kim loại tấm",
