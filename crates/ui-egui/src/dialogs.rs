@@ -4085,7 +4085,9 @@ pub(crate) fn plane_sel(s: &Session, pl: &PlaneRef) -> Option<Sel> {
     match pl {
         PlaneRef::Origin { name } => Some(Sel::Plane { name: name.clone() }),
         PlaneRef::Construction { name } => Some(Sel::Plane { name: name.to_string() }),
-        PlaneRef::Custom { plane } | PlaneRef::Face { plane, .. } => face_sel(s, plane.origin),
+        PlaneRef::Custom { plane } => face_sel(s, plane.origin),
+        // The point picked on the face: the plane's origin can lie off the face (#3567).
+        PlaneRef::Face { at, .. } => face_sel(s, *at),
         PlaneRef::Flipped { base, .. } => plane_sel(s, base),
         _ => None,
     }
