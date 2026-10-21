@@ -34,3 +34,34 @@ fn health_lists_failing_features_and_the_history() {
     let h = run(&mut s, "model.health", json!({}));
     assert_eq!((h["errors"].clone(), h["redo_depth"].clone()), (json!([]), json!(1)), "{h}");
 }
+
+#[test]
+fn notices_report_what_each_feature_says_about_itself() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [20, 10]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 5}));
+    let n = run(&mut s, "model.notices", json!({}));
+    let all = n["notices"].as_array().unwrap();
+    assert_eq!(all.len(), 2, "{n}");
+    // The sketch says how far it is constrained; the extrude has nothing to add.
+    let sketch = &all[0];
+    assert_eq!((sketch["name"].clone(), sketch["status"].clone()), (json!("Base"), json!("ok")), "{n}");
+    assert_eq!(sketch["values"]["profiles"], 1, "{n}");
+    assert!(sketch["values"]["dof"].as_u64().unwrap() > 0, "an undimensioned rectangle moves: {n}");
+    assert!(sketch["info"].as_str().unwrap().contains("degrees of freedom left"), "{n}");
+    assert!(all[1].get("info").is_none(), "{n}");
+    // By name or id; an unknown name is refused.
+    let one = run(&mut s, "model.notices", json!({"features": ["Base"]}));
+    assert_eq!(one["notices"].as_array().unwrap().len(), 1, "{one}");
+    assert!(s.execute("model.notices", &json!({"features": ["Nope"]})).is_err());
+    // model.health carries a digest of each notice, which moves when the notice does.
+    let before = run(&mut s, "model.health", json!({}))["notices"].clone();
+    assert_eq!(before.as_array().unwrap().len(), 1, "{before}");
+    run(&mut s, "sketch.edit", json!({"sketch": "Base"}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["l1"], "value": 20}));
+    run(&mut s, "sketch.finish", json!({}));
+    let after = run(&mut s, "model.health", json!({}))["notices"].clone();
+    assert_ne!(before[0]["digest"], after[0]["digest"], "{before} {after}");
+}

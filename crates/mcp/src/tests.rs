@@ -94,6 +94,7 @@ fn handshake_and_tools_list() {
         "inspect_design",
         "measure",
         "body_topology",
+        "notices",
         "set_parameter",
         "screenshot",
         "export",
@@ -1673,6 +1674,37 @@ fn tool_results_tell_the_agent_what_changed_in_the_design() {
     assert_eq!(f["changed_since_your_last_call"]["done"], json!(["Cylinder"]), "{f}");
     assert!(f.get("features").is_none(), "inspecting changed nothing: {f}");
     assert_eq!(feedback(&raw_tool(&mut s, "inspect_design", json!({"measure": false}))), None, "told once");
+    // A feature's own report comes back too: a sketch's degrees of freedom, read in full with `notices`.
+    let r = raw_tool(
+        &mut s,
+        "batch",
+        json!({"commands": [
+            {"command": "sketch.create", "params": {"plane": "XY", "name": "Plate"}},
+            {"command": "sketch.rectangle.two_point", "params": {"p0": [0, 0], "p1": [30, 20]}},
+            {"command": "sketch.finish", "params": {}}
+        ]}),
+    );
+    let f = feedback(&r).unwrap();
+    assert!(
+        f["notices"]
+            .as_array()
+            .is_some_and(|n| n.iter().any(|x| x["name"] == "Plate" && x["info"].as_str().is_some_and(|i| i.contains("degrees of freedom")))),
+        "{f}"
+    );
+    let n = tool(&mut s, "notices", json!({"features": ["Plate"]}));
+    assert_eq!(n["notices"][0]["values"]["profiles"], 1, "{n}");
+    // The `notices` tool is a plain read-only tool: it answers without the block too.
+    tool(
+        &mut plain,
+        "batch",
+        json!({"commands": [
+            {"command": "sketch.create", "params": {"plane": "XY", "name": "Plate"}},
+            {"command": "sketch.rectangle.two_point", "params": {"p0": [0, 0], "p1": [30, 20]}},
+            {"command": "sketch.finish", "params": {}}
+        ]}),
+    );
+    let n = tool(&mut plain, "notices", json!({"features": ["Plate"]}));
+    assert_eq!(n["notices"][0]["values"]["profiles"], 1, "{n}");
 }
 
 /// `describe_command` serves a converted command's schemas, and a headless session set to strict
