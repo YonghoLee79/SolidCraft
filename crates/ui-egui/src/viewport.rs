@@ -3057,7 +3057,7 @@ fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect) {
     let mut free = crate::viewport_layout::free_rect(crate::shell::content_rect(app, viewport), &obstacles).shrink(t.space_8);
     if let Some((msg, at, error)) = app.status.clone() {
         if crate::now_ms() - at < 6000.0 {
-            if let Some(r) = paint_toast(ui, free, msg, error, false) {
+            if let Some(r) = paint_toast(ui, free, if error { crate::i18n::diagnostic(&msg) } else { msg }, error, false) {
                 crate::scenario::publish_rect("toast", r);
                 free.max.y = r.top() - t.space_8;
                 // Open the run's messages from the tokenised status toast.

@@ -757,7 +757,7 @@ fn interference_rows(app: &SolveApp, ui: &mut egui::Ui, r: &Value) {
     let t = Tokens::get();
     if let Some(e) = r.get("error").and_then(Value::as_str) {
         form_row(ui, "", |ui| {
-            ui.label(RichText::new(e).color(t.error));
+            ui.label(RichText::new(crate::i18n::diagnostic(e)).color(t.error));
         });
         return;
     }

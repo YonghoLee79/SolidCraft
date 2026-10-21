@@ -161,7 +161,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             }
         }
         if let Some(e) = &d.error {
-            ui.label(RichText::new(e).color(t.error));
+            ui.label(RichText::new(crate::i18n::diagnostic(e)).color(t.error));
         }
         ui.separator();
         ui.horizontal(|ui| {

@@ -484,7 +484,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 let hits = c.get("collisions").and_then(Value::as_array).cloned().unwrap_or_default();
                 crate::ui_kit::section(ui, "contact_collisions", "Collisions", true, |ui| {
                     if let Some(e) = c.get("error").and_then(Value::as_str) {
-                        ui.label(RichText::new(e).color(t.error));
+                        ui.label(RichText::new(crate::i18n::diagnostic(e)).color(t.error));
                     } else if hits.is_empty() {
                         ui.label(RichText::new("none").color(t.text_dim));
                     } else {
@@ -524,7 +524,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
             }
             if let Some(e) = error {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(e.as_str()).color(t.error));
+                    ui.label(RichText::new(crate::i18n::diagnostic(e.as_str())).color(t.error));
                 });
             }
         }
