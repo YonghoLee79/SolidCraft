@@ -1204,6 +1204,7 @@
   "ui.agent_chat_view_attached": "View attached",
   "ui.agent_cursor": "Agent cursor",
   "ui.agent_cursor_speed": "Agent cursor speed",
+  "ui.agent_design_feedback": "Tell the agent what each call did to the design (design feedback)",
   "ui.ai_add": "Add",
   "ui.ai_add_agent": "Add agent…",
   "ui.ai_add_agent_title": "Add agent",

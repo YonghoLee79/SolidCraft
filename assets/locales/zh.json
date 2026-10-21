@@ -1204,6 +1204,7 @@
   "ui.agent_chat_view_attached": "已附加视图",
   "ui.agent_cursor": "代理光标",
   "ui.agent_cursor_speed": "代理光标速度",
+  "ui.agent_design_feedback": "告诉智能体每次调用对设计做了什么（设计反馈）",
   "ui.ai_add": "添加",
   "ui.ai_add_agent": "添加智能体…",
   "ui.ai_add_agent_title": "添加智能体",
