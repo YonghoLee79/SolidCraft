@@ -66,7 +66,10 @@
 - **Dialogs** dock on the right with a live preview. Most features also show drag handles and a
   value box in the viewport.
 - **Timeline** (bottom). Every feature in order. Double-click to edit, drag the marker to roll
-  back, and drag features to reorder them.
+  back, and drag features to reorder them. Preferences can put the timeline vertically at the
+  far left of the viewport, beside the browser. Its seam handle switches between icon
+  chips and compact feature names; the browser can collapse to a rail beside either width.
+  Previous, Play and Next sit at the top. Double-click Previous to roll to the start.
 - **Command search (S).** Click the ribbon search field or press S to open the search popup
   below it. Results group commands by their ribbon path and show matching features and user
   parameters from this design. With an empty query, recent commands appear first, followed by
