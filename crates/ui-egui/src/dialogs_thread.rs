@@ -59,6 +59,7 @@ impl HoleThreadDraft {
 /// Tapped holes use the existing metric catalogue; the engine derives the tap drill.
 /// Custom remains a dialog mode even when its current values match a catalogue size.
 pub(crate) fn hole_rows(ui: &mut egui::Ui, doc: &Document, designation: &mut String, custom: &mut Option<HoleThreadDraft>) -> bool {
+    let designation_id = ui.make_persistent_id("hole_thread_designation");
     form_row(ui, "Profile", |ui| {
         ui.label(tr("ISO metric"));
     });
@@ -96,8 +97,8 @@ pub(crate) fn hole_rows(ui: &mut egui::Ui, doc: &Document, designation: &mut Str
         enter |= diameter_enter || pitch_enter;
     }
 
-    let (designation_enter, changed) = text_row(ui, "Designation", designation, "M5 or M5x0.5");
-    if changed && custom.is_some() {
+    let response = form_row(ui, "Designation", |ui| crate::ui_kit::cell_editor(ui, designation_id, designation, "M5 or M5x0.5", false));
+    if response.changed() && custom.is_some() {
         *custom = Some(HoleThreadDraft::new(designation));
     }
     form_row(ui, "Tap drill diameter", |ui| {
@@ -110,7 +111,7 @@ pub(crate) fn hole_rows(ui: &mut egui::Ui, doc: &Document, designation: &mut Str
             }
         }
     });
-    enter || designation_enter
+    enter || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
 }
 
 /// Returns (Enter pressed, automatic sizing requested).
@@ -413,6 +414,7 @@ mod contribution_tests {
     #[test]
     fn contribution_metric_designation_rendering_preserves_authored_legacy_and_custom_text() {
         let context = egui::Context::default();
+        crate::fonts::setup_bundled_fonts(&context);
         for original in ["M8x1.25", "M8x1", "M33x1", "M5×0.5", " m8x1.25 ", "invalid"] {
             let mut hole = original.to_string();
             let mut thread = original.to_string();
