@@ -12,7 +12,7 @@ use solidcraft_engine::geom::Vec3;
 use crate::SolveApp;
 use crate::dialogs::{Dialog, Kind};
 use crate::gizmo::{self, Change, Drag};
-use crate::selection::{AXES, BODIES, EDGES, FACES, ORIGIN, SelInput, VERTICES};
+use crate::selection::{AXES, BODIES, EDGES, FACES, ORIGIN, ROUND_FACES, SelInput, VERTICES};
 
 pub const TYPES: [&str; 5] = ["Free Move", "Translate", "Rotate", "Point to Point", "Point to Position"];
 pub const FREE: usize = 0;
@@ -34,7 +34,7 @@ pub fn inputs(mode: usize) -> Vec<SelInput> {
     let mut v = vec![SelInput::new("Bodies", BODIES, true)];
     match mode {
         FREE => v.push(SelInput::new("Pivot", POINTS, false)),
-        ROTATE => v.push(SelInput::new("Axis", AXES | EDGES, false)),
+        ROTATE => v.push(SelInput::new("Axis", AXES | EDGES | ROUND_FACES, false)),
         POINT_TO_POINT => {
             v.push(SelInput::new("From", POINTS, false));
             v.push(SelInput::new("To", POINTS, false));

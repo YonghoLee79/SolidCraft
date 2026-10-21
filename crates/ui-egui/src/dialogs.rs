@@ -109,7 +109,7 @@ crate::dialog_descriptor::dialog_descriptors! {
             FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { distance, .. } }) {
             offset: String = "0 mm".into() => distance.to_string(),
         } => json!({"offset": offset});
-        AnglePlane("construct.plane.at_angle", "PLANE AT ANGLE", [("Plane", PLANES, false), ("Axis", AXES, false)],
+        AnglePlane("construct.plane.at_angle", "PLANE AT ANGLE", [("Plane", PLANES, false), ("Axis", AXES | EDGES | selection::ROUND_FACES, false)],
             FeatureKind::ConstructionPlane { plane: PlaneRef::AtAngle { angle, .. } }) {
             angle: String = "45 deg".into() => angle.to_string(),
         } => json!({"angle": angle});
@@ -671,13 +671,13 @@ impl Dialog {
                 Kind::PatternRect { count: "3".into(), spacing: "20 mm".into(), count2: "1".into(), spacing2: "20 mm".into() },
                 vec![
                     SelInput::new("Objects", BODIES, true),
-                    SelInput::new("Direction", AXES | EDGES, false),
-                    SelInput::new("Direction 2", AXES | EDGES, false),
+                    SelInput::new("Direction", AXES | EDGES | selection::ROUND_FACES, false),
+                    SelInput::new("Direction 2", AXES | EDGES | selection::ROUND_FACES, false),
                 ],
             ),
             "solid.pattern.circular" => Dialog::new(
                 Kind::PatternCirc { count: "6".into(), angle: "360 deg".into() },
-                vec![SelInput::new("Objects", BODIES, true), SelInput::new("Axis", AXES, false)],
+                vec![SelInput::new("Objects", BODIES, true), SelInput::new("Axis", AXES | EDGES | selection::ROUND_FACES, false)],
             ),
             "solid.loft" => Dialog::new(Kind::Loft { operation: usize::from(has_bodies), rail_fit: 0 }, {
                 let [rail, rail2] = crate::dialogs_sweep::rail_inputs();
@@ -1802,13 +1802,13 @@ fn placement_row(d: &mut Dialog, ui: &mut egui::Ui) {
                     Kind::PatternRect { count: "3".into(), spacing: "20 mm".into(), count2: "1".into(), spacing2: "20 mm".into() },
                     vec![
                         SelInput::new("Objects", BODIES, true),
-                        SelInput::new("Direction", AXES | EDGES, false),
-                        SelInput::new("Direction 2", AXES | EDGES, false),
+                        SelInput::new("Direction", AXES | EDGES | selection::ROUND_FACES, false),
+                        SelInput::new("Direction 2", AXES | EDGES | selection::ROUND_FACES, false),
                     ],
                 ),
                 1 => (
                     Kind::PatternCirc { count: "6".into(), angle: "360 deg".into() },
-                    vec![SelInput::new("Objects", BODIES, true), SelInput::new("Axis", AXES, false)],
+                    vec![SelInput::new("Objects", BODIES, true), SelInput::new("Axis", AXES | EDGES | selection::ROUND_FACES, false)],
                 ),
                 _ => (
                     Kind::PathPattern { count: "4".into(), spacing: "20 mm".into() },
@@ -3161,9 +3161,12 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let axis = match sels(d, 1).first() {
                 Some(Sel::Axis { name }) => json!(name),
                 Some(Sel::SketchCurve { id }) => json!(id),
-                // A round face stands for its axis, a straight edge for itself.
-                Some(Sel::Face { body, point, .. }) => json!({"face": pt(*point), "body": body}),
-                Some(Sel::Edge { body, point, .. }) => json!({"edge": pt(*point), "body": body}),
+                // A round face stands for its axis, a circular edge for its own axis and a
+                // straight edge for itself: where the view shows them.
+                Some(x @ (Sel::Face { .. } | Sel::Edge { .. })) => {
+                    let (o, dir) = axis_of(app, x).ok_or("the axis must be an axis, a sketch line, a straight or circular edge, or a round face")?;
+                    json!({"origin": pt(o), "dir": pt(dir)})
+                }
                 _ => stored_axis.clone().ok_or("select an axis")?,
             };
             let (sketch, idx) = profiles();
@@ -3263,7 +3266,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             need(0, "objects")?;
             let kept = d.extra.get("dir1").and_then(|v| serde_json::from_value::<[f64; 3]>(v.clone()).ok()).map(|a| Vec3::new(a[0], a[1], a[2]));
             let d1 = match (sels(d, 1).first(), kept) {
-                (Some(x), _) => axis_of(app, x).ok_or("the direction must be an axis, a sketch line or a straight edge")?.1,
+                (Some(x), _) => {
+                    axis_of(app, x).ok_or("the direction must be an axis, a sketch line, a straight or circular edge, or a round face")?.1
+                }
                 (None, Some(k)) => k,
                 (None, None) => return Err("select a direction (an axis, a sketch line or a straight edge) first".into()),
             };
@@ -3271,7 +3276,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             pattern_objects(s, sels(d, 0), &mut p);
             let kept2 = d.extra.get("dir2").and_then(|v| serde_json::from_value::<[f64; 3]>(v.clone()).ok()).map(|a| Vec3::new(a[0], a[1], a[2]));
             let d2 = match sels(d, 2).first() {
-                Some(x) => Some(axis_of(app, x).ok_or("the second direction must be an axis, a sketch line or a straight edge")?.1),
+                Some(x) => Some(
+                    axis_of(app, x).ok_or("the second direction must be an axis, a sketch line, a straight or circular edge, or a round face")?.1,
+                ),
                 None => kept2,
             };
             if let Some(d2) = d2 {
@@ -3287,7 +3294,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 None if d.extra.contains_key("axis") => d.extra.get("axis").cloned().unwrap_or(Value::Null),
                 Some(Sel::Axis { name }) => json!(name),
                 Some(x) => {
-                    let (o, dir) = axis_of(app, x).ok_or("the axis must be an origin axis or a sketch line")?;
+                    let (o, dir) = axis_of(app, x).ok_or("the axis must be an axis, a sketch line, a straight or circular edge, or a round face")?;
                     json!({"origin": pt(o), "dir": pt(dir)})
                 }
                 None => return Err("select an axis".into()),
@@ -3390,7 +3397,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let axis = match sels(d, 1).first() {
                 Some(Sel::Axis { name }) => json!(name),
                 Some(x) => {
-                    let (o, dir) = axis_of(app, x).ok_or("the axis must be an origin axis or a sketch line")?;
+                    let (o, dir) = axis_of(app, x).ok_or("the axis must be an axis, a sketch line, a straight or circular edge, or a round face")?;
                     json!({"origin": pt(o), "dir": pt(dir)})
                 }
                 None => d.extra.get("axis").cloned().ok_or("pick an axis")?,
@@ -3812,9 +3819,11 @@ pub(crate) fn curves_sketch(app: &SolveApp, ids: &[String], not: Option<u64>) ->
     st.sketches.iter().rev().map(|ss| ss.feature).find(|sid| Some(*sid) != not && has(*sid))
 }
 
-/// An axis selection as a line: a point on it and its unit direction (origin axes, or a straight
-/// sketch line).
+/// An axis selection as a line: a point on it and its unit direction (origin and construction
+/// axes, a straight sketch line or model edge, a round face's axis or a circular edge's axis),
+/// where the view shows it.
 pub fn axis_of(app: &SolveApp, sel: &Sel) -> Option<(Vec3, Vec3)> {
+    use solidcraft_engine::kernel;
     match sel {
         Sel::Axis { name } => match name.as_str() {
             "X" => Some((Vec3::ZERO, Vec3::X)),
@@ -3832,20 +3841,32 @@ pub fn axis_of(app: &SolveApp, sel: &Sel) -> Option<(Vec3, Vec3)> {
             let (pa, pb) = (ss.plane.to_world(ss.sketch.point(a)?), ss.plane.to_world(ss.sketch.point(b)?));
             Some((pa, (pb - pa).normalized()?))
         }
-        // A straight model edge, along it.
+        // A straight model edge, along it; a circle or an arc of one, its own axis (through its
+        // centre, square to its plane).
         Sel::Edge { body, index, .. } => {
             let b = app.session.world_state().body(body).cloned()?;
             let m = b.mesh();
             let e = m.edges.get(*index)?;
             let (a, z) = (*e.first()?, *e.last()?);
-            let dir = (z - a).normalized()?;
             let tol = 1e-6 * a.dist(z).max(1.0);
-            if !e.iter().all(|p| (*p - a).cross(dir).len() < tol) {
-                return None;
-            }
+            let straight = (z - a).normalized().filter(|dir| e.iter().all(|p| (*p - a).cross(*dir).len() < tol));
+            let Some(dir) = straight else {
+                let c = kernel::guard("axis edge circle", || Ok(kernel::edge_circle(&b.body, *index))).ok().flatten()?;
+                return Some((c.center, *c.axis));
+            };
             // An edge along an origin axis points the way the axis does (as picking the axis).
             let axis = [Vec3::X, Vec3::Y, Vec3::Z].into_iter().find(|x| dir.dot(*x).abs() > 1.0 - 1e-9);
             Some((a, axis.unwrap_or(dir)))
+        }
+        // A cylinder, cone or torus face: its axis.
+        Sel::Face { body, index, .. } => {
+            let b = app.session.world_state().body(body).cloned()?;
+            match kernel::guard("axis face surface", || Ok(kernel::face_surface(&b.body, *index))).ok().flatten()? {
+                kernel::FaceSurface::Cylinder { origin, axis, .. } => Some((origin, *axis)),
+                kernel::FaceSurface::Cone { apex, axis, .. } => Some((apex, *axis)),
+                kernel::FaceSurface::Torus { center, axis, .. } => Some((center, *axis)),
+                _ => None,
+            }
         }
         _ => None,
     }

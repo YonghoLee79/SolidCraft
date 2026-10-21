@@ -12,7 +12,9 @@ use solidcraft_engine::geom::Vec3;
 
 use crate::SolveApp;
 use crate::dialogs::{Kind, OP_LABELS, OPS, combo, form_row, op_index};
-use crate::selection::{AXES, BODIES, CURVES, EDGES, FACES, PLANES, PROFILES, SelInput, SelectionExt as _, VERTICES, items, point_value as pt};
+use crate::selection::{
+    AXES, BODIES, CURVES, EDGES, FACES, PLANES, PROFILES, ROUND_FACES, SelInput, SelectionExt as _, VERTICES, items, point_value as pt,
+};
 use crate::ui_kit;
 
 crate::dialog_descriptor::dialog_descriptors! {
@@ -158,7 +160,9 @@ const RULED_MODES: [(&str, &str); 4] = [("Normal", "normal"), ("Tangent", "tange
 fn inputs(k: &Surf) -> Vec<SelInput> {
     match k {
         Surf::Extrude { .. } => vec![SelInput::new("Profiles or curves", PROFILES | CURVES, true)],
-        Surf::Revolve { .. } => vec![SelInput::new("Profiles or curves", PROFILES | CURVES, true), SelInput::new("Axis", AXES, false)],
+        Surf::Revolve { .. } => {
+            vec![SelInput::new("Profiles or curves", PROFILES | CURVES, true), SelInput::new("Axis", AXES | EDGES | ROUND_FACES, false)]
+        }
         Surf::Sweep(_) => {
             let [rail, rail2] = crate::dialogs_sweep::rail_inputs();
             vec![
@@ -179,7 +183,11 @@ fn inputs(k: &Surf) -> Vec<SelInput> {
         Surf::Unstitch => vec![SelInput::new("Body, or faces to take out", BODIES | FACES, true)],
         Surf::ReverseNormal => vec![SelInput::new("Surface, or faces to turn over", BODIES | FACES, true)],
         Surf::Ruled { .. } => {
-            vec![SelInput::new("Edges", EDGES, true), SelInput::new("Reference face", FACES, false), SelInput::new("Direction", AXES | EDGES, false)]
+            vec![
+                SelInput::new("Edges", EDGES, true),
+                SelInput::new("Reference face", FACES, false),
+                SelInput::new("Direction", AXES | EDGES | ROUND_FACES, false),
+            ]
         }
         Surf::Trim { .. } => vec![
             SelInput::new("Surface", BODIES, false),
@@ -491,6 +499,12 @@ pub fn commands(app: &SolveApp, k: &Surf, inputs: &[SelInput], extra: &Map<Strin
             p["axis"] = match items(inputs, 1).first() {
                 Some(Sel::Axis { name }) => json!(name),
                 Some(Sel::SketchCurve { id }) => json!(id),
+                // A round face's axis, a circular edge's axis or a straight edge, where shown.
+                Some(x) => {
+                    let (o, dir) = crate::dialogs::axis_of(app, x)
+                        .ok_or("the axis must be an axis, a sketch line, a straight or circular edge, or a round face")?;
+                    json!({"origin": pt(o), "dir": pt(dir)})
+                }
                 _ => axis.clone().ok_or("select an axis")?,
             };
             p["angle"] = json!(angle);
@@ -655,7 +669,11 @@ pub fn commands(app: &SolveApp, k: &Surf, inputs: &[SelInput], extra: &Map<Strin
             // A picked direction, else the one the feature was made with (Edit Feature).
             let kept = extra.get("direction").and_then(|v| serde_json::from_value::<[f64; 3]>(v.clone()).ok()).map(|a| Vec3::new(a[0], a[1], a[2]));
             let dir = match items(inputs, 2).first() {
-                Some(x) => Some(crate::dialogs::axis_of(app, x).ok_or("the direction must be an axis, a sketch line or a straight edge")?.1),
+                Some(x) => Some(
+                    crate::dialogs::axis_of(app, x)
+                        .ok_or("the direction must be an axis, a sketch line, a straight or circular edge, or a round face")?
+                        .1,
+                ),
                 None => kept,
             };
             match (mode, dir) {
