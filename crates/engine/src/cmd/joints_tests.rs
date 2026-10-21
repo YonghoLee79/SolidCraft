@@ -215,10 +215,11 @@ fn interference_finds_a_peg_overlapping_a_small_rib() {
     assert!((lo[0].as_f64().unwrap_or(0.0) - 19.7).abs() < 1e-6 && (hi[0].as_f64().unwrap_or(0.0) - 19.85).abs() < 1e-6, "{i}");
 }
 
-/// An arc revolved up to a post ends on the post's wall, where the two bodies can't be
-/// intersected: the pair is listed as unchecked instead of passing as clear.
+/// An arc revolved up to a post ends on the post's wall. The two bodies only touch there, and
+/// the pair is intersected and found clear (it used to be listed as unchecked, when the
+/// boolean couldn't intersect the arc's end face with the post).
 #[test]
-fn interference_lists_a_pair_it_could_not_check() {
+fn interference_clears_an_arc_revolved_up_to_a_post() {
     let mut s = Session::default();
     run(&mut s, "solid.cylinder", json!({"base": [0, 14, -5], "radius": 4, "height": 15, "body_name": "Post"}));
     run(&mut s, "sketch.create", json!({"name": "Profile", "plane": "XZ"}));
@@ -227,9 +228,8 @@ fn interference_lists_a_pair_it_could_not_check() {
     run(&mut s, "solid.revolve", json!({"sketch": "Profile", "axis": {"origin": [0, 0, 0], "dir": [0, 0, 1]}, "to": [4, 14, 2], "body_name": "Arc"}));
     let i = run(&mut s, "inspect.interference", json!({}));
     assert_eq!(i["count"], 0, "{i}");
-    let unchecked = i["unchecked"].as_array().cloned().unwrap_or_default();
-    assert_eq!(unchecked.len(), 1, "{i}");
-    assert!(unchecked[0]["reason"].as_str().is_some_and(|r| r.starts_with("not verified") && !r.contains("displacement")), "{i}");
+    assert_eq!(i["pairs_intersected"], 1, "{i}");
+    assert_eq!(i["unchecked"].as_array().map(Vec::len), Some(0), "{i}");
     // Bodies that are clear of each other, or overlap plainly, leave the list empty.
     let mut s = two_cubes();
     let i = run(&mut s, "inspect.interference", json!({}));

@@ -35,6 +35,24 @@ Changes:
   circle) is divided again, finer, before its area's sign tells a hole from a face piece. The
   sign of a zero area was random: the hole became a face of its own, inside out, and the face it
   was cut in stayed whole.
+- `transversal/divide_face/mod.rs`: on a periodic surface, each point of a loop's parameter
+  boundary is taken the period nearest the one before it (the searches still start where they
+  did), and a loop inside a face piece is also looked for a period either way. The search gives
+  each parameter within one period, so a boundary crossing the seam jumped by the period: a face
+  of a revolved surface holding its seam got loops of the wrong sign and area, a piece was taken
+  for a hole inside no other piece, and the operation gave up.
+- `transversal/intersection_curve/mod.rs`: a point of the leading polyline that does not
+  project onto both surfaces in the plane across the polyline is projected in the plane across
+  the intersection curve itself (the cross product of the surfaces' normals at its nearest
+  parameters), and kept if it moved at most ten tolerances. On a face small beside the mesh
+  tolerance the polyline can step across the curve; the plane across it then runs along the
+  curve, Newton's method slid off the face, and the whole curve (and boolean) was refused.
+- `transversal/loops_store/mod.rs`: a curve end within a thousandth of the tolerance of a
+  boundary curve (or its end) is on it (at its end), and an edge is cut at such a point even
+  though it lies that little off the curve. Faces of imported bodies meet their edges only to
+  the file's tolerance (2e-6 mm), so the ends of intersection curves crossing a common edge of
+  two such faces part by that much: they were found on neither face's edge nor joined to each
+  other, and the result's shell stayed open.
 - `lib.rs`: `tr!` reports where an operation gives up when `SHAPEOPS_TRACE` is set; compiler
   warnings no longer fail the build.
 - Face and edge history (`transversal/history.rs`, new): `and_with_history` / `or_with_history`

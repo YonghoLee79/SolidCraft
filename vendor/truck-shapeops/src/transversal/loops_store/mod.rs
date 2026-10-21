@@ -159,11 +159,16 @@ impl ParameterKind {
 }
 
 impl<P: Copy + Tolerance, C: Clone> Loops<P, C> {
-    fn search_parameter(&self, pt: P) -> Option<(usize, usize, ParameterKind)>
-    where C: BoundedCurve<Point = P> + SearchParameter<D1, Point = P> {
-        self.iter()
-            .enumerate()
-            .flat_map(move |(i, wire)| wire.iter().enumerate().map(move |(j, edge)| (i, j, edge)))
+    // SolidCraft: `snap` is the distance within which a point is the end of a curve it is at
+    // (see below); at least the point tolerance.
+    fn search_parameter(&self, pt: P, snap: f64) -> Option<(usize, usize, ParameterKind)>
+    where
+        C: BoundedCurve<Point = P> + SearchParameter<D1, Point = P> + SearchNearestParameter<D1, Point = P>,
+        P: MetricSpace<Metric = f64>,
+    {
+        let at = |end: P| pt.near(&end) || pt.distance(end) <= snap;
+        let edges = || self.iter().enumerate().flat_map(move |(i, wire)| wire.iter().enumerate().map(move |(j, edge)| (i, j, edge)));
+        edges()
             .find_map(|(i, j, edge)| {
                 let curve = edge.curve();
                 curve.search_parameter(pt, None, 1).and_then(|t| {
@@ -172,15 +177,42 @@ impl<P: Copy + Tolerance, C: Clone> Loops<P, C> {
                     // polyline it counts segments, and an intersection curve ending 2e-7 mm from
                     // another's end (two walls of a glyph meeting a face) read 1.4e-6 before it,
                     // so it was cut into a sliver and the result's shell never closed (#391).
-                    let kind = if pt.near(&curve.front()) {
+                    let kind = if at(curve.front()) {
                         ParameterKind::Front
-                    } else if pt.near(&curve.back()) {
+                    } else if at(curve.back()) {
                         ParameterKind::Back
                     } else {
                         ParameterKind::try_new(t, curve.range_tuple())?
                     };
                     Some((i, j, kind))
                 })
+            })
+            // SolidCraft: a point on no curve of the face (within the point tolerance) that lies
+            // within `snap` of one is on the nearest such, and at its end if it is that close to
+            // it. Where a face of an imported body meets the next a little off its own surface (a
+            // STEP edge 2e-6 mm off a plane), the two faces' meshes part along their common edge by
+            // that much, and so do the ends of the intersection curves that cross it: such an end
+            // was found on neither face's edge, two curves meeting there on the other body's face
+            // were left unjoined, the faces kept no loop and the result's shell stayed open.
+            .or_else(|| {
+                edges()
+                    .filter_map(|(i, j, edge)| {
+                        let curve = edge.curve();
+                        let t = curve.search_nearest_parameter(pt, None, 1)?;
+                        let d = pt.distance(curve.subs(t));
+                        (d <= snap).then_some((i, j, t, d, curve))
+                    })
+                    .min_by(|x, y| x.3.total_cmp(&y.3))
+                    .and_then(|(i, j, t, _, curve)| {
+                        let kind = if at(curve.front()) {
+                            ParameterKind::Front
+                        } else if at(curve.back()) {
+                            ParameterKind::Back
+                        } else {
+                            ParameterKind::try_new(t, curve.range_tuple())?
+                        };
+                        Some((i, j, kind))
+                    })
             })
     }
 
@@ -433,12 +465,14 @@ impl<P: Copy + Tolerance, C: Clone> LoopsStore<P, C> {
         loops_index: usize,
         v: &Vertex<P>,
         emap: &mut HashMap<EdgeID<C>, Edge<P, C>>,
+        snap: f64,
     ) -> Option<(usize, usize, ParameterKind)>
     where
-        C: Cut<Point = P> + SearchParameter<D1, Point = P>,
+        C: Cut<Point = P> + SearchParameter<D1, Point = P> + SearchNearestParameter<D1, Point = P>,
+        P: MetricSpace<Metric = f64>,
     {
         let pt = v.point();
-        let (wire_index, edge_index, kind) = self[loops_index].search_parameter(pt)?;
+        let (wire_index, edge_index, kind) = self[loops_index].search_parameter(pt, snap)?;
         match kind {
             ParameterKind::Front => {
                 let old_vertex = self[loops_index][wire_index][edge_index]
@@ -455,7 +489,15 @@ impl<P: Copy + Tolerance, C: Clone> LoopsStore<P, C> {
             ParameterKind::Inner(t) => {
                 let edge = self[loops_index][wire_index][edge_index].absolute_clone();
                 let edge_id = edge.id();
-                let (edge0, edge1) = edge.cut_with_parameter(v, t)?;
+                // SolidCraft: a point snapped onto the edge (see `Loops::search_parameter`) lies
+                // up to the snap distance off it, so truck's cut, which wants the vertex on the
+                // curve, refused it, and the point was left out of the face's loops as if it were
+                // on no edge of the face.
+                let (edge0, edge1) = edge.cut_with_parameter(v, t).or_else(|| {
+                    let mut curve0 = edge.curve();
+                    let curve1 = curve0.cut(t);
+                    Some((Edge::new(edge.absolute_front(), v, curve0), Edge::new(v, edge.absolute_back(), curve1)))
+                })?;
                 let new_wire: Wire<_, _> = vec![edge0, edge1].into();
                 self.swap_edge_into_wire(edge_id, &new_wire);
             }
@@ -588,6 +630,10 @@ where
     let mut poly_loops_store0: LoopsStore<_, _> = poly_shell0.face_iter().collect();
     let mut geom_loops_store1: LoopsStore<_, _> = geom_shell1.face_iter().collect();
     let mut poly_loops_store1: LoopsStore<_, _> = poly_shell1.face_iter().collect();
+    // SolidCraft: the ends of intersection curves closer than this are one point (see
+    // `Loops::search_parameter`): a thousandth of the tolerance the faces were meshed at, far
+    // below what their meshes can tell apart.
+    let snap = tol * 1.0e-3;
     let store0_len = geom_loops_store0.len();
     let store1_len = geom_loops_store1.len();
     (0..store0_len)
@@ -639,7 +685,7 @@ where
                     let mut gemap0 = HashMap::default();
                     let mut gemap1 = HashMap::default();
                     let idx00 =
-                        poly_loops_store0.add_polygon_vertex(face_index0, &pv0, &mut pemap0);
+                        poly_loops_store0.add_polygon_vertex(face_index0, &pv0, &mut pemap0, snap);
                     if let Some((wire_index, edge_index, kind)) = idx00 {
                         crate::tr!(geom_loops_store0.add_geom_vertex(
                             (face_index0, wire_index, edge_index),
@@ -653,7 +699,7 @@ where
                         *polyline.first_mut().unwrap() = gv0.point();
                     }
                     let idx01 =
-                        poly_loops_store0.add_polygon_vertex(face_index0, &pv1, &mut pemap1);
+                        poly_loops_store0.add_polygon_vertex(face_index0, &pv1, &mut pemap1, snap);
                     if let Some((wire_index, edge_index, kind)) = idx01 {
                         crate::tr!(geom_loops_store0.add_geom_vertex(
                             (face_index0, wire_index, edge_index),
@@ -667,7 +713,7 @@ where
                         *polyline.last_mut().unwrap() = gv1.point();
                     }
                     let idx10 =
-                        poly_loops_store1.add_polygon_vertex(face_index1, &pv0, &mut pemap0);
+                        poly_loops_store1.add_polygon_vertex(face_index1, &pv0, &mut pemap0, snap);
                     if let Some((wire_index, edge_index, kind)) = idx10 {
                         crate::tr!(geom_loops_store1.add_geom_vertex(
                             (face_index1, wire_index, edge_index),
@@ -681,7 +727,7 @@ where
                         *polyline.first_mut().unwrap() = gv0.point();
                     }
                     let idx11 =
-                        poly_loops_store1.add_polygon_vertex(face_index1, &pv1, &mut pemap1);
+                        poly_loops_store1.add_polygon_vertex(face_index1, &pv1, &mut pemap1, snap);
                     if let Some((wire_index, edge_index, kind)) = idx11 {
                         crate::tr!(geom_loops_store1.add_geom_vertex(
                             (face_index1, wire_index, edge_index),

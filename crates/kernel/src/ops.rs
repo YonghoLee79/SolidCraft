@@ -1284,8 +1284,16 @@ where
             meshes = again;
         }
     }
+    // Volumes of meshes are summed about one point near the operands, the same for them and
+    // every result checked against them: per-face meshes have cracks, which count their area
+    // times their distance from that point (about the origin, a 9 mm³ result half a metre out
+    // measured -19 mm³), and the same cracks count alike in the operands and the result.
+    let about = match &meshes {
+        (Some(ma), Some(mb)) => ma.bounds().union(&mb.bounds()).center(),
+        _ => Vec3::ZERO,
+    };
     let (va, vb) = match &meshes {
-        (Some(ma), Some(mb)) => (ma.measure().volume, mb.measure().volume),
+        (Some(ma), Some(mb)) => (ma.measure_about(about).volume, mb.measure_about(about).volume),
         _ => (volume(a), volume(b)),
     };
     let slack = 2e-3 * (va + vb) + 1e-9;
@@ -1314,7 +1322,7 @@ where
             return (false, f64::NAN);
         }
         let Ok(mr) = r.tessellate_with(tol_m, true) else { return (false, f64::NAN) };
-        let v = mr.measure().volume;
+        let v = mr.measure_about(about).volume;
         let bounds = plausible(v, op, va, vb, slack);
         if !bounds {
             return (false, v);
@@ -1371,7 +1379,7 @@ where
                 // Measured as the operands were: a coarser mesh of a plate with many holes
                 // overstates its volume by more than the slack.
                 let v = match &meshes {
-                    (Some(_), Some(_)) => body.tessellate_with(tol_m, true).map(|m| m.measure().volume).unwrap_or(f64::NAN),
+                    (Some(_), Some(_)) => body.tessellate_with(tol_m, true).map(|m| m.measure_about(about).volume).unwrap_or(f64::NAN),
                     _ => volume(&body),
                 };
                 if plausible(v, op, va, vb, slack) {

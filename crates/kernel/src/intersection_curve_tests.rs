@@ -1,4 +1,5 @@
 //! Regressions against the actual patched truck constructor, run by workspace CI.
+use solidcraft_geom::Vec3;
 use truck_meshalgo::prelude::PolylineCurve;
 use truck_modeling::{BoundedCurve, ParametricCurve, Plane, Point3, Sphere};
 use truck_shapeops::IntersectionCurveWithParameters;
@@ -113,4 +114,163 @@ fn a_result_with_an_edge_that_does_not_evaluate_is_refused() {
     let solid = |gap: f64| Solid::new_unchecked(vec![triangle_with_intersection_edge(gap)]);
     assert!(!crate::boolean_record::edges_evaluate(&solid(1.0)));
     assert!(crate::boolean_record::edges_evaluate(&solid(0.0)));
+}
+
+/// A small biquadratic B-spline patch, 2 mm by 0.75 mm, that the plane `z = 0` cuts along the
+/// arc `0.2 x² + (y - 0.1)² = 0.25`: the patch is `z = 0.2 x² + (y - 0.1)² - 0.25` over
+/// `x ∈ [-1, 1]`, `y ∈ [0, 0.75]`, and the plane is a large one (a metre across).
+fn small_patch_and_large_plane() -> (truck_modeling::Surface, truck_modeling::Surface) {
+    use truck_modeling::{BSplineSurface, KnotVec, Surface};
+    // Bezier ordinates of the quadratics g(x(u)) and h(y(v)): the values at the ends, and twice
+    // the middle value less the mean of the ends in between.
+    let ordinates = |f: &dyn Fn(f64) -> f64, a: f64, b: f64| [f(a), 2.0 * f((a + b) / 2.0) - (f(a) + f(b)) / 2.0, f(b)];
+    let (xs, ys) = ([-1.0, 0.0, 1.0], [0.0, 0.375, 0.75]);
+    let g = ordinates(&|x| 0.2 * x * x, -1.0, 1.0);
+    let h = ordinates(&|y| (y - 0.1) * (y - 0.1) - 0.25, 0.0, 0.75);
+    let control = (0..3).map(|i| (0..3).map(|j| Point3::new(xs[i], ys[j], g[i] + h[j])).collect()).collect();
+    let patch = BSplineSurface::new((KnotVec::bezier_knot(2), KnotVec::bezier_knot(2)), control);
+    let plane = Plane::new(Point3::new(-500.0, -500.0, 0.0), Point3::new(500.0, -500.0, 0.0), Point3::new(-500.0, 500.0, 0.0));
+    (Surface::Plane(plane), Surface::BSplineSurface(patch))
+}
+
+/// The point of the arc above `x`.
+fn on_arc(x: f64) -> Point3 {
+    Point3::new(x, 0.1 + (0.25 - 0.2 * x * x).sqrt(), 0.0)
+}
+
+/// The polyline leading an intersection curve is where the faces' meshes meet, so it can run up
+/// to the mesh tolerance off the surfaces, and on a face that is small beside that tolerance it
+/// can step out across the curve and back. At such a step the plane across the polyline runs
+/// along the curve, beside it: truck's projection found no point there, and the whole curve was
+/// refused (the boolean with it). The point is now taken across the curve itself, and the curve
+/// is built with every point on both surfaces, in order along it.
+#[test]
+fn a_plane_cut_through_a_small_b_spline_patch_survives_a_polyline_stepping_across_the_curve() {
+    use truck_modeling::{MetricSpace, ParametricSurface, SearchNearestParameter};
+    let (plane, patch) = small_patch_and_large_plane();
+    // Along the arc, except one point 0.08 mm outside it, from which the polyline comes back
+    // straight across the arc (along its normal there).
+    let normal = {
+        let d = -0.2 * 0.5 / (on_arc(0.5).y - 0.1);
+        truck_modeling::Vector3::new(-d, 1.0, 0.0) / (1.0 + d * d).sqrt()
+    };
+    let mut leader: Vec<Point3> = [-0.8, -0.4, 0.0, 0.3].into_iter().map(on_arc).collect();
+    leader.extend([on_arc(0.5) + normal * 0.08, on_arc(0.5), on_arc(0.7), on_arc(0.9)]);
+    let curve = IntersectionCurveWithParameters::try_new(plane.clone(), patch.clone(), PolylineCurve(leader.clone()), 0.05)
+        .expect("the leader point across the curve refused the whole curve");
+    let points = &curve.leader().0;
+    assert_eq!(points.len(), leader.len());
+    for p in points {
+        for surface in [&plane, &patch] {
+            let (u, v) = surface.search_nearest_parameter(*p, None, 100).unwrap();
+            assert!(surface.subs(u, v).distance(*p) < 1e-6, "{p:?} is off a surface");
+        }
+        assert!((0.2 * p.x * p.x + (p.y - 0.1) * (p.y - 0.1) - 0.25).abs() < 1e-6, "{p:?} is off the arc");
+    }
+    // The point stepped out to came back next to where it left the arc, not elsewhere along it.
+    assert!(points[4].distance(leader[4]) < 0.1, "{:?} moved too far", points[4]);
+    assert!(points.windows(2).all(|w| w[0].x <= w[1].x + 0.01), "out of order along the arc: {points:?}");
+}
+
+/// A 10 mm cube at `at` whose faces lie up to `gap` off its edges, alternately in and out (as the
+/// faces of a STEP part meet its edges only to the file's tolerance).
+fn cube_with_loose_faces(at: truck_modeling::Vector3, gap: f64) -> truck_modeling::Solid {
+    use truck_modeling::{EuclideanSpace, Face, InnerSpace, Shell, Solid, Surface, Vector3, Vertex, builder};
+    let v = |x: f64, y: f64| builder::vertex(Point3::new(x, y, 0.0) + at);
+    let p: Vec<Vertex> = vec![v(0.0, 0.0), v(10.0, 0.0), v(10.0, 10.0), v(0.0, 10.0)];
+    let wire: truck_modeling::Wire = (0..4).map(|i| builder::line(&p[i], &p[(i + 1) % 4])).collect();
+    let bottom = builder::try_attach_plane(&[wire.inverse()]).unwrap();
+    let cube = builder::tsweep(&bottom, Vector3::new(0.0, 0.0, 10.0));
+    let faces: Vec<Face> = cube.boundaries()[0]
+        .face_iter()
+        .enumerate()
+        .map(|(i, face)| {
+            let Surface::Plane(plane) = face.surface() else { panic!("a face of the cube is not a plane") };
+            let n = plane.normal() * if i % 2 == 0 { gap } else { -gap };
+            let o = plane.origin().to_vec() + n;
+            let moved = truck_modeling::Plane::new(Point3::from_vec(o), Point3::from_vec(o + plane.u_axis()), Point3::from_vec(o + plane.v_axis()));
+            assert!(n.magnitude() <= gap * (1.0 + 1e-9));
+            let mut f = Face::new(face.absolute_boundaries().clone(), Surface::Plane(moved));
+            if !face.orientation() {
+                f.invert();
+            }
+            f
+        })
+        .collect();
+    Solid::new(vec![Shell::from(faces)])
+}
+
+/// A plate cut across a cube whose faces meet its edges only to within 2e-6 mm: each face is
+/// meshed on its own surface, so two faces' meshes part along their common edge by that much,
+/// and so do the ends of the intersection curves that cross it. Such an end was found on no edge
+/// of the cube's faces and on no end of the next curve on the plate's (both wanted 1e-6 mm), the
+/// faces kept no loop and the result's shell stayed open. A point a thousandth of the tolerance
+/// off an edge or a curve's end is now on it.
+#[test]
+fn a_plate_across_a_part_whose_faces_meet_its_edges_loosely_closes() {
+    use truck_modeling::Vector3;
+    let at = Vector3::new(0.0, 0.0, 0.0);
+    let gap = 2e-6;
+    let part = crate::Body::new(cube_with_loose_faces(at, gap)).unwrap();
+    let plate = crate::box_solid(Vec3::new(-20.0, -20.0, 4.0), Vec3::new(30.0, 30.0, 6.0)).unwrap();
+    let tol = plate.size().max(part.size()) * 2e-3;
+    let (solid, _) = crate::ops::truck_boolean(&plate, &part, crate::BoolOp::Intersect, None, tol).expect("the shell of the shared part is closed");
+    let body = crate::Body::new(solid).unwrap();
+    let v = crate::measure(&body).unwrap().volume;
+    assert!((v - 200.0).abs() < 0.01, "{v}");
+}
+
+/// A ring of rectangular section (radii 5 and 6 mm, 4 mm high) revolved 300° about the z axis.
+/// truck builds each side of three faces of 100°, each on its own surface whose angle runs from
+/// 0 to 100°; each surface is turned 50° about the axis (the same geometry), so its angle runs
+/// from -50° to 50° across the face and the seam, where the angle wraps from 2π to 0, lies
+/// inside it, as it can on an imported part.
+fn ring_with_seams_inside_its_faces() -> truck_modeling::Solid {
+    use truck_modeling::{Face, Matrix4, Rad, Shell, Solid, Surface, Vector3, builder};
+    let v = |x: f64, z: f64| builder::vertex(Point3::new(x, 0.0, z));
+    let p = [v(5.0, 0.0), v(6.0, 0.0), v(6.0, 4.0), v(5.0, 4.0)];
+    let wire: truck_modeling::Wire = (0..4).map(|i| builder::line(&p[i], &p[(i + 1) % 4])).collect();
+    let section = builder::try_attach_plane(&[wire]).unwrap();
+    let ring: Solid = builder::rsweep(&section, Point3::new(0.0, 0.0, 0.0), Vector3::unit_z(), Rad(300f64.to_radians()));
+    let turn = Matrix4::from_axis_angle(Vector3::unit_z(), Rad(50f64.to_radians()));
+    let faces: Vec<Face> = ring.boundaries()[0]
+        .face_iter()
+        .map(|face| {
+            let Surface::RevolutedCurve(revolved) = face.surface() else { return face.clone() };
+            let surface = revolved.map_ref(|rc| {
+                truck_modeling::RevolutedCurve::by_revolution(
+                    truck_modeling::Transformed::transformed(rc.entity_curve(), turn),
+                    rc.origin(),
+                    rc.axis(),
+                )
+            });
+            let mut f = Face::new(face.absolute_boundaries().clone(), Surface::RevolutedCurve(surface));
+            if !face.orientation() {
+                f.invert();
+            }
+            f
+        })
+        .collect();
+    // The swept section faces into the ring.
+    let mut ring = Solid::new(vec![Shell::from(faces)]);
+    ring.not();
+    ring
+}
+
+/// A plate across a ring whose revolved faces hold their surface's seam. A boundary's points in
+/// such a face's parameters were each found within one turn, so they jumped by 2π where the
+/// boundary crossed the seam: the loops of the pieces the plate cut the face into came out with
+/// the wrong sign and area, a piece was taken for a hole inside no other piece, and the boolean
+/// gave up ("loop not inside any face piece"). Each point is now taken the turn nearest the one
+/// before it.
+#[test]
+fn a_plate_across_revolved_faces_holding_their_surfaces_seam_divides_them() {
+    let ring = ring_with_seams_inside_its_faces();
+    let plate = crate::box_solid(Vec3::new(-10.0, -10.0, 1.0), Vec3::new(10.0, 10.0, 2.0)).unwrap();
+    let solid = truck_shapeops::and(&ring, &plate.solid, 0.04).expect("the ring's faces are divided by the plate");
+    let body = crate::Body::new(solid).unwrap();
+    let v = crate::measure(&body).unwrap().volume;
+    // 300° of an annulus of radii 5 and 6, 1 mm thick.
+    let expected = 300.0 / 360.0 * std::f64::consts::PI * (36.0 - 25.0);
+    assert!((v - expected).abs() < 1e-3 * expected, "{v} against {expected}");
 }

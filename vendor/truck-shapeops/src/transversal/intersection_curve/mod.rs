@@ -39,7 +39,7 @@ where S: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>
         let mut params1 = PolylineCurve(Vec::new());
         for p in poly.windows(2) {
             let n = (p[1] - p[0]).normalize();
-            let (q, p0, p1) = double_projection(&surface0, None, &surface1, None, p[0], n, 100)?;
+            let (q, p0, p1) = project_onto_curve(&surface0, &surface1, p[0], n, tol)?;
             polyline.push(q);
             params0.push(p0);
             params1.push(p1);
@@ -48,15 +48,7 @@ where S: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>
             (polyline[0], params0[0], params1[0])
         } else {
             let n = (poly[poly.len() - 1] - poly[poly.len() - 2]).normalize();
-            double_projection(
-                &surface0,
-                None,
-                &surface1,
-                None,
-                poly[poly.len() - 1],
-                n,
-                100,
-            )?
+            project_onto_curve(&surface0, &surface1, poly[poly.len() - 1], n, tol)?
         };
         polyline.push(q);
         params0.push(p0);
@@ -72,6 +64,43 @@ where S: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>
             params1,
         })
     }
+}
+
+/// SolidCraft: a point of the leading polyline moved onto the intersection of the two
+/// surfaces, in the plane through it across the polyline (`direction`), as truck does; when
+/// that does not converge, in the plane through it across the intersection curve itself.
+///
+/// The polyline is where the two faces' meshes meet, so it lies up to the mesh tolerance off
+/// the surfaces, and on a face that is small beside that tolerance it can zigzag across the
+/// curve: its direction there is nearly along the curve's normal plane, the plane across it
+/// nearly contains the curve, and Newton's method slides along the curve, off the face onto the
+/// surface's continuation past its knot range, and diverges. One such point failed the whole
+/// curve, and with it the boolean. The curve's own direction (the cross product of the two
+/// surfaces' normals at the point's nearest parameters) gives the plane the step needs; a
+/// point it moves farther than ten tolerances is not taken.
+fn project_onto_curve<S>(
+    surface0: &S,
+    surface1: &S,
+    point: Point3,
+    direction: Vector3,
+    tol: f64,
+) -> Option<(Point3, Point2, Point2)>
+where
+    S: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>,
+{
+    if let Some(found) = double_projection(surface0, None, surface1, None, point, direction, 100) {
+        return Some(found);
+    }
+    let uv0 = surface0.search_nearest_parameter(point, None, 10)?;
+    let uv1 = surface1.search_nearest_parameter(point, None, 10)?;
+    let along = surface0.normal(uv0.0, uv0.1).cross(surface1.normal(uv1.0, uv1.1));
+    let length = along.magnitude();
+    if !(length > 1.0e-3 && length.is_finite()) {
+        return None;
+    }
+    let along = if along.dot(direction) < 0.0 { -along } else { along } / length;
+    double_projection(surface0, Some(uv0), surface1, Some(uv1), point, along, 100)
+        .filter(|(q, _, _)| q.distance(point) <= 10.0 * tol)
 }
 
 impl<S> ParametricCurve for IntersectionCurveWithParameters<S>

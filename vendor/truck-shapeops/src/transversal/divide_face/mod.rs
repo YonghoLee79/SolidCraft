@@ -37,20 +37,39 @@ where
         .search_parameter(pt, None, 100)
         .or_else(|| surface.search_nearest_parameter(pt, None, 100))?
         .into();
+    // SolidCraft: on a periodic surface the search gives each parameter within one period, so a
+    // boundary crossing the seam jumped by the period: a face of a revolved surface across its
+    // seam had an outer loop of the wrong sign, and the loop of the intersection that cut it
+    // was found inside no piece. Each point is taken the period nearest the one before it, so
+    // the loop is unbroken; the searches still start where they did. A loop that winds around
+    // the surface (a whole turn of a cylinder, which does not come back to its start unbroken)
+    // keeps the points as found, as before.
+    let periods = [surface.u_period(), surface.v_period()];
+    let unwrapped = |q: Point2, prev: Point2| -> Point2 {
+        let near = |x: f64, prev: f64, period: Option<f64>| match period.filter(|t| *t > 0.0) {
+            Some(t) => x - ((x - prev) / t).round() * t,
+            None => x,
+        };
+        Point2::new(near(q.x, prev.x, periods[0]), near(q.y, prev.y, periods[1]))
+    };
+    let (u, v) = surface.try_range_tuple();
+    let half = |r: Option<(f64, f64)>| r.map_or(f64::INFINITY, |(a, b)| (b - a).abs() / 2.0);
+    let (hu, hv) = (half(u), half(v));
+    let (mut raw, mut jumped, mut raws) = (p, false, vec![p]);
     let vec = wire.edge_iter().try_fold(vec![p], |mut vec, edge| {
         let poly = polys.entry(edge.id()).or_insert_with(|| {
             let curve = edge.curve();
             let div = curve.parameter_division(curve.range_tuple(), tol).1;
             PolylineCurve(div)
         });
-        let mut p = *vec.last().unwrap();
+        let mut prev = *vec.last().unwrap();
         let closure = |q: &P| -> Option<Point2> {
             // SolidCraft: the points of an intersection curve on a lofted or swept surface lie on
             // the seam between its halves, a hair outside the parameter range, and Newton's
             // method from the previous point's parameter then fails (or the surface bends away
             // from it). `lenient`, the second try after the first gave up: start from the hint
             // moved into the range, and as a last resort search the whole surface.
-            let hint = if lenient { clamped(&surface, p) } else { p };
+            let hint = if lenient { clamped(&surface, raw) } else { raw };
             let found = surface
                 .search_parameter(*q, Some(hint.into()), 100)
                 .or_else(|| surface.search_nearest_parameter(*q, Some(hint.into()), 100));
@@ -61,8 +80,16 @@ where
             } else {
                 found
             };
-            p = found?.into();
-            Some(p)
+            let found: Point2 = found?.into();
+            // SolidCraft: a lenient boundary whose points jump half the parameter range or more
+            // has been found across a periodic surface's seam by the whole-surface search (on a
+            // cylinder the points of one edge landed at both ends of its angle): it would divide
+            // the face wrongly, so the face is left undivided as before.
+            jumped |= (found.x - raw.x).abs() >= hu || (found.y - raw.y).abs() >= hv;
+            raw = found;
+            raws.push(found);
+            prev = unwrapped(found, prev);
+            Some(prev)
         };
         let add: Option<Vec<Point2>> = match edge.orientation() {
             true => poly.iter().skip(1).map(closure).collect(),
@@ -71,17 +98,12 @@ where
         vec.append(&mut add?);
         Some(vec)
     })?;
-    // SolidCraft: a lenient boundary whose points jump half the parameter range or more has been
-    // found across a periodic surface's seam by the whole-surface search (on a cylinder the
-    // points of one edge landed at both ends of its angle): it would divide the face wrongly, so
-    // the face is left undivided as before.
-    if lenient {
-        let (u, v) = surface.try_range_tuple();
-        let half = |r: Option<(f64, f64)>| r.map_or(f64::INFINITY, |(a, b)| (b - a).abs() / 2.0);
-        let (hu, hv) = (half(u), half(v));
-        if vec.windows(2).any(|w| (w[1].x - w[0].x).abs() >= hu || (w[1].y - w[0].y).abs() >= hv) {
-            return None;
-        }
+    if lenient && jumped {
+        return None;
+    }
+    let (first, last) = (vec[0], vec[vec.len() - 1]);
+    if (last.x - first.x).abs() >= hu || (last.y - first.y).abs() >= hv {
+        return Some(PolylineCurve(raws));
     }
     Some(PolylineCurve(vec))
 }
@@ -158,6 +180,7 @@ where
     S: Clone + ParametricSurface3D + SearchParameter<D2, Point = Point3> + SearchNearestParameter<D2, Point = Point3>,
 {
     let (mut pre_faces, mut negative_wires) = (Vec::new(), Vec::new());
+    let periods = [face.surface().u_period(), face.surface().v_period()];
     let mut map = HashMap::default();
     loops.iter().try_for_each(|wire| {
         let poly = crate::tr!(
@@ -184,10 +207,19 @@ where
         // SolidCraft: the innermost piece that holds the loop (nested intersection loops, such
         // as both walls of a tube crossing one face), never the loop's own twin.
         let hole = -chunk.poly.area();
+        // SolidCraft: each loop is unbroken across a periodic surface's seam (see
+        // `create_parameter_boundary`), but loops found from different points can lie a period
+        // apart: the loop's point is also tried a period either way.
+        let holds = |poly: &PolylineCurve<Point2>| {
+            let shifts = |t: Option<f64>| -> Vec<f64> { t.filter(|t| *t > 0.0).map_or(vec![0.0], |t| vec![0.0, -t, t]) };
+            shifts(periods[0])
+                .into_iter()
+                .any(|du| shifts(periods[1]).into_iter().any(|dv| poly.include(pt + Vector2::new(du, dv))))
+        };
         let op = crate::tr!(
             pre_faces
                 .iter_mut()
-                .filter(|face| face[0].poly.area() > hole * (1.0 + 1e-6) && face[0].poly.include(pt))
+                .filter(|face| face[0].poly.area() > hole * (1.0 + 1e-6) && holds(&face[0].poly))
                 .min_by(|x, y| x[0].poly.area().total_cmp(&y[0].poly.area())),
             "loop not inside any face piece"
         );
