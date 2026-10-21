@@ -64,6 +64,10 @@ pub struct Input {
     /// The device `seen` is about, and the device and calibration `settle` is about.
     pub read_device: Option<String>,
     pub settled_for: Option<Calibration>,
+    /// The device the calibration notice is up for and when it was shown or last pointed at
+    /// (egui time), and the devices it went away from for this run ().
+    pub offer_since: Option<(String, f64)>,
+    pub offer_hidden: std::collections::BTreeSet<String>,
     /// The driver mapping navigation used last frame, which says what each axis does to the view.
     pub mapping: Option<DriverMapping>,
     /// Which of the Linux readers exist, as the app's reader last saw them; none where there is

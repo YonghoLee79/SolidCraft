@@ -3011,15 +3011,18 @@ fn paint_box_selection(painter: &egui::Painter, bx: BoxSel, sketch: bool) {
 
 /// A single visual pattern for ongoing work and the existing six-second status.
 fn transient_messages(app: &mut SolveApp, ui: &egui::Ui, viewport: Rect) {
-    if app.status.is_none() && app.computing_since().is_none() {
-        return;
-    }
+    let quiet = app.status.is_none() && app.computing_since().is_none();
     let t = Tokens::get();
     let mut obstacles = crate::shell::covered_rects(app);
     if let Some(layout) = &app.viewport.layout {
         obstacles.extend([layout.navigation, layout.axis_view]);
     }
     let mut free = crate::viewport_layout::free_rect(crate::shell::content_rect(app, viewport), &obstacles).shrink(t.space_8);
+    // The calibration notice first, so the status toast stacks above it.
+    crate::space_mouse_offer::toast(app, ui, &mut free);
+    if quiet {
+        return;
+    }
     if let Some((msg, at, error)) = app.status.clone() {
         if crate::now_ms() - at < 6000.0 {
             if let Some(r) = paint_toast(ui, free, msg, error, false) {
