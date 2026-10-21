@@ -176,13 +176,16 @@ pub fn press(app: &mut SolveApp, key: &str) {
 }
 
 /// Outside a sketch: the SKETCH-tab command bound to `key` that a new sketch would start. Not
-/// Normal/Construction (a mode of the drawing in progress) nor the Finish Sketch panel.
+/// Normal/Construction (a mode of the drawing in progress), the Finish Sketch panel, nor the
+/// Modify tools (Move/Copy, Fillet, Trim…), which work on a sketch's existing geometry: an empty
+/// new sketch has none (M is Move outside a sketch and Move/Copy Sketch Entities in one).
 fn sketch_tool_for(app: &SolveApp, key: &str) -> Option<&'static str> {
     if app.session.active_sketch.is_some() {
         return None;
     }
     commands_for(app, key).into_iter().find(|id| {
-        solidcraft_engine::find_command(id).is_some_and(|c| c.tab == "SKETCH" && c.panel != "FINISH SKETCH" && c.id != "sketch.construction")
+        solidcraft_engine::find_command(id)
+            .is_some_and(|c| c.tab == "SKETCH" && !matches!(c.panel, "FINISH SKETCH" | "MODIFY") && c.id != "sketch.construction")
     })
 }
 

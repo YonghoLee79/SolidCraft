@@ -61,6 +61,9 @@ pub struct LibraryState {
     pub entries: Vec<Entry>,
     pub error: Option<String>,
     pub filter: String,
+    /// Where the panel was drawn last frame: a card let go over it is not dropped in the view
+    /// the panel lies over.
+    shown: Option<egui::Rect>,
     listed: Option<(PathBuf, f64)>,
     #[cfg(not(target_arch = "wasm32"))]
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
@@ -281,13 +284,16 @@ pub fn view_drop(app: &mut SolveApp, ui: &egui::Ui, rect: egui::Rect, proj: &cra
     if !egui::DragAndDrop::has_payload_of_type::<Dragged>(ctx) {
         return;
     }
-    let Some(pos) = ctx.pointer_hover_pos().filter(|p| rect.contains(*p)) else { return };
+    // Over the view, not the panel lying over it: a card clicked, or let go where it was picked
+    // up, inserts nothing.
+    let over_panel = |p: &egui::Pos2| app.library.shown.is_some_and(|r| r.contains(*p));
+    let Some(pos) = ctx.pointer_hover_pos().filter(|p| rect.contains(*p) && !over_panel(p)) else { return };
     // Where it will land.
     let at = drop_point(app, proj, pos);
     if let Some(s) = proj.to_screen(at) {
         ui.painter().circle_stroke(s, 7.0, egui::Stroke::new(2.0, Tokens::get().accent));
     }
-    if ctx.input(|i| i.pointer.any_released())
+    if ctx.input(|i| i.pointer.primary_released())
         && let Some(d) = egui::DragAndDrop::take_payload::<Dragged>(ctx)
     {
         match insert(app, &d.0, at) {
@@ -350,11 +356,13 @@ fn card(ui: &mut egui::Ui, l: &mut LibraryState, e: &Entry) -> egui::Response {
 /// The panel (or its strip) on the window's left.
 pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     if !app.preferences.library_open {
+        app.library.shown = None;
         return;
     }
     let t = Tokens::get();
     let tr = crate::i18n::tr;
     if app.preferences.library_collapsed {
+        app.library.shown = None;
         egui::Panel::left("sc_library_strip").exact_size(30.0).resizable(false).frame(egui::Frame::NONE.fill(t.panel).inner_margin(4)).show(
             ui,
             |ui| {
@@ -371,7 +379,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     let mut enter: Option<PathBuf> = None;
     let mut insert_now: Option<PathBuf> = None;
     let mut action: Option<&'static str> = None;
-    egui::Panel::left("sc_library")
+    let shown = egui::Panel::left("sc_library")
         .resizable(true)
         .default_size(250.0)
         .size_range(180.0..=520.0)
@@ -446,16 +454,19 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                                 resp = Some(card(ui, &mut app.library, e));
                             });
                             if let Some(r) = resp {
-                                if r.double_clicked() && e.kind == Kind::Design {
+                                // A double click opens the part as its own document (a STEP or
+                                // mesh file too); only a drag into the view inserts it, or the
+                                // menu's Insert.
+                                if r.double_clicked() {
                                     open = Some(e.path.clone());
                                 }
                                 r.context_menu(|ui| {
-                                    if ui.button(tr("library.insert")).clicked() {
-                                        insert_now = Some(e.path.clone());
+                                    if ui.button(tr("library.open")).clicked() {
+                                        open = Some(e.path.clone());
                                         ui.close();
                                     }
-                                    if e.kind == Kind::Design && ui.button(tr("library.open")).clicked() {
-                                        open = Some(e.path.clone());
+                                    if ui.button(tr("library.insert")).clicked() {
+                                        insert_now = Some(e.path.clone());
                                         ui.close();
                                     }
                                 });
@@ -469,6 +480,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 }
             });
         });
+    app.library.shown = Some(shown.response.rect);
     match action {
         Some("hide") => {
             app.preferences.library_open = false;
@@ -621,5 +633,25 @@ mod tests {
         h.frames(2);
         assert!(h.widget(crate::i18n::tr("library.title")).is_none(), "hidden");
         assert!(control(&mut h.app, &json!({"folder": h.dir.join("bracket.solidcraft").to_string_lossy()})).is_err(), "a file is not a folder");
+    }
+
+    /// A card let go over the library panel (a click, or a drag back to where it started) inserts
+    /// nothing, though the view lies under the panel; let go over the view, it inserts.
+    #[test]
+    fn a_card_inserts_only_when_let_go_over_the_view() {
+        let mut h = crate::scenario::Harness::new();
+        parts(&h.dir);
+        control(&mut h.app, &json!({"folder": h.dir.to_string_lossy()})).unwrap();
+        h.frames(3);
+        let panel = h.app.library.shown.expect("the panel is drawn");
+        let links =
+            |h: &mut crate::scenario::Harness| h.app.session.execute("component.links", &json!({})).unwrap()["links"].as_array().map_or(0, Vec::len);
+        let bracket = h.dir.join("bracket.solidcraft");
+        for (at, inserted) in [(panel.center(), 0), (panel.right_center() + egui::vec2(200.0, 0.0), 1)] {
+            egui::DragAndDrop::set_payload(&h.ctx, Dragged(bracket.clone()));
+            h.step(&json!({"click": [at.x, at.y]})).unwrap();
+            h.frames(2);
+            assert_eq!(links(&mut h), inserted, "let go at {at:?} (panel {panel:?})");
+        }
     }
 }
