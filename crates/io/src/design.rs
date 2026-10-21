@@ -1007,6 +1007,8 @@ mod tests {
             angle: 0.0,
             opacity: 0.5,
             flip: false,
+            see_through: false,
+            selectable: true,
             visible: true,
             component: 0,
         });

@@ -65,6 +65,45 @@ fn forget_removed(app: &SolveApp) {
     TEX.with(|t| t.borrow_mut().retain(|id, _| doc.canvases.iter().any(|c| c.id == *id)));
 }
 
+/// A stored size can be hostile (zero, negative, not finite): such a canvas is neither drawn
+/// nor picked.
+fn drawable(c: &Canvas) -> bool {
+    let (w, h) = (c.width, c.height());
+    w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0
+}
+
+/// The nearest visible canvas that `keep` takes whose picture is under `pos`, and the point on
+/// its plane.
+pub fn canvas_at(app: &SolveApp, proj: &Proj, pos: egui::Pos2, keep: impl Fn(&Canvas) -> bool) -> Option<(u64, Vec2)> {
+    let doc = &app.session.doc;
+    if doc.canvases.is_empty() || app.session.folder_hidden(crate::browser::CANVASES) {
+        return None;
+    }
+    let (vals, _) = doc.param_values();
+    let (o, d) = proj.ray(pos);
+    let len = d.dot(d).sqrt();
+    if !(len.is_finite() && len > 0.0) {
+        return None;
+    }
+    let mut best: Option<(f64, u64, Vec2)> = None;
+    for c in doc.canvases.iter().filter(|c| c.visible && c.opacity > 0.0 && keep(c) && drawable(c)) {
+        let Ok(plane) = doc.canvas_plane(&vals, c) else { continue };
+        let n = plane.normal();
+        let nl = n.dot(n).sqrt();
+        // Seen edge-on: nothing to hit.
+        if !(nl.is_finite() && nl > 0.0) || (d.dot(n) / (len * nl)).abs() < 1e-6 {
+            continue;
+        }
+        let Some(hit) = plane.intersect_ray(o, d) else { continue };
+        let t = (hit - o).dot(d) / (len * len);
+        let local = plane.to_local(hit);
+        if t.is_finite() && t > 0.0 && c.contains(local) && best.is_none_or(|b| t < b.0) {
+            best = Some((t, c.id, local));
+        }
+    }
+    best.map(|(_, id, p)| (id, p))
+}
+
 /// The visible canvases as GPU quads.
 pub fn gpu_images(app: &SolveApp) -> Vec<GpuImage> {
     forget_removed(app);
@@ -75,12 +114,12 @@ pub fn gpu_images(app: &SolveApp) -> Vec<GpuImage> {
     let (vals, _) = doc.param_values();
     doc.canvases
         .iter()
-        .filter(|c| c.visible && c.opacity > 0.0)
+        .filter(|c| c.visible && c.opacity > 0.0 && drawable(c))
         .filter_map(|c| {
             let plane = doc.canvas_plane(&vals, c).ok()?;
             let (_, version, size, rgba) = pixels(c)?;
             let corners = c.world_corners(&plane).map(|p| [p.x as f32, p.y as f32, p.z as f32]);
-            Some(GpuImage { id: c.id, version, size, rgba, corners, opacity: c.opacity.clamp(0.0, 1.0) as f32 })
+            Some(GpuImage { id: c.id, version, size, rgba, corners, opacity: c.opacity.clamp(0.0, 1.0) as f32, on_top: c.see_through })
         })
         .collect()
 }

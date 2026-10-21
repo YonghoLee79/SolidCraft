@@ -2670,6 +2670,23 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                         // Clicking again on the same spot selects the next thing under it (not
                         // the second click of a double-click, which has its own actions).
                         None if !add && !resp.double_clicked() && crate::select_other::cycle_click(app, &proj, p) => {}
+                        // Nothing else under the click: a selectable canvas picks (the Browser's selection).
+                        None if cand.is_none()
+                            && app.session.active_sketch.is_none()
+                            && let Some((id, _)) = crate::ref_images::canvas_at(app, &proj, p, |c| c.selectable) =>
+                        {
+                            select(app, None, add, allow_toggle);
+                            let picked = app.tree.picked_canvases.contains(&id);
+                            if add && allow_toggle && picked {
+                                app.tree.picked_canvases.retain(|c| *c != id);
+                            } else if add {
+                                if !picked {
+                                    app.tree.picked_canvases.push(id);
+                                }
+                            } else {
+                                app.tree.picked_canvases = vec![id];
+                            }
+                        }
                         None => {
                             let sel = cand.and_then(|c| c.1);
                             select(app, sel.clone(), add, allow_toggle);

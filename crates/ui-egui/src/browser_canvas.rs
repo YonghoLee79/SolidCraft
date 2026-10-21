@@ -39,6 +39,7 @@ pub(crate) fn panel(app: &mut SolveApp, ctx: &egui::Context) {
                 m.distance = m.distance.clamp(0.001, 1e6);
             } else {
                 let (mut x, mut y, mut w, mut ang, mut op, mut flip) = (c.center.x, c.center.y, c.width, c.angle.to_degrees(), c.opacity, c.flip);
+                let (mut see_through, mut selectable) = (c.see_through, c.selectable);
                 let mut changed = false;
                 changed |= ui_kit::row(ui, crate::i18n::tr_label("Center X"), |ui| ui_kit::length_field(ui, &mut x, &units, decimals)).changed();
                 changed |= ui_kit::row(ui, crate::i18n::tr_label("Center Y"), |ui| ui_kit::length_field(ui, &mut y, &units, decimals)).changed();
@@ -50,8 +51,16 @@ pub(crate) fn panel(app: &mut SolveApp, ctx: &egui::Context) {
                     flip = !flip;
                     changed = true;
                 }
+                if ui_kit::checkbox_row(ui, "see_through", crate::i18n::tr_label("See through"), see_through) {
+                    see_through = !see_through;
+                    changed = true;
+                }
+                if ui_kit::checkbox_row(ui, "selectable", crate::i18n::tr_label("Selectable"), selectable) {
+                    selectable = !selectable;
+                    changed = true;
+                }
                 if changed {
-                    edit = Some(json!({ "canvas": name, "center": [x, y], "width": w.clamp(0.01, 1e6), "angle": ang, "opacity": op, "flip": flip }));
+                    edit = Some(json!({ "canvas": name, "center": [x, y], "width": w.clamp(0.01, 1e6), "angle": ang, "opacity": op, "flip": flip, "see_through": see_through, "selectable": selectable }));
                 }
             }
         });

@@ -32,6 +32,12 @@ pub struct Canvas {
     /// Mirrored left to right.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub flip: bool,
+    /// Drawn over the model instead of hidden by it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub see_through: bool,
+    /// Clicking it in the view selects it.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub selectable: bool,
     #[serde(default = "yes")]
     pub visible: bool,
     /// The component it belongs to (its plane is in that component's frame, so it moves with
@@ -42,6 +48,10 @@ pub struct Canvas {
 
 fn is_root(c: &u64) -> bool {
     *c == 0
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 fn half() -> f64 {
@@ -64,6 +74,13 @@ impl Canvas {
         let rot = |x: f64, y: f64| self.center + Vec2::new(x * c - y * s, x * s + y * c);
         let f = if self.flip { -1.0 } else { 1.0 };
         [rot(-hw * f, -hh), rot(hw * f, -hh), rot(hw * f, hh), rot(-hw * f, hh)]
+    }
+    /// Whether a point on the plane (plane coordinates) lies on the image, edges included.
+    pub fn contains(&self, p: Vec2) -> bool {
+        let (s, c) = self.angle.sin_cos();
+        let d = p - self.center;
+        let (x, y) = (d.x * c + d.y * s, d.y * c - d.x * s);
+        x.abs() <= self.width / 2.0 && y.abs() <= self.height() / 2.0
     }
     /// Corners on `plane` (in whatever frame the plane is given).
     pub fn world_corners(&self, plane: &Plane) -> [Vec3; 4] {
@@ -162,6 +179,31 @@ pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A canvas as saved before see-through and selectable.
+    fn old_canvas_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": 1, "name": "Canvas1", "format": "png", "data": "", "pixels": [400, 200],
+            "plane": {"type": "origin", "name": "XY"}, "center": [10.0, 5.0], "width": 40.0,
+            "angle": std::f64::consts::FRAC_PI_2, "opacity": 0.5, "visible": true
+        })
+    }
+
+    #[test]
+    fn an_older_canvas_is_hidden_by_the_model_and_selectable_and_saves_as_before() {
+        let c: Canvas = serde_json::from_value(old_canvas_json()).unwrap();
+        assert_eq!((c.see_through, c.selectable), (false, true));
+        assert_eq!(serde_json::to_value(&c).unwrap(), old_canvas_json());
+    }
+
+    #[test]
+    fn contains_follows_the_turned_image() {
+        // 40 x 20 mm, centred at (10, 5), turned a quarter turn: 20 wide and 40 tall on the plane.
+        let c: Canvas = serde_json::from_value(old_canvas_json()).unwrap();
+        for (p, inside) in [((10.0, 24.9), true), ((19.9, 5.0), true), ((10.0, 25.1), false), ((20.1, 5.0), false), ((29.0, 5.0), false)] {
+            assert_eq!(c.contains(Vec2::new(p.0, p.1)), inside, "{p:?}");
+        }
+    }
 
     #[test]
     fn base64_round_trip_and_headers() {
