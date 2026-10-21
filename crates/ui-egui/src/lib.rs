@@ -945,7 +945,7 @@ impl SolveApp {
         }
         if let Some(mut t) = tools::Tool::for_command(id) {
             if let Some(params) = tools::constraint_preselection(id, &self.session.selection) {
-                if self.run(id, params).is_ok() {
+                if self.run(id, tools::picked(id, params)).is_ok() {
                     let _ = self.session.execute("select.clear", &json!({}));
                     self.set_status("Constraint applied", false);
                 }
@@ -974,7 +974,7 @@ impl SolveApp {
                 self.session.selection.as_slice()
                 && a != b
             {
-                let params = json!({ "a": a, "b": b });
+                let params = tools::picked(id, json!({ "a": a, "b": b }));
                 if self.run(id, params).is_ok() {
                     let _ = self.session.execute("select.clear", &json!({}));
                     self.set_status("Constraint applied", false);
