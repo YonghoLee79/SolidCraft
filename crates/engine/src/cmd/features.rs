@@ -91,7 +91,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("solid.thread", "Thread", thread)
         .at("SOLID", "CREATE")
         .icon("thread")
-        .params("face: [x,y,z] on a cylindrical face; designation?: ISO metric (\"M8\", \"M8x1\"; default: the size that fits); length?: expr (default: the whole face); modeled?: bool (default false). Cosmetic: the model is unchanged, model.threads lists it. Modeled: cuts the thread profile into the body"),
+        .params("face: [x,y,z] on a cylindrical face; designation?: ISO metric (\"M8\", \"M8x1\"; default: the size that fits); sizing?: iso261|legacy (default iso261; preserved when redefining an existing thread; ignored for explicit designations); length?: expr (default: the whole face); modeled?: bool (default false). Cosmetic: the model is unchanged, model.threads lists it. Modeled: cuts the thread profile into the body"),
     CommandSpec::new("solid.shell", "Shell", shell)
         .at("SOLID", "MODIFY")
         .icon("shell")
@@ -2106,7 +2106,11 @@ fn thread(s: &mut Session, p: &Value) -> Result<Value> {
         check_expr(s, l, Kind::Length, cmd, "length")?;
     }
     let modeled = p.get("modeled").and_then(Value::as_bool).unwrap_or(false);
-    let v = add_feature(s, p, FeatureKind::Thread { face: FacePick(face), designation, length, modeled })?;
+    let sizing = match p.get("sizing") {
+        None => solidcraft_doc::ThreadSizing::Iso261,
+        Some(v) => serde_json::from_value(v.clone()).map_err(|_| bad(cmd, "`sizing` must be iso261 or legacy"))?,
+    };
+    let v = add_feature(s, p, FeatureKind::Thread { face: FacePick(face), designation, length, modeled, sizing })?;
     let st = s.model.state();
     let t = v.get("feature").and_then(Value::as_u64).and_then(|id| st.threads.iter().find(|t| t.feature == id).cloned());
     Ok(json!({"feature": v.get("feature"), "name": v.get("name"), "thread": t}))

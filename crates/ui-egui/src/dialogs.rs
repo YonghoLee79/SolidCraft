@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
-use solidcraft_engine::doc::{AxisRef, Direction, FeatureKind, FilletStyle, HoleKind, Operation, PatternKind, PlaneRef, ProfileSel, ThinSide};
+use solidcraft_engine::doc::{
+    AxisRef, Direction, FeatureKind, FilletStyle, HoleKind, Operation, PatternKind, PlaneRef, ProfileSel, ThinSide, ThreadSizing,
+};
 use solidcraft_engine::geom::{Aabb3, Vec3};
 
 use crate::SolveApp;
@@ -234,9 +236,12 @@ crate::dialog_descriptor::dialog_descriptors! {
             Thread {
                 designation: String,
                 length: String,
+                dimensions: crate::dialogs_thread::Dimensions,
                 /// The last automatic size; a different value is a manual override. Keep automatic
                 /// features automatic when applying, even though their resolved size is visible.
                 suggested: Option<String>,
+                /// Preserve the saved rule when reopening an automatic feature.
+                sizing: ThreadSizing,
                 /// The picks used for the suggestion, so an unchanged dialog does no geometry work.
                 of: Vec<Sel>,
             },
@@ -636,7 +641,14 @@ impl Dialog {
                 vec![SelInput::new("Body to split", BODIES, false), SelInput::new("Splitting tool", PLANES | FACES | AXES, false)],
             ),
             "solid.thread" => Dialog::new(
-                Kind::Thread { designation: String::new(), length: String::new(), suggested: None, of: Vec::new() },
+                Kind::Thread {
+                    designation: String::new(),
+                    length: String::new(),
+                    dimensions: Default::default(),
+                    suggested: None,
+                    sizing: ThreadSizing::Iso261,
+                    of: Vec::new(),
+                },
                 vec![SelInput::new("Cylindrical face", FACES, false)],
             ),
             "material.assign" => Dialog::new(Kind::Material { index: 1 }, vec![SelInput::new("Bodies", BODIES, true)]),
@@ -821,7 +833,7 @@ impl Dialog {
     /// Resolve a newly selected face without replacing an authored size or changing the
     /// document. Clearing the face also clears a suggestion that no longer applies.
     fn sync_thread(&mut self, s: &Session) {
-        let Kind::Thread { designation, suggested, of, .. } = &mut self.kind else { return };
+        let Kind::Thread { designation, suggested, sizing, of, .. } = &mut self.kind else { return };
         if !designation.trim().is_empty() && suggested.as_deref() != Some(designation.as_str()) {
             return;
         }
@@ -831,7 +843,7 @@ impl Dialog {
         }
         *of = picks.to_vec();
         *suggested = picks.first().and_then(|sel| match sel {
-            Sel::Face { point, .. } => solidcraft_engine::doc::suggested_thread(&s.world_state(), *point).ok(),
+            Sel::Face { point, .. } => solidcraft_engine::doc::suggested_thread_with_sizing(&s.world_state(), *point, *sizing).ok(),
             _ => None,
         });
         *designation = suggested.clone().unwrap_or_default();
@@ -3402,9 +3414,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             need(0, "planar faces")?;
             ("solid.offset_face", json!({"faces": face_points(0)}))
         }
-        Kind::Thread { designation, length, suggested, .. } => {
+        Kind::Thread { designation, length, suggested, sizing, .. } => {
             need(0, "a cylindrical face")?;
-            let mut p = json!({"face": face_points(0).into_iter().next().unwrap_or(Value::Null)});
+            let mut p = json!({"face": face_points(0).into_iter().next().unwrap_or(Value::Null), "sizing": sizing});
             if !designation.trim().is_empty() && suggested.as_deref() != Some(designation.as_str()) {
                 p["designation"] = json!(designation.trim());
             }
@@ -4581,21 +4593,32 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Thread { face, designation, length, modeled } => {
+        FeatureKind::Thread { face, designation, length, modeled, sizing } => {
             let mut d = start("solid.thread")?;
             if *modeled {
                 d.extra.insert("modeled".into(), json!(true));
             }
+            // Opening, changing the face or resetting automatic size uses the saved rule.
+            // Old automatic features must never silently opt into a different table.
+            let picks: Vec<_> = face_sel(s, face.0).into_iter().collect();
+            let suggested = designation
+                .is_none()
+                .then(|| match picks.first() {
+                    Some(Sel::Face { point, .. }) => solidcraft_engine::doc::suggested_thread_with_sizing(&s.world_state(), *point, *sizing).ok(),
+                    _ => None,
+                })
+                .flatten();
             d.kind = Kind::Thread {
-                designation: designation.clone().unwrap_or_default(),
+                designation: designation.clone().or_else(|| suggested.clone()).unwrap_or_default(),
                 length: length.as_deref().map(str::to_string).unwrap_or_default(),
-                suggested: None,
-                of: Vec::new(),
+                dimensions: Default::default(),
+                suggested,
+                sizing: *sizing,
+                of: picks.clone(),
             };
             if let Some(inp) = d.inputs.first_mut() {
-                inp.items = face_sel(s, face.0).into_iter().collect();
+                inp.items = picks;
             }
-            d.sync_thread(s);
             d
         }
         FeatureKind::BoundingSolid { bodies, .. } => {

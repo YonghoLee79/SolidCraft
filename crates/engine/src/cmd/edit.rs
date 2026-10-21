@@ -1197,6 +1197,12 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
     let mut params = p.get("params").cloned().unwrap_or_else(|| json!({}));
     let idx = s.doc.feature_index(id).ok_or_else(|| bad(cmd, "feature"))?;
     let old = s.doc.feature(id).cloned().ok_or_else(|| bad(cmd, "feature"))?;
+    if let FeatureKind::Thread { sizing, .. } = &old.kind
+        && cid == "solid.thread"
+        && let Some(parameters) = params.as_object_mut()
+    {
+        parameters.entry("sizing").or_insert_with(|| json!(sizing));
+    }
     if let FeatureKind::Extrude { extent, .. } | FeatureKind::SurfaceExtrude { extent, .. } = &old.kind
         && matches!(cid, "solid.extrude" | "surface.extrude")
         && let Some(parameters) = params.as_object_mut()
