@@ -567,6 +567,68 @@ pub enum ParamUser {
     /// A joint's offset, angle or value, or a motion link's gear, rack or screw length (`input`
     /// says which; a link is named by the joint it drives).
     Joint { joint: u64, name: String, input: String },
+    /// A sheet metal or plastic rule's value (`kind` says which, `field` which value).
+    Rule { kind: String, name: String, field: String },
+    /// The plane a canvas lies on (`input` is its label, e.g. `Offset`).
+    Canvas { canvas: u64, name: String, input: String },
+}
+
+/// The expressions of a sheet metal rule, by field.
+fn sheet_rule_exprs(r: &crate::sheet::SheetRule) -> [(&'static str, &String); 8] {
+    [
+        ("thickness", &r.thickness),
+        ("k_factor", &r.k_factor),
+        ("bend_radius", &r.bend_radius),
+        ("relief_width", &r.relief_width),
+        ("relief_depth", &r.relief_depth),
+        ("corner_relief", &r.corner_relief),
+        ("hem_gap", &r.hem_gap),
+        ("gap", &r.gap),
+    ]
+}
+
+fn sheet_rule_exprs_mut(r: &mut crate::sheet::SheetRule) -> [(&'static str, &mut String); 8] {
+    [
+        ("thickness", &mut r.thickness),
+        ("k_factor", &mut r.k_factor),
+        ("bend_radius", &mut r.bend_radius),
+        ("relief_width", &mut r.relief_width),
+        ("relief_depth", &mut r.relief_depth),
+        ("corner_relief", &mut r.corner_relief),
+        ("hem_gap", &mut r.hem_gap),
+        ("gap", &mut r.gap),
+    ]
+}
+
+/// The expressions of a plastic rule, by field.
+fn plastic_rule_exprs(r: &crate::plastic::PlasticRule) -> [(&'static str, &String); 10] {
+    [
+        ("thickness", &r.thickness),
+        ("nominal_radius", &r.nominal_radius),
+        ("clearance", &r.clearance),
+        ("knife_edge", &r.knife_edge),
+        ("reveal_height", &r.reveal_height),
+        ("thickness_variation", &r.thickness_variation),
+        ("draft", &r.draft),
+        ("max_thickness", &r.max_thickness),
+        ("min_thickness", &r.min_thickness),
+        ("min_draft", &r.min_draft),
+    ]
+}
+
+fn plastic_rule_exprs_mut(r: &mut crate::plastic::PlasticRule) -> [(&'static str, &mut String); 10] {
+    [
+        ("thickness", &mut r.thickness),
+        ("nominal_radius", &mut r.nominal_radius),
+        ("clearance", &mut r.clearance),
+        ("knife_edge", &mut r.knife_edge),
+        ("reveal_height", &mut r.reveal_height),
+        ("thickness_variation", &mut r.thickness_variation),
+        ("draft", &mut r.draft),
+        ("max_thickness", &mut r.max_thickness),
+        ("min_thickness", &mut r.min_thickness),
+        ("min_draft", &mut r.min_draft),
+    ]
 }
 
 impl ParamUser {
@@ -580,6 +642,8 @@ impl ParamUser {
                 None => format!("configuration column {column}"),
             },
             ParamUser::Joint { name, input, .. } => format!("joint {name} ({input})"),
+            ParamUser::Rule { kind, name, field } => format!("{kind} rule {name} ({field})"),
+            ParamUser::Canvas { name, input, .. } => format!("canvas {name} ({input})"),
         }
     }
 }
@@ -707,6 +771,24 @@ impl Document {
                 out.push(ParamUser::Joint { joint, name: jname, input });
             }
         }
+        let uses = |e: &str| expr::references(e).iter().any(|r| r == name);
+        for r in &self.sheet.rules {
+            for (field, _) in sheet_rule_exprs(r).into_iter().filter(|(_, e)| uses(e)) {
+                out.push(ParamUser::Rule { kind: "sheet metal".into(), name: r.name.clone(), field: field.into() });
+            }
+        }
+        for r in &self.plastic.rules {
+            for (field, _) in plastic_rule_exprs(r).into_iter().filter(|(_, e)| uses(e)) {
+                out.push(ParamUser::Rule { kind: "plastic".into(), name: r.name.clone(), field: field.into() });
+            }
+        }
+        for c in &self.canvases {
+            c.plane.walk_exprs(&mut |(label, e, _, _)| {
+                if uses(e) {
+                    out.push(ParamUser::Canvas { canvas: c.id, name: c.name.clone(), input: label.into() });
+                }
+            });
+        }
         out
     }
 
@@ -817,6 +899,24 @@ impl Document {
                 *e = r;
                 n += 1;
             }
+        }
+        // Sheet metal and plastic rules and canvas planes hold expressions too (#4420).
+        let rules = self.sheet.rules.iter_mut().flat_map(sheet_rule_exprs_mut).chain(self.plastic.rules.iter_mut().flat_map(plastic_rule_exprs_mut));
+        for (_, e) in rules {
+            let r = expr::rename_reference(e, old, new);
+            if r != *e {
+                *e = r;
+                n += 1;
+            }
+        }
+        for c in &mut self.canvases {
+            c.plane.walk_exprs_mut(&mut |(_, e, _, _)| {
+                let r = expr::rename_reference(e, old, new);
+                if r != *e {
+                    *e = r.into();
+                    n += 1;
+                }
+            });
         }
         if let Some(c) = self.param_comments.remove(old) {
             self.param_comments.insert(new.to_string(), c);
