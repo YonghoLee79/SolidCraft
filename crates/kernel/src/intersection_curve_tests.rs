@@ -114,3 +114,81 @@ fn a_result_with_an_edge_that_does_not_evaluate_is_refused() {
     assert!(!crate::boolean_record::edges_evaluate(&solid(1.0)));
     assert!(crate::boolean_record::edges_evaluate(&solid(0.0)));
 }
+
+fn validation_sample_count(solid: &crate::body::Solid) -> (bool, usize) {
+    let before = crate::boolean_record::EDGE_EVALUATION_COUNT.with(std::cell::Cell::get);
+    let valid = crate::boolean_record::edges_evaluate(solid);
+    let after = crate::boolean_record::EDGE_EVALUATION_COUNT.with(std::cell::Cell::get);
+    (valid, after - before)
+}
+
+fn stock_with_shared_intersection(stationary_middle: bool) -> crate::body::Solid {
+    use solidcraft_geom::Vec3;
+    use truck_modeling as mt;
+    let stock = crate::box_solid(Vec3::ZERO, Vec3::new(0.25, 1.0, 1.0)).unwrap();
+    let edge = stock
+        .solid
+        .edge_iter()
+        .find(|edge| {
+            let (a, b) = (edge.absolute_front().point(), edge.absolute_back().point());
+            a.y == 0.0 && b.y == 0.0 && a.z == 0.0 && b.z == 0.0
+        })
+        .unwrap();
+    let (a, b) = (edge.absolute_front().point(), edge.absolute_back().point());
+    let support0 = mt::Surface::Plane(mt::Plane::new(a, b, a + mt::Vector3::unit_y()));
+    let support1 = mt::Surface::Plane(mt::Plane::new(a, b, a + mt::Vector3::unit_z()));
+    let leader = if stationary_middle {
+        // At t=1/2 the point is off the supports' intersection and its derivative
+        // is zero, so projection fails there while both endpoints evaluate.
+        let mut points = vec![
+            mt::Point3::new(0.0, 0.0, 0.0),
+            mt::Point3::new(0.25, 4.0 / 3.0, 0.0),
+            mt::Point3::new(0.0, 4.0 / 3.0, 0.0),
+            mt::Point3::new(0.25, 0.0, 0.0),
+        ];
+        if a.x > b.x {
+            points.reverse();
+        }
+        mt::Leader::BSpline(mt::BSplineCurve::new(mt::KnotVec::bezier_knot(3), points))
+    } else {
+        mt::Leader::Polyline(PolylineCurve(vec![a, b]))
+    };
+    edge.set_curve(mt::Curve::IntersectionCurve(mt::IntersectionCurve::new_unchecked(Box::new(support0), Box::new(support1), leader, 0.01)));
+    (*stock.solid).clone()
+}
+
+#[test]
+fn shared_intersection_edges_keep_all_validation_samples_without_repeating_face_uses() {
+    let solid = stock_with_shared_intersection(false);
+    let unique: std::collections::HashSet<_> = solid.edge_iter().map(|edge| edge.id()).collect();
+    assert_eq!(unique.len(), 12);
+    assert_eq!(solid.edge_iter().count(), 24, "closed stock shares every edge between faces");
+    assert_eq!(validation_sample_count(&solid), (true, 12 * 33));
+}
+
+#[test]
+fn a_shared_intersection_that_fails_inside_its_range_is_still_refused() {
+    let solid = stock_with_shared_intersection(true);
+    let curve = solid.edge_iter().map(|edge| edge.curve()).find(|curve| matches!(curve, truck_modeling::Curve::IntersectionCurve(_))).unwrap();
+    use truck_meshalgo::prelude::TrySubs;
+    assert!(curve.try_subs(0.0).is_some());
+    assert!(curve.try_subs(1.0).is_some());
+    assert!(curve.try_subs(0.5).is_none(), "the fixture must fail at an interior sample");
+    assert!(!crate::boolean_record::edges_evaluate(&solid));
+}
+
+#[test]
+fn coincident_edges_with_distinct_topology_ids_are_each_validated() {
+    use solidcraft_geom::Vec3;
+    let first = crate::box_solid(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)).unwrap();
+    let second = crate::box_solid(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)).unwrap();
+    // This fixture exercises curve validation only; it does not assert that
+    // overlapping shells constitute an acceptable Boolean result.
+    let solid = truck_modeling::Solid::new_unchecked(vec![
+        first.solid.boundaries().first().unwrap().clone(),
+        second.solid.boundaries().first().unwrap().clone(),
+    ]);
+    let unique: std::collections::HashSet<_> = solid.edge_iter().map(|edge| edge.id()).collect();
+    assert_eq!(unique.len(), 24);
+    assert_eq!(validation_sample_count(&solid), (true, 24 * 33));
+}

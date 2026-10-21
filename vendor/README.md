@@ -4,6 +4,15 @@ Copies of third-party crates that SolidCraft builds with local fixes, wired in w
 `[patch.crates-io]` in the workspace `Cargo.toml`. They keep their own licence; changed lines
 are marked `SolidCraft:` in the source.
 
+The kernel module `crates/kernel/src/curve_sampler.rs` also adapts the ordered
+fixed-grid presearch from truck-geotrait 0.4.0 `algo/surface.rs` (Apache-2.0,
+copyright RICOS Co. Ltd., https://github.com/ricosjp/truck). It prepares immutable
+surface points once per borrowed curve sampler while retaining every query's
+distance comparison and the original Newton solver. No truck-geotrait source
+file is modified or vendored for this adaptation. The shell-local adapter in
+`crates/kernel/src/mesh_curve_sampler.rs` shares this same grid/scan helper between
+bitwise-identical immutable intersection supports under an explicit storage bound.
+
 ## truck-shapeops 0.4.0 (Apache-2.0, © RICOS Co. Ltd., https://github.com/ricosjp/truck)
 
 Changes:

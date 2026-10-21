@@ -279,7 +279,11 @@ fn mesh_shells_within(solid: &Solid, deflection: Deflection) -> Vec<MeshedShell>
         // The robust search tries the exact one first, so exact geometry costs nothing extra; a
         // face can also come back as an empty mesh rather than none (boolean results with
         // approximate intersection curves), so always use it.
-        .map(|sh| sh.robust_triangulation_within(deflection))
+        .map(|sh| {
+            let budget = std::sync::Arc::new(crate::mesh_curve_sampler::MeshBudget::new(crate::mesh_curve_sampler::MAX_GRIDS));
+            sh.mapped(|p| *p, |curve| crate::mesh_curve_sampler::MeshCurve::new(curve.clone(), budget.clone()), |surface| surface.clone())
+                .robust_triangulation_within(deflection)
+        })
         .collect()
 }
 

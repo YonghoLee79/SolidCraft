@@ -5,7 +5,7 @@
 //! they take ([`History::over`], [`History::substitute`]); a path that cannot leaves the result
 //! without history.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use solidcraft_geom::Vec3;
 use truck_modeling as mt;
@@ -14,6 +14,11 @@ use crate::Result;
 use crate::body::{Body, Solid, edge_order};
 use crate::history::{Change, EdgeOrigin, FaceOrigin, FaceProv, History};
 use crate::record;
+
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static EDGE_EVALUATION_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// A composition step's history, or none (logged) where the lineage can't be expressed.
 pub(crate) fn composed(h: Result<History>) -> Option<History> {
@@ -124,14 +129,21 @@ const EVALUATION_SAMPLES: usize = 32;
 /// from an approximation that strayed (#1252). Such a result is no solid to keep: the mesher,
 /// healing and measuring all sample the edge and stumble over the gap.
 pub(crate) fn edges_evaluate(solid: &Solid) -> bool {
-    use truck_meshalgo::prelude::TrySubs;
     use truck_modeling::BoundedCurve;
+    // Face uses share an absolute edge curve; sample its first occurrence only.
+    let mut seen = HashSet::new();
     solid.boundaries().iter().flat_map(|shell| shell.edge_iter()).all(|edge| {
+        if !seen.insert(edge.id()) {
+            return true;
+        }
         let curve = edge.curve();
+        let sampler = crate::curve_sampler::CurveSampler::new(&curve);
         let (t0, t1) = curve.range_tuple();
         (0..=EVALUATION_SAMPLES).all(|k| {
+            #[cfg(test)]
+            EDGE_EVALUATION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
             let t = t0 + (t1 - t0) * k as f64 / EVALUATION_SAMPLES as f64;
-            curve.try_subs(t).is_some_and(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+            sampler.at(t).is_some_and(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
         })
     })
 }

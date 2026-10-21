@@ -1,5 +1,467 @@
 # Design loading
 
+## Shared intersection edges sampled once per pass (2026-10-19, #3035)
+
+`Shell::edge_iter()` yields face uses, so adjacent faces visit the same edge twice.
+Validation now samples each topology EdgeID at its first occurrence, retaining all
+33 parameters and the existing finite/projection checks. Exact line/arc fitting
+also remembers unsuccessful attempts: a shared intersection that cannot be made
+exact needs one 17-point fit, rather than another fit for its other face use.
+The input solid keeps these identities alive throughout each pass. Traversal order,
+absolute curves, tolerances, substitutions and provenance are unchanged.
+
+One sequential matched pair used a private periodic-spline through-cut workload:
+load the first fifteen cuts, then append cut sixteen in the same CLI session.
+Both binaries used base `1666ca7018b867b90c613e7b39830c89a7d2db82`, the same local
+opt-in diagnostics, Rust 1.99.1 / LLVM 23.1.1, release O3, 16 codegen units and LTO
+disabled. Only the two operation-local identity sets differ. Hardware: Windows 11
+x86_64, Intel i7-12700F, 12 cores / 20 logical processors. Other heavy jobs were
+paused and CPU/build preflights passed; system background work was not excluded.
+
+| Observed wall span | Baseline | With identity deduplication |
+|---|---:|---:|
+| Cold document evaluation, 57 features | 176.901 s | 103.987 s |
+| Appended cut command | 22.225 s | 12.900 s |
+| Intersection core | 0.671 s | 0.645 s |
+| Exact line/arc fitting | 6.066 s | 3.078 s |
+| Edge validation | 11.918 s | 5.721 s |
+
+These nested wall spans overlap and must not be added. Whole-process times,
+including loading and later measurement/reference inspection, were 204.187 s and
+122.380 s. They are not the appended cut's time. The observed cut reduction is
+about 42% in this pair; this is not a statistical benchmark or a general latency
+guarantee. Final integration and additional workload checks are separate from this
+base-head measurement.
+
+A subsequent baseline repeat reached its 240-second process cap during the new
+cut's edge validation, after completing the 57-feature load in 178.289 s. Healing
+took 52.538 s in that incomplete run despite unchanged surface-search counts;
+the cause of that slowdown was not established. The wrapper stopped the batch,
+so neither its candidate nor its planned STEP arm ran. This failed repeat supplies
+no additional speedup estimate and leaves repeatability unconfirmed.
+
+Validation visited 3,354 face-edge uses before and 1,677 distinct edges after.
+Its plane/B-spline intersection evaluations fell from 49,764 to 24,882; each unique
+intersection retained all 33 samples. Exact fitting's cold surface searches fell
+from 26,163 to 13,345. Unchanged first occurrences therefore do less repeated work
+within the same operation, without reusing results from previous operations.
+
+The pair's measurement output matched bit for bit: volume, area, centres, bounds
+and topology (one native body, one shell, 545 kernel faces and 1,677 edges).
+Document output matched except timeline milliseconds and source path, including
+all 144 public parameters and 36 fully constrained sketches. The names and data
+returned for all 545 faces and 1,677 edges also matched bit for bit.
+
+Deterministic regressions count actual validation samples and fitting attempts,
+including a shared curve whose projection fails at an interior sample, failed
+non-arc fits, successful substitutions with opposite orientations and provenance,
+and coincident curves with distinct topology IDs. They use independently
+constructed geometry and impose no wall-clock threshold.
+
+## Prepare immutable spline support grids per curve (2026-10-19, #3035)
+
+Each unseeded intersection projection evaluates the same 51 by 51 support-surface
+grid before finding its nearest seed. A borrowed curve sampler now prepares that
+grid lazily for each B-spline or NURBS support. Every query still compares all
+2,601 distances in the original order, with the same strict ties, zero fallback,
+parameter arithmetic and original Newton solver. Explicit hints and other surface
+types pass through unchanged. Validation retains every sample and finite check;
+healing retains its existing guarded `subs` failure through the original fallback.
+
+The actual immutable supports are borrowed, preserving transforms, weights,
+normals and parameterization. Each spline support holds 2,601 points and 102
+parameters: 63,240 bytes of data, plus small structure/allocation overhead. A curve
+has at most two supports. Storage drops with the sampler; it is never reused
+between edges or operations. The ordered grid scan is adapted from Apache-2.0
+truck-geotrait; its attribution is recorded in `ATTRIBUTION.md`.
+
+One further matched native pair compared the identity-deduplicated candidate
+against prepared grids on the same base `1666ca7018b867b90c613e7b39830c89a7d2db82`,
+workload, settings and opt-in diagnostics described above. CPU quietness was
+explicitly waived, so these are observations under concurrent activity, not
+controlled-load estimates. An earlier CPU preflight aborted before starting any
+model and contributes no geometry or timing result.
+
+| Observed wall span | Identity deduplication | Prepared grids |
+|---|---:|---:|
+| Cold document evaluation, 57 features | 104.484 s | 33.653 s |
+| Appended cut command | 13.202 s | 4.454 s |
+| Intersection core | 0.638 s | 0.697 s |
+| Healing | 4.384 s | 0.596 s |
+| Exact line/arc fitting | 3.133 s | 0.257 s |
+| Edge validation | 5.882 s | 0.316 s |
+| Command profile tessellation | 1.059 s | 1.395 s |
+
+The observed command reduction is about 66% in this pair. Inclusive phase spans
+overlap and must not be added. Whole-process wall times, including loading and
+later measurement/reference inspection, were 122.886 s and 44.159 s. Process CPU
+was 437.969 s and 443.703 s (user plus kernel), so no total CPU saving is claimed.
+These counters came from each retained child process handle and rose from zero;
+they are cumulative across all its threads, not isolated cut CPU. Effective
+whole-process parallelism averaged 3.56 and 10.05 busy logical CPUs. Five-second
+load/stage samples cannot establish why total CPU stayed similar or assign an
+interval's CPU to its last observed stage. The same runtime configuration was
+inherited by both children; actual initialized pool size was not recorded.
+
+Measurement, normalized document state, all 545 face references and 1,677 edge
+references matched bit for bit, including all 144 public parameters and 36 fully
+constrained sketches. Four independent cut edits and restoration, plus four
+public simple/split-stock axial/oblique Hole controls, also matched the prior
+candidate exactly. Those functional probes provide no timing evidence.
+
+Deterministic tests compare grid points, seeds and all 33 projection results,
+including weighted/transformed NURBS, two spline supports, inverted curves,
+nonunit bounds, reversed/collapsed explicit ranges, nonfinite data, interior
+failure and lazy failure ordering. Actual preparation/distance counters distinguish
+2,601 prepared points from all 33 times 2,601 distance comparisons. Prepared
+searches bypass the vendor's diagnostic presearch wrapper; its reduced counters
+exclude the prepared work and are not used as performance evidence.
+
+This single pair neither isolates code causality from load/scheduling nor promises
+general latency. Tessellation and the Boolean core remain material costs. These
+numbers describe the matched experimental base; source integration and validation
+on newer upstream commits are separate and do not inherit this measurement.
+
+The production source at `396cbf8fb8793d641ccfabe467c975e4460f314c`, integrated
+with upstream `b76302e8`, subsequently passed a bounded functional run of the
+copied native workload using an optimized CLI without the experimental diagnostic
+patch. Measurements and normalized document state matched the experimental
+prepared candidate bit for bit, as did all 545 face and 1,677 edge references.
+The accepted result had one body and shell, 144 error-free public parameters,
+36 fully constrained sketches and no feature errors. This checks the existing
+parameter state; it does not repeat the earlier reversible parameter-edit probe.
+Its 74.753-second whole-process duration includes cold evaluation, the appended
+cut and subsequent measurement/reference inspection under concurrent activity.
+It is neither a separate cut timing nor a matched performance comparison.
+
+That integrated source passed 769 kernel tests (28 ignored and the same two
+existing upstream PR exclusions), the oblique-cut engine regression, all 16 Hole
+face/placement/edit regressions, kernel Clippy with warnings denied, the kernel
+wasm check, formatting and an optimized production CLI build. Full local CI
+stopped at the pre-existing icon-hash check in this Windows CRLF checkout; the
+GitHub CI run for this head was skipped, not passing. Newer upstream commits
+and a combined desktop user trial are outside this validation snapshot. The
+performance PR remains a draft pending that trial.
+
+## Reuse intersection support grids during shell meshing (2026-10-19, #3035)
+
+A scoped replay of an original saved model found that intersection-curve
+`try_subs` calls accounted for about 97% of process cycles during operand meshing.
+The diagnostic summed Windows thread cycle counters around disjoint delegated
+calls and compared them with process cycles; its overhead is included. The
+profile concerned actual intersection leaders and supports, not just projections
+of trim points onto face surfaces.
+
+`mesh_shells_within` now maps each immutable edge curve to a meshing adapter.
+Ordinary curves and their derivatives, ranges, periods, division and approximate
+samples retain the original methods. Intersection `try_subs` uses the original
+`double_projection` call, leader point and derivative, initial hints and 100-step
+limit. Only an unhinted spline-support search gets a seed from the existing grid
+helper. Every query still scans all 2,601 distances in the original order; neither
+Newton, deflection, refinement, rejection nor subsequent validation is relaxed.
+
+Different edge curves can own separate copies of the same support geometry.
+A shell-local table shares a grid only when the complete keys compare equal:
+surface kind, both knot vectors, every row length and every coordinate/weight as
+`f64::to_bits`. Signed zero and NaN payloads remain distinct. Hash collisions alone
+cannot equate supports. The actual immutable curve is owned by the adapter; the
+projection borrows its supports. A mutex admits cells, then releases its lock
+before a shared `OnceLock` prepares points on the bare original surface. Clones
+share cells and all state drops with that shell's temporary mapping.
+
+The first revision retained the first 512 distinct supports for the entire shell.
+The figures in this section describe that retention policy; the recycling follow-up
+below keeps the same live-grid budget. Grid point/parameter data is
+bounded by 32,378,880 bytes, plus at most 4 MiB of stored key words, headers and
+allocator overhead. Each temporary key is at most 8 KiB. Curve/geometry/topology
+clones are additional transient storage, so this is not a process-memory limit.
+Oversized keys, a full table or a poisoned mutex use the original unseeded search.
+Other surface kinds and explicit hints pass through unchanged. No table survives
+between meshing calls or history steps. The earlier healing/validation sampler
+remains scoped to one borrowed curve.
+
+One diagnostic pass replayed exact original intermediates at their recorded
+meshing settings, using 20 explicitly created Rayon workers and an optimized
+standalone driver linked against the existing CI geometry dependencies. A raw
+mesher, a pass-through curve adapter and the prepared adapter produced identical
+mesh positions, normals, UVs, polygon indices, orientations and edge polylines.
+These calls exclude later output refinement and other Boolean work.
+
+| Direct meshing scope | Raw wall / process CPU | Prepared wall / process CPU |
+|---|---:|---:|
+| Clearance, 542 faces, chord 0.0829799051 | 1.103 s / 14.656 s | 0.080 s / 1.156 s |
+| Operand, 542 faces, chord 0.01 | 1.814 s / 26.953 s | 0.120 s / 1.500 s |
+| Result orientation, 570 faces, chord 1 | 0.489 s / 5.781 s | 0.066 s / 0.797 s |
+
+The first stock contains 966 intersection edges with polyline leaders and 423
+bitwise-distinct cubic-by-linear B-spline supports; the result contains 449 such
+supports. CPU is the current process's user-plus-kernel time across all threads,
+read around each call with Windows accounting granularity. This is one sequential
+diagnostic pass under concurrent activity, not a statistical or application-level
+speedup. The captured repeated-vertex trim wires fail the checked topology
+extractor; replay reconstructs them without repair. Mesh equivalence here is not
+a certificate of closed-solid validity.
+
+A frozen production CLI from files identical to implementation commit
+`52bc16715d433ad6eaed3258664782db5fe75bd6` passed the complete native control cut.
+Measurements, normalized document state and every one of its 545 face and 1,677
+edge references matched production `396cbf8f` bit for bit. The control command
+observed 2.132 s; whole-process time was 24.102 s and CPU 75.469 s, including cold
+history and later inspections. Those are observations from this run, not a matched
+comparison with earlier production timings. The control model is a separate,
+simplified workload and does not stand in for the original saved model below.
+
+A second, bounded process loaded a private saved copy with 73 features rolled to
+53, changed an existing ThroughAll cut to a 5 mm blind cut, then activated all 20
+later cuts. The driver uses the same release engine library as that production CLI
+and streams each completed command's result and own-process CPU before continuing.
+`RAYON_NUM_THREADS=20` was supplied; the production pool size was not instrumented.
+No CPU quietness gate was used.
+
+| Original-copy scope | Wall | Process CPU |
+|---|---:|---:|
+| Cold load of the rolled prefix | 32.159 s | 109.406 s |
+| Actual changed-feature edit | 2.642 s | 11.672 s |
+| Activate and compute 20 dependent cuts | 201.462 s | 1,194.594 s |
+| Whole process, including inspections and streamed output | 263.968 s | 1,491.516 s |
+
+Whole-process scope contains the other rows and must not be added to them. Stream
+I/O is outside command measurements and inside whole-process measurements. The
+edit changed volume measurably; the generated planar floor independently confirms
+5 mm depth. The accepted final state has one body and shell, all 73 features
+active, no feature/parameter errors, 36 fully constrained sketches and all 144
+user parameters preserved. All 2,275 visible document parameter records remain
+unchanged; feature-definition fields are separate from that parameter table.
+The final inspection returned 1,207 named face and 3,705 named edge references.
+At that snapshot there was no completed earlier original-model baseline for
+before/after reference or timing equivalence. The earlier original-model attempts reached their own caps
+and provide no additional completed comparison. At that snapshot the 201-second dependent suffix
+remained a substantial performance problem. This engine run does not measure the
+public dialog preview/OK chain or establish near-instant editing.
+
+The implementation snapshot passed 778 native kernel tests, 28 ignored and the
+same two upstream PR exclusions, the engine oblique-cut regression and all 16
+Hole face/placement/edit regressions. Clippy with warnings denied and wasm checks
+passed. A later test-only commit adds a closed swept cubic prism with eight shared
+intersection edges: complete mesh fields match at three chord deflections, two
+angular settings and budgets zero, one and the default. It also checks first-support
+failure without preparing the second. All 11 targeted mesher tests, Clippy, wasm
+and formatting passed after those additions; production function source was
+unchanged. The earlier 11 grid/sampler tests remain included. Four public simple/
+fragmented axial/oblique Hole controls also passed, matching prior measurements,
+document state and references bit for bit with analytic volume error below
+0.017 mm3. No Hole timing improvement is claimed.
+
+The tested implementation is based on integrated upstream `b76302e8`. Later
+upstream integration and combined UI validation are separate. No private geometry,
+production diagnostic hooks or vendor source changes are included. The performance PR
+remains draft; full workspace/GitHub CI is not claimed by these scoped checks.
+
+## Recycle inactive meshing grids within the existing budget (2026-10-19, #3035)
+
+A one-shot diagnostic follow-up observed cache exhaustion in the actual dependent
+history, starting with a shell requesting 542 distinct keyed supports. Later shells
+requested up to 1,026 while the first 512 remained pinned by strong per-curve
+references. Denied admissions caused subsequent unhinted queries to repeat the
+original surface search. The diagnostic recorded a 20-worker pool; it supplied
+counts and selected late immutable B-reps, not clean timing comparisons.
+
+Per-curve references are now weak. The shell table can recycle an entry observed
+as inactive, choosing approximate least-recent use. Each entry owns a non-cloneable
+permit acquired by bounded compare-and-swap before initialization. An evicted
+entry that a racing weak upgrade keeps alive retains its permit. Its grid data is
+destroyed before the permit is returned; unavailable slots use the original search.
+Local and map locks are released before `OnceLock` initialization, geometry
+evaluation or the ordered seed scan. Full geometry keys, solver calls, hints,
+leader, trials, tolerances and failure ordering remain unchanged.
+
+The limit is still 512 total live entries per shell, including pending preparation
+and evicted strong references: at most 32,378,880 bytes of grid data and 4 MiB of
+map-resident key words. Each temporary key remains capped at 8 KiB. This is not a
+process-RAM limit. Expired weak references can retain allocation control blocks;
+headers, hash-table buckets, allocator retention, topology and concurrent temporary
+keys are additional. Recency is approximate under concurrent touches and counter
+wrap; the permit invariant does not depend on that ordering.
+
+One standalone prototype replay used a captured late operand with 1,001 keyed
+supports, chord 0.4148995256, a 20-degree angle bound and the same 512-entry limit.
+Raw, retained-grid and recycling meshes matched all fields bit for bit. Both
+adapters made exactly 170,876 intersection `try_subs` calls. This single sequential
+replay included diagnostic counters and concurrent system activity:
+
+| Captured-shell replay | Wall | Own process CPU |
+|---|---:|---:|
+| Raw | 16.599 s | 69.844 s |
+| Retain first 512 grids | 7.228 s | 29.000 s |
+| Recycle inactive grids | 1.173 s | 4.047 s |
+
+Recycling reached a peak of 512 live entries, with 3,765 evictions. A separate
+423-support prototype control did not exhaust the 512-entry limit and observed
+1.641 s CPU before versus 1.844 s with recycling. These individual samples do not
+establish a general speedup or regression estimate. Mutex, weak/strong-reference
+and recency-atomic work remains even without pressure; the no-pressure regression
+proves zero eviction, not zero overhead. The orphan race is covered by a simulated
+active-orphan test and scheduler-driven checks, not concurrency model checking.
+
+The clean release candidate and the preceding retained-grid implementation then
+completed the same saved-copy input and ten-command script: cold rolled-prefix
+load, the real 5 mm edit, first computation of 20 dependent cuts, measurements and
+reference inspections. Both used O3, 16 codegen units, LTO disabled and 20 requested
+workers. The clean binaries contain no experimental counters or geometry capture;
+actual pool size was not instrumented in these runs. Each version ran once under
+concurrent activity, without a quiet window or matched-load guarantee.
+
+| Clean original-copy scope | Retained grids: wall / CPU | Recycling: wall / CPU |
+|---|---:|---:|
+| Actual changed-feature edit | 2.642 s / 11.672 s | 2.574 s / 11.438 s |
+| First computation of 20 dependent cuts | 201.462 s / 1,194.594 s | 105.830 s / 476.688 s |
+| Whole process, including streamed output and inspections | 263.968 s / 1,491.516 s | 149.875 s / 637.984 s |
+
+Whole-process scope contains the other rows; command CPU/time excludes streamed
+output, while the whole includes it. Every field in all ten command results
+matched bit for bit except timeline milliseconds, including measurements, all
+2,275 visible parameters, 144 user parameters and all 1,207 face/3,705 edge
+reference records. The 5 mm floor, 36 solved sketches, active history, one body and
+shell and absence of errors were verified. The source copy's hash was unchanged.
+
+The new suffix profile still reports 83.179 s in Boolean calls, 19.271 s in
+standalone tessellation and 3.380 s elsewhere. Boolean time includes its nested
+meshing/checks; it is not an isolated intersection-core measurement. The remaining
+105.830 s is substantial. These single executions do not measure GUI preview/OK,
+a warm history cache or general near-instant editing.
+
+The candidate passed 21 focused mesher tests, 790 kernel tests (28 ignored and the
+same two existing upstream exclusions), the engine oblique-cut regression and
+all 16 Hole regressions, kernel all-target Clippy with warnings denied, wasm,
+formatting and an optimized CLI build. The separate native control retained every
+measurement and 545 face/1,677 edge reference field. A same-input public ten-command
+check matched the CLI and streaming runner except feature timing. Independent
+read-only static review found no actionable correctness issue; runtime checks were
+author-run. A fresh full workspace `xtask ci` attempt stops at the existing UI
+icon standards/hash check in this Windows CRLF checkout; it is not reported as
+passing. Combined desktop integration and a user trial remain separate.
+
+## Reuse two support grids while checking planar faces (2026-10-20, #3035)
+
+`heal::planar_surfaces` visits consecutive boundary curves that often share a
+spline support. Its pass now retains up to two immutable support grids between
+curves, using the same full-bit, 1,024-word support keys as the shell mesher.
+An entry is moved to the back on reuse; the oldest grid is dropped before a third
+is prepared. The 51 by 51 grid, seed scan order, strict distance comparisons,
+Newton searches, sample counts, tolerances and rejection paths are unchanged.
+Exact edge fitting and edge validation retain their existing per-curve sampler.
+
+The pass borrows its scratch exclusively through each sampler's destruction.
+Explicit sampler and prepared-support destructors keep that borrow live even
+after the last sampling call, including a retained support clone. An oversized
+key clears the scratch and uses the existing local-grid search; scoped clones
+share those fallback grid cells. This bounds retained grid payload across the
+scratch, sampler and its clones to two grids, 126,480 bytes total. At most four
+1,024-word key buffers add 32 KiB, with allocation and synchronization headers
+outside those figures. This is a scoped payload bound, not a process RSS limit.
+Contended or poisoned locks use the original uncached search; no lock remains
+held during Newton iteration. Ordinary unscoped samplers keep their prior clone
+behavior.
+
+Private component replays use captured target/tool geometry and a cold reconstructed
+body, without the original optional history, paint or display metadata. Their
+output can be compared exactly, but their elapsed times are not a replay of the
+complete document history or the preceding 20-cut measurement. One baseline and
+one candidate replay ran with 20 workers under concurrent activity:
+
+| Captured-geometry scope | Per-curve grids | Two-grid planar pass |
+|---|---:|---:|
+| Boolean operation | 5,725.182 ms | 4,747.550 ms |
+| Nested planar-surface check | 970.891 ms | 618.181 ms |
+
+The candidate returned exactly the same compressed result bytes and every JSON
+floating-point bit as the captured 1,207-face result. Inputs remained unchanged.
+Other unchanged phases also varied between executions; the total difference
+cannot be assigned to this cache. The candidate additionally included private
+vendor phase timers, whose overhead is included. These observations do not
+establish a general speedup or a complete-history editing latency.
+
+Vendor Boolean time includes two internal operand triangulations, which are
+outside the kernel's `body.raw_mesh` timer. The candidate replay observed
+562.586 ms in those triangulations, 695.910 ms in face division and 215.743 ms in
+loop construction, within its 1,492.647 ms vendor Boolean total. These disjoint
+leaves are nested in that total; they must not be added to it or to the kernel
+Boolean total. The product candidate contains no vendor changes or private
+timers.
+
+The final planar source passed 43 focused sampler/meshing tests and 801 kernel
+tests (28 ignored, the same two existing exclusions), three oblique engine
+regressions and 96 Hole-related engine tests, including all 16 Hole face tests.
+Kernel all-target Clippy with warnings denied, wasm, formatting and diff checks
+passed. Four public native-document Hole controls (simple/fragmented stock,
+axial/oblique) retained every result field bit for bit except timings/source path,
+including measurements, documents and face/edge references; analytic volume
+checks passed. The clean optimized CLI contains no private diagnostic markers.
+Independent read-only review found no actionable correctness issue. Six compiler
+checks distinguish the old accepted retained-owner/clone cases, the new borrow
+errors and successful reuse after explicit destruction; runtime regressions cover
+oversized fallback clones and poisoning. A fresh full `xtask ci` attempt stopped
+at the same 288 existing icon hash errors as the preceding Windows checkout
+attempt, with no asset changes. Full workspace CI and combined desktop
+integration are not claimed passing.
+
+## Reuse bounded spline bases while preparing support grids (2026-10-20, #3035)
+
+Support-grid preparation previously evaluated both B-spline basis vectors again
+for each of its 2,601 points. Small B-spline supports now prepare their 51 U and
+51 V coefficient vectors once and reuse them across the grid. The point sum
+keeps the vendor's U-major order, exact row/column zip limits and floating-point
+operations. Grid coordinates, point order, seed scans, hints, Newton searches,
+tolerances, sample counts and rejection behavior remain unchanged.
+
+The helper accepts only supports whose pre-truncation basis request fits eight
+words per direction. Its two fixed coefficient arrays contain 6,528 bytes; one
+temporary vendor basis vector requests at most 64 bytes. Array/Vec metadata,
+allocator slack and other stack data are outside those payload figures. These
+are temporary preparation costs, additional to the previously documented grid
+payload bounds, and do not describe process RSS. Larger bases, NURBS, unsupported
+coordinate shapes and unavailable coefficient results use the original surface
+evaluation. Malformed empty control rows defer to the original guarded path.
+No vendor code, global cache or dependency changes are included.
+
+A private reference probe compared all floating-point point bits on 1,026
+captured unique supports and nine analytic public surfaces: 2,692,035 points
+matched. A separate sampling probe matched all 122,265 optional point results
+on 3,705 edges, including independent public valid/rejected controls. These are
+component checks. A new actual Boolean replay then used the same captured
+target/tool geometry and cold reconstructed body as the preceding planar-cache
+measurement, with 20 requested workers:
+
+| Captured-geometry scope | Two-grid planar cache | With bounded basis reuse |
+|---|---:|---:|
+| Boolean operation | 4,747.550 ms | 4,212.855 ms |
+| Nested planar-surface check | 618.181 ms | 408.988 ms |
+
+The result retained exactly the captured compressed bytes and every JSON
+floating-point bit, with 1,207 faces and unchanged inputs. Each column is a single
+execution under concurrent activity; unchanged phases also vary. These timings
+do not establish a causal total improvement, complete-history editing latency,
+warm-cache behavior or a general speedup. Private nested vendor timers are
+included only in the diagnostic builds and must not be added to the kernel
+total. Cold geometry-only replays omit original history/display metadata and
+do not certify checked topology validity. The complete original history was
+not rerun for this increment.
+
+The frozen product source passed seven public basis-reference/hostile tests,
+43 sampler tests and 808 kernel tests (28 ignored, the same two existing
+exclusions), the oblique-cut engine regression and all 16 Hole face regressions.
+Kernel all-target Clippy with warnings denied, wasm, formatting and diff checks
+passed. Four fresh compiler checks on this source reject scratch reuse while
+an owner or support clone survives and accept it after explicit destruction.
+Independent read-only final-source review found no actionable issue; runtime
+checks were author-run. Four public native-document Hole controls retained
+all result fields bit for bit except timings/source path, including measurement,
+document and face/edge references; analytic volume checks passed. Their clean
+optimized CLI contains no private diagnostic markers. A fresh full workspace
+`xtask ci` attempt stopped at the same 288 existing Windows icon hash errors;
+assets were unchanged. Full workspace CI and combined desktop integration
+are not claimed passing.
+
 ## Edges made by booleans: each point evaluated once (2026-10-16)
 
 A boolean meshes both operands with truck-meshalgo, which first divides every edge into a
