@@ -705,9 +705,7 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
             }
         }
         Kind::Pipe { diameter, wall } => {
-            if !opts.tapped {
-                enter |= expr_row(ui, "Diameter", diameter);
-            }
+            enter |= expr_row(ui, "Diameter", diameter);
             enter |= hint_row(ui, "Wall", wall, tr("solid"));
         }
         Kind::Stock { margin } => {
