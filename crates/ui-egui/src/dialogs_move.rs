@@ -200,7 +200,7 @@ pub fn params(app: &SolveApp, d: &Dialog) -> Result<Value, String> {
             }
         }
         ROTATE => {
-            let (o, a) = items(d, 1).first().and_then(|s| axis_line(app, s)).ok_or("select an axis or a straight edge first")?;
+            let (o, a) = items(d, 1).first().and_then(|s| axis_line(app, s)).ok_or("select an axis, a straight edge or a circular edge first")?;
             let th = ang(app, angle)?;
             let r = gizmo::rotation(a, th);
             p["translate"] = num(o - gizmo::apply(&r, o));
@@ -223,7 +223,7 @@ pub fn params(app: &SolveApp, d: &Dialog) -> Result<Value, String> {
     Ok(p)
 }
 
-/// An axis line: origin axes and sketch lines, or a straight body edge.
+/// An axis line: origin axes and sketch lines, a straight body edge, or the axis of a circular edge.
 fn axis_line(app: &SolveApp, s: &Sel) -> Option<(Vec3, Vec3)> {
     if let Some(a) = crate::dialogs::axis_of(app, s) {
         return Some(a);
@@ -233,6 +233,10 @@ fn axis_line(app: &SolveApp, s: &Sel) -> Option<(Vec3, Vec3)> {
     let m = st.body(body)?.mesh();
     let e = m.edges.get(*index)?;
     let (a, b) = (*e.first()?, *e.last()?);
+    // A circle or arc: through its centre, along its normal.
+    if let Some(axis) = crate::dialogs_assembly::circle_of(e) {
+        return Some(axis);
+    }
     let dir = (b - a).normalized()?;
     // Straight: every point on the chord.
     e.iter().all(|p| (*p - a).cross(dir).len() < 1e-6 * (1.0 + (b - a).len())).then_some((a, dir))

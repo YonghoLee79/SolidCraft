@@ -99,3 +99,23 @@ fn point_to_point_takes_the_origin_point() {
     let p = params(&h.app, &d).unwrap();
     assert_eq!(p["translate"], json!([mm(-hi.x), mm(-hi.y), mm(-hi.z)]), "the corner goes onto the origin");
 }
+
+/// Rotate takes a circular edge as the axis (#3128): through its centre, along its normal.
+#[test]
+fn rotate_about_a_circular_edge_uses_its_axis() {
+    let mut s = Session::default();
+    s.execute("solid.cylinder", &json!({"diameter": 20, "height": 30})).unwrap();
+    let mut app = SolveApp::new(s, Services::default());
+    let body = app.session.model.state().body("Body1").unwrap().clone();
+    let m = body.mesh();
+    let (index, (center, normal)) = m.edges.iter().enumerate().find_map(|(i, e)| crate::dialogs_assembly::circle_of(e).map(|c| (i, c))).unwrap();
+    app.start("solid.move");
+    let mut d = app.dialog.clone().unwrap();
+    d.kind = kind(ROTATE);
+    d.inputs = inputs(ROTATE);
+    d.inputs[0].items = vec![Sel::Body { name: "Body1".into() }];
+    d.inputs[1].items = vec![Sel::Edge { body: "Body1".into(), index, point: center }];
+    let p = params(&app, &d).unwrap();
+    let a: Vec<f64> = serde_json::from_value(p["axis"].clone()).unwrap();
+    assert!((a[0] * normal.x + a[1] * normal.y + a[2] * normal.z).abs() > 1.0 - 1e-9, "axis {a:?} is not along {normal:?}");
+}
