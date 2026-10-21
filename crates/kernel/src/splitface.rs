@@ -13,7 +13,7 @@ use solidcraft_geom::{Plane, Seg2, UnitVec3, Vec2, Vec3};
 use truck_meshalgo::tessellation::RobustMeshableShape;
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::record::Rebuild;
 use crate::{KernelError, Result, guard};
 
@@ -342,8 +342,8 @@ fn trace_flat(face: &mt::Face, g: &Field, size: f64) -> Option<Vec<Chain>> {
         // chord; such an edge crosses the plane once at most.
         let straight = matches!(e.curve(), mt::Curve::Line(_)) || {
             let c = e.curve();
-            let (t0, t1) = c.range_tuple();
-            (1..8).all(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 8.0)).dist_to_segment(a, b) <= tol)
+            let r = c.range();
+            (1..8).all(|k| from_p3(c.subs(r.step(k, 8))).dist_to_segment(a, b) <= tol)
         };
         if !straight || (ga.abs() <= tol && gb.abs() <= tol) || !ga.is_finite() || !gb.is_finite() {
             return None;
@@ -375,12 +375,12 @@ fn boundary_hits(face: &mt::Face, g: &Field) -> Vec<Hit> {
     for w in face.absolute_boundaries() {
         for e in w.edge_iter() {
             let c = e.curve();
-            let (t0, t1) = c.range_tuple();
+            let r = c.range();
             let n = 64;
             let val = |t: f64| g.eval(from_p3(c.subs(t)));
-            let mut prev = (t0, val(t0));
+            let mut prev = (r.lo(), val(r.lo()));
             for k in 1..=n {
-                let t = t0 + (t1 - t0) * k as f64 / n as f64;
+                let t = r.step(k, n);
                 let cur = (t, val(t));
                 if (prev.1 >= 0.0) != (cur.1 >= 0.0) {
                     let (mut lo, mut hi) = (prev.0, cur.0);
@@ -567,8 +567,7 @@ fn expand(e: &mt::Edge, cuts: &[(mt::Edge, (mt::Edge, mt::Edge))], out: &mut Vec
 /// The parameter of the point of `c` nearest `q`, searched from the nearest of points along it (a
 /// long arc's search from its middle can settle on the far side).
 fn nearest(c: &mt::Curve, q: mt::Point3) -> Option<f64> {
-    let (t0, t1) = c.range_tuple();
-    let hint = (0..=16).map(|k| t0 + (t1 - t0) * k as f64 / 16.0).min_by(|x, y| c.subs(*x).distance2(q).total_cmp(&c.subs(*y).distance2(q)));
+    let hint = c.range().samples(16).min_by(|x, y| c.subs(*x).distance2(q).total_cmp(&c.subs(*y).distance2(q)));
     c.search_nearest_parameter(q, hint, 100)
 }
 
@@ -597,8 +596,8 @@ pub(crate) fn split_edges_at(body: &Body, points: &[Vec3]) -> Result<Body> {
                     return false;
                 }
                 let c = e.curve();
-                let (t0, t1) = c.range_tuple();
-                nearest(&c, q).is_some_and(|t| t > t0.min(t1) && t < t0.max(t1) && c.subs(t).distance(q) <= tol * 10.0)
+                let r = c.range();
+                nearest(&c, q).is_some_and(|t| t > r.lo() && t < r.hi() && c.subs(t).distance(q) <= tol * 10.0)
             });
             let Some(k) = hit else { continue };
             let (e, root) = current.swap_remove(k);
@@ -668,9 +667,9 @@ fn loop_uv(s: &mt::Surface, w: &mt::Wire) -> Vec<(f64, f64)> {
     let mut hint = None;
     for e in w.edge_iter() {
         let c = e.oriented_curve();
-        let (t0, t1) = c.range_tuple();
+        let r = c.range();
         for k in 0..8 {
-            let p = c.subs(t0 + (t1 - t0) * k as f64 / 8.0);
+            let p = c.subs(r.step(k, 8));
             if let Some(uv) = s.search_nearest_parameter(p, hint, 50) {
                 hint = Some(uv);
                 out.push(uv);
@@ -770,8 +769,7 @@ fn split_one(faces: &mut Vec<mt::Face>, fi: usize, g: &Field, size: f64, new_edg
                     let off = |pc: &mt::Edge| {
                         use mt::SearchNearestParameter;
                         let cc = pc.curve();
-                        let (t0, t1) = cc.range_tuple();
-                        let t = cc.search_nearest_parameter(h.p, None, 100).unwrap_or(h.t).clamp(t0.min(t1), t0.max(t1));
+                        let t = cc.range().clamp(cc.search_nearest_parameter(h.p, None, 100).unwrap_or(h.t));
                         cc.subs(t).distance(h.p)
                     };
                     e = if off(x) <= off(y) { x.clone() } else { y.clone() };
@@ -1142,9 +1140,8 @@ pub fn split_faces_with_map(body: &Body, faces: &[usize], tool: &SplitTool) -> R
     let mut lines: Vec<Vec<Vec3>> = body.splits.as_ref().map(|l| l.to_vec()).unwrap_or_default();
     lines.extend(imp.new_edges.iter().filter_map(|e| {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
         let n = if matches!(c, mt::Curve::Line(_)) { 1 } else { 64 };
-        let pts: Vec<Vec3> = (0..=n).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / n as f64))).collect();
+        let pts: Vec<Vec3> = c.range().samples(n).map(|t| from_p3(c.subs(t))).collect();
         pts.iter().all(|p| p.is_finite()).then_some(pts)
     }));
     let b = b.with_split_lines(Some(std::sync::Arc::new(lines)));
@@ -1430,8 +1427,8 @@ pub fn split_body(body: &Body, tool: &SplitTool) -> Result<Vec<Body>> {
                 w.edge_iter()
                     .flat_map(|e| {
                         let c = e.oriented_curve();
-                        let (t0, t1) = c.range_tuple();
-                        (0..32).map(move |k| c.subs(t0 + (t1 - t0) * k as f64 / 32.0)).collect::<Vec<_>>()
+                        let r = c.range();
+                        (0..32).map(move |k| c.subs(r.step(k, 32))).collect::<Vec<_>>()
                     })
                     .collect()
             };

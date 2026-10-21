@@ -18,7 +18,7 @@ use mt::{BoundedCurve, ParametricCurve, ParametricSurface3D, SearchNearestParame
 use solidcraft_geom::Vec3;
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3, v3};
+use crate::body::{Body, CurveRange, from_p3, p3, v3};
 use crate::record::{Rebuild, rebuilt_body};
 use crate::surfaces::{map_control_points, nearest_face, picked_chain, surface_body};
 use crate::{KernelError, Result, guard};
@@ -301,7 +301,6 @@ struct Strip {
 impl Strip {
     fn new(base: mt::Edge, face: &mt::Face, face_left: bool, field: &Field, eps: f64) -> Result<Strip> {
         let c = base.oriented_curve();
-        let (t0, t1) = c.range_tuple();
         let d = field.distance;
         // The point, unit tangent, face normal and ruling at a parameter of the edge.
         let at = |t: f64| -> Result<(Vec3, Vec3, Vec3, Vec3)> {
@@ -315,7 +314,7 @@ impl Strip {
             let out = out.normalized().ok_or_else(|| KernelError::Invalid("the face beside an edge runs along it".into()))?;
             Ok((p, tan, n, field.ruling(tan, n, out)?))
         };
-        let param = |k: usize, m: usize| t0 + (t1 - t0) * k as f64 / (m - 1) as f64;
+        let param = |k: usize, m: usize| c.range().step(k, m - 1);
         let samples: Vec<(Vec3, Vec3, Vec3, Vec3)> = (0..SAMPLES).map(|k| at(param(k, SAMPLES))).collect::<Result<_>>()?;
         let (Some(first), Some(last)) = (samples.first().copied(), samples.last().copied()) else {
             return Err(KernelError::Failed("ruled surface: samples".into()));

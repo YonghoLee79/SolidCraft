@@ -16,7 +16,7 @@ use solidcraft_geom::mesh_distance::{MeshClosest, TriangleSet};
 use solidcraft_geom::{Aabb3, Mesh, Vec3};
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::surface_kind::{FaceSurface, surface_of};
 use crate::{Result, guard};
 
@@ -198,22 +198,22 @@ impl<'a> DistanceShape<'a> {
 
     /// The point of edge `i` nearest `p`, with the edge's direction there.
     fn edge_nearest(&self, i: usize, p: Vec3, hint: &mut Hint) -> Option<(Vec3, Vec3)> {
-        use mt::{BoundedCurve, ParametricCurve, SearchNearestParameter};
+        use mt::{ParametricCurve, SearchNearestParameter};
         let c = self.edges.get(i)?.oriented_curve();
-        let (t0, t1) = c.range_tuple();
-        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        let r = c.range();
+        let (lo, hi) = (r.lo(), r.hi());
         let at = |t: f64| from_p3(c.subs(t));
         let start = match hint.t {
             Some(t) => t,
             None => {
                 // A coarse look along the curve, then the inversion from the best sample.
                 let n = 32;
-                (0..=n).map(|k| t0 + (t1 - t0) * f64::from(k) / f64::from(n)).min_by(|a, b| at(*a).dist(p).total_cmp(&at(*b).dist(p)))?
+                (0..=n).map(|k| r.step(k as usize, n as usize)).min_by(|a, b| at(*a).dist(p).total_cmp(&at(*b).dist(p)))?
             }
         };
         let mut best = (start.clamp(lo, hi), f64::INFINITY);
         best.1 = at(best.0).dist(p);
-        for t in [c.search_nearest_parameter(p3(p), Some(start), 64).map(|t| t.clamp(lo, hi)), Some(t0), Some(t1)].into_iter().flatten() {
+        for t in [c.search_nearest_parameter(p3(p), Some(start), 64).map(|t| t.clamp(lo, hi)), Some(r.lo()), Some(r.hi())].into_iter().flatten() {
             let d = at(t).dist(p);
             if d < best.1 {
                 best = (t, d);

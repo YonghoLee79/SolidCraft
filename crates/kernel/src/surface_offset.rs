@@ -13,7 +13,7 @@ use mt::{BoundedCurve, InnerSpace, ParametricCurve, ParametricSurface, Parametri
 use solidcraft_geom::{Grid, Vec3};
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::build::interpolate_net;
 use crate::history::FaceOrigin;
 use crate::surfaces::{Offset, map_curve, map_surface, surface_body};
@@ -83,10 +83,8 @@ impl FaceMover {
             How::Exact(off) => map_curve(off, c, d),
             How::Fitted { .. } if d == 0.0 => Ok(c.clone()),
             How::Fitted { .. } => {
-                let (t0, t1) = c.range_tuple();
-                let pts: Vec<Vec3> = (0..EDGE_SAMPLES)
-                    .map(|k| self.point(from_p3(c.subs(t0 + (t1 - t0) * k as f64 / (EDGE_SAMPLES - 1) as f64)), d))
-                    .collect::<Result<_>>()?;
+                let pts: Vec<Vec3> =
+                    (0..EDGE_SAMPLES).map(|k| self.point(from_p3(c.subs(c.range().step(k, EDGE_SAMPLES - 1))), d)).collect::<Result<_>>()?;
                 Ok(mt::Curve::BSplineCurve(crate::build::interpolate_cubic(&pts).ok_or_else(|| KernelError::Failed("offset edge".into()))?))
             }
         }
@@ -164,8 +162,7 @@ pub fn offset_surface(body: &Body, faces: &[usize], distance: f64, tolerance: f6
                     let abs = if e.orientation() { e.clone() } else { e.inverse() };
                     let (a, b) = (vertex(abs.front())?, vertex(abs.back())?);
                     let c = abs.curve();
-                    let (t0, t1) = c.range_tuple();
-                    let mid = map(from_p3(c.subs(0.5 * (t0 + t1))))?;
+                    let mid = map(from_p3(c.subs(c.range().mid())))?;
                     let list = edges.entry(abs.id()).or_default();
                     let shared = list.iter().find(|m| {
                         m.front().id() == a.id() && m.back().id() == b.id() && {
@@ -228,9 +225,8 @@ fn fit(f: &mt::Face, distance: f64, tolerance: f64) -> Result<mt::BSplineSurface
     let (mut u0, mut u1, mut v0, mut v1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
     for e in f.absolute_boundaries().iter().flat_map(|w| w.edge_iter()) {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
         for k in 0..=16 {
-            let q = c.subs(t0 + (t1 - t0) * k as f64 / 16.0);
+            let q = c.subs(c.range().step(k, 16));
             if let Some((u, v)) = s.search_nearest_parameter(q, None, 100) {
                 (u0, u1, v0, v1) = (u0.min(u), u1.max(u), v0.min(v), v1.max(v));
             }

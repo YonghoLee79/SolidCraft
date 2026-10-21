@@ -1,8 +1,8 @@
 //! Whole-span certificates for analytic planar prism boundaries.
 //! Samples propose a circle; only positive rational Bernstein bounds accept it.
-use crate::body::from_p3;
+use crate::body::{CurveRange, from_p3};
 use solidcraft_geom::{Plane, Seg2, Vec2};
-use truck_modeling::{self as mt, BoundedCurve, Invertible, ParametricCurve};
+use truck_modeling::{self as mt, Invertible, ParametricCurve};
 
 const MAX_DEGREE: usize = 32;
 /// How far an arc read off a curve may end from the curve's end (mm): half the gap a profile
@@ -217,11 +217,11 @@ pub(super) fn segment_fitted(e: &mt::Edge, plane: &Plane, tol: f64, fit: f64, wo
     if !e.orientation() {
         c.invert();
     }
-    let (t0, t1) = c.range_tuple();
-    if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
+    let r = c.range();
+    if !(r.lo().is_finite() && r.hi().is_finite() && r.hi() > r.lo()) {
         return None;
     }
-    let (a3, b3) = (from_p3(c.subs(t0)), from_p3(c.subs(t1)));
+    let (a3, b3) = (from_p3(c.subs(r.lo())), from_p3(c.subs(r.hi())));
     if !a3.is_finite() || !b3.is_finite() || a3.dist(from_p3(e.front().point())) > tol || b3.dist(from_p3(e.back().point())) > tol {
         return None;
     }
@@ -262,11 +262,11 @@ fn read(e: &mt::Edge, plane: &Plane, tol: f64, work: &mut usize, each_span: bool
     if !e.orientation() {
         c.invert();
     }
-    let (t0, t1) = c.range_tuple();
-    if !t0.is_finite() || !t1.is_finite() || t1 <= t0 {
+    let r = c.range();
+    if !r.lo().is_finite() || !r.hi().is_finite() || r.hi() <= r.lo() {
         return None;
     }
-    let (a3, b3) = (from_p3(c.subs(t0)), from_p3(c.subs(t1)));
+    let (a3, b3) = (from_p3(c.subs(r.lo())), from_p3(c.subs(r.hi())));
     let (a, b) = (plane.to_local(a3), plane.to_local(b3));
     if !a3.is_finite()
         || !b3.is_finite()
@@ -382,11 +382,11 @@ fn free_form(spans: &[Vec<H>], a: Vec2, b: Vec2, tol: f64) -> Option<Vec<Seg2>> 
 /// whole-span proofs show it is one.
 #[allow(clippy::too_many_arguments)]
 fn arc(c: &mt::Curve, spans: &[Vec<H>], plane: &Plane, a: Vec2, b: Vec2, tol: f64, error: f64, work: &mut usize) -> Option<Vec<Seg2>> {
-    let (t0, t1) = c.range_tuple();
+    let pr = c.range();
     // Samples are only a candidate proposal. Whole-span implicit and oriented
     // angular proofs below are required before converting any spline to an arc.
-    let q = plane.to_local(from_p3(c.subs(t0 + (t1 - t0) * 5. / 16.))) - a;
-    let r = plane.to_local(from_p3(c.subs(t0 + (t1 - t0) * 11. / 16.))) - a;
+    let q = plane.to_local(from_p3(c.subs(pr.step(5, 16)))) - a;
+    let r = plane.to_local(from_p3(c.subs(pr.step(11, 16)))) - a;
     let det = 2. * (q.x * r.y - q.y * r.x);
     if !det.is_finite() || det.abs() < 1e-300 {
         return None;
@@ -554,8 +554,8 @@ mod tests {
     fn discontinuous_and_multiple_winding_curves_decline() {
         let edge_from = |knots: Vec<f64>, points: Vec<mt::Vector4>| {
             let c = mt::Curve::NurbsCurve(mt::NurbsCurve::new(mt::BSplineCurve::new(mt::KnotVec::from(knots), points)));
-            let (lo, hi) = c.range_tuple();
-            mt::Edge::new(&mt::Vertex::new(c.subs(lo)), &mt::Vertex::new(c.subs(hi)), c)
+            let r = c.range();
+            mt::Edge::new(&mt::Vertex::new(c.subs(r.lo())), &mt::Vertex::new(c.subs(r.hi())), c)
         };
         let w = std::f64::consts::FRAC_1_SQRT_2;
         let p = |x, y, w| mt::Vector4::new(x, y, 0., w);

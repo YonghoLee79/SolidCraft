@@ -1,6 +1,6 @@
 //! Independent current-geometry intervals for uniform prisms.
 //! These are not mesh measurements or certificates of construction history.
-use crate::body::from_p3;
+use crate::body::{CurveRange, from_p3};
 use solidcraft_geom::{Plane, Ring, Seg2, Vec2, Vec3};
 use truck_modeling as mt;
 
@@ -182,7 +182,7 @@ fn segment_same(a: &Seg2, b: &Seg2, tolerance: f64) -> bool {
 }
 
 fn wall_supports_cap(surface: &mt::Surface, edge: &mt::Edge, plane: &Plane, levels: (f64, f64), tol: f64, work: &mut usize) -> Option<bool> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let cap = crate::prism_curve::segment(edge, plane, tol, work)?;
     if let mt::Surface::Plane(p) = surface {
         let (n, ne) = plane_normal(p)?;
@@ -326,8 +326,8 @@ fn wall_supports_cap(surface: &mt::Surface, edge: &mt::Edge, plane: &Plane, leve
         }
         *work = work.checked_sub(knots.len())?;
         let c = mt::Curve::NurbsCurve(mt::NurbsCurve::new(mt::BSplineCurve::try_new(knots.clone(), projected).ok()?));
-        let (a, b) = c.range_tuple();
-        let support = mt::Edge::new(&mt::Vertex::new(c.subs(a)), &mt::Vertex::new(c.subs(b)), c);
+        let pr = c.range();
+        let support = mt::Edge::new(&mt::Vertex::new(c.subs(pr.lo())), &mt::Vertex::new(c.subs(pr.hi())), c);
         let Some(fit) = crate::prism_curve::segment(&support, plane, tol, work) else {
             continue;
         };

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use solidcraft_geom::Vec3;
 use truck_modeling::{self as mt, builder};
 
-use crate::body::{Body, Solid, from_p3, p3};
+use crate::body::{Body, CurveRange, Solid, from_p3, p3};
 use crate::{KernelError, Result, guard};
 
 #[derive(Clone, Copy, Debug)]
@@ -173,17 +173,17 @@ fn fail(m: &str) -> KernelError {
 /// Points and outward normals sampled over a face (boundary and a grid inside its
 /// parameter box).
 fn samples(f: &mt::Face) -> Vec<(Vec3, Vec3)> {
-    use mt::{BoundedCurve, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
+    use mt::{ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
     let surf = f.oriented_surface();
     let mut uv: Vec<(f64, f64)> = Vec::new();
     for w in f.boundaries() {
         for e in w.edge_iter() {
             let c = e.oriented_curve();
-            let (t0, t1) = c.range_tuple();
+            let r = c.range();
             for k in 0..5 {
                 // The previous point's parameters as a hint, unless that lands elsewhere (a
                 // singular point such as a pole holds the search).
-                let q = c.subs(t0 + (t1 - t0) * k as f64 / 5.0);
+                let q = c.subs(r.step(k, 5));
                 let near = |x: (f64, f64)| from_p3(surf.subs(x.0, x.1)).dist(from_p3(q)) < 1e-6 * (1.0 + from_p3(q).len());
                 let found = surf
                     .search_nearest_parameter(q, uv.last().copied(), 50)
@@ -684,10 +684,9 @@ fn crossed_loops(
 }
 
 pub(crate) fn arc_mid(e: &mt::Edge, tol: f64) -> Option<Option<Vec3>> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let c = e.curve();
-    let (t0, t1) = c.range_tuple();
-    let pts: Vec<Vec3> = (0..=16).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 16.0))).collect();
+    let pts: Vec<Vec3> = c.range().samples(16).map(|t| from_p3(c.subs(t))).collect();
     let (a, b, m) = (*pts.first()?, *pts.last()?, *pts.get(8)?);
     if a.dist(b) < tol {
         return None;
@@ -806,12 +805,11 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
         .solid
         .edge_iter()
         .filter_map(|e| {
-            use mt::{BoundedCurve, ParametricCurve};
+            use mt::ParametricCurve;
             let c = e.curve();
-            let (t0, t1) = c.range_tuple();
             Some((
                 efaces.get(&e.id())?.clone(),
-                [from_p3(e.absolute_front().point()), from_p3(e.absolute_back().point()), from_p3(c.subs((t0 + t1) / 2.0))],
+                [from_p3(e.absolute_front().point()), from_p3(e.absolute_back().point()), from_p3(c.subs(c.range().mid()))],
             ))
         })
         .collect();
@@ -1021,11 +1019,10 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                 // square to a coaxial cylinder); faces that meet in another curve are refused.
                 // Shared with its twin from the round's other side: the new edge with the same
                 // ends through the same middle (two arcs of one circle have the same ends).
-                use mt::{BoundedCurve, ParametricCurve};
+                use mt::ParametricCurve;
                 let fs = efaces.get(&e.id()).ok_or_else(|| fail("edge faces"))?;
                 let cv = e.curve();
-                let (t0, t1) = cv.range_tuple();
-                let mid = from_p3(cv.subs((t0 + t1) / 2.0));
+                let mid = from_p3(cv.subs(cv.range().mid()));
                 // The face across: the strip's far side (`opposite_side`), the nearest of them
                 // when several; the nearest along the rounds when the strip has none.
                 let (mut meet, cand) = across(fs, mid);
@@ -1047,8 +1044,7 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                         let (pa, pc) = (from_p3(a.point()), from_p3(c.point()));
                         let x = if m.dist_to_segment(pa, pc) < near { builder::line(a, c) } else { builder::circle_arc(a, c, p3(m)) };
                         let xc = x.curve();
-                        let (u0, u1) = xc.range_tuple();
-                        let pts: Vec<Vec3> = (0..=16).map(|j| from_p3(xc.subs(u0 + (u1 - u0) * j as f64 / 16.0))).collect();
+                        let pts: Vec<Vec3> = xc.range().samples(16).map(|t| from_p3(xc.subs(t))).collect();
                         if !pts.iter().all(|p| n.iter().all(|sf| sf.dist(*p).abs() < near)) {
                             return Err(fail("not supported yet: faces meeting along a collapsed round in a curve other than a line or circle"));
                         }
@@ -1063,15 +1059,15 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
             let Some(kind) = arc_mid(&e, size * 1e-6) else {
                 // Another curve (where two cylinders meet): its points moved onto the moved
                 // faces, through a smooth curve.
-                use mt::{BoundedCurve, ParametricCurve};
+                use mt::ParametricCurve;
                 let fs = efaces.get(&e.id()).ok_or_else(|| fail("edge faces"))?;
                 let (o, s, n) = pick(fs);
                 let cv = e.curve();
-                let (t0, t1) = cv.range_tuple();
+                let r = cv.range();
                 let k = 16;
                 let mut pts = vec![from_p3(a.point())];
                 for j in 1..k {
-                    let p = from_p3(cv.subs(t0 + (t1 - t0) * j as f64 / k as f64));
+                    let p = from_p3(cv.subs(r.step(j, k)));
                     pts.push(
                         move_point(p, &o, &s, &n, size * 1e-6).ok_or_else(|| fail("an edge whose faces don't meet the same way after the move"))?,
                     );
@@ -1144,11 +1140,10 @@ pub(crate) fn offset_body(b: &Body, shift: impl Fn(usize, Vec3) -> f64) -> Resul
                 (Some(mat), _, _) => mt::Transformed::transformed(&f.surface(), mat),
                 // A torus: its tube's circle scaled about the tube's centre, revolved again.
                 (None, Surf::Torus { o: to, a, big, h, r, .. }, Surf::Torus { r: r2, .. }) => {
-                    use mt::{BoundedCurve, ParametricCurve};
+                    use mt::ParametricCurve;
                     let mt::Surface::RevolutedCurve(rc) = f.surface() else { return Err(fail("torus surface")) };
                     let curve = rc.entity().entity_curve().clone();
-                    let (t0, t1) = curve.range_tuple();
-                    let q = from_p3(curve.subs((t0 + t1) / 2.0));
+                    let q = from_p3(curve.subs(curve.range().mid()));
                     let c = tube_centre(to, a, big, h, q).ok_or_else(|| fail("torus"))?;
                     let k = r2 / r;
                     let t = c * (1.0 - k);

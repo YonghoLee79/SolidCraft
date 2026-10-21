@@ -16,11 +16,11 @@
 //! of the target meet, with shapes that part company, is a seam the target itself does not hold
 //! beyond that order, and no surface can be told to carry a condition the target has not got.
 
-use mt::{BoundedCurve, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
+use mt::{ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
 use solidcraft_geom::Vec3;
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::bridge::{self, Continuity, Frame};
 use crate::record::Rebuild;
 use crate::surfaces::surface_body;
@@ -318,12 +318,12 @@ fn chain_polyline(chain: &[mt::Edge]) -> Result<Vec<Vec3>> {
     let mut out = Vec::with_capacity(chain.len() * (PER_EDGE + 1));
     for e in chain {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
-        if !(t1 > t0) || ![t0, t1].into_iter().all(f64::is_finite) {
+        let r = c.range();
+        if !(r.hi() > r.lo()) || ![r.lo(), r.hi()].into_iter().all(f64::is_finite) {
             return Err(KernelError::Failed("match: an edge has no parameter range".into()));
         }
         for k in 0..=PER_EDGE {
-            out.push(from_p3(c.subs(t0 + (t1 - t0) * k as f64 / PER_EDGE as f64)));
+            out.push(from_p3(c.subs(r.step(k, PER_EDGE))));
         }
     }
     Ok(out)
@@ -400,8 +400,7 @@ fn side_edges(face: &mt::Face, side: Side, tol: f64) -> Result<Vec<mt::Edge>> {
     let mut pool: Vec<mt::Edge> = Vec::new();
     for e in face.edge_iter() {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
-        let p = from_p3(c.subs(0.5 * (t0 + t1)));
+        let p = from_p3(c.subs(c.range().mid()));
         let Some((u, v)) = surf.search_nearest_parameter(p3(p), None, 100) else { continue };
         if from_p3(surf.subs(u, v)).dist(p) > tol {
             continue;

@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use solidcraft_geom::{Ring, Vec3};
 use truck_modeling::{self as mt, builder};
 
-use crate::body::{Solid, from_p3};
+use crate::body::{CurveRange, Solid, from_p3};
 use crate::history::{Change, EdgeOrigin, FaceProv};
 
 fn plane_of(f: &mt::Face) -> Option<(Vec3, f64)> {
@@ -44,10 +44,9 @@ pub(crate) fn find(p: &mut [usize], mut i: usize) -> usize {
 
 /// Points along an oriented edge (for loop areas and containment).
 fn samples(e: &mt::Edge) -> Vec<Vec3> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let c = e.oriented_curve();
-    let (t0, t1) = c.range_tuple();
-    (0..8).map(|k| t0 + (t1 - t0) * k as f64 / 8.0).map(|t| from_p3(c.subs(t))).collect()
+    (0..8).map(|k| c.range().step(k, 8)).map(|t| from_p3(c.subs(t))).collect()
 }
 
 fn loop_area(edges: &[mt::Edge], n: Vec3) -> f64 {
@@ -83,10 +82,9 @@ pub(crate) fn on_split_line(pts: &[Vec3], keep: &[Vec<Vec3>]) -> bool {
 
 /// Points along an edge (ends and three inside).
 pub(crate) fn edge_points(e: &mt::Edge) -> Vec<Vec3> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let c = e.curve();
-    let (t0, t1) = c.range_tuple();
-    (0..=4).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 4.0))).collect()
+    (0..=4).map(|k| from_p3(c.subs(c.range().step(k, 4)))).collect()
 }
 
 /// Merge each group of edge-connected coplanar faces into one face (keeping faces apart along
@@ -338,10 +336,9 @@ fn exact_curve(e: &mt::Edge, tol: f64) -> Option<mt::Edge> {
 
 /// A line or circular arc through the edge's samples, if they all lie on one.
 fn fit_exact(e: &mt::Edge, tol: f64) -> Option<mt::Edge> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let c = e.curve();
-    let (t0, t1) = c.range_tuple();
-    let pts: Vec<Vec3> = (0..=16).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 16.0))).collect();
+    let pts: Vec<Vec3> = (0..=16).map(|k| from_p3(c.subs(c.range().step(k, 16)))).collect();
     let (a, b) = (from_p3(e.absolute_front().point()), from_p3(e.absolute_back().point()));
     if e.absolute_front() == e.absolute_back() || a.dist(b) < tol {
         return None;
@@ -410,7 +407,7 @@ fn exact_edges(shell: &mt::Shell, tol: f64, trace: &mut Trace) -> Option<mt::She
 /// Faces whose surface is flat but not a plane (a revolved line square to the axis, a swept
 /// line) get a real plane, so they merge with their coplanar neighbours and blend like planes.
 pub(crate) fn planar_surfaces(shell: &mt::Shell, tol: f64) -> Option<mt::Shell> {
-    use mt::{BoundedCurve, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
+    use mt::{ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
     let mut changed = false;
     let mut faces = Vec::new();
     for f in shell.face_iter() {
@@ -425,9 +422,8 @@ pub(crate) fn planar_surfaces(shell: &mt::Shell, tol: f64) -> Option<mt::Shell> 
         for w in f.absolute_boundaries() {
             for e in w.edge_iter() {
                 let c = e.oriented_curve();
-                let (t0, t1) = c.range_tuple();
                 for k in 0..6 {
-                    let p = c.subs(t0 + (t1 - t0) * k as f64 / 6.0);
+                    let p = c.subs(c.range().step(k, 6));
                     pts.push(from_p3(p));
                     if let Some(x) = surf.search_nearest_parameter(p, uv.last().copied(), 50) {
                         uv.push(x);
@@ -714,10 +710,9 @@ mod tests {
         let curve = mt::Curve::BSplineCurve(crate::build::interpolate_cubic(&pts).expect("spline"));
         let e = mt::Edge::new(&a, &b, curve);
         let x = fit_exact(&e, 1e-2).expect("an arc");
-        use mt::{BoundedCurve, ParametricCurve};
+        use mt::ParametricCurve;
         let c = x.curve();
-        let (t0, t1) = c.range_tuple();
-        let mid = c.subs((t0 + t1) / 2.0);
+        let mid = c.subs(c.range().mid());
         assert!(((mid.x * mid.x + mid.y * mid.y).sqrt() - 10.0).abs() < 1e-9, "{mid:?}");
     }
 }

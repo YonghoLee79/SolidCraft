@@ -18,7 +18,7 @@ use solidcraft_geom::Vec3;
 use truck_modeling::{self as mt};
 
 use crate::blend::{edge_mid, too_large, unsupported, vtx};
-use crate::body::{Body, Solid, from_p3, p3, v3};
+use crate::body::{Body, CurveRange, Solid, from_p3, p3, v3};
 use crate::curveblend::project;
 use crate::record;
 use crate::{BoolOp, KernelError, Result};
@@ -220,11 +220,11 @@ fn round_vertex(cur: &Body, at: Vec3, r: f64) -> Result<Body> {
 /// A point on edge `e` between where the plane (through `c`, normal `m`) crosses it and its far
 /// end (the end that is not `v`).
 fn remaining_pick(e: &mt::Edge, v: &mt::Vertex, c: Vec3, m: Vec3) -> Result<Vec3> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let curve = e.curve();
-    let (lo, hi) = curve.range_tuple();
+    let r = curve.range();
     // From the end at the vertex (outside the plane's far side) to the far end.
-    let (near, far) = if e.absolute_front() == v { (lo, hi) } else { (hi, lo) };
+    let (near, far) = if e.absolute_front() == v { (r.lo(), r.hi()) } else { (r.hi(), r.lo()) };
     let side = |t: f64| (from_p3(curve.subs(t)) - c).dot(m);
     let (mut a, mut b) = (near, far);
     if !(side(a) > 0.0 && side(b) < 0.0) {

@@ -8,7 +8,7 @@ use truck_modeling as mt;
 use solidcraft_geom::tess::EvalSurface;
 
 use super::size::Rules;
-use crate::body::from_p3;
+use crate::body::{CurveRange, from_p3};
 
 /// Most nodes on one edge.
 pub(crate) const MAX_EDGE_NODES: usize = 20_000;
@@ -58,8 +58,8 @@ pub(crate) fn sample_edge(edge: &mt::Edge, rules: &Rules, h: f64) -> Nodes {
         }
         return Nodes::plain(pts);
     }
-    let (t0, t1) = curve.range_tuple();
-    if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
+    let r = curve.range();
+    if !(r.lo().is_finite() && r.hi().is_finite() && r.hi() > r.lo()) {
         return Nodes::plain(vec![front, back]);
     }
     // Our evaluators: the curve's own form where it has one (no allocation per point); for an
@@ -81,7 +81,7 @@ pub(crate) fn sample_edge(edge: &mt::Edge, rules: &Rules, h: f64) -> Nodes {
     // A closed curve's chord between its ends is empty: start it from a few segments. An open
     // one starts whole, so an arc the tolerance leaves flat stays one segment.
     let initial: u32 = if edge.absolute_front().id() == edge.absolute_back().id() { 4 } else { 1 };
-    let t_at = |i: u32| t0 + (t1 - t0) * f64::from(i) / f64::from(initial);
+    let t_at = |i: u32| r.step(i as usize, initial as usize);
     let mut ends: Vec<Pt> = Vec::with_capacity(initial as usize + 1);
     for i in 0..=initial {
         let Some(p) = at(t_at(i)) else { return fallback() };

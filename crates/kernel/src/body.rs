@@ -1,5 +1,5 @@
 use serde::Serialize;
-use solidcraft_geom::{Aabb3, Mesh, Vec3};
+use solidcraft_geom::{Aabb3, Interval, Mesh, Vec3};
 use truck_meshalgo::prelude::*;
 use truck_modeling as mt;
 
@@ -416,7 +416,7 @@ fn refined_with_cache(pm: &PolygonMesh, surf: &mt::Surface, tol: f64, memoize: b
 /// or 2π, which confuses the boolean's loop projection. Each revolved face's surface is turned
 /// (same geometry) so the face sits around angle π, well away from the wrap.
 fn rephase_revolved(solid: Solid) -> Solid {
-    use mt::{BoundedCurve, ParametricCurve, SearchNearestParameter};
+    use mt::{ParametricCurve, SearchNearestParameter};
     #[cfg(test)]
     REPHASED.with(|n| n.set(n.get() + 1));
     let r = guard("rephase", || {
@@ -436,9 +436,8 @@ fn rephase_revolved(solid: Solid) -> Solid {
                 for w in f.absolute_boundaries() {
                     for e in w.edge_iter() {
                         let c = e.oriented_curve();
-                        let (t0, t1) = c.range_tuple();
                         for k in 0..4 {
-                            acc += from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 4.0));
+                            acc += from_p3(c.subs(c.range().step(k, 4)));
                             n += 1.0;
                         }
                     }
@@ -492,6 +491,13 @@ pub(crate) fn v3(v: Vec3) -> mt::Vector3 {
 pub(crate) fn from_p3(p: mt::Point3) -> Vec3 {
     Vec3::new(p.x, p.y, p.z)
 }
+/// A bounded curve's parameters, front to back, as an [`Interval`].
+pub(crate) trait CurveRange: mt::BoundedCurve {
+    fn range(&self) -> Interval {
+        self.range_tuple().into()
+    }
+}
+impl<C: mt::BoundedCurve> CurveRange for C {}
 
 /// The distinct edges of `faces` in order of first use, and the faces (by position) each one
 /// bounds: the one edge order of a body, used by [`Body::edges`], tessellations and

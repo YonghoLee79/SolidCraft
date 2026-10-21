@@ -10,6 +10,7 @@ use truck_modeling as mt;
 use super::Ctx;
 use super::geom::{self, R, entity};
 use super::p21::Param;
+use crate::body::CurveRange;
 use crate::guard;
 
 /// Most faces in one body.
@@ -127,9 +128,8 @@ fn reversed_outer(surface: &mt::Surface, wire: &mt::Wire, tol: f64) -> bool {
     let (mut area, mut magnitude) = (0.0, 0.0);
     for edge in wire.edge_iter() {
         let curve = edge.oriented_curve();
-        let (a, b) = curve.range_tuple();
         for k in 0..8 {
-            let point = curve.subs(a + (b - a) * f64::from(k) / 8.0);
+            let point = curve.subs(curve.range().step(k, 8));
             let hint = previous.map(|p| (p[0], p[1]));
             let valid = |&(u, v): &(f64, f64)| u.is_finite() && v.is_finite() && surface.subs(u, v).distance(point) <= tol;
             let Some((u, v)) = truck_meshalgo::tessellation::project_trim_point(surface, point, hint, tol).filter(valid) else {
@@ -340,8 +340,7 @@ impl Builder {
             .flat_map(|w| w.edge_iter())
             .flat_map(|e| {
                 let c = e.curve();
-                let (t0, t1) = c.range_tuple();
-                (0..=8).map(move |i| c.subs(t0 + (t1 - t0) * i as f64 / 8.0)).collect::<Vec<_>>()
+                (0..=8).map(move |i| c.subs(c.range().step(i, 8))).collect::<Vec<_>>()
             })
             .collect();
         // Seam edges: used twice by the face's loops.
@@ -356,8 +355,7 @@ impl Builder {
             .filter(|e| uses.get(&e.id()).copied().unwrap_or(0) > 1 && seen.insert(e.id()))
             .flat_map(|e| {
                 let c = e.curve();
-                let (t0, t1) = c.range_tuple();
-                (0..=8).map(move |i| c.subs(t0 + (t1 - t0) * i as f64 / 8.0)).collect::<Vec<_>>()
+                (0..=8).map(move |i| c.subs(c.range().step(i, 8))).collect::<Vec<_>>()
             })
             .collect();
         let mut surface = if e.name() == "FACE" {
@@ -543,8 +541,7 @@ fn whole_sphere(cx: &Ctx, file_face: u64, face: &mt::Face) -> Option<Vec<mt::Fac
     // The seam is a meridian: all of it on the sphere whose diameter joins the poles.
     let samples = |e: &&mt::Edge| {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
-        (0..=8).map(move |i| c.subs(t0 + (t1 - t0) * i as f64 / 8.0))
+        (0..=8).map(move |i| c.subs(c.range().step(i, 8)))
     };
     if !(radius.is_finite() && radius > tol) || !edges.iter().flat_map(samples).all(|p| (p.distance(center) - radius).abs() <= tol) {
         return None;

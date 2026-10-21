@@ -10,7 +10,7 @@ use solidcraft_geom::Vec3;
 use truck_modeling as mt;
 
 use crate::blend::{ChamferSide, plane_normal, vtx};
-use crate::body::Body;
+use crate::body::{Body, CurveRange};
 use crate::{KernelError, Result};
 
 /// What is asked for on every edge.
@@ -347,10 +347,10 @@ fn frame(faces: &[&mt::Face], e: &mt::Edge) -> Option<Frame> {
 
 /// The unit tangent of an edge (as used) at its start or end.
 fn tangent_at(e: &mt::Edge, at_end: bool) -> Option<Vec3> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let c = e.oriented_curve();
-    let (t0, t1) = c.range_tuple();
-    let d = c.der(if at_end { t1 } else { t0 });
+    let r = c.range();
+    let d = c.der(if at_end { r.hi() } else { r.lo() });
     Vec3::new(d.x, d.y, d.z).normalized()
 }
 

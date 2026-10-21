@@ -25,7 +25,7 @@ use truck_meshalgo::prelude::*;
 use truck_modeling as mt;
 
 use super::uv::{self, Domain};
-use crate::body::from_p3;
+use crate::body::{CurveRange, from_p3};
 
 /// Leader parameters at which both surfaces' parameters are found up front.
 const SEEDS: usize = 32;
@@ -55,8 +55,8 @@ impl Intersection {
         let mt::Curve::IntersectionCurve(ic) = curve else { return None };
         let surfaces = [super::surface::eval_surface(ic.surface0())?, super::surface::eval_surface(ic.surface1())?];
         let domains = [uv::domain(&surfaces[0]), uv::domain(&surfaces[1])];
-        let (t0, t1) = curve.range_tuple();
-        if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
+        let r = curve.range();
+        if !(r.lo().is_finite() && r.hi().is_finite() && r.hi() > r.lo()) {
             return None;
         }
         let leader = |t: f64| match ic.leader() {
@@ -65,7 +65,7 @@ impl Intersection {
         };
         // The leader lies within the curve's tolerance of both surfaces.
         let accept = (ic.tolerance() * 100.0).max(1e-6);
-        let scale = (0..=SEEDS).map(|k| leader(t0 + (t1 - t0) * k as f64 / SEEDS as f64).0.len()).fold(1.0, f64::max);
+        let scale = (0..=SEEDS).map(|k| leader(r.step(k, SEEDS)).0.len()).fold(1.0, f64::max);
         let mut it = Intersection {
             surfaces,
             domains,
@@ -76,7 +76,7 @@ impl Intersection {
         let (mut params, mut points): (Vec<f64>, Vec<[f64; 7]>) = (Vec::with_capacity(SEEDS + 1), Vec::with_capacity(SEEDS + 1));
         let mut prev: Option<[f64; 4]> = None;
         for k in 0..=SEEDS {
-            let t = t0 + (t1 - t0) * k as f64 / SEEDS as f64;
+            let t = r.step(k, SEEDS);
             let (p, d) = leader(t);
             let mut q = [0.0; 4];
             for (i, (s, dom)) in it.surfaces.iter().zip(&it.domains).enumerate() {
@@ -244,8 +244,8 @@ mod tests {
         for e in body.solid.edge_iter() {
             let curve = e.curve();
             let Some(ix) = Intersection::new(&curve) else { continue };
-            let (t0, t1) = curve.range_tuple();
-            let dense: Vec<Vec3> = (0..=1000).map(|k| from_p3(curve.subs(t0 + (t1 - t0) * f64::from(k) / 1000.0))).collect();
+            let r = curve.range();
+            let dense: Vec<Vec3> = (0..=1000).map(|k| from_p3(curve.subs(r.step(k, 1000)))).collect();
             let near = |p: Vec3| dense.windows(2).map(|w| p.dist_to_segment(w[0], w[1])).fold(f64::MAX, f64::min);
             // Arc length along truck's curve to the point nearest `p`.
             let along = |p: Vec3| {
@@ -264,7 +264,7 @@ mod tests {
             };
             let mut last: Option<Vec3> = None;
             for k in 0..=50 {
-                let t = t0 + (t1 - t0) * f64::from(k) / 50.0;
+                let t = r.step(k, 50);
                 let Some((p, _)) = ix.eval(t) else { continue };
                 for (s, dom) in ix.surfaces.iter().zip(&ix.domains) {
                     assert!(uv::project(s, dom, p, None, 1e-8).is_some(), "t {t}: {p:?} off a surface");

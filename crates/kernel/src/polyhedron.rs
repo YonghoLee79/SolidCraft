@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use solidcraft_geom::{Plane, Vec3};
 use truck_modeling::{self as mt, builder};
 
-use crate::body::{Body, Solid, from_p3, p3, v3};
+use crate::body::{Body, CurveRange, Solid, from_p3, p3, v3};
 use crate::history::{Change, EdgeOrigin, FaceOrigin, FaceProv, History};
 use crate::record;
 use crate::{KernelError, Result, guard};
@@ -583,7 +583,7 @@ fn shell_barrel(b: &Body, opened: &[usize], thickness: f64) -> Result<Option<Bod
 /// is at least `thickness`: the cavity's wall then passes through the rim where the round meets
 /// the open face, leaving nothing between them.
 fn rim_without_thickness(b: &Body, opened: &[usize], thickness: f64, whole_rim: bool) -> Option<f64> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let faces: Vec<&mt::Face> = b.solid.face_iter().take(if whole_rim { 4097 } else { usize::MAX }).collect();
     let tol = (b.size() * 1e-7).max(1e-9) * 100.0;
     // A distant shell can make the body's tolerance larger than this wall.
@@ -607,12 +607,12 @@ fn rim_without_thickness(b: &Body, opened: &[usize], thickness: f64, whole_rim: 
                     _ => return None,
                 };
                 let c = edge.curve();
-                let (t0, t1) = c.range_tuple();
-                if !t0.is_finite() || !t1.is_finite() || t0 >= t1 {
+                let pr = c.range();
+                if !pr.lo().is_finite() || !pr.hi().is_finite() || pr.lo() >= pr.hi() {
                     return None;
                 }
-                let parameter = t0 * 0.5 + t1 * 0.5;
-                if !parameter.is_finite() || parameter < t0 || parameter > t1 {
+                let parameter = pr.lo() * 0.5 + pr.hi() * 0.5;
+                if !parameter.is_finite() || parameter < pr.lo() || parameter > pr.hi() {
                     return None;
                 }
                 let mid = from_p3(c.subs(parameter));

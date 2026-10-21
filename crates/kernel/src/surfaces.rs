@@ -7,11 +7,11 @@
 
 use std::collections::HashMap;
 
-use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
+use mt::{InnerSpace, MetricSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
 use solidcraft_geom::{Plane, Region2, Seg2, UnitVec3, Vec2, Vec3};
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::history::{Change, EdgeOrigin, FaceOrigin, FaceProv};
 use crate::record::{self, Rebuild, Side, rebuilt_body};
 use crate::{KernelError, Result, guard};
@@ -296,8 +296,7 @@ fn far_wire(swept: &mt::Shell, start: &mt::Wire, map: &dyn Fn(Vec3) -> Vec3) -> 
     let near = |p: Vec3, q: Vec3| p.dist(q) <= 1e-6 * (1.0 + p.len().max(q.len()));
     let mid = |e: &mt::Edge| {
         let c = e.oriented_curve();
-        let (t0, t1) = c.range_tuple();
-        from_p3(c.subs((t0 + t1) / 2.0))
+        from_p3(c.subs(c.range().mid()))
     };
     let mut out = Vec::new();
     for e in start.edge_iter() {
@@ -410,9 +409,8 @@ pub(crate) fn edge_near(body: &Body, p: Vec3) -> Option<mt::Edge> {
     let mut best: Option<(f64, mt::Edge)> = None;
     for e in body.solid.edge_iter() {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
-        for k in 0..=32 {
-            let d = from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 32.0)).dist(p);
+        for t in c.range().samples(32) {
+            let d = from_p3(c.subs(t)).dist(p);
             if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, e.clone()));
             }
@@ -650,8 +648,7 @@ pub fn stitch(bodies: &[&Body], tol: f64) -> Result<Body> {
                     let abs = if e.orientation() { e.clone() } else { e.inverse() };
                     let (a, b) = (canon(abs.front(), &mut verts), canon(abs.back(), &mut verts));
                     let c = abs.curve();
-                    let (t0, t1) = c.range_tuple();
-                    let mid = c.subs(0.5 * (t0 + t1));
+                    let mid = c.subs(c.range().mid());
                     let found = edges.iter().find_map(|(x, m)| {
                         if m.distance(mid) > tol * 10.0 {
                             return None;
@@ -756,8 +753,7 @@ pub(crate) fn map_curve(off: &Offset, c: &mt::Curve, d: f64) -> Result<mt::Curve
         return Ok(moved);
     }
     // Anything else: a cubic through moved samples.
-    let (t0, t1) = c.range_tuple();
-    let pts: Vec<Vec3> = (0..=32).map(|k| off.map(from_p3(c.subs(t0 + (t1 - t0) * k as f64 / 32.0)), d)).collect();
+    let pts: Vec<Vec3> = c.range().samples(32).map(|t| off.map(from_p3(c.subs(t)), d)).collect();
     Ok(mt::Curve::BSplineCurve(crate::build::interpolate_cubic(&pts).ok_or_else(|| KernelError::Failed("offset edge".into()))?))
 }
 
@@ -888,14 +884,12 @@ pub fn thicken(body: &Body, thickness: f64, symmetric: bool) -> Result<Body> {
                         continue;
                     };
                     let c = abs.curve();
-                    let (t0, t1) = c.range_tuple();
-                    let mid = off.point(from_p3(c.subs(0.5 * (t0 + t1))), d)?;
+                    let mid = off.point(from_p3(c.subs(c.range().mid())), d)?;
                     let list = ecopies[side].entry(abs.id()).or_default();
                     let shared = list.iter().find(|m| {
                         m.front().id() == a.id() && m.back().id() == b.id() && {
                             let mc = m.curve();
-                            let (s0, s1) = mc.range_tuple();
-                            near(from_p3(mc.subs(0.5 * (s0 + s1))), mid)
+                            near(from_p3(mc.subs(mc.range().mid())), mid)
                         }
                     });
                     let copy = match shared {
@@ -975,8 +969,7 @@ pub fn thicken(body: &Body, thickness: f64, symmetric: bool) -> Result<Body> {
                     let surf = ruled.surface();
                     // The wall's outward normal: across the edge, away from the face.
                     let c = le.oriented_curve();
-                    let (t0, t1) = c.range_tuple();
-                    let tm = 0.5 * (t0 + t1);
+                    let tm = c.range().mid();
                     let p = c.subs(tm);
                     let tangent = c.der(tm);
                     let n =
@@ -1010,8 +1003,7 @@ pub fn thicken(body: &Body, thickness: f64, symmetric: bool) -> Result<Body> {
                 // Which way the faces bend across the edge: each lies behind the other's normal
                 // (convex toward the normals) or in front of it.
                 let c = abs.curve();
-                let (t0, t1) = c.range_tuple();
-                let p = from_p3(c.subs(0.5 * (t0 + t1)));
+                let p = from_p3(c.subs(c.range().mid()));
                 let normal = |fi: usize| -> Option<Vec3> {
                     let s = faces.get(fi)?.oriented_surface();
                     let (u, v) = s.search_nearest_parameter(p3(p), None, 50)?;

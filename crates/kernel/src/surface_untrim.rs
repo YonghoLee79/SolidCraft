@@ -8,11 +8,11 @@
 //!
 //! Which loop is the outer one is worked out from the face's parameters ([`FaceLoops`]).
 
-use mt::{BoundedCurve, MetricSpace, ParametricCurve, ParametricSurface};
+use mt::{MetricSpace, ParametricCurve, ParametricSurface};
 use solidcraft_geom::Vec3;
 use truck_modeling as mt;
 
-use crate::body::Body;
+use crate::body::{Body, CurveRange};
 use crate::face_params::{FaceLoops, iso_curve, natural_span, passes};
 use crate::record::{Rebuild, rebuilt_body};
 use crate::surfaces::surface_body;
@@ -148,8 +148,8 @@ fn bounds_wire(surface: &mt::Surface, span: [(f64, f64); 2], ccw: bool, size: f6
         }
         let curve = iso_curve(surface, along_u, w, from, to)?;
         let close = |p: mt::Point3, q: mt::Point3| p.distance(q) <= tol * 10.0;
-        let (t0, t1) = curve.range_tuple();
-        if !close(curve.subs(t0), a.point()) || !close(curve.subs(t1), b.point()) || !passes(&curve, mid, tol * 10.0) {
+        let r = curve.range();
+        if !close(curve.subs(r.lo()), a.point()) || !close(curve.subs(r.hi()), b.point()) || !passes(&curve, mid, tol * 10.0) {
             return Err(KernelError::Failed("a restored boundary edge does not follow its surface".into()));
         }
         edges.push(mt::Edge::try_new(a, b, curve).map_err(|e| KernelError::Failed(format!("restored boundary edge: {e}")))?);

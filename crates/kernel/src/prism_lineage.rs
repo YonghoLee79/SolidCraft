@@ -12,7 +12,7 @@ use truck_modeling as mt;
 
 use super::{Index, Section, Tag, dist_to, inside};
 use crate::BoolOp;
-use crate::body::{Body, edge_order, from_p3};
+use crate::body::{Body, CurveRange, edge_order, from_p3};
 use crate::history::{EdgeOrigin, FaceOrigin, FaceOrigin::Face, FaceProv, Side};
 
 /// A cap of an operand: a planar face square to the prism direction.
@@ -271,12 +271,11 @@ impl<'a> Context<'a> {
         let order = crate::body::edge_order(body.solid.face_iter()).0;
         let mut on = edges.iter().filter(|e| {
             order.get(**e).is_some_and(|edge| {
-                use mt::{BoundedCurve, ParametricCurve};
+                use mt::ParametricCurve;
                 let c = edge.curve();
-                let (t0, t1) = c.range_tuple();
                 // The edge as a fine polyline: a line exactly, an arc within its chords' sag.
                 let n = if matches!(c, mt::Curve::Line(_)) { 1 } else { 64 };
-                let pts: Vec<Vec3> = (0..=n).map(|k| from_p3(c.subs(t0 + (t1 - t0) * k as f64 / n as f64))).collect();
+                let pts: Vec<Vec3> = (0..=n).map(|k| from_p3(c.subs(c.range().step(k, n)))).collect();
                 let length: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
                 let near = self.tol * 10.0 + if n == 1 { 0.0 } else { length * 2e-3 };
                 pts.windows(2).any(|w| at.dist_to_segment(w[0], w[1]) <= near)

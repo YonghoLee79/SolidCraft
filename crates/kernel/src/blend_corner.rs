@@ -21,7 +21,7 @@ use solidcraft_geom::Vec3;
 use truck_modeling::{self as mt, builder};
 
 use crate::blend::{plane_normal, too_large, unsupported, vtx};
-use crate::body::{Body, Solid, p3, v3};
+use crate::body::{Body, CurveRange, Solid, p3, v3};
 use crate::{KernelError, Result, guard};
 
 /// Fillet each edge nearest a point with its own radius.
@@ -131,11 +131,11 @@ fn hit(v: Vec3, u: Vec3, t: Vec3, s: f64) -> Result<Vec3> {
 
 /// Unit direction in which a (curved) edge leaves its end vertex `v`.
 fn leaving(e: &mt::Edge, v: &mt::Vertex) -> Option<Vec3> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let c = e.curve();
-    let (t0, t1) = c.range_tuple();
+    let r = c.range();
     let at_front = e.absolute_front() == v;
-    let d = c.der(if at_front { t0 } else { t1 });
+    let d = c.der(if at_front { r.lo() } else { r.hi() });
     let d = Vec3::new(d.x, d.y, d.z);
     (if at_front { d } else { d * -1.0 }).normalized()
 }
@@ -143,11 +143,11 @@ fn leaving(e: &mt::Edge, v: &mt::Vertex) -> Option<Vec3> {
 /// Point where the contact line at setback `s` (in-face direction `t`) crosses a curved edge
 /// leaving `v`: the first along it from `v`.
 fn crossing(e: &mt::Edge, v: Vec3, t: Vec3, s: f64) -> Result<Vec3> {
-    use mt::{BoundedCurve, ParametricCurve};
+    use mt::ParametricCurve;
     let c = e.curve();
-    let (t0, t1) = c.range_tuple();
+    let r = c.range();
     let from_front = crate::body::from_p3(e.absolute_front().point()).dist(v) <= crate::body::from_p3(e.absolute_back().point()).dist(v);
-    let at = |f: f64| crate::body::from_p3(c.subs(if from_front { t0 + (t1 - t0) * f } else { t1 - (t1 - t0) * f }));
+    let at = |f: f64| crate::body::from_p3(c.subs(if from_front { r.at(f) } else { r.hi() - r.span() * f }));
     let g = |f: f64| (at(f) - v).dot(t) - s;
     let steps = 256;
     let mut lo = 0.0;
@@ -1285,7 +1285,7 @@ mod tests {
 
     /// Largest angle (degrees) between the two faces' normals along edges between curved faces.
     fn kink(b: &Body) -> f64 {
-        use mt::{BoundedCurve, InnerSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
+        use mt::{InnerSpace, ParametricCurve, ParametricSurface3D, SearchNearestParameter};
         let faces: Vec<&mt::Face> = b.solid.face_iter().collect();
         let mut worst: f64 = 0.0;
         for (i, f) in faces.iter().enumerate() {
@@ -1295,9 +1295,8 @@ mod tests {
                 }
                 for e in f.edge_iter().filter(|e| g.edge_iter().any(|x| x.id() == e.id())) {
                     let c = e.curve();
-                    let (t0, t1) = c.range_tuple();
                     for k in 1..10 {
-                        let p = c.subs(t0 + (t1 - t0) * k as f64 / 10.0);
+                        let p = c.subs(c.range().step(k, 10));
                         let n = |s: mt::Surface| {
                             let (u, v) = s.search_nearest_parameter(p, None, 100).unwrap();
                             s.normal(u, v)

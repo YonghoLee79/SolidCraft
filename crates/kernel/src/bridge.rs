@@ -16,12 +16,12 @@
 //! speed) by finite differences: the second derivative of a surface curve with a unit tangent is
 //! its curvature vector, and the third is the arclength derivative of that curvature vector.
 
-use mt::{BoundedCurve, ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
+use mt::{ParametricCurve, ParametricSurface, ParametricSurface3D, SearchNearestParameter};
 use solidcraft_geom::Vec3;
 use solidcraft_geom::bspline::{CurveN, HPoint, NurbsSurface};
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::surfaces::surface_body;
 use crate::{KernelError, Result, guard};
 
@@ -167,14 +167,14 @@ impl ChainLine {
         };
         for (i, e) in edges.iter().enumerate() {
             let c = e.curve();
-            let (t0, t1) = c.range_tuple();
-            if !(t1 > t0) || ![t0, t1].into_iter().all(f64::is_finite) {
+            let r = c.range();
+            if !(r.hi() > r.lo()) || ![r.lo(), r.hi()].into_iter().all(f64::is_finite) {
                 return Err(KernelError::Invalid("an edge has no parameter range".into()));
             }
             for k in 0..=PER_EDGE {
                 // The segment that starts at this point: along this edge, or the zero-length join
                 // to the next edge.
-                let t = t0 + (t1 - t0) * k as f64 / PER_EDGE as f64;
+                let t = r.step(k, PER_EDGE);
                 push(&mut samples, from_p3(c.subs(t)), i, t);
             }
             curves.push(c);
@@ -235,10 +235,10 @@ impl ChainLine {
         let count = self.curves.len();
         let tol = self.length() * 1e-9 + 1e-12;
         let Some(curve) = self.curves.get(edge) else { return [Some(edge), None, None] };
-        let (t0, t1) = curve.range_tuple();
+        let r = curve.range();
         let at = |t: f64| from_p3(curve.subs(t)).dist(p) <= tol;
-        let before = at(t0).then(|| edge.checked_sub(1).or(self.closed.then(|| count.saturating_sub(1)))).flatten();
-        let after = at(t1).then(|| Some(edge + 1).filter(|e| *e < count).or(self.closed.then_some(0))).flatten();
+        let before = at(r.lo()).then(|| edge.checked_sub(1).or(self.closed.then(|| count.saturating_sub(1)))).flatten();
+        let after = at(r.hi()).then(|| Some(edge + 1).filter(|e| *e < count).or(self.closed.then_some(0))).flatten();
         [Some(edge), before, after]
     }
 
@@ -264,9 +264,9 @@ impl ChainLine {
         }
         let (chord, s, edge, hint) = best;
         let on_curve = self.curves.get(edge).and_then(|c| {
-            let (t0, t1) = c.range_tuple();
+            let r = c.range();
             let t = c.search_nearest_parameter(p3(p), Some(hint), 100)?;
-            (t0..=t1).contains(&t).then(|| from_p3(c.subs(t)).dist(p))
+            r.contains(t).then(|| from_p3(c.subs(t)).dist(p))
         });
         (s, on_curve.map_or(chord, |d| d.min(chord)))
     }
@@ -772,8 +772,7 @@ fn support_faces(body: &Body, chain: &[mt::Edge], leave: Vec3) -> Result<Vec<mt:
     let mut out = Vec::with_capacity(chain.len());
     for edge in chain {
         let curve = edge.curve();
-        let (t0, t1) = curve.range_tuple();
-        let mid = from_p3(curve.subs(0.5 * (t0 + t1)));
+        let mid = from_p3(curve.subs(curve.range().mid()));
         let mut best: Option<(f64, mt::Face)> = None;
         for face in body.solid.face_iter() {
             if !face.edge_iter().any(|f| f.id() == edge.id()) {

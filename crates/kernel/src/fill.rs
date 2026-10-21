@@ -351,11 +351,11 @@ pub(crate) fn face_tolerance(body: &Body) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use mt::{BoundedCurve, InnerSpace, MetricSpace, ParametricCurve, ParametricSurface};
+    use mt::{InnerSpace, MetricSpace, ParametricCurve, ParametricSurface};
     use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
     use truck_modeling as mt;
 
-    use crate::body::{Body, from_p3, p3};
+    use crate::body::{Body, CurveRange, from_p3, p3};
     use crate::boolean_record::tests::{Reach, checked};
     use crate::history::{Change, EdgeOrigin};
     use crate::{BoolOp, boolean, copy_faces, cylinder, extrude, measure, patch_edges, patch_edges_crowned, stitch};
@@ -427,9 +427,8 @@ mod tests {
         let mut worst = 0.0f64;
         for e in face.boundaries().iter().flat_map(|w| w.edge_iter()) {
             let c = e.curve();
-            let (t0, t1) = c.range_tuple();
             for k in 0..=24 {
-                worst = worst.max(to_surface(&s, c.subs(t0 + (t1 - t0) * k as f64 / 24.0)));
+                worst = worst.max(to_surface(&s, c.subs(c.range().step(k, 24))));
             }
         }
         worst
@@ -721,8 +720,7 @@ mod tests {
             .filter(|(n, _)| *n == 1)
             .map(|(_, e)| {
                 let c = e.curve();
-                let (t0, t1) = c.range_tuple();
-                from_p3(c.subs(0.5 * (t0 + t1)))
+                from_p3(c.subs(c.range().mid()))
             })
             .collect()
     }

@@ -3,6 +3,7 @@
 //! refused.
 
 use super::*;
+use crate::body::CurveRange;
 use crate::bridge::{Continuity, Frame};
 use crate::build::SEAM_ANGLE;
 use crate::{cylinder, stitch};
@@ -60,8 +61,7 @@ fn edge_at(body: &Body, p: Vec3) -> mt::Edge {
     let mut best: Option<(f64, mt::Edge)> = None;
     for e in face.edge_iter() {
         let c = e.curve();
-        let (t0, t1) = c.range_tuple();
-        let m = from_p3(c.subs(0.5 * (t0 + t1)));
+        let m = from_p3(c.subs(c.range().mid()));
         let d = m.dist(p);
         if best.as_ref().is_none_or(|(b, _)| d < *b) {
             best = Some((d, e.clone()));

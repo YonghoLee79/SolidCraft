@@ -30,7 +30,7 @@ use solidcraft_geom::tess::EvalSurface;
 use solidcraft_geom::{UnitVec3, Vec3};
 use truck_modeling as mt;
 
-use crate::body::{Body, from_p3, p3};
+use crate::body::{Body, CurveRange, from_p3, p3};
 use crate::face_params::{FaceLoops, iso_curve, natural_span, parameters};
 use crate::record::{Rebuild, Was, rebuilt_body};
 use crate::splitface::ToolSide;
@@ -564,8 +564,7 @@ impl<'a> Extension<'a> {
         if let Some(found) = self.sides.get(&v.id()).and_then(|list| {
             list.iter().find(|e| {
                 let c = e.curve();
-                let (t0, t1) = c.range_tuple();
-                e.back().id() == f.id() && from_p3(c.subs(0.5 * (t0 + t1))).dist(mid) <= near * 10.0
+                e.back().id() == f.id() && from_p3(c.subs(c.range().mid())).dist(mid) <= near * 10.0
             })
         }) {
             return Ok(found.clone());
