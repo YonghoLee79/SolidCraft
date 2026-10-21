@@ -4983,3 +4983,73 @@ fn mirroring_or_copying_a_sheet_body_leaves_the_original_sheet_as_it_was() {
         assert_eq!(copy["bends"], original["bends"], "{name}");
     }
 }
+
+/// A 150 x 100 base on a 2 mm rule with one 40 mm wall on its left edge: the part a chained
+/// flap (#4094) is made on.
+fn wall_bracket(s: &mut Session) {
+    run(
+        s,
+        "sheet.manage_rules",
+        json!({"name": "Demo", "thickness": "2 mm", "bend_radius": "2 mm", "gap": "0.5 mm", "k_factor": "0.4", "active": true}),
+    );
+    base(s, 150.0, 100.0);
+    run(s, "sheet.flange", json!({"edges": [[0, 50, 2]], "height": 40}));
+}
+
+/// `then` bends one flange after another, each on the far edge of the one before, in one feature
+/// and one undo step: the same part as picking each far edge by hand.
+#[test]
+fn an_edge_flange_can_carry_further_bends() {
+    let mut chained = Session::default();
+    wall_bracket(&mut chained);
+    let walls = chained.doc.features.len();
+    run(&mut chained, "sheet.flange", json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg", "then": [{"angle": "45 deg", "height": 80}]}));
+    assert_eq!(chained.model.state().bodies.len(), 1, "the flap is part of the sheet, not a second body");
+    assert_eq!(chained.doc.features.len(), walls + 2, "one flange per bend");
+    let flat_chained = flat(&mut chained);
+    assert_eq!(flat_chained["bends"].as_array().map(Vec::len), Some(3), "the wall's bend and the flap's two");
+    // Each 45° bend of the flap takes (pi/4) x (radius + K x thickness) = (pi/4) x (2 + 0.4 x 2) of flat length.
+    let allowance = PI / 4.0 * (2.0 + 0.4 * 2.0);
+    let quarter: Vec<f64> = flat_chained["bends"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| (b["angle_deg"].as_f64().unwrap_or(0.0) - 45.0).abs() < 1e-6)
+        .filter_map(|b| b["allowance"].as_f64())
+        .collect();
+    assert_eq!(quarter.len(), 2, "{flat_chained}");
+    assert!(quarter.iter().all(|a| rel(*a, allowance) < 1e-9), "{quarter:?} vs {allowance}");
+
+    let mut by_hand = Session::default();
+    wall_bracket(&mut by_hand);
+    run(&mut by_hand, "sheet.flange", json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg"}));
+    run(&mut by_hand, "sheet.flange", json!({"edges": [[29.3, -28.3, 20]], "height": 80, "angle": "45 deg"}));
+    assert!(rel(volume(&mut chained), volume(&mut by_hand)) < 1e-9, "{} vs {}", volume(&mut chained), volume(&mut by_hand));
+    assert_eq!(flat_chained["bends"], flat(&mut by_hand)["bends"]);
+
+    // One undo takes the whole chain back.
+    run(&mut chained, "edit.undo", json!({}));
+    assert_eq!(chained.doc.features.len(), walls);
+}
+
+#[test]
+fn further_bends_are_checked_before_anything_is_made() {
+    let mut s = Session::default();
+    wall_bracket(&mut s);
+    let features = s.doc.features.len();
+    let edges = json!([[1, 0, 20]]);
+    for (what, then) in [
+        ("not a list", json!("45 deg")),
+        ("a bend without a height", json!([{"angle": "45 deg"}])),
+        ("an unknown key", json!([{"height": 10, "radius": 1}])),
+        ("too many bends", Value::Array((0..17).map(|_| json!({"angle": "10 deg", "height": 10})).collect())),
+        ("a bad expression", json!([{"height": "10 deg"}])),
+    ] {
+        let r = s.execute("sheet.flange", &json!({"edges": edges, "height": 40, "angle": "45 deg", "then": then}));
+        assert!(r.is_err(), "{what}: {r:?}");
+        assert_eq!(s.doc.features.len(), features, "{what}: nothing is left behind");
+    }
+    // `then` belongs to edge flanges.
+    let r = s.execute("sheet.flange", &json!({"sketch": "Base", "then": [{"height": 10}]}));
+    assert!(r.is_err(), "{r:?}");
+}

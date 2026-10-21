@@ -21,6 +21,7 @@ pub static COMMANDS: &[CommandSpec] = &[
          height (to the outer face), angle? (default 90 deg), radius? (default: rule), \
          position?: inside|outside|middle, flip?, body?, corner_relief_shape?: notch|round|rectangular|tear and corner_relief? (size across): \
          the relief at the corners these flanges make (default: the rule's); \
+         then?: [{angle?, height}] further bends (at most 16), each a flange on the far edge of the one before, as one feature (edge only); \
          type?: base|edge|contour (default from the inputs); name?, body_name? (the new body). \
          Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused, \
          and so is the corner relief on a base or contour flange",
@@ -94,6 +95,50 @@ fn points(p: &Value, k: &str, cmd: &str) -> Result<Vec<Vec3>> {
 
 /// The `edges` of an edge flange: points `[x, y, z]` on sheet edges, or `{point, angle?, height?}`
 /// for an edge with its own angle and height (expressions, checked like the feature's).
+/// Most bends `then` may add after an edge flange's own.
+const MAX_THEN: usize = 16;
+
+/// The further bends of an edge flange (`then`): each an angle and a height, made one after
+/// the other, every one on the far edge of the flange before it.
+fn then_steps(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(solidcraft_doc::Expr, solidcraft_doc::Expr)>> {
+    let Some(v) = p.get("then").filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
+    let list = "`then` must list further bends {angle?, height}: each on the far edge of the flange before it";
+    let a = v.as_array().ok_or_else(|| bad(cmd, list))?;
+    if a.len() > MAX_THEN {
+        return Err(bad(cmd, format!("`then` may list at most {MAX_THEN} bends")));
+    }
+    let mut out = Vec::with_capacity(a.len());
+    for (i, step) in a.iter().enumerate() {
+        let o = step.as_object().ok_or_else(|| bad(cmd, format!("then[{i}]: {list}")))?;
+        if let Some(k) = o.keys().find(|k| k.as_str() != "angle" && k.as_str() != "height") {
+            return Err(bad(cmd, format!("then[{i}]: unknown key `{k}` (a bend takes angle and height)")));
+        }
+        let height = req_expr(cmd, step, "height").map_err(|_| bad(cmd, format!("then[{i}]: `height` is required")))?;
+        check_expr(s, &height, Kind::Length, cmd, &format!("then[{i}].height"))?;
+        let angle = expr(step, "angle").unwrap_or_else(|| "90 deg".into());
+        check_expr(s, &angle, Kind::Angle, cmd, &format!("then[{i}].angle"))?;
+        out.push((angle, height));
+    }
+    Ok(out)
+}
+
+/// Where to pick the far edges of the flanges feature `id` made: a point on each, for the flanges
+/// of the next bend of a chain.
+fn far_edge_picks(s: &Session, id: u64, cmd: &str) -> Result<Vec<FlangeEdge>> {
+    let prefix = format!("F{id}.");
+    let st = s.model.state();
+    let picks: Vec<FlangeEdge> = st
+        .sheets
+        .iter()
+        .flat_map(|sh| sh.flanges.iter().enumerate().filter(|(_, f)| f.tag.starts_with(&prefix)).filter_map(|(i, _)| sh.far_edge_pick(i)))
+        .map(FlangeEdge::at)
+        .collect();
+    if picks.is_empty() {
+        return Err(bad(cmd, "the flange has no far edge to bend again"));
+    }
+    Ok(picks)
+}
+
 fn flange_edges(s: &Session, p: &Value, cmd: &str) -> Result<Vec<FlangeEdge>> {
     const KEYS: [&str; 3] = ["point", "angle", "height"];
     let list = "`edges` must list points [x, y, z] on sheet edges, or {point, angle?, height?}";
@@ -160,6 +205,9 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
             ),
         ));
     }
+    if ty != "edge" && p.get("then").is_some_and(|v| !v.is_null()) {
+        return Err(bad(cmd, "`then` (further bends) is only for edge flanges"));
+    }
     match ty.as_str() {
         "base" => {
             let sketch = feature_sketch(s, p, cmd)?;
@@ -194,6 +242,7 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
         }
         "edge" => {
             let edges = flange_edges(s, p, cmd)?;
+            let then = then_steps(s, p, cmd)?;
             let height = req_expr(cmd, p, "height")?;
             check_expr(s, &height, Kind::Length, cmd, "height")?;
             let angle = expr(p, "angle").unwrap_or_else(|| "90 deg".into());
@@ -221,21 +270,43 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(c) = &corner_relief {
                 check_expr(s, c, Kind::Length, cmd, "corner_relief")?;
             }
-            add_feature(
+            let flip = bool_(p, "flip").unwrap_or(false);
+            let mut made = add_feature(
                 s,
                 p,
                 FeatureKind::SheetFlange {
                     edges,
                     height,
                     angle,
-                    radius,
-                    position,
-                    flip: bool_(p, "flip").unwrap_or(false),
-                    body: body.map(BodyName),
+                    radius: radius.clone(),
+                    position: position.clone(),
+                    flip,
+                    body: body.clone().map(BodyName),
                     corner_relief_shape,
                     corner_relief,
                 },
-            )
+            )?;
+            // Each further bend stands on the far edge of the flange before it.
+            for (angle, height) in then {
+                let id = made.get("feature").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "no feature to bend again"))?;
+                let edges = far_edge_picks(s, id, cmd)?;
+                made = add_feature(
+                    s,
+                    &json!({}),
+                    FeatureKind::SheetFlange {
+                        edges,
+                        height,
+                        angle,
+                        radius: radius.clone(),
+                        position: position.clone(),
+                        flip,
+                        body: body.clone().map(BodyName),
+                        corner_relief_shape: None,
+                        corner_relief: None,
+                    },
+                )?;
+            }
+            Ok(made)
         }
         other => Err(bad(cmd, format!("unknown flange type `{other}` (base, edge or contour)"))),
     }

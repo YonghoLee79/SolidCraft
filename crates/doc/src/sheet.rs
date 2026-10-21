@@ -1011,6 +1011,16 @@ impl SheetBody {
         mat_mul(&self.frame_mat(), &f)
     }
 
+    /// A world point on flange `i`'s far edge, in the middle of the sheet's thickness: where to
+    /// pick that edge for a flange that stands on it (a chain of bends, one flange after another).
+    pub fn far_edge_pick(&self, i: usize) -> Option<Vec3> {
+        let f = self.flanges.get(i)?;
+        let (u0, u1) = self.far_edge(f);
+        let mid = f.p + f.n * (self.allowance(f) + f.leg) + f.d * ((u0 + u1) / 2.0);
+        let at = apply_point(&self.world(Some(i)), v3(mid) + Vec3::Z * (self.t / 2.0));
+        (at.x.is_finite() && at.y.is_finite() && at.z.is_finite()).then_some(at)
+    }
+
     /// Where a flat point of a piece lands (folded), at height `z` in the sheet.
     fn map3(&self, piece: Piece, q: Vec2, z: f64) -> Vec3 {
         match piece {

@@ -119,6 +119,18 @@ per edge with an angle and a height box; an empty box takes the value above.
  "height":38.6,"angle":"75 deg"}}
 ```
 
+An edge flange can bend more than once: `then` lists further bends, each an `angle` and a
+`height`, and each is a flange on the far edge of the one before it, made in the same command
+and undone with one step. It is the way to make a flap with two or more bends that is part of
+the same sheet (a Contour Flange is always a sheet of its own). The example bends the end edge of
+a wall 45° outward, then 45° again, the second leg 80 mm long. Each bend is a flange feature of
+its own in the timeline, so each can be edited there.
+
+```json
+{"command":"sheet.flange","params":{"edges":[[1,0,20]],"height":40,"angle":"45 deg",
+ "then":[{"angle":"45 deg","height":80}]}}
+```
+
 A flange can also stand on the far edge of another flange: a return, such as a lip turned in
 along the top of a tray's walls. It runs along that edge from end to end, so it follows the
 closed end of the flange it stands on, slanted or not. Two returns of one feature whose flanges
