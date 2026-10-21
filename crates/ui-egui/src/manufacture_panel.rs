@@ -294,7 +294,7 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &crate::viewport::Pr
         if let Some(seg) = d.step.checked_sub(1).and_then(|i| report.segs.get(i))
             && let Some(p) = proj.to_screen(to_model(frame, seg.to))
         {
-            painter.circle(p, 5.0, t.accent, Stroke::new(1.5, Color32::WHITE));
+            painter.circle(p, 5.0, t.accent, Stroke::new(1.5, t.text));
         }
     }
     for c in report.reply["collisions"].as_array().into_iter().flatten() {
@@ -311,7 +311,14 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &crate::viewport::Pr
     }
 }
 
-fn paint_stock(painter: &egui::Painter, proj: &crate::viewport::Proj, frame: &[Vec3; 4], s: &Surface, stock_max: [f64; 2], (base, shade): (Color32, Color32)) {
+fn paint_stock(
+    painter: &egui::Painter,
+    proj: &crate::viewport::Proj,
+    frame: &[Vec3; 4],
+    s: &Surface,
+    stock_max: [f64; 2],
+    (base, shade): (Color32, Color32),
+) {
     // Height at each cell corner: the mean of the cells that meet there.
     let corner = |i: usize, j: usize| -> f64 {
         let (mut sum, mut n) = (0.0, 0.0);
