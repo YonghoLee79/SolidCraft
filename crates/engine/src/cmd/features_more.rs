@@ -443,6 +443,10 @@ fn align(s: &mut Session, p: &Value) -> Result<Value> {
         _ => (None, None),
     };
     let flip = bool_(p, "flip").unwrap_or(false);
+    let normal_only = bool_(p, "normal_only").unwrap_or(false);
+    if normal_only && (from_normal.is_none() || to_normal.is_none() || to_plane.is_some()) {
+        return Err(bad(cmd, "`normal_only` needs a face on both sides (`from_face` and `to_face`)"));
+    }
     add_feature(
         s,
         p,
@@ -455,6 +459,7 @@ fn align(s: &mut Session, p: &Value) -> Result<Value> {
             flip,
             from_plane,
             to_plane,
+            normal_only,
         },
     )
 }

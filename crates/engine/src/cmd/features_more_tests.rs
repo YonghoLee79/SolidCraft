@@ -1684,3 +1684,20 @@ fn align_takes_both_ends_where_they_are_shown_across_placed_components() {
     assert!(near(a.min.z, 8.0) && near(a.max.z, 16.0), "on B's top, not across it: {a:?}");
     assert!(near(0.5 * (a.min.x + a.max.x), 60.0) && near(0.5 * (a.min.y + a.max.y), 15.0), "centred on the picked point: {a:?}");
 }
+
+/// Face onto face with `normal_only`, the body moves only along the target face's normal (it
+/// still turns to meet it): the faces end in one plane, the picked points line up in that one
+/// direction only. Without a face on both sides it is refused.
+#[test]
+fn align_normal_only_moves_along_the_target_face_s_normal() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "A"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [50, 20, 0], "body_name": "B"}));
+    // B's front face (y = 20) onto A's back face (y = 10), picked off-centre on both.
+    run(&mut s, "solid.align", json!({"bodies": ["B"], "from_face": [52, 20, 3], "to_face": [8, 10, 7], "normal_only": true}));
+    let b = world_bounds(&s, "B");
+    assert!(near(b.min.y, 10.0) && near(b.max.y, 20.0), "B's face is now in A's back plane: {b:?}");
+    assert!(near(b.min.x, 50.0) && near(b.min.z, 0.0), "nothing slid across: {b:?}");
+    let e = s.execute("solid.align", &json!({"bodies": ["B"], "from": [50, 10, 0], "to": [0, 10, 0], "normal_only": true})).unwrap_err().to_string();
+    assert!(e.contains("normal_only"), "{e}");
+}

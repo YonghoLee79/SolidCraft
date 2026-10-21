@@ -3445,14 +3445,28 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             need(1, "what to move from")?;
             need(2, "where to move it to")?;
             let mut p = json!({"bodies": sels(d, 0).body_names(), "flip": flip});
+            // A circular edge (or an arc of one: imported holes often come in halves) stands for
+            // its circle's centre, at the edge's own height, as picked or as Circle Center.
+            let circle = |body: &str, index: usize| {
+                use solidcraft_engine::kernel;
+                let b = s.world_state().body(body).cloned()?;
+                kernel::guard("align edge circle", || Ok(kernel::edge_circle(&b.body, index))).ok().flatten().map(|c| c.center)
+            };
+            let mut faces = 0;
             for (i, key) in [(1, "from"), (2, "to")] {
                 let snap = d.extra.get(&format!("{key}_snap")).and_then(Value::as_str).unwrap_or("picked");
                 match (sels(d, i).first(), snap) {
                     (Some(Sel::Face { point, .. }), "center") => p[key] = json!({"snap": "face_center", "at": pt(*point)}),
+                    (Some(Sel::Edge { body, index, point }), "picked" | "circle") if circle(body, *index).is_some() => {
+                        p[key] = pt(circle(body, *index).unwrap_or(*point))
+                    }
                     (Some(Sel::Face { point, .. } | Sel::Edge { point, .. }), "circle") => {
                         p[key] = json!({"snap": "circle_center", "at": pt(*point)})
                     }
-                    (Some(Sel::Face { point, .. }), _) => p[format!("{key}_face")] = pt(*point),
+                    (Some(Sel::Face { point, .. }), _) => {
+                        faces += 1;
+                        p[format!("{key}_face")] = pt(*point)
+                    }
                     (Some(Sel::Edge { point, .. }), _) => p[key] = json!({"snap": "edge_mid", "at": pt(*point)}),
                     // The origin point (a vertex of no body) stays the origin.
                     (Some(Sel::Vertex { body, .. }), _) if body.is_empty() => p[key] = json!("origin"),
@@ -3461,6 +3475,10 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                     (Some(Sel::Plane { name }), _) => p[format!("{key}_plane")] = json!(name),
                     _ => return Err("pick faces, edges, vertices or planes".into()),
                 }
+            }
+            // Face onto face: along the normal only, unless the picked points are to line up too.
+            if faces == 2 && d.extra.get("slide").and_then(Value::as_bool) != Some(true) {
+                p["normal_only"] = json!(true);
             }
             ("solid.align", p)
         }

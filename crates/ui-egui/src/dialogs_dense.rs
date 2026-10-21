@@ -682,6 +682,11 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
                 });
             }
             ui_kit::options(ui, "feature_options", &mut [("Flip", flip)]);
+            // Face onto face the bodies move only along the normal; this lines the picked points
+            // up as well.
+            form_row(ui, "Line Up Points Too", |ui| {
+                extra_check(ui, &mut d.extra, "slide");
+            });
         }
         Kind::BoundaryFill { operation, cells, .. } => {
             form_row(ui, "Cells", |ui| {
