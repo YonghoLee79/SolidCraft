@@ -195,6 +195,11 @@ impl NavPreset {
     fn translated_label(&self) -> &str {
         if self.id == TOUCHPAD_NAV { crate::i18n::tr("nav.touchpad.label") } else { crate::i18n::tr_label(self.label) }
     }
+
+    /// The catalog message carrying the preset's whole help sentence, `{snap}` apart.
+    fn help_id(&self) -> String {
+        format!("nav.{}.help", self.id)
+    }
 }
 
 impl Prefs {
@@ -1208,12 +1213,11 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             if app.preferences.nav == TOUCHPAD_NAV {
                 ui_kit::text(ui, crate::i18n::tr("nav.touchpad.help"), ui_kit::Text::Note("navigation"));
             } else {
-                let snap_help = if app.preferences.nav == OPENSCAD_NAV { "" } else { "; hold Shift during orbit to snap" };
-                let raw_help = format!(
-                    "{}; Ctrl+left drag on empty space orbits{snap_help}; hold Space to pan; the wheel zooms",
-                    nav_preset(&app.preferences.nav).help
-                );
-                ui_kit::text(ui, crate::i18n::tr_label(&raw_help), ui_kit::Text::Note("navigation"));
+                // The whole sentence comes from the catalog; `{snap}` carries the shared snap
+                // hint, which OpenSCAD does not have.
+                let snap = if app.preferences.nav == OPENSCAD_NAV { "" } else { crate::i18n::tr("nav.help.snap") };
+                let help = crate::i18n::format(&nav_preset(&app.preferences.nav).help_id(), &[("snap", snap)]);
+                ui_kit::text(ui, &help, ui_kit::Text::Note("navigation"));
             }
             setting::radial_context_menu(app, ui);
             crate::mouse_gesture::nav_rows(app, ui, t);
