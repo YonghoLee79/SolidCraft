@@ -1,0 +1,20 @@
+{
+  "macro": {
+    "name": "Plate with four corner holes",
+    "description": "A rectangular plate with a hole in each corner, from five values: length, width, thickness, hole diameter and how far the holes sit from the edges."
+  },
+  "params": [
+    { "name": "length", "label": "Length", "default": "120 mm" },
+    { "name": "width", "label": "Width", "default": "80 mm" },
+    { "name": "height", "label": "Thickness", "default": "8 mm" },
+    { "name": "hole_dia", "label": "Hole diameter", "default": "6.5 mm" },
+    { "name": "edge_offset", "label": "Hole offset from the edges", "default": "10 mm" }
+  ],
+  "commands": [
+    { "command": "solid.box", "params": { "length": "{{length}}", "width": "{{width}}", "height": "{{height}}", "name": "Plate" } },
+    { "command": "solid.hole", "params": { "position": ["{{edge_offset}}", "{{edge_offset}}", "{{height}}"], "diameter": "{{hole_dia}}", "name": "HoleA" } },
+    { "command": "solid.hole", "params": { "position": ["{{length}} - {{edge_offset}}", "{{edge_offset}}", "{{height}}"], "diameter": "{{hole_dia}}", "name": "HoleB" } },
+    { "command": "solid.hole", "params": { "position": ["{{edge_offset}}", "{{width}} - {{edge_offset}}", "{{height}}"], "diameter": "{{hole_dia}}", "name": "HoleC" } },
+    { "command": "solid.hole", "params": { "position": ["{{length}} - {{edge_offset}}", "{{width}} - {{edge_offset}}", "{{height}}"], "diameter": "{{hole_dia}}", "name": "HoleD" } }
+  ]
+}

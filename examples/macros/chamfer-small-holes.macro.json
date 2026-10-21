@@ -1,0 +1,15 @@
+{
+  "macro": {
+    "name": "Chamfer small holes",
+    "description": "Find every hole up to a diameter, optionally of one feature type or name, and chamfer both ends of each one."
+  },
+  "params": [
+    { "name": "max_dia", "label": "Chamfer holes up to", "default": "8 mm" },
+    { "name": "chamfer", "label": "Chamfer distance", "default": "1 mm" },
+    { "name": "feature_type", "label": "Feature type (optional)", "default": "Hole" }
+  ],
+  "commands": [
+    { "command": "inspect.find_holes", "params": { "max_diameter": "{{max_dia}}", "type": "{{feature_type}}" }, "let": "holes" },
+    { "command": "solid.chamfer", "params": { "edges": "{{holes.edges}}", "distance": "{{chamfer}}" } }
+  ]
+}

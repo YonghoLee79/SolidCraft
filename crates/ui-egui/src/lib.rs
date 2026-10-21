@@ -83,6 +83,8 @@ mod linked_source;
 mod loft_rails_dialog_tests;
 #[cfg(test)]
 mod look_at_tests;
+mod macro_run;
+mod macro_ui;
 #[cfg(test)]
 mod manage_dialogs_tests;
 mod material_card_review;
@@ -370,6 +372,8 @@ pub struct SolveApp {
     pub dialog: Option<dialogs::Dialog>,
     /// The Change Parameters window, when open.
     pub params: Option<params_dialog::ParamsDialog>,
+    /// The Play Macro prompt, when a loaded macro asks for values.
+    pub macro_run: Option<macro_run::MacroRun>,
     /// The Design Properties window, when open.
     pub design_properties: Option<design_properties::DesignProperties>,
     /// The Bill of Materials window, when open.
@@ -532,6 +536,7 @@ impl SolveApp {
             tool: None,
             dialog: None,
             params: None,
+            macro_run: None,
             design_properties: None,
             bom: None,
             material_card_review: None,
@@ -869,6 +874,12 @@ impl SolveApp {
         if id == "material.properties.validate" {
             self.material_card_review = Some(material_card_review::ReviewWindow::default());
             self.home.open = false;
+            return;
+        }
+        // MACRO tab: record, pause and play. The commands live in the engine, so the CLI and
+        // the control channel reach the same behaviour without any of this (docs/macros.md).
+        if matches!(id, "macro.record" | "macro.pause" | "macro.resume" | "macro.stop" | "macro.play" | "macro.open" | "macro.save" | "macro.clear") {
+            macro_ui::toolbar(self, id);
             return;
         }
         // A display toggle leaves the current modelling tool and camera in place.
@@ -1508,6 +1519,7 @@ impl SolveApp {
         self.poll_deferred(ui.ctx());
         self.poll_delete_check(ui.ctx());
         toolbar::app_bar(self, ui);
+        macro_ui::chip(self, ui.ctx());
         issue_report::CadInput::block(self, ui, report_input);
         file_load::show(self, ui.ctx());
         open_meshing::show(self, ui.ctx());
@@ -1615,6 +1627,7 @@ impl SolveApp {
             }
         });
         dialogs::show(self, ui.ctx());
+        macro_run::show(self, ui.ctx());
         issue_report::CadInput::block(self, ui, report_input);
         sketch_palette::show(self, ui.ctx());
         self.resolve_fit(ui.ctx());

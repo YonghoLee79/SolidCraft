@@ -833,7 +833,7 @@ fn hostile_params_never_panic() {
                     while let Some(&id) = ids.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
                         for v in hostile_values() {
                             for k in keys {
-                                if k == "path" && (id.starts_with("parameters.") || id == "timeline.export_script") {
+                                if k == "path" && (id.starts_with("parameters.") || id == "timeline.export_script" || id.starts_with("macro.")) {
                                     continue; // parameter and script files: covered by their own tests (no stray files)
                                 }
                                 let mut s = Session::default();

@@ -1,0 +1,13 @@
+{
+  "macro": {
+    "name": "Flatten and export DXF",
+    "description": "Unfold the sheet body to its flat pattern and write the flat to a DXF file: outline, cut-outs and bend lines."
+  },
+  "params": [
+    { "name": "path", "label": "DXF file", "default": "flat.dxf" }
+  ],
+  "commands": [
+    { "command": "sheet.flat_pattern", "params": {}, "let": "flat" },
+    { "command": "sheet.export_dxf", "params": { "path": "{{path}}" } }
+  ]
+}
