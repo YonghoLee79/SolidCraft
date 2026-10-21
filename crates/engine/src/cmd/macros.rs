@@ -11,7 +11,7 @@
 //! a successful playback is a single undo step.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -77,7 +77,6 @@ pub fn recordable(id: &str) -> bool {
         || id.starts_with("file.")
         || id.starts_with("doc.")
         || id.starts_with("view.")
-        || id.starts_with("select.")
         || id.starts_with("ui.")
         || matches!(id, "edit.undo" | "edit.redo"))
 }
@@ -161,7 +160,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .noundo()
         .doc_only()
         .enabled(has_steps)
-        .params("name?: a file in the macros folder, path?: any file (default: the macro's name with .macro.json) → {path, steps}"),
+        .params("name?: a file in the macros folder, path?: any file (default: the macro's name with .macro.json); a .rs path writes a Cargo crate → {path, steps, crate?}"),
     CommandSpec::new("macro.clear", "Clear Macro", clear_macro)
         .at("MACRO", "PLAYBACK")
         .icon("delete")
@@ -539,20 +538,66 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
             named(cmd, &name)?.display().to_string()
         }
     };
+    if path.ends_with(".rs") {
+        return save_rust_crate(&path, &m, p);
+    }
     let script = json!({
         "macro": {"name": m.name, "description": m.description},
         "params": m.params,
         "commands": m.commands,
-        "about": {"replay": "macro.play {path}, or solidcraft-cli run of a script that calls macro.play"},
+        "about": {"replay": "macro.play {path}, or a Rust macro via solidcraft-macro-client"},
     });
     let text = serde_json::to_string_pretty(&script).map_err(|e| EngineError::Other(e.to_string()))?;
-    if let Some(parent) = std::path::Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty())
+    if let Some(parent) = Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty())
         && let Err(e) = solidcraft_io::vfs::create_dir_all(&parent.display().to_string())
     {
         return Err(EngineError::Other(format!("{}: {e}", parent.display())));
     }
     solidcraft_io::vfs::write(&path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({"path": path, "steps": m.commands.len()}))
+}
+
+fn save_rust_crate(path: &str, m: &Macro, p: &Value) -> Result<Value> {
+    let crate_dir = Path::new(path).with_extension("");
+    if crate_dir.as_os_str().is_empty() {
+        return Err(bad("macro.save", "path has no crate name"));
+    }
+    let stem = crate_dir.file_name().and_then(|s| s.to_str()).unwrap_or("macro");
+    let pkg = crate_pkg_name(stem);
+    let client = match str_(p, "client_path") {
+        Some(s) => PathBuf::from(s),
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../macro-client"),
+    };
+    let client = std::fs::canonicalize(&client).unwrap_or(client);
+    let src_dir = crate_dir.join("src");
+    let src_dir_s = src_dir.display().to_string();
+    solidcraft_io::vfs::create_dir_all(&src_dir_s).map_err(|e| EngineError::Other(format!("{src_dir_s}: {e}")))?;
+    let main = crate_dir.join("src").join("main.rs");
+    let main_s = main.display().to_string();
+    solidcraft_io::vfs::write(&main_s, rust_source(m).as_bytes()).map_err(|e| EngineError::Other(format!("{main_s}: {e}")))?;
+    let client_toml = client.display().to_string().replace('\\', "/").replace('"', "");
+    let cargo = format!(
+        "[package]\nname = \"{pkg}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nserde_json = \"1\"\nsolidcraft-macro-client = {{ path = \"{client_toml}\" }}\n"
+    );
+    let cargo_s = crate_dir.join("Cargo.toml").display().to_string();
+    solidcraft_io::vfs::write(&cargo_s, cargo.as_bytes()).map_err(|e| EngineError::Other(format!("{cargo_s}: {e}")))?;
+    Ok(json!({"path": crate_dir.display().to_string(), "steps": m.commands.len(), "crate": true}))
+}
+
+fn crate_pkg_name(stem: &str) -> String {
+    let mut out = String::new();
+    for c in stem.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        return "solidcraft-macro".into();
+    }
+    if out.chars().next().is_some_and(|c| c.is_ascii_digit()) { format!("macro-{out}") } else { out }
 }
 
 fn saved_macros() -> Vec<(String, u64)> {
@@ -585,6 +630,36 @@ fn delete(_: &mut Session, p: &Value) -> Result<Value> {
     let path = named(cmd, name)?;
     solidcraft_io::vfs::remove(&path.display().to_string()).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
     Ok(json!({"deleted": name}))
+}
+
+/// A recorded macro as a Rust program that talks to the live app (`solidcraft-macro-client`).
+pub fn rust_source(m: &Macro) -> String {
+    let mut out = String::from(
+        "//! Generated SolidCraft macro. `cargo run` in this crate talks to a live app\n\
+         //! (`SOLIDCRAFT_CONTROL_PORT`) or use `App::headless()` for `solidcraft-cli mcp`.\n\
+         use serde_json::Value;\n\
+         use solidcraft_macro_client::App;\n\n\
+         fn main() -> Result<(), Box<dyn std::error::Error>> {\n",
+    );
+    out.push_str("    let mut app = App::connect()?;\n");
+    if !m.params.is_empty() {
+        out.push_str("    // This recording asked for: ");
+        out.push_str(&m.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+        out.push_str(".\n");
+    }
+    for step in &m.commands {
+        let id = step.get("command").and_then(Value::as_str).unwrap_or("");
+        let params = step.get("params").cloned().unwrap_or(Value::Null);
+        let raw = serde_json::to_string(&params).unwrap_or_else(|_| "null".into());
+        let escaped = raw.replace('\\', "\\\\").replace('"', "\\\"");
+        out.push_str("    app.run(\"");
+        out.push_str(id);
+        out.push_str("\", serde_json::from_str::<Value>(\"");
+        out.push_str(&escaped);
+        out.push_str("\")?)?;\n");
+    }
+    out.push_str("    Ok(())\n}\n");
+    out
 }
 
 impl Session {

@@ -1207,6 +1207,9 @@ fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn chamfer(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "solid.chamfer";
+    if p.get("edges").and_then(Value::as_array).is_some_and(|a| a.is_empty()) {
+        return Ok(json!({"skipped": true, "edges": 0}));
+    }
     let edges = edge_points(s, p, cmd)?;
     let distance = req_expr(cmd, p, "distance")?;
     check_expr(s, &distance, Kind::Length, cmd, "distance")?;

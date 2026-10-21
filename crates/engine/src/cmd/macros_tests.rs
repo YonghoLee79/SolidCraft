@@ -30,6 +30,7 @@ fn recording_captures_design_commands_and_pause_skips() {
     let mut s = Session::default();
     run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
     run(&mut s, "macro.record", json!({"name": "Plate"}));
+    run(&mut s, "select.set", json!({"items": []}));
     run(&mut s, "solid.sphere", json!({"radius": 5}));
     run(&mut s, "macro.pause", json!({}));
     run(&mut s, "solid.cylinder", json!({"radius": 2, "height": 4}));
@@ -38,9 +39,10 @@ fn recording_captures_design_commands_and_pause_skips() {
     run(&mut s, "macro.resume", json!({}));
     run(&mut s, "parameters.add", json!({"name": "height", "expression": "3"}));
     let stop = run(&mut s, "macro.stop", json!({}));
-    assert_eq!(stop["steps"], 2, "{stop}");
-    assert_eq!(stop["commands"][0]["command"], "solid.sphere");
-    assert_eq!(stop["commands"][1]["command"], "parameters.add");
+    assert_eq!(stop["steps"], 3, "{stop}");
+    assert_eq!(stop["commands"][0]["command"], "select.set");
+    assert_eq!(stop["commands"][1]["command"], "solid.sphere");
+    assert_eq!(stop["commands"][2]["command"], "parameters.add");
     assert!(error(&mut s, "macro.stop", json!({})).contains("nothing is being recorded"));
     assert!(error(&mut s, "macro.pause", json!({})).contains("nothing is being recorded"));
 }
@@ -179,7 +181,28 @@ fn saved_macros_write_and_hostile_names_are_refused() {
     }
     std::fs::write(&path, "not json").unwrap();
     assert!(error(&mut s, "macro.play", json!({"path": path.display().to_string()})).contains("command script"));
+    let rust_path = dir.join("box.rs");
+    run(&mut s, "macro.record", json!({}));
+    run(&mut s, "solid.sphere", json!({"radius": 2}));
+    run(&mut s, "macro.stop", json!({}));
+    let saved = run(&mut s, "macro.save", json!({"path": rust_path.display().to_string()}));
+    assert_eq!(saved["crate"], true, "{saved}");
+    let crate_dir = rust_path.with_extension("");
+    let rust = std::fs::read_to_string(crate_dir.join("src/main.rs")).unwrap();
+    assert!(rust.contains("solidcraft_macro_client::App"), "{rust}");
+    assert!(rust.contains("solid.sphere"), "{rust}");
+    let cargo = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
+    assert!(cargo.contains("solidcraft-macro-client"), "{cargo}");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn chamfer_of_no_edges_is_a_no_op() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    let r = run(&mut s, "solid.chamfer", json!({"edges": [], "distance": "1 mm"}));
+    assert_eq!(r["skipped"], true, "{r}");
+    assert_eq!(s.doc.features.len(), 1);
 }
 
 #[test]

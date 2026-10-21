@@ -4322,6 +4322,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "solidcraft-macro-client"
+version = "0.17.0"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "solidcraft-macros"
+version = "0.17.0"
+dependencies = [
+ "serde_json",
+ "solidcraft-macro-client",
+]
+
+[[package]]
 name = "solidcraft-mcp"
 version = "0.18.4"
 dependencies = [

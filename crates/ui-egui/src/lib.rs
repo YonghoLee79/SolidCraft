@@ -468,6 +468,8 @@ pub struct SolveApp {
     /// The modifiers of the synthetic press in progress (a Ctrl-drag keeps Ctrl while it moves).
     pub synthetic_mods: egui::Modifiers,
     control_rx: Option<Receiver<ControlRequest>>,
+    /// Loopback control port this window is listening on (Rust macros spawn with it).
+    pub control_port: Option<u16>,
     /// Control requests that change the design, held while a file loads or an agent's design
     /// change computes.
     control_held: std::collections::VecDeque<ControlRequest>,
@@ -586,6 +588,7 @@ impl SolveApp {
             synthetic: Vec::new(),
             synthetic_mods: egui::Modifiers::default(),
             control_rx: None,
+            control_port: None,
             agent_chat: Default::default(),
             control_held: Default::default(),
             control_job: None,
@@ -736,6 +739,11 @@ impl SolveApp {
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
+        self
+    }
+
+    pub fn with_control_port(mut self, port: u16) -> Self {
+        self.control_port = Some(port);
         self
     }
 

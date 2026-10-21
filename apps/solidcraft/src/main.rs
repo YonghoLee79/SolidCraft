@@ -8,9 +8,9 @@
 //! A `.step`/`.stp` file opens as a new design holding the file's bodies (an Import feature); a
 //! `.3mf`/`.stl`/`.obj`/`.glb`/`.gltf` file as a new design holding mesh bodies.
 //!
-//! `--control <port>` (or `SOLIDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control
-//! server: `{"id":1,"method":"engine.execute","params":{"command":"solid.box","params":{…}}}`.
-//! See `solidcraft_ui_egui::control` and docs/control-protocol.md.
+//! A localhost JSON-lines control server always starts (a free port, or `--control <port>` /
+//! `SOLIDCRAFT_CONTROL_PORT`): `{"id":1,"method":"engine.execute","params":{"command":"solid.box","params":{…}}}`.
+//! An explicit `--control` skips the start page. See `solidcraft_ui_egui::control` and docs/control-protocol.md.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![deny(unsafe_code)]
@@ -687,9 +687,11 @@ fn main() -> eframe::Result {
                 ));
             }
             mark("viewport pipelines");
-            if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
-                app = app.with_control(rx);
+            let explicit_control = control_port.is_some();
+            let (bound, rx) = control_server::start(control_port.unwrap_or(0), cc.egui_ctx.clone());
+            app = app.with_control(rx);
+            if let Some(port) = bound {
+                app = app.with_control_port(port);
             }
             // The agent chat's MCP bridge reaches the app through an endpoint of its own, started
             // on a free port the first time the chat connects (docs/agent-chat.md).
@@ -719,7 +721,7 @@ fn main() -> eframe::Result {
             }
             // No design given: the start page (not when driven over the control channel, whose
             // clients expect the design view; `ui.home` shows it there).
-            if files.is_empty() && !sample && control_port.is_none() {
+            if files.is_empty() && !sample && !explicit_control {
                 let rev = app.session.revision;
                 app.home.show(rev);
             }

@@ -39,16 +39,17 @@ pub fn remove_token_file() {
     }
 }
 
-pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
+pub fn start(port: u16, ctx: egui::Context) -> (Option<u16>, Receiver<ControlRequest>) {
     let (tx, rx) = channel::<ControlRequest>();
     // Every connection must show the token before anything runs (docs/control-protocol.md).
-    match control_auth::env_token().or_else(new_token) {
-        Some(token) => {
-            listen(port, token, tx, ctx, false);
+    let bound = match control_auth::env_token().or_else(new_token) {
+        Some(token) => listen(port, token, tx, ctx, false),
+        None => {
+            eprintln!("solidcraft: control server not started: no random token available");
+            None
         }
-        None => eprintln!("solidcraft: control server not started: no random token available"),
-    }
-    rx
+    };
+    (bound, rx)
 }
 
 /// The agent chat's own endpoint for its agent's MCP server (docs/agent-chat.md): a free loopback

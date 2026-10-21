@@ -51,12 +51,19 @@ pub(crate) fn toolbar(app: &mut SolveApp, id: &str) {
         }
         "macro.save" => {
             let name = format!("{}-macro.json", design_stem(app));
-            app.pick_save(&name, &["json"], |app, path| {
+            app.pick_save(&name, &["json", "rs"], |app, path| {
                 let Some(path) = path else { return };
-                match app.run("macro.save", json!({"path": path.clone()})) {
+                let mut params = json!({"path": path.clone()});
+                if path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rs"))
+                    && let Ok(client) = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../macro-client").canonicalize()
+                {
+                    params["client_path"] = json!(client.display().to_string());
+                }
+                match app.run("macro.save", params) {
                     Ok(r) => {
                         let steps = r.get("steps").and_then(Value::as_u64).unwrap_or(0);
-                        app.set_status(crate::i18n::format("macro.saved", &[("steps", &steps.to_string()), ("path", &path)]), false);
+                        let saved = r.get("path").and_then(Value::as_str).unwrap_or(&path);
+                        app.set_status(crate::i18n::format("macro.saved", &[("steps", &steps.to_string()), ("path", saved)]), false);
                     }
                     Err(e) => app.set_status(format!("{}: {e}", app.tr("cmd.macro_save")), true),
                 }
@@ -79,18 +86,49 @@ fn play_button(app: &mut SolveApp) {
         Some(m) if !m.params.is_empty() => crate::macro_run::open(app),
         Some(m) if !m.commands.is_empty() => play(app, json!({})),
         _ => {
-            app.pick_open_for(&["json"], |app, path| {
+            app.pick_open(|app, path| {
                 let Some(path) = path else { return };
-                if let Err(e) = app.run("macro.open", json!({"path": path})) {
-                    app.set_status(format!("{}: {e}", app.tr("cmd.macro_open")), true);
-                    return;
-                }
+                open_or_spawn(app, path);
+            });
+        }
+    }
+}
+
+fn open_or_spawn(app: &mut SolveApp, path: String) {
+    if path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+        match app.run("macro.open", json!({"path": path})) {
+            Ok(r) => {
+                let steps = r.get("steps").and_then(Value::as_u64).unwrap_or(0);
+                app.set_status(crate::i18n::format("macro.opened", &[("steps", &steps.to_string())]), false);
                 if app.session.macros.loaded.as_ref().is_some_and(|m| !m.params.is_empty()) {
                     crate::macro_run::open(app);
                 } else {
                     play(app, json!({}));
                 }
-            });
+            }
+            Err(e) => app.set_status(format!("{}: {e}", app.tr("cmd.macro_open")), true),
+        }
+        return;
+    }
+    spawn_rust_macro(app, &path);
+}
+
+fn spawn_rust_macro(app: &mut SolveApp, path: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        app.set_status("Rust macros run in the desktop app", true);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(port) = app.control_port.map(|p| p.to_string()).or_else(|| std::env::var("SOLIDCRAFT_CONTROL_PORT").ok().filter(|p| !p.is_empty()))
+        else {
+            app.set_status("SolidCraft could not start a control port for Rust macros", true);
+            return;
+        };
+        match std::process::Command::new(path).env("SOLIDCRAFT_CONTROL_PORT", &port).spawn() {
+            Ok(_) => app.set_status(format!("Started {path}"), false),
+            Err(e) => app.set_status(format!("Rust macro: {e}"), true),
         }
     }
 }

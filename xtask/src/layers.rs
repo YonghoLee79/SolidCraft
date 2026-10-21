@@ -40,6 +40,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("space-mouse", Class::Layer(0)),
     // the derive macros (proc-macro, no workspace dependencies)
     ("derive", Class::Standalone),
+    // JSON-lines / MCP client for user Rust macros (no workspace dependencies)
+    ("macro-client", Class::Standalone),
     // the 3Dconnexion driver's client API on macOS (no workspace dependencies)
     ("3dx-client", Class::Standalone),
     ("sketch", Class::Layer(1)),
@@ -55,6 +57,7 @@ pub const TABLE: &[(&str, Class)] = &[
     // apps and tooling
     ("solidcraft", Class::Exempt),
     ("cli", Class::Exempt),
+    ("macros", Class::Exempt),
     ("web", Class::Exempt),
     ("xtask", Class::Exempt),
 ];

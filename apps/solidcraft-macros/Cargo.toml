@@ -1,0 +1,38 @@
+[package]
+name = "solidcraft-macros"
+description = "Example Rust macros for SolidCraft (solidcraft-macro-client)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "chamfer-large-holes"
+path = "src/chamfer_large_holes.rs"
+
+[[bin]]
+name = "plate-generator"
+path = "src/plate_generator.rs"
+
+[[bin]]
+name = "flatten-export-dxf"
+path = "src/flatten_export_dxf.rs"
+
+[[bin]]
+name = "bolt-circle"
+path = "src/bolt_circle.rs"
+
+[[bin]]
+name = "chamfer-selection"
+path = "src/chamfer_selection.rs"
+
+[[bin]]
+name = "batch-mass"
+path = "src/batch_mass.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+solidcraft-macro-client = { workspace = true }
