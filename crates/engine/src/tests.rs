@@ -517,10 +517,12 @@ fn revolve_and_primitives() {
 /// A revolve's axis can be a cylinder's face (its axis) or a straight body edge, as well as a
 /// sketch line or an origin axis: the same ring comes out about a pin's face as about Z.
 #[test]
-fn revolve_about_a_round_face_or_a_straight_edge() {
+fn revolve_about_a_round_face_a_straight_edge_or_a_circular_edge() {
     for (prep, axis) in [
         (json!({"radius": 3, "height": 20}), json!({"face": [3, 0, 10]})),
         (json!({"radius": 3, "height": 20}), json!({"face": [0, 3, 10], "body": "Body1"})),
+        // The cylinder's top circle: its own axis.
+        (json!({"radius": 3, "height": 20}), json!({"edge": [3, 0, 20]})),
     ] {
         let mut s = Session::default();
         run(&mut s, "solid.cylinder", prep);

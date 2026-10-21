@@ -28,7 +28,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("solid.revolve", "Revolve", revolve)
         .at("SOLID", "CREATE")
         .icon("revolve")
-        .params("axis: sketch line id | x | y (sketch axes) | X|Y|Z (world) | {origin, dir} | {face: [x,y,z], body?} (the axis of a cylindrical, conical or toroidal face) | {edge: [x,y,z], body?} (a straight edge); the axis must lie in the sketch plane; angle?: expr (default 360 deg); angle2?: expr (Two Sides: the other side's angle); direction?: symmetric (angle split either side, independent of axis direction); convention?: sketch_normal|legacy_axis_start (default sketch_normal; legacy retains older angular starts); to?: [x,y,z] (To Object: turn until that face, vertex or point); sketch?, profiles? | face: [x,y,z] (a planar body face as the profile) and face_body?: name (whose face, where faces of several bodies meet), operation?, targets?, name?, body_name?"),
+        .params("axis: sketch line id | x | y (sketch axes) | X|Y|Z (world) | {origin, dir} | {face: [x,y,z], body?} (the axis of a cylindrical, conical or toroidal face) | {edge: [x,y,z], body?} (a straight edge, or a circular edge: its axis); the axis must lie in the sketch plane; angle?: expr (default 360 deg); angle2?: expr (Two Sides: the other side's angle); direction?: symmetric (angle split either side, independent of axis direction); convention?: sketch_normal|legacy_axis_start (default sketch_normal; legacy retains older angular starts); to?: [x,y,z] (To Object: turn until that face, vertex or point); sketch?, profiles? | face: [x,y,z] (a planar body face as the profile) and face_body?: name (whose face, where faces of several bodies meet), operation?, targets?, name?, body_name?"),
     CommandSpec::new("solid.sweep", "Sweep", sweep)
         .at("SOLID", "CREATE")
         .icon("sweep")
@@ -822,7 +822,7 @@ fn revolve(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// A revolve axis taken from the model: `axis: {"face": [x, y, z], "body"?}` is the axis of the
 /// cylindrical, conical or toroidal face at that point, `axis: {"edge": [x, y, z], "body"?}` the
-/// straight edge there. The axis is the one the face or edge has now, kept as a line. None when
+/// straight edge (or a circular edge, whose axis it takes) there. The axis is the one the face or edge has now, kept as a line. None when
 /// `axis` is neither.
 pub(super) fn model_axis(s: &Session, p: &Value, cmd: &str) -> Result<Option<AxisRef>> {
     let Some(o) = p.get("axis").filter(|v| v.is_object()) else { return Ok(None) };
@@ -848,28 +848,32 @@ pub(super) fn model_axis(s: &Session, p: &Value, cmd: &str) -> Result<Option<Axi
             _ => Err(bad(cmd, "the axis face is not round (pick a cylindrical, conical or toroidal face)")),
         };
     }
-    // The nearest edge of the bodies; it has to be straight.
+    // The nearest edge of the bodies: a straight one is the axis; a circle or an arc of one gives
+    // its own axis (through its centre, square to its plane).
     let to_segment = |q: Vec3, a: Vec3, b: Vec3| {
         let d = b - a;
         let t = if d.dot(d) > 0.0 { ((q - a).dot(d) / d.dot(d)).clamp(0.0, 1.0) } else { 0.0 };
         (a + d * t).dist(q)
     };
-    let mut best: Option<(f64, Vec<Vec3>)> = None;
+    let mut best: Option<(f64, Vec<Vec3>, &solidcraft_doc::ModelBody, usize)> = None;
     for b in bodies {
         let m = b.mesh();
-        for e in &m.edges {
+        for (i, e) in m.edges.iter().enumerate() {
             let d = e.windows(2).map(|w| to_segment(at, w[0], w[1])).fold(f64::INFINITY, f64::min);
-            if best.as_ref().is_none_or(|(bd, _)| d < *bd) && d <= solidcraft_doc::appearance::pick_tolerance(b) {
-                best = Some((d, e.clone()));
+            if best.as_ref().is_none_or(|(bd, ..)| d < *bd) && d <= solidcraft_doc::appearance::pick_tolerance(b) {
+                best = Some((d, e.clone(), b, i));
             }
         }
     }
-    let (_, e) = best.ok_or_else(|| bad(cmd, "no edge of a body at the axis point"))?;
+    let (_, e, body, index) = best.ok_or_else(|| bad(cmd, "no edge of a body at the axis point"))?;
     let (Some(a), Some(z)) = (e.first().copied(), e.last().copied()) else { return Err(bad(cmd, "the axis edge is empty")) };
-    let dir = (z - a).normalized().ok_or_else(|| bad(cmd, "the axis edge has no length (pick a straight edge)"))?;
-    if e.iter().any(|q| (*q - a).cross(dir).len() > 1e-6 * (1.0 + a.dist(z))) {
-        return Err(bad(cmd, "the axis edge is not straight (pick a straight edge or a round face)"));
-    }
+    let straight = (z - a).normalized().filter(|dir| e.iter().all(|q| (*q - a).cross(*dir).len() <= 1e-6 * (1.0 + a.dist(z))));
+    let Some(dir) = straight else {
+        return match solidcraft_kernel::edge_circle(&body.body, index) {
+            Some(c) => Ok(Some(line(c.center, *c.axis))),
+            None => Err(bad(cmd, "the axis edge is neither straight nor round (pick a straight or circular edge, or a round face)")),
+        };
+    };
     Ok(Some(line(a, dir)))
 }
 
