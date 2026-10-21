@@ -555,8 +555,12 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     close = true;
                 }
                 ui.separator();
-                if item_if(ui, "Save as mesh…", "", "mesh_export", shown) {
-                    app.start("file.save_mesh");
+                if item_if(ui, "Export STL…", "", "mesh_export", shown) {
+                    crate::dialogs_save_mesh::start_with_format(app, "stl");
+                    close = true;
+                }
+                if item_if(ui, "Export 3MF…", "", "mesh_export", shown) {
+                    crate::dialogs_save_mesh::start_with_format(app, "3mf");
                     close = true;
                 }
                 if item_if(ui, "Export STEP…", "", "export", shown) {
@@ -1891,6 +1895,27 @@ mod header_report_tests {
         assert!(h.dir.join("Exported copy.json").is_file());
         h.app.run("file.save", json!({})).unwrap();
         assert!(!solidcraft_engine::io::is_design_container(&std::fs::read(saved).unwrap()), "subsequent Save keeps a .json choice");
+    }
+
+    /// File › Export STL… and Export 3MF… both open the Save as mesh dialog with their format
+    /// chosen (whatever was used last), and command search finds the export by format or purpose.
+    #[test]
+    fn file_menu_has_export_stl_and_3mf_that_open_the_mesh_dialog_with_that_format() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
+        h.app.preferences.save_mesh_format = "3mf".into();
+        for (item, format) in [("Export STL…", "stl"), ("Export 3MF…", "3mf")] {
+            h.frames(3);
+            h.step(&json!({"click":{"handle":"appbar:file"}})).unwrap();
+            h.step(&json!({"widget": item})).unwrap();
+            let Some(crate::dialogs::Kind::SaveMesh(k)) = h.app.dialog.as_ref().map(|d| &d.kind) else { panic!("{item}: no Save as mesh dialog") };
+            assert_eq!(k.format_name(), format, "{item}");
+            crate::dialogs::cancel(&mut h.app);
+        }
+        for q in ["3mf", "stl", "export 3mf", "print"] {
+            let found = crate::shortcut_box::search(&h.app, q);
+            assert!(found.iter().any(|r| r.0 == "file.save_mesh"), "{q}: {:?}", found.iter().map(|r| r.0).collect::<Vec<_>>());
+        }
     }
 
     /// The browser build's File > Download design hands the open design to the host as a

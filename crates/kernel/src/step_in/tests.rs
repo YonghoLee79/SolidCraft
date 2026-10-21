@@ -1746,3 +1746,52 @@ fn extruded_ellipse_patch_crossing_profile_seam_stays_trimmed() {
         }
     }
 }
+
+/// Parts of known shape from the step-conformance corpus (`tests/step-conformance`, generated
+/// from formulas by https://github.com/dan335/step-conformance at 96f30bb, CC0 1.0):
+/// each reads back with its exact volume (from the generator's own profile), its box and its
+/// face count. Left out: `torus_ring` (meshes below its equator, a meshing issue for the
+/// tessellation work), `cone_point` and `cone_point_vertex` (#258, #3871) and the
+/// 1.4 MB `plate_900_holes`.
+#[test]
+fn step_conformance_parts_read_back_their_exact_shape() {
+    // (file, exact volume (mm³), box (min, max), kernel faces, bodies)
+    #[rustfmt::skip]
+    let parts: [(&str, &str, f64, [f64; 6], usize, usize); 15] = [
+        ("cylinder", include_str!("../../../../tests/step-conformance/cylinder.step"), 9424.778, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 3, 1),
+        ("cylinder_inch", include_str!("../../../../tests/step-conformance/cylinder_inch.step"), 9424.778, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 3, 1),
+        ("cylinder_nurbs", include_str!("../../../../tests/step-conformance/cylinder_nurbs.step"), 9424.778, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 3, 1),
+        ("cylinder_placed", include_str!("../../../../tests/step-conformance/cylinder_placed.step"), 9424.778, [31.835, -33.165, 1.835, 65.485, 0.485, 35.485], 3, 1),
+        ("cylinder_seam", include_str!("../../../../tests/step-conformance/cylinder_seam.step"), 9424.778, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 3, 1),
+        ("cylinder_twice", include_str!("../../../../tests/step-conformance/cylinder_twice.step"), 18849.556, [-10.0, -10.0, 0.0, 90.0, 10.0, 30.0], 6, 2),
+        ("dome", include_str!("../../../../tests/step-conformance/dome.step"), 16755.161, [-20.0, -20.0, 0.0, 20.0, 20.0, 20.0], 2, 1),
+        ("dome_nurbs", include_str!("../../../../tests/step-conformance/dome_nurbs.step"), 16755.161, [-20.0, -20.0, 0.0, 20.0, 20.0, 20.0], 2, 1),
+        ("far_cylinder", include_str!("../../../../tests/step-conformance/far_cylinder.step"), 9424.778, [99990.0, -10.0, 0.0, 100010.0, 10.0, 30.0], 3, 1),
+        ("grooved_shaft", include_str!("../../../../tests/step-conformance/grooved_shaft.step"), 153532.251, [-10.0, -10.0, 0.0, 10.0, 10.0, 501.0], 753, 1),
+        ("plate_100_holes", include_str!("../../../../tests/step-conformance/plate_100_holes.step"), 71588.321, [0.0, 0.0, 0.0, 100.0, 100.0, 10.0], 110, 1),
+        ("sheet_disc", include_str!("../../../../tests/step-conformance/sheet_disc.step"), 193396443.755, [-1800.0, -1800.0, 0.0, 1800.0, 1800.0, 19.0], 3, 1),
+        ("tiny_pin", include_str!("../../../../tests/step-conformance/tiny_pin.step"), std::f64::consts::FRAC_PI_8, [-0.25, -0.25, 0.0, 0.25, 0.25, 2.0], 3, 1),
+        ("torus_ring_nurbs", include_str!("../../../../tests/step-conformance/torus_ring_nurbs.step"), 4934.802, [-25.0, -25.0, 0.0, 25.0, 25.0, 5.0], 2, 1),
+        ("washer", include_str!("../../../../tests/step-conformance/washer.step"), 3534.292, [-20.0, -20.0, 0.0, 20.0, 20.0, 3.0], 4, 1),
+    ];
+    for (name, text, volume, bbox, faces, bodies) in parts {
+        let imp = step_import(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(imp.warnings.is_empty(), "{name}: {:?}", imp.warnings);
+        assert_eq!(imp.bodies.len(), bodies, "{name}");
+        let (mut v, mut n) = (0.0, 0);
+        let mut b = solidcraft_geom::Aabb3::EMPTY;
+        for body in &imp.bodies {
+            let m = measure(&body.body).unwrap_or_else(|e| panic!("{name}: {e}"));
+            v += m.volume;
+            n += m.faces;
+            b = b.union(&m.bbox);
+        }
+        assert!(rel(v, volume) < 1e-3, "{name}: volume {v} vs {volume}");
+        assert_eq!(n, faces, "{name}: faces");
+        let [x0, y0, z0, x1, y1, z1] = bbox;
+        let size = Vec3::new(x1 - x0, y1 - y0, z1 - z0).len();
+        for (got, want) in [(b.min, Vec3::new(x0, y0, z0)), (b.max, Vec3::new(x1, y1, z1))] {
+            assert!(got.dist(want) <= size * 1e-3, "{name}: box corner {got:?} vs {want:?}");
+        }
+    }
+}
