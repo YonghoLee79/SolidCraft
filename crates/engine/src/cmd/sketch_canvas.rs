@@ -12,7 +12,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("canvas.insert", "Canvas", add_canvas)
         .at("SKETCH", "INSERT")
         .icon("canvas")
-        .params("path | data (base64 PNG or JPEG); plane?: XY|XZ|YZ|{face: [x,y,z]}|… (default XY); center?: [x,y] on the plane, or at?: [x,y,z]; width?: mm (default 100); angle?: deg; opacity?: 0…1 (default 0.5); flip?; name?"),
+        .params("path | data (base64 PNG, JPEG, BMP, GIF, WebP or TIFF; the last four are stored as PNG); plane?: XY|XZ|YZ|{face: [x,y,z]}|… (default XY); center?: [x,y] on the plane, or at?: [x,y,z]; width?: mm (default 100); angle?: deg; opacity?: 0…1 (default 0.5); flip?; name?"),
     CommandSpec::new("canvas.decal", "Decal", add_decal)
         .at("SKETCH", "INSERT")
         .icon("decal")
@@ -39,9 +39,34 @@ fn image_bytes(p: &Value, cmd: &str) -> Result<Vec<u8>> {
     Ok(b)
 }
 
+const NOT_A_PICTURE: &str = "only pictures can be inserted (PNG, JPEG, BMP, GIF, WebP, TIFF)";
+
+/// The bytes to store, the format tag and the pixel size. PNG and JPEG are kept as they are;
+/// BMP, GIF (first frame), WebP and TIFF are decoded within limits and stored as PNG.
+fn stored_picture(bytes: Vec<u8>, cmd: &str) -> Result<(Vec<u8>, &'static str, [u32; 2])> {
+    if let Some((format, pixels)) = image_info(&bytes) {
+        return Ok((bytes, format, pixels));
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().map_err(|_| bad(cmd, NOT_A_PICTURE))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(512 << 20);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|e| match e {
+        image::ImageError::Limits(_) => bad(cmd, "the image is too large"),
+        _ => bad(cmd, NOT_A_PICTURE),
+    })?;
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(|_| bad(cmd, NOT_A_PICTURE))?;
+    if out.len() > MAX_CANVAS_BYTES {
+        return Err(bad(cmd, "the image is too large"));
+    }
+    Ok((out, "png", [img.width(), img.height()]))
+}
+
 fn make(s: &mut Session, p: &Value, cmd: &str, decal: bool) -> Result<Value> {
-    let bytes = image_bytes(p, cmd)?;
-    let (format, pixels) = image_info(&bytes).ok_or_else(|| bad(cmd, "only PNG and JPEG images can be inserted"))?;
+    let (bytes, format, pixels) = stored_picture(image_bytes(p, cmd)?, cmd)?;
     let plane = super::sketch::plane_ref(s, p, cmd)?;
     let (vals, _) = s.doc.param_values();
     let pl = s.doc.resolve_plane_in(&vals, &plane, 0, Some(&s.model.state()))?;
@@ -168,6 +193,60 @@ mod tests {
         b.extend(h.to_be_bytes());
         b.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
         base64_encode(&b)
+    }
+
+    /// A `w` x `h` 24-bit BMP, mid grey.
+    fn bmp(w: u32, h: u32) -> Vec<u8> {
+        let row = (w * 3).div_ceil(4) * 4;
+        let size = row * h;
+        let mut b = b"BM".to_vec();
+        b.extend((54 + size).to_le_bytes());
+        b.extend([0u8; 4]);
+        b.extend(54u32.to_le_bytes());
+        b.extend(40u32.to_le_bytes());
+        b.extend(w.to_le_bytes());
+        b.extend(h.to_le_bytes());
+        b.extend(1u16.to_le_bytes());
+        b.extend(24u16.to_le_bytes());
+        b.extend([0u8; 4]);
+        b.extend(size.to_le_bytes());
+        b.extend([0u8; 16]);
+        b.extend(std::iter::repeat_n(128u8, size as usize));
+        b
+    }
+
+    #[test]
+    fn bmp_gif_webp_and_tiff_are_stored_as_png() {
+        let pic = image::RgbaImage::from_pixel(4, 2, image::Rgba([10, 20, 30, 255]));
+        let mut s = Session::default();
+        s.execute("canvas.insert", &json!({"data": base64_encode(&bmp(4, 2))})).unwrap();
+        for format in [image::ImageFormat::Gif, image::ImageFormat::WebP, image::ImageFormat::Tiff] {
+            let mut b = Vec::new();
+            image::DynamicImage::ImageRgba8(pic.clone()).write_to(&mut std::io::Cursor::new(&mut b), format).unwrap();
+            s.execute("canvas.insert", &json!({"data": base64_encode(&b)})).unwrap();
+        }
+        assert_eq!(s.doc.canvases.len(), 4);
+        for c in &s.doc.canvases {
+            assert_eq!((c.format.as_str(), c.pixels), ("png", [4, 2]), "{}", c.name);
+            let stored = solidcraft_doc::canvas::base64_decode(&c.data).unwrap();
+            assert_eq!(image::guess_format(&stored).unwrap(), image::ImageFormat::Png);
+        }
+        // Anything else is not a picture.
+        let e = s.execute("canvas.insert", &json!({"data": base64_encode(b"not a picture")})).unwrap_err().to_string();
+        assert!(e.contains("only pictures"), "{e}");
+    }
+
+    #[test]
+    fn canvas_insert_refuses_huge_picture_headers() {
+        let mut b = bmp(2, 2);
+        b[18..22].copy_from_slice(&100_000u32.to_le_bytes());
+        b[22..26].copy_from_slice(&100_000u32.to_le_bytes());
+        let mut s = Session::default();
+        assert!(s.execute("canvas.insert", &json!({"data": base64_encode(&b)})).is_err());
+        // Over the decoding limits (16 384 pixels a side): said so, not "not a picture".
+        let e = s.execute("canvas.insert", &json!({"data": base64_encode(&bmp(20_000, 1))})).unwrap_err().to_string();
+        assert!(e.contains("too large"), "{e}");
+        assert!(s.doc.canvases.is_empty());
     }
 
     #[test]

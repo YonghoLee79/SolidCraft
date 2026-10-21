@@ -12,7 +12,7 @@
 | 3MF with face tags | as 3MF | each triangle tagged with its B-rep face, exact coordinates |
 | URDF | | the assembly as a robot: links with meshes, mass and inertia, joints from the assembly's joints |
 | DXF, SVG | into a sketch | sketches and flat patterns as DXF |
-| PNG, JPEG | canvases and decals | |
+| PNG, JPEG, BMP, GIF, WebP, TIFF | canvases and decals (BMP, GIF's first frame, WebP and TIFF are stored as PNG) | |
 
 Opening a STEP, IGES, FreeCAD or Rhino file creates a design with the file's bodies as a base feature, and
 inserting one adds them to the current design. Later features build on them. Mesh bodies render,

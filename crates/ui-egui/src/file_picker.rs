@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 
 use crate::SolveApp;
 
+/// The picture files Insert Canvas and Decal offer first (the engine stores all but PNG and JPEG as PNG).
+pub const PICTURES: &[&str] = &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"];
+
 /// A host picker answer: a selected path, or `None` when cancelled.
 pub type FilePickerFuture = Pin<Box<dyn Future<Output = Option<String>>>>;
 type Completion = Box<dyn FnOnce(&mut SolveApp, Option<String>)>;
@@ -314,8 +317,8 @@ mod tests {
             ("sketch.insert_svg", vec!["svg"]),
             ("sketch.insert_dxf", vec!["dxf"]),
             ("file.insert_step", vec![]),
-            ("canvas.insert", vec!["png", "jpg", "jpeg"]),
-            ("canvas.decal", vec!["png", "jpg", "jpeg"]),
+            ("canvas.insert", PICTURES.to_vec()),
+            ("canvas.decal", PICTURES.to_vec()),
         ] {
             h.app.start(command);
             tick(&mut h.app, &h.ctx);
