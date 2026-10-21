@@ -162,10 +162,14 @@ pub fn tool_definitions() -> Vec<Value> {
             "compare_shapes",
             "Compare two CAD files",
             "Compare two CAD files: imports both into a throwaway session (STEP, IGES, FreeCAD or Rhino) and compares their \
-             surfaces in world placement, so near-identical parts compare too. Reports each side's volume, area, centre of \
-             mass and bounding box, the deviation each way, and every region where only one side has material (its volume, \
-             largest deviation and where it is), with a verdict and `identical`. Use it to check an exported STEP against a \
-             reference part. Each file must hold one body, or name the body to use with actual_body/expected_body.",
+             surfaces in world placement, so near-identical parts compare too. `summary` is the short answer: `identical`, \
+             both volumes, their difference with its sign (`actual_minus_expected`: positive when the part under test holds \
+             more material), the sampled volume that only one side has, and the region count. `comparison` is the detail, \
+             and there the two sides are called `a` and `b`: **`a` is `actual` and `b` is `expected`**, so `only_in_a` is \
+             material the part under test has and the reference does not. Every region where only one side has material \
+             comes with its volume, largest deviation and where it is, and the whole thing ends in a verdict. Use it to check \
+             an exported STEP against a reference part. Each file must hold one body, or name the body to use with \
+             actual_body/expected_body.",
             obj(
                 json!({
                     "actual": string("The file to check (STEP, IGES, .FCStd or .3dm)"),
@@ -673,6 +677,12 @@ fn clip(s: &str) -> String {
     s.chars().take(MAX_REPORT_TEXT).collect()
 }
 
+/// `x` without the binary-noise tail a subtraction leaves (`12304.000000000002`).
+fn round6(x: f64) -> f64 {
+    let r = (x * 1e6).round() / 1e6;
+    if r == 0.0 { 0.0 } else { r }
+}
+
 /// What a `run_script` report says about one design state: the timeline problems, the sketches
 /// that are not fully constrained, and each body's size. The same facts `solidcraft-checking`
 /// tells an agent to look for after every parameter change.
@@ -825,12 +835,43 @@ fn compare_shapes(a: &Map<String, Value>) -> Value {
         (Err(e), _) | (_, Err(e)) => return text_result(&Value::String(e), true),
     };
     match s.execute("inspect.compare", &json!({"a": pa, "b": pb, "tolerance": tolerance})) {
-        Ok(v) => text_result(
-            &json!({"actual": actual, "expected": expected, "actual_bodies": actual_bodies, "expected_bodies": expected_bodies, "comparison": v}),
-            false,
-        ),
+        Ok(v) => {
+            let reply = json!({
+                "actual": actual,
+                "expected": expected,
+                "actual_bodies": actual_bodies,
+                "expected_bodies": expected_bodies,
+                "summary": comparison_summary(&v),
+                "comparison": v,
+            });
+            text_result(&reply, false)
+        }
         Err(e) => text_result(&Value::String(e.to_string()), true),
     }
+}
+
+/// The short answer `compare_shapes` puts above `comparison`, in names that say which file is
+/// which. `inspect.compare` calls its two sides `a` and `b`, and nothing in its reply ties `a`
+/// back to the file the caller called `actual`, so `only_in_b` reads as the wrong part unless the
+/// reader knows the mapping.
+fn comparison_summary(v: &Value) -> Value {
+    let volume = |side: &Value| side.get("volume_mm3").and_then(Value::as_f64);
+    let only = |key: &str| v.get(key).and_then(|o| o.get("volume_mm3")).and_then(Value::as_f64);
+    let (actual, expected) = (volume(&v["a"]), volume(&v["b"]));
+    json!({
+        "identical": v.get("identical").cloned().unwrap_or(Value::Bool(false)),
+        // Positive when the part under test holds more material than the reference.
+        "volume_mm3": {
+            "actual": actual,
+            "expected": expected,
+            "actual_minus_expected": match (actual, expected) { (Some(a), Some(b)) => json!(round6(a - b)), _ => Value::Null },
+        },
+        // Sampled from lines across the surfaces, so close to the exact difference above, not equal to it.
+        "only_in_actual_mm3": only("only_in_a"),
+        "only_in_expected_mm3": only("only_in_b"),
+        "regions": v.get("regions").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+        "verdict": v.get("verdict").cloned().unwrap_or(Value::Null),
+    })
 }
 
 /// `reply` with `timings` and `total_ms` when they were asked for.

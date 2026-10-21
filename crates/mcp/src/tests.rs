@@ -1761,6 +1761,9 @@ fn compare_shapes_needs_two_files_and_compares_what_they_hold() {
     }
     let r = tool(&mut s, "compare_shapes", json!({"actual": same.to_string_lossy(), "expected": same.to_string_lossy()}));
     assert_eq!(r["comparison"]["identical"], true, "{r}");
+    assert_eq!(r["summary"]["identical"], true, "{r}");
+    assert_eq!(r["summary"]["volume_mm3"]["actual_minus_expected"], json!(0.0), "{r}");
+    assert_eq!(r["summary"]["regions"], 0, "{r}");
     let r = tool(&mut s, "compare_shapes", json!({"actual": bigger.to_string_lossy(), "expected": same.to_string_lossy()}));
     assert_eq!(r["comparison"]["identical"], false, "{r}");
     // 26 mm against 20 mm is 6 × 10 × 5 mm3 more material, given as b − a.
@@ -1769,5 +1772,17 @@ fn compare_shapes_needs_two_files_and_compares_what_they_hold() {
     // The region volume is integrated from sampled lines, so it is close rather than exact.
     let only_in_actual = r["comparison"]["only_in_a"]["volume_mm3"].as_f64().unwrap_or(0.0);
     assert!((only_in_actual - 300.0).abs() < 10.0, "{only_in_actual}");
+    // The summary names the sides, so a reader never has to work out that `a` is `actual` and
+    // that the engine's own difference runs the other way: the part under test is the bigger one.
+    let summary = &r["summary"];
+    assert_eq!(summary["identical"], false, "{r}");
+    assert_eq!(summary["volume_mm3"]["actual"], json!(1300.0), "{r}");
+    assert_eq!(summary["volume_mm3"]["expected"], json!(1000.0), "{r}");
+    assert_eq!(summary["volume_mm3"]["actual_minus_expected"], json!(300.0), "{r}");
+    assert_eq!(summary["only_in_expected_mm3"], json!(0.0), "{r}");
+    let only_in_actual = summary["only_in_actual_mm3"].as_f64().unwrap_or(0.0);
+    assert!((only_in_actual - 300.0).abs() < 10.0, "{}", summary["only_in_actual_mm3"]);
+    assert_eq!(summary["regions"], 1, "{r}");
+    assert!(summary["verdict"].as_str().is_some_and(|v| v.contains("Part")), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
