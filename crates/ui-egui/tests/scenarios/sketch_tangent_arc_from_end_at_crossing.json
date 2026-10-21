@@ -1,0 +1,12 @@
+[
+  {"note": "Tangent Arc started from a line end that sits on another line (a crossing) still takes the end: only the drawing tools that understand crossing snaps get one."},
+  {"call": "engine.execute", "params": {"command": "sketch.create", "params": {"plane": "XY"}}},
+  {"call": "engine.execute", "params": {"command": "sketch.options", "params": {"snap_crossings": true}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[0, 0], [24, 24]]}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[0, 40], [60, 0]]}}},
+  {"start": "sketch.arc.tangent"},
+  {"click": {"sketch": [24, 24]}},
+  {"click": {"sketch": [40, 30]}},
+  {"key": "Escape"},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["curves", 2, "type"], "value": "arc"}}}
+]

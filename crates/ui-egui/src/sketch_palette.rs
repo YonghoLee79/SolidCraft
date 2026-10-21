@@ -22,11 +22,12 @@ thread_local! {
     static MODE: Cell<(u8, Option<u64>)> = const { Cell::new((0, None)) };
 }
 
-/// Option keys and existing localized labels. The five primary design rows are selected below;
+/// Option keys and existing localized labels. The primary rows are [`PRIMARY`];
 /// the remaining display options live in More. Point/profile labels share the dialog IDs.
-pub const TOGGLES: [(&str, &str); 10] = [
+pub const TOGGLES: [(&str, &str); 11] = [
     ("grid", "Sketch Grid"),
     ("snap", "Snap"),
+    ("snap_crossings", "Crossings"),
     ("slice", "Slice"),
     ("show_profile", "ui.profile"),
     ("show_points", "ui.points"),
@@ -36,6 +37,9 @@ pub const TOGGLES: [(&str, &str); 10] = [
     ("show_construction", "Construction Geometries"),
     ("sketch_3d", "3D Sketch"),
 ];
+
+/// The toggles shown as their own rows; the rest live in More. Crossings sits under Snap.
+const PRIMARY: [&str; 5] = ["show_constraints", "show_dimensions", "show_points", "snap", "snap_crossings"];
 
 /// Does the sketch hold any geometry of its own: a drawn curve or a 3D curve? Projected curves
 /// and the origin are held in place and do not count.
@@ -341,6 +345,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let shown = |key: &str| match key {
         "grid" => !opts.hide_grid,
         "snap" => !opts.no_snap,
+        "snap_crossings" => opts.snap_crossings,
         "slice" => opts.slice,
         "show_profile" => !opts.hide_profile,
         "show_points" => !opts.hide_points,
@@ -448,9 +453,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 let names: Vec<&str> =
                     LINE_TYPES.iter().zip(selected_types).filter(|(_, on)| *on).map(|((_, _, name), _)| app.tr_label(name)).collect();
                 crate::ui_kit::caption(ui, "Line Type", &names.join(", "));
-                for key in ["show_constraints", "show_dimensions", "show_points", "snap"] {
+                for key in PRIMARY {
+                    // Crossings is a kind of Snap: it waits, ticked or not, while Snap is off.
+                    let enabled = key != "snap_crossings" || !opts.no_snap;
                     if let Some((_, label)) = TOGGLES.iter().find(|(k, _)| *k == key)
-                        && crate::ui_kit::checkbox_row(ui, key, label, shown(key))
+                        && ui.add_enabled_ui(enabled, |ui| crate::ui_kit::checkbox_row(ui, key, label, shown(key))).inner
                     {
                         set = Some((key.to_string(), !shown(key)));
                     }
@@ -463,9 +470,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 );
                 crate::ui_kit::section(ui, "more", "ui.palette_more", false, |ui| {
                     for (key, label) in TOGGLES {
-                        if !["show_constraints", "show_dimensions", "show_points", "snap"].contains(&key)
-                            && crate::ui_kit::checkbox_row(ui, key, label, shown(key))
-                        {
+                        if !PRIMARY.contains(&key) && crate::ui_kit::checkbox_row(ui, key, label, shown(key)) {
                             set = Some((key.to_string(), !shown(key)));
                         }
                     }

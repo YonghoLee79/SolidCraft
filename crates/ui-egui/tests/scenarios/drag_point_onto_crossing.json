@@ -1,0 +1,14 @@
+[
+  {"note": "Dragging a line's end onto where two lines cross snaps it there and holds it on both (two point_on_curve constraints)."},
+  {"start": "sketch.create"},
+  {"click": {"plane": "XY"}},
+  {"call": "engine.execute", "params": {"command": "sketch.options", "params": {"snap_crossings": true}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[10, 10], [50, 50]]}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[10, 50], [50, 10]]}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[55, 15], [58, 25]]}}},
+  {"drag": [{"sketch": [55, 15]}, {"sketch": [30.3, 29.8]}], "steps": 12},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["curves", 2, "start_at"], "value": [30.0, 30.0]}}},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["constraints", 0, "type"], "value": "point_on_curve"}}},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["constraints", 1, "type"], "value": "point_on_curve"}}},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["constraints", 2], "value": null}}}
+]

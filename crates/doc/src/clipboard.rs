@@ -89,7 +89,7 @@ fn remap_geo(
         return Err(crate::DocError::Invalid("clone plane reference depth exceeded".into()));
     }
     match g {
-        GeoRef::SketchPoint { sketch, .. } | GeoRef::SketchCurve { sketch, .. } => {
+        GeoRef::SketchPoint { sketch, .. } | GeoRef::SketchCurve { sketch, .. } | GeoRef::SketchCrossing { sketch, .. } => {
             if let Some(new) = ids.get(sketch) {
                 *sketch = *new;
             }
@@ -194,7 +194,7 @@ impl crate::Feature {
                     checked_link(&link.source, 0)?;
                 }
             }
-            K::ConstructionPlane { plane }
+            K::ConstructionPlane { plane, .. }
             | K::Split { plane, .. }
             | K::SplitFace { plane, .. }
             | K::Mirror { plane, .. }
@@ -252,7 +252,7 @@ impl crate::Feature {
                     }
                 }
             }
-            K::ConstructionPlane { plane }
+            K::ConstructionPlane { plane, .. }
             | K::Split { plane, .. }
             | K::SplitFace { plane, .. }
             | K::Mirror { plane, .. }

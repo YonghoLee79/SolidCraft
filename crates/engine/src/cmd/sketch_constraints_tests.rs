@@ -251,6 +251,200 @@ fn drawing_onto_a_curve_keeps_the_point_on_it() {
     assert!((st.dist(cc) - 8.0).abs() < 1e-7, "{st:?} {cc:?}");
 }
 
+/// Indices of the curves holding point `p` through `PointOnCurve` constraints.
+fn on_curves(sk: &solidcraft_sketch::Sketch, p: usize) -> Vec<usize> {
+    use solidcraft_sketch::ConstraintKind::PointOnCurve;
+    sk.constraints.iter().filter_map(|c| if let PointOnCurve { p: q, c } = c.kind { (q == p).then_some(c) } else { None }).collect()
+}
+
+fn n_on_curve(sk: &solidcraft_sketch::Sketch) -> usize {
+    sk.constraints.iter().filter(|c| matches!(c.kind, solidcraft_sketch::ConstraintKind::PointOnCurve { .. })).count()
+}
+
+fn start_of(sk: &solidcraft_sketch::Sketch, line: &str) -> (usize, Vec2) {
+    let i = sk.resolve_point(&format!("{line}.start")).unwrap();
+    (i, sk.point(i).unwrap())
+}
+
+fn dist_to(sk: &solidcraft_sketch::Sketch, curve: &str, p: Vec2) -> f64 {
+    sk.shape(sk.curve_index(curve).unwrap()).unwrap().dist(p)
+}
+
+/// The snap string for the crossing of `a` and `b` near `xy`.
+fn xsnap(a: &str, b: &str, xy: &str) -> String {
+    format!("x:[\"{a}\",\"{b}\"]:{xy}")
+}
+
+/// Two crossing lines l1 (0,0)-(20,20) and l2 (0,20)-(20,0): their ids.
+fn two_lines(s: &mut Session) -> (String, String) {
+    let l1 = ids(&run(s, "sketch.line", json!({"points": [[0, 0], [20, 20]]}))["curves"])[0].clone();
+    let l2 = ids(&run(s, "sketch.line", json!({"points": [[0, 20], [20, 0]]}))["curves"])[0].clone();
+    (l1, l2)
+}
+
+#[test]
+fn drawing_from_a_crossing_keeps_it_there() {
+    let mut s = new_sketch();
+    let (l1, l2) = two_lines(&mut s);
+    let r = run(&mut s, "sketch.line", json!({"points": [xsnap(&l1, &l2, "10,10"), [30, 5]]}));
+    let n = ids(&r["curves"])[0].clone();
+    run(&mut s, "sketch.move_point", json!({"point": format!("{l2}.end"), "to": [20, 10]}));
+    let sk = sketch(&s);
+    let (p, at) = start_of(&sk, &n);
+    assert!(dist_to(&sk, &l1, at) < 1e-7 && dist_to(&sk, &l2, at) < 1e-7, "{at:?}");
+    assert_eq!(on_curves(&sk, p).len(), 2);
+    assert_eq!(n_on_curve(&sk), 2);
+}
+
+#[test]
+fn drawing_from_a_line_circle_crossing_follows_a_resize() {
+    let mut s = new_sketch();
+    let c = ids(&run(&mut s, "sketch.circle.center", json!({"center": [0, 0], "radius": 10}))["curves"])[0].clone();
+    let l = ids(&run(&mut s, "sketch.line", json!({"points": [[-20, 0], [20, 0]]}))["curves"])[0].clone();
+    let r = run(&mut s, "sketch.line", json!({"points": [xsnap(&c, &l, "10,0"), [30, 30]]}));
+    let n = ids(&r["curves"])[0].clone();
+    run(&mut s, "sketch.dimension", json!({"entities": [c], "value": 16}));
+    let sk = sketch(&s);
+    assert!(start_of(&sk, &n).1.dist(Vec2::new(8.0, 0.0)) < 1e-7, "{:?}", start_of(&sk, &n));
+}
+
+#[test]
+fn an_arc_and_a_spline_crossing_hold_too() {
+    let mut s = new_sketch();
+    let a = ids(&run(&mut s, "sketch.arc.center_point", json!({"center": [0, 0], "start": [20, 0], "sweep": 90}))["curves"])[0].clone();
+    let l = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 10], [30, 10]]}))["curves"])[0].clone();
+    let sp = ids(&run(&mut s, "sketch.spline.fit_point", json!({"points": [[0, 30], [10, 40], [20, 30]]}))["curves"])[0].clone();
+    let m = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 35], [20, 35]]}))["curves"])[0].clone();
+    let r1 = run(&mut s, "sketch.line", json!({"points": [xsnap(&a, &l, "17.3,10"), [40, 40]]}));
+    let r2 = run(&mut s, "sketch.line", json!({"points": [xsnap(&sp, &m, "3,35"), [40, 50]]}));
+    let (n1, n2) = (ids(&r1["curves"])[0].clone(), ids(&r2["curves"])[0].clone());
+    run(&mut s, "sketch.move_point", json!({"point": format!("{l}.end"), "to": [30, 12]}));
+    run(&mut s, "sketch.move_point", json!({"point": format!("{m}.end"), "to": [20, 37]}));
+    let sk = sketch(&s);
+    let (_, p1) = start_of(&sk, &n1);
+    assert!(dist_to(&sk, &a, p1) < 1e-7 && dist_to(&sk, &l, p1) < 1e-7, "{p1:?}");
+    let (_, p2) = start_of(&sk, &n2);
+    assert!(dist_to(&sk, &m, p2) < 1e-7, "{p2:?}");
+    let ci = sk.curve_index(&sp).unwrap();
+    let off = sk.exact_segs(ci).unwrap().iter().map(|g| g.point_at(g.closest_param(p2)).dist(p2)).fold(f64::INFINITY, f64::min);
+    assert!(off < 1e-6, "{p2:?} off the spline by {off}");
+}
+
+#[test]
+fn a_loose_point_at_the_crossing_is_reused_and_attached() {
+    let mut s = new_sketch();
+    let (l1, l2) = two_lines(&mut s);
+    let pid = run(&mut s, "sketch.point", json!({"point": [10, 10]}))["point"].as_str().unwrap().to_string();
+    let before = sketch(&s).points.len();
+    let r = run(&mut s, "sketch.line", json!({"points": [xsnap(&l1, &l2, "10,10"), [30, 5]]}));
+    let n = ids(&r["curves"])[0].clone();
+    let sk = sketch(&s);
+    assert_eq!(sk.points.len(), before + 1, "only the line's end is new");
+    let loose = sk.resolve_point(&pid).unwrap();
+    assert_eq!(start_of(&sk, &n).0, loose);
+    assert_eq!(on_curves(&sk, loose).len(), 2);
+    run(&mut s, "sketch.move_point", json!({"point": format!("{l2}.end"), "to": [20, 10]}));
+    let sk = sketch(&s);
+    let at = sk.point(loose).unwrap();
+    assert!(dist_to(&sk, &l1, at) < 1e-7 && dist_to(&sk, &l2, at) < 1e-7, "{at:?}");
+}
+
+#[test]
+fn a_line_end_already_on_one_curve_gets_only_the_missing_constraint() {
+    // T-junction: l3 ends on l1 at the crossing of l1 and l2.
+    let mut s = new_sketch();
+    let (l1, l2) = two_lines(&mut s);
+    run(&mut s, "sketch.line", json!({"points": [[30, 0], format!("on:{l1}:10,10")]}));
+    let before = n_on_curve(&sketch(&s));
+    run(&mut s, "sketch.line", json!({"points": [xsnap(&l1, &l2, "10,10"), [30, 5]]}));
+    assert_eq!(n_on_curve(&sketch(&s)), before + 1, "only the l2 constraint is missing");
+    // Corner: b starts where a ends.
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [20, 20], [40, 0]], "ids": ["a", "b"]}));
+    run(&mut s, "sketch.line", json!({"points": [xsnap("a", "b", "20,20"), [30, 30]]}));
+    assert_eq!(n_on_curve(&sketch(&s)), 0, "the corner is on both already");
+}
+
+#[test]
+fn a_point_already_held_at_the_crossing_gets_nothing_added() {
+    // The centre of a centre rectangle sits at its diagonals' crossing, held there by a
+    // midpoint on one and by the geometry on the other.
+    let mut s = new_sketch();
+    run(&mut s, "sketch.rectangle.center", json!({"center": [5, 3], "corner": [15, 9]}));
+    let diag: Vec<String> = sketch(&s).curves.iter().filter(|c| c.construction).map(|c| c.id.clone()).collect();
+    let (d1, d2) = (&diag[0], &diag[1]);
+    let (np, nc) = (sketch(&s).points.len(), sketch(&s).constraints.len());
+    run(&mut s, "sketch.circle.center", json!({"center": xsnap(d1, d2, "5,3"), "radius": 2}));
+    let sk = sketch(&s);
+    assert_eq!((sk.points.len(), sk.constraints.len()), (np, nc), "the centre is reused, nothing added");
+    // A T-junction started from a line's midpoint.
+    let mut s = new_sketch();
+    let l1 = ids(&run(&mut s, "sketch.line", json!({"points": [[0, 0], [20, 0]]}))["curves"])[0].clone();
+    let t = ids(&run(&mut s, "sketch.line", json!({"points": [format!("mid:{l1}"), [10, 10]]}))["curves"])[0].clone();
+    let nc = sketch(&s).constraints.len();
+    run(&mut s, "sketch.line", json!({"points": [xsnap(&l1, &t, "10,0"), [30, 5]]}));
+    assert_eq!(sketch(&s).constraints.len(), nc, "the midpoint is on both already");
+}
+
+#[test]
+fn undo_removes_the_crossing_point_and_constraints() {
+    let mut s = new_sketch();
+    let (l1, l2) = two_lines(&mut s);
+    let (np, nc) = (sketch(&s).points.len(), sketch(&s).constraints.len());
+    run(&mut s, "sketch.line", json!({"points": [xsnap(&l1, &l2, "10,10"), [30, 5]]}));
+    assert_eq!(sketch(&s).constraints.len(), nc + 2);
+    run(&mut s, "edit.undo", json!({}));
+    let sk = sketch(&s);
+    assert_eq!((sk.points.len(), sk.constraints.len()), (np, nc));
+}
+
+#[test]
+fn pulling_the_curves_apart_is_refused() {
+    let mut s = new_sketch();
+    let c = ids(&run(&mut s, "sketch.circle.center", json!({"center": [0, 0], "radius": 10}))["curves"])[0].clone();
+    let l = ids(&run(&mut s, "sketch.line", json!({"points": [[-20, 5], [20, 5]]}))["curves"])[0].clone();
+    run(&mut s, "sketch.constraint.fix", json!({"entity": l}));
+    run(&mut s, "sketch.line", json!({"points": [xsnap(&c, &l, "8.6,5"), [30, 30]]}));
+    // The circle shrinks to radius 3, which the line at y = 5 can no longer touch.
+    let e = s.execute("sketch.dimension", &json!({"entities": [c], "value": 3})).unwrap_err().to_string();
+    assert!(e.contains("over-constrain") || e.contains("conflict"), "{e}");
+}
+
+#[test]
+fn the_snapping_commands_are_commands() {
+    for c in crate::SNAPPING_COMMANDS {
+        assert!(crate::find_command(c).is_some(), "{c}");
+    }
+}
+
+#[test]
+fn bad_crossing_snaps_are_errors() {
+    let mut s = new_sketch();
+    let (l1, l2) = two_lines(&mut s);
+    let far = ids(&run(&mut s, "sketch.line", json!({"points": [[100, 100], [120, 100]]}))["curves"])[0].clone();
+    for bad in [
+        xsnap(&l1, "nope", "10,10"),
+        xsnap(&l1, &l1, "10,10"),
+        xsnap(&l1, &l2, "NaN,10"),
+        xsnap(&l1, &l2, "inf,10"),
+        xsnap(&l1, &l2, "10"),
+        xsnap(&l1, &far, "10,10"),
+        // The crossing is at 10,10, more than 1 mm away.
+        xsnap(&l1, &l2, "11.5,10"),
+        format!("x:[\"{l1}\"]:10,10"),
+        format!("x:[\"{l1}\",\"{l2}\",\"{l1}\"]:10,10"),
+        "x:[1,2]:10,10".to_string(),
+        format!("x:{l1},{l2}:10,10"),
+        "x:[\"l1\",:10,10".to_string(),
+        "x:".to_string(),
+        "x::".to_string(),
+    ] {
+        let before = s.doc.clone();
+        assert!(s.execute("sketch.line", &json!({"points": [bad.clone(), [30, 5]]})).is_err(), "{bad}");
+        assert_eq!(*s.doc, *before, "{bad}");
+    }
+}
+
 /// A faucet spout path: a vertical riser, a horizontal top and an outlet sloping down, joined
 /// by fillets. The riser points up and the outlet down-left, so their directions are 150° apart
 /// while the lines meet at 30°.

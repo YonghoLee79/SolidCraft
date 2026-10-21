@@ -33,7 +33,10 @@ use serde_json::Value;
 use solidcraft_doc::{Document, Model, ModelState};
 use solidcraft_geom::Vec3;
 
-pub use cmd::{CommandInfo, CommandSpec, auto_operation, command_specs, extrude_reach, find_command};
+pub use cmd::{
+    AT_CROSSING, CommandInfo, CommandSpec, Crossing, SNAPPING_COMMANDS, auto_operation, command_specs, crossing_near, crossings_of, extrude_reach,
+    find_command,
+};
 pub use solidcraft_doc as doc;
 pub use solidcraft_doc::Visibility;
 pub use solidcraft_geom as geom;
@@ -141,6 +144,13 @@ pub enum Sel {
     /// An origin axis (X, Y, Z).
     Axis {
         name: String,
+    },
+    /// Where curves `a` and `b` (ids) of a sketch cross, at `at` in sketch coordinates.
+    SketchCrossing {
+        sketch: u64,
+        a: String,
+        b: String,
+        at: solidcraft_geom::Vec2,
     },
     /// A body vertex at a point.
     Vertex {

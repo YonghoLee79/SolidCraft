@@ -5605,7 +5605,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             }
             Ok(())
         }
-        FeatureKind::ConstructionPlane { plane } => {
+        FeatureKind::ConstructionPlane { plane, .. } => {
             // On a body face: follow the face as it is now, as a sketch on that face does.
             let pl = match crate::face_anchor::plane_face_anchor(plane) {
                 Some(anchor) => {

@@ -1,0 +1,16 @@
+[
+  {"note": "A point near a crossing but not at it is reused as it is: the line starts there, no new point at the crossing, nothing attached."},
+  {"call": "engine.execute", "params": {"command": "sketch.create", "params": {"plane": "XY"}}},
+  {"call": "engine.execute", "params": {"command": "sketch.options", "params": {"snap_crossings": true}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[0, 0], [60, 60]]}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[0, 40], [60, 0]]}}},
+  {"call": "engine.execute", "params": {"command": "sketch.point", "params": {"point": [24.05, 24]}}},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["points", 6], "value": null}}},
+  {"start": "sketch.line"},
+  {"click": {"sketch": [24.05, 24]}},
+  {"click": {"sketch": [70, 10]}},
+  {"key": "Escape"},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["points", 7], "value": null}}},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["curves", 2, "start"], "value": "p1"}}},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["constraints", 1], "value": null}}}
+]

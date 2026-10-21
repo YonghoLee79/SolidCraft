@@ -55,6 +55,8 @@ pub enum GeoRef {
     SketchPoint { sketch: u64, point: String },
     /// A sketch curve (by sketch feature id and curve id).
     SketchCurve { sketch: u64, curve: String },
+    /// Where two curves of one sketch cross: the crossing of curves `a` and `b` nearest `near` (sketch coordinates).
+    SketchCrossing { sketch: u64, a: String, b: String, near: Vec2 },
 }
 
 /// How a construction axis is defined.
@@ -286,6 +288,23 @@ pub(crate) fn point(ctx: &Ctx, g: &GeoRef) -> Result<Vec3> {
             let ss = ctx.st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?;
             let q =
                 ss.sketch.point_index(point).and_then(|i| ss.sketch.point(i)).ok_or_else(|| DocError::Unknown(format!("sketch point `{point}`")))?;
+            sketch_world(ctx, *sketch, q)
+        }
+        GeoRef::SketchCrossing { sketch, a, b, near } => {
+            let ss = ctx.st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?;
+            let curve = |id: &String| ss.sketch.curve_index(id).ok_or_else(|| DocError::Unknown(format!("curve `{id}`")));
+            let (ia, ib) = (curve(a)?, curve(b)?);
+            if ia == ib {
+                return Err(bad("a crossing needs two different curves"));
+            }
+            if !near.x.is_finite() || !near.y.is_finite() {
+                return Err(bad("the crossing's pick position is not a finite point"));
+            }
+            // ponytail: nearest to the original pick; can jump to another crossing of the same pair after a big edit (option A, accepted). Track the last resolved position if it bites.
+            let q = solidcraft_sketch::crossings_of(&ss.sketch, ia, ib)
+                .into_iter()
+                .min_by(|p, q| (*p - *near).len().total_cmp(&(*q - *near).len()))
+                .ok_or_else(|| bad(format!("curves `{a}` and `{b}` no longer cross")))?;
             sketch_world(ctx, *sketch, q)
         }
         // A round edge or face: its centre.

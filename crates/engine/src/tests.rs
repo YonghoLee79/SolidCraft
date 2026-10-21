@@ -689,6 +689,9 @@ pub(crate) fn hostile_values() -> Vec<Value> {
         json!(["origin", "origin"]),
         json!({}),
         json!({"x": 1}),
+        json!("x:[\"l1\",\"l2\"]:1,1"),
+        json!("x:[\"l1\",\"l1\"]:NaN,1e999"),
+        json!(["x:[\"l1\",\"l2\"]:1,1", "x:[[[[:1"]),
         json!([{"point": [0, 0]}]),
         json!([{"body": "Body1", "index": 999999}]),
     ]
@@ -859,6 +862,51 @@ fn hostile_params_never_panic() {
         workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
     });
     assert!(internal.is_empty(), "commands panicked:\n{}", internal.join("\n"));
+}
+
+/// A hostile sketch-crossing reference is an error or a feature error, never a panic (the key/value
+/// sweep above can't build a nested reference).
+#[test]
+fn hostile_crossing_refs_never_panic() {
+    let refs = [
+        json!({"type": "sketch_crossing", "sketch": 999999, "a": "l1", "b": "l2", "near": [1, 1]}),
+        json!({"type": "sketch_crossing", "sketch": 1, "a": "nope", "b": "l1", "near": [1, 1]}),
+        json!({"type": "sketch_crossing", "sketch": 1, "a": "l1", "b": "l1", "near": [1, 1]}),
+        json!({"sketch": 1, "crossing": "l1", "near": [1, 1]}),
+        json!({"sketch": 1, "crossing": ["l1"], "near": [1, 1]}),
+        json!({"sketch": 1, "crossing": ["l1", "l2"]}),
+        json!({"sketch": 999999, "crossing": ["l1", "l2"], "near": [1, 1]}),
+    ];
+    for r in refs {
+        let mut s = Session::default();
+        let _ = s.execute("sketch.create", &json!({"plane": "XY"}));
+        let _ = s.execute("sketch.line", &json!({"points": [[0, 0], [10, 10]]}));
+        let _ = s.execute("sketch.line", &json!({"points": [[0, 10], [10, 0]]}));
+        let _ = s.execute("sketch.finish", &json!({}));
+        let p = json!({"a": r.clone(), "b": {"point": [100, 0, 0]}, "c": {"point": [0, 100, 0]}});
+        let res = s.execute("construct.plane.three_points", &p);
+        // Refused up front, or built as a feature that reports its error.
+        if res.is_ok() {
+            let id = s.doc.features.last().map(|f| f.id);
+            assert!(id.is_some_and(|id| s.model.result(id).is_some_and(|r| r.error.is_some())), "{r}: accepted without an error");
+        }
+        assert!(!matches!(res, Err(EngineError::Internal(..))), "{r}: {res:?}");
+        // The same curve twice is said plainly.
+        if res.is_ok() && r["a"] == r["b"] && r["type"] == "sketch_crossing" {
+            let id = s.doc.features.last().map(|f| f.id).unwrap_or_default();
+            let msg = format!("{:?}", s.model.result(id).and_then(|x| x.error.clone()));
+            assert!(msg.contains("two different curves"), "{msg}");
+        }
+    }
+    // A huge but finite pick is not an error: it resolves to the nearest crossing, without panicking.
+    let mut s = Session::default();
+    let _ = s.execute("sketch.create", &json!({"plane": "XY"}));
+    let _ = s.execute("sketch.line", &json!({"points": [[0, 0], [10, 10]]}));
+    let _ = s.execute("sketch.line", &json!({"points": [[0, 10], [10, 0]]}));
+    let _ = s.execute("sketch.finish", &json!({}));
+    let far = json!({"type": "sketch_crossing", "sketch": 1, "a": "l1", "b": "l2", "near": [1e308, -1e308]});
+    let res = s.execute("construct.plane.three_points", &json!({"a": far, "b": {"point": [100, 0, 50]}, "c": {"point": [0, 100, 80]}}));
+    assert!(!matches!(res, Err(EngineError::Internal(..))), "{res:?}");
 }
 
 #[test]

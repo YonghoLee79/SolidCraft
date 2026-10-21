@@ -1,0 +1,15 @@
+[
+  {"note": "Two line ends that merely coincide (separate points) are a crossing: drawing from there holds the point on both lines."},
+  {"call": "engine.execute", "params": {"command": "sketch.create", "params": {"plane": "XY"}}},
+  {"call": "engine.execute", "params": {"command": "sketch.options", "params": {"snap_crossings": true}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[0, 10], [20, 20]]}}},
+  {"call": "engine.execute", "params": {"command": "sketch.line", "params": {"points": [[30, 20], [40, 40]]}}},
+  {"call": "engine.execute", "params": {"command": "sketch.move_point", "params": {"point": "l2.start", "to": [20, 20]}}},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["constraints"], "value": []}}},
+  {"start": "sketch.line"},
+  {"click": {"sketch": [20, 20]}},
+  {"click": {"sketch": [50, 10]}},
+  {"key": "Escape"},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["constraints", 0, "type"], "value": "point_on_curve"}}},
+  {"expect": {"query": {"command": "sketch.inspect", "path": ["constraints", 1], "value": null}}}
+]

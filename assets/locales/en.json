@@ -1742,6 +1742,7 @@
   "ui.smooth_wheel_zoom": "Smooth wheel zoom",
   "ui.smooth_wheel_zoom_tip": "Turn off to apply each wheel event immediately, without a smoothing tail",
   "ui.snap": "Snap",
+  "ui.snap_crossings": "Crossings",
   "ui.space_mouse_axes_reassigned": "Axes are reassigned in Preferences, and that still applies on top of this calibration.",
   "ui.space_mouse_calibrate": "Calibrate…",
   "ui.space_mouse_calibrate_tip": "Move the cap as the window asks, so SolidCraft learns which way each axis of this 3D mouse goes and how far. Saved for this 3D mouse.",

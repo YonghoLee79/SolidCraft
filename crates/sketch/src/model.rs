@@ -612,12 +612,23 @@ pub struct SketchView {
     /// Clicks don't snap to the grid.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_snap: bool,
+    /// Clicks and drags also snap to where two curves cross (while Snap is on, see
+    /// [`SketchView::snaps_crossings`]). The one snap that starts off.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub snap_crossings: bool,
     /// Cut away the model in front of the sketch plane while editing.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub slice: bool,
     /// 3D sketch: drawing may leave the sketch plane.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub three_d: bool,
+}
+
+impl SketchView {
+    /// Whether clicks and drags snap to crossings: Snap and its Crossings option both on.
+    pub fn snaps_crossings(&self) -> bool {
+        !self.no_snap && self.snap_crossings
+    }
 }
 
 /// A 2D sketch. Point 0 is always the fixed sketch origin (id `origin`).

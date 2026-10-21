@@ -70,6 +70,8 @@ mod silhouette;
 mod sketch;
 pub(crate) use sketch::author_path_for_rebind;
 pub(crate) use sketch::created as sketch_created;
+pub use sketch_project::SNAPPING_COMMANDS;
+pub use solidcraft_sketch::{AT_CROSSING, Crossing, crossing_near, crossings_of};
 mod sketch_3d;
 mod sketch_canvas;
 pub mod sketch_clipboard;

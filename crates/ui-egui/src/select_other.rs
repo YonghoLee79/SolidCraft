@@ -148,7 +148,7 @@ fn shown_as(hit: &Hit, sel: &Sel) -> Sel {
 /// Sort key: in a sketch its own points and curves come first; then by kind.
 fn rank(s: &Sel, sketching: bool) -> (u8, u8) {
     let kind = match s {
-        Sel::SketchPoint { .. } | Sel::ExternalSketchPoint { .. } => 0,
+        Sel::SketchPoint { .. } | Sel::ExternalSketchPoint { .. } | Sel::SketchCrossing { .. } => 0,
         Sel::SketchCurve { .. } | Sel::ExternalSketchCurve { .. } => 1,
         Sel::SketchConstraint { .. } => 2,
         Sel::Vertex { .. } => 3,
@@ -238,6 +238,7 @@ pub fn label(app: &SolveApp, sel: &Sel) -> String {
         Sel::SketchCurve { id } => app.session.active_sketch.map(|s| in_sketch(s, &|sk| curve_label(sk, id))).unwrap_or_else(|| id.clone()),
         Sel::ExternalSketchPoint { sketch, id } => format!("{} · {}", in_sketch(*sketch, &|sk| point_label(sk, id)), sketch_name(app, *sketch)),
         Sel::ExternalSketchCurve { sketch, id } => format!("{} · {}", in_sketch(*sketch, &|sk| curve_label(sk, id)), sketch_name(app, *sketch)),
+        Sel::SketchCrossing { sketch, a, b, .. } => format!("{a} × {b} · {}", sketch_name(app, *sketch)),
         Sel::SketchConstraint { id } => format!("Constraint {id}"),
         Sel::Vertex { body, .. } => format!("Vertex · {body}"),
         Sel::Edge { body, index, .. } => format!("Edge {} · {body}", index + 1),
@@ -266,7 +267,7 @@ fn icon(app: &SolveApp, sel: &Sel) -> &'static str {
         }
     };
     match sel {
-        Sel::SketchPoint { .. } | Sel::ExternalSketchPoint { .. } | Sel::Vertex { .. } => "point",
+        Sel::SketchPoint { .. } | Sel::ExternalSketchPoint { .. } | Sel::SketchCrossing { .. } | Sel::Vertex { .. } => "point",
         Sel::SketchCurve { id } => curve(app.session.active_sketch, id),
         Sel::ExternalSketchCurve { sketch, id } => curve(Some(*sketch), id),
         Sel::SketchConstraint { .. } => "dimension",

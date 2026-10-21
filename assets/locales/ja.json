@@ -1742,6 +1742,7 @@
   "ui.smooth_wheel_zoom": "滑らかなホイールズーム",
   "ui.smooth_wheel_zoom_tip": "オフにすると、ホイール操作のたびにズームが即座に反映され、滑らかな減速効果は適用されません。",
   "ui.snap": "スナップ",
+  "ui.snap_crossings": "交点",
   "ui.space_mouse_axes_reassigned": "軸の割り当ては環境設定で変更されており、このキャリブレーションの後も適用されます。",
   "ui.space_mouse_calibrate": "キャリブレーション…",
   "ui.space_mouse_calibrate_tip": "ウィンドウの指示どおりにキャップを動かすと、この3Dマウスの各軸の向きと移動量をSolidCraftが学習します。この3Dマウス用に保存されます。",

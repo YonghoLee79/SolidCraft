@@ -1921,6 +1921,7 @@ mod tests {
             .add_feature(
                 crate::FeatureKind::ConstructionPlane {
                     plane: crate::PlaneRef::Offset { base: Box::new(crate::PlaneRef::Origin { name: "XZ".into() }), distance: "7 mm".into() },
+                    size: Default::default(),
                 },
                 None,
             )
@@ -1928,7 +1929,7 @@ mod tests {
         let mut json: Value = serde_json::from_str(&doc.to_json()).unwrap();
         json["format"] = Value::from("solidcraft/5");
         let migrated = read(&json.to_string()).unwrap();
-        let crate::FeatureKind::ConstructionPlane { plane } = &migrated.feature(id).unwrap().kind else { panic!("plane") };
+        let crate::FeatureKind::ConstructionPlane { plane, .. } = &migrated.feature(id).unwrap().kind else { panic!("plane") };
         let (values, errors) = migrated.param_values();
         assert!(errors.is_empty());
         let p = migrated.resolve_plane(&values, plane, 0).unwrap();

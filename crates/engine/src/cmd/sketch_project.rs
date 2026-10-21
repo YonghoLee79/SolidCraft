@@ -421,10 +421,69 @@ fn auto_project(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"auto_project": s.auto_project}))
 }
 
+/// Resolve `["<c1>","<c2>"]:x,y` to the id of a point on both curves at their crossing nearest
+/// x,y (within 1 mm): an existing point there is reused, and only the missing `PointOnCurve`s are added.
+fn crossing_point(sk: &mut Sketch, t: &str) -> std::result::Result<String, String> {
+    let (list, xy) = t.rsplit_once(':').ok_or("expected x:[\"c1\",\"c2\"]:x,y")?;
+    let ids: Vec<String> = serde_json::from_str(list).map_err(|_| "expected two JSON-quoted curve ids")?;
+    let [c1, c2] = &ids[..] else { return Err("expected two JSON-quoted curve ids".into()) };
+    let n: Vec<f64> = xy.split(',').map(|x| x.trim().parse().unwrap_or(f64::NAN)).collect();
+    let [x, y] = n[..] else { return Err("expected a position x,y".into()) };
+    if !x.is_finite() || !y.is_finite() {
+        return Err("the position must be finite".into());
+    }
+    let near = solidcraft_geom::Vec2::new(x, y);
+    let curve = |id: &String| sk.curve_index(id).ok_or_else(|| format!("unknown curve `{id}`"));
+    let (a, b) = (curve(c1)?, curve(c2)?);
+    if a == b {
+        return Err("a crossing needs two different curves".into());
+    }
+    let at = crate::crossings_of(sk, a, b)
+        .into_iter()
+        .min_by(|p, q| p.dist(near).total_cmp(&q.dist(near)))
+        // The UI sends the crossing itself; 1 mm leaves room for rounding, not for guessing.
+        .filter(|p| p.dist(near) <= 1.0)
+        .ok_or_else(|| format!("`{c1}` and `{c2}` do not cross near {x},{y}"))?;
+    let reuse = (0..sk.points.len())
+        .filter_map(|i| Some((i, sk.point(i)?.dist(at))))
+        .filter(|&(_, d)| d <= crate::AT_CROSSING)
+        .min_by(|p, q| p.1.total_cmp(&q.1))
+        .map(|(i, _)| i);
+    let pi = match reuse {
+        Some(i) => i,
+        None => sk.add_point(at, None).map_err(|e| e.to_string())?,
+    };
+    // Only what removes a degree of freedom: a point already held on a curve (its end, a
+    // midpoint, coincident, or by the geometry itself) gets nothing redundant (as `redundancy`).
+    for c in [a, b] {
+        let before = super::sketch::dof_now(sk);
+        let mut trial = sk.clone();
+        trial.add_constraint(ConstraintKind::PointOnCurve { p: pi, c }, None).map_err(|e| e.to_string())?;
+        if super::sketch::dof_now(&trial) < before {
+            *sk = trial;
+        }
+    }
+    sk.points.get(pi).map(|q| q.id.clone()).ok_or_else(|| "no such point".into())
+}
+
+/// The commands whose point arguments go through [`snap_points`], so take the snap forms
+/// (`"x:…"`, `"mid:…"`, `"on:…"`, vertices). Others take only point ids and coordinates.
+pub const SNAPPING_COMMANDS: &[&str] = &[
+    "sketch.line",
+    "sketch.circle.center",
+    "sketch.arc.three_point",
+    "sketch.arc.center_point",
+    "sketch.spline.fit_point",
+    "sketch.spline.control_point",
+    "sketch.spline.control_point_5",
+    "sketch.conic",
+];
+
 /// Point arguments that snap to model geometry while drawing, rewritten to sketch point ids:
 /// `{"vertex": [x,y,z]}` projects the vertex (a linked point); `{"on_edge": [x,y,z]}` projects
 /// the edge and makes a free point on it (coincident with the projection); `"mid:<line>"`
-/// makes a point held at the line's midpoint (and `"vertex:x,y,z"` is the vertex form). Everything
+/// makes a point held at the line's midpoint (and `"vertex:x,y,z"` is the vertex form);
+/// `"x:[\"<c1>\",\"<c2>\"]:x,y"` is the (reused) point at the crossing of two curves, held on both. Everything
 /// else is left as it is. The links are added to the active sketch in the session's document.
 pub(super) fn snap_points(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
     let Some(id) = s.active_sketch else { return Ok(p.clone()) };
@@ -451,7 +510,9 @@ pub(super) fn snap_points(s: &mut Session, p: &Value, cmd: &str) -> Result<Value
                 _ => None,
             }
         });
-        if vertex.is_none() && edge.is_none() && mid.is_none() && on.is_none() {
+        // "x:[\"<c1>\",\"<c2>\"]:x,y": the crossing of two curves nearest x,y (ids are JSON-quoted, they may hold `:`).
+        let cross = v.as_str().and_then(|x| x.strip_prefix("x:")).map(str::to_string);
+        if vertex.is_none() && edge.is_none() && mid.is_none() && on.is_none() && cross.is_none() {
             return Ok(());
         }
         if doc.is_none() {
@@ -462,7 +523,9 @@ pub(super) fn snap_points(s: &mut Session, p: &Value, cmd: &str) -> Result<Value
         }
         let Some((d, sk)) = doc.as_mut() else { return Ok(()) };
         let body = str_(v, "body").unwrap_or("").to_string();
-        let pid = if let Some((curve, near)) = on {
+        let pid = if let Some(t) = cross {
+            crossing_point(sk, &t).map_err(|e| bad(cmd, e))?
+        } else if let Some((curve, near)) = on {
             let c = sk.curve_index(&curve).ok_or_else(|| bad(cmd, format!("unknown curve `{curve}`")))?;
             let at = match sk.shape(c) {
                 Some(sh) => sh.project(near),

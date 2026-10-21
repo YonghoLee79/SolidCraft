@@ -408,15 +408,18 @@ fn self_referencing_construction_planes_are_errors() {
 
     // Directly its own first side.
     let mut doc = Document::new("selfplane");
-    doc.add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Midplane { a: selfref("P1"), b: xz() } }, Some("P1")).unwrap();
+    doc.add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Midplane { a: selfref("P1"), b: xz() }, size: Default::default() }, Some("P1"))
+        .unwrap();
     let mut m = Model::new();
     m.evaluate(&doc);
     assert!(m.results.iter().any(|r| r.error.is_some()), "a plane that is its own side must report an error: {:?}", m.results);
 
     // Two planes that are each other's side.
     let mut doc = Document::new("twoplanes");
-    doc.add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Midplane { a: selfref("P2"), b: xz() } }, Some("P1")).unwrap();
-    doc.add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Midplane { a: selfref("P1"), b: xz() } }, Some("P2")).unwrap();
+    doc.add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Midplane { a: selfref("P2"), b: xz() }, size: Default::default() }, Some("P1"))
+        .unwrap();
+    doc.add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Midplane { a: selfref("P1"), b: xz() }, size: Default::default() }, Some("P2"))
+        .unwrap();
     let mut m = Model::new();
     m.evaluate(&doc);
     assert!(m.results.iter().any(|r| r.error.is_some()), "a two-plane cycle must report an error: {:?}", m.results);
@@ -424,7 +427,11 @@ fn self_referencing_construction_planes_are_errors() {
     // A perpendicular plane whose base is itself, and a sketch placed on it.
     let mut doc = Document::new("perpplane");
     let line = Box::new(construct::GeoRef::World { axis: "X".into() });
-    doc.add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Perpendicular { plane: selfref("P1"), line } }, Some("P1")).unwrap();
+    doc.add_feature(
+        FeatureKind::ConstructionPlane { plane: PlaneRef::Perpendicular { plane: selfref("P1"), line }, size: Default::default() },
+        Some("P1"),
+    )
+    .unwrap();
     doc.add_feature(FeatureKind::Sketch { plane: PlaneRef::Construction { name: "P1".into() }, sketch: Sketch::new() }, Some("Sketch1")).unwrap();
     let mut m = Model::new();
     m.evaluate(&doc);

@@ -40,6 +40,8 @@ pub const FEATURES: Accept = 1024;
 pub const SKETCH_POINTS: Accept = 2048;
 /// The origin point, picked as a vertex of no body (in the viewport or the browser's Origin).
 pub const ORIGIN: Accept = 4096;
+/// Places where two curves of a shown sketch cross.
+pub const CROSSINGS: Accept = 8192;
 
 /// One selection input of a command dialog ("Profiles", "Edges", "Plane", ...).
 #[derive(Clone, Debug, PartialEq)]
@@ -81,6 +83,9 @@ impl SelInput {
             Hit::SketchCurve { id, .. } if a & CURVES != 0 => Some(Sel::SketchCurve { id: id.clone() }),
             Hit::SketchPoint { id, .. } if a & SKETCH_POINTS != 0 => Some(Sel::SketchPoint { id: id.clone() }),
             Hit::SketchPoint { sketch, id, .. } if a & POINTS != 0 => Some(Sel::SketchPoint { id: format!("{sketch}:{id}") }),
+            Hit::SketchCrossing { sketch, a: ca, b, at } if a & CROSSINGS != 0 => {
+                Some(Sel::SketchCrossing { sketch: *sketch, a: ca.clone(), b: b.clone(), at: *at })
+            }
             Hit::Vertex { body, point } if body.is_empty() && a & ORIGIN != 0 => Some(Sel::Vertex { body: String::new(), point: *point }),
             Hit::Vertex { body, point } if !body.is_empty() && a & VERTICES != 0 => Some(Sel::Vertex { body: body.clone(), point: *point }),
             _ => None,
