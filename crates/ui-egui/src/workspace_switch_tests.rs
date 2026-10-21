@@ -189,13 +189,13 @@ fn an_airflow_study_runs_from_its_dialog_and_shows_its_result() {
     assert!(crate::simulation_workspace::see_through(&h.app));
     let mut sc = crate::gpu::GpuScene::default();
     crate::simulation_workspace::draw(&h.app, &mut sc);
-    assert!(!sc.tris.is_empty() && !sc.lines.is_empty(), "a section plane and streamlines are drawn");
+    assert!(!sc.tris.is_empty() && !sc.overlay.is_empty(), "a section plane and streamlines are drawn");
     // Turning both off draws nothing; leaving the workspace hides the result.
     h.app.simulation.display.section = None;
     h.app.simulation.display.streamlines = false;
     let mut none = crate::gpu::GpuScene::default();
     crate::simulation_workspace::draw(&h.app, &mut none);
-    assert!(none.tris.is_empty() && none.lines.is_empty());
+    assert!(none.tris.is_empty() && none.lines.is_empty() && none.overlay.is_empty());
     enter(&mut h.app, Workspace::Design).unwrap();
     assert!(!crate::simulation_workspace::see_through(&h.app));
     assert_eq!(design_of(&h), before, "a study never touches the design");

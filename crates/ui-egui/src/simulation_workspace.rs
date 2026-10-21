@@ -277,8 +277,10 @@ pub fn draw(app: &SolveApp, sc: &mut GpuScene) {
     for (p, c) in &o.tris {
         sc.tri(*p, [0.0; 3], *c);
     }
+    // Streamlines run inside the bodies and through the section, so they are drawn over both:
+    // depth-tested, an opaque section or body hid every line behind or inside it.
     for (a, b, c) in &o.lines {
-        sc.line(*a, *b, *c, 1.6, false);
+        sc.line(*a, *b, *c, 2.0, true);
     }
 }
 
@@ -894,6 +896,9 @@ mod tests {
         assert_eq!(shown["streamlines"], json!(true), "{shown}");
         let o = super::overlay(&h.app).expect("the result is shown");
         assert!(!o.tris.is_empty(), "the section is drawn");
+        let mut sc = crate::gpu::GpuScene::default();
+        super::draw(&h.app, &mut sc);
+        assert!(sc.lines.is_empty() && sc.overlay.len() >= o.lines.len(), "streamlines draw over the section and the bodies");
         assert!(o.lines.len() > 10, "streamlines are drawn: {} segments", o.lines.len());
         let speed = o.range;
         super::control(&mut h.app, &json!({"quantity": "pressure"})).unwrap();
