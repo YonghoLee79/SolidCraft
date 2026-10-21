@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "未キャリブレーション",
   "ui.space_mouse_reading": "読み取り値",
   "ui.space_mouse_reset_axes": "軸の割り当てをリセット",
-  "ui.space_mouse_rows_header": "反転 · 速度 · 操作元",
   "ui.space_mouse_step_lift": "キャップを持ち上げて保持し、離してください。",
   "ui.space_mouse_step_press": "キャップを押し下げて保持し、離してください。",
   "ui.space_mouse_step_pull": "キャップを手前に引いて保持し、離してください。",

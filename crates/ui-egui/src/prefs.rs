@@ -1273,7 +1273,8 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             let off_tip = app.tr("ui.space_mouse_view_off_tip").to_owned();
             let motions: Vec<String> = crate::space_mouse::MOTIONS.iter().map(|motion| app.tr(motion).to_owned()).collect();
             ui_kit::row(ui, app.tr("ui.space_mouse_view_axis"), |ui| {
-                ui_kit::text(ui, app.tr("ui.space_mouse_rows_header"), ui_kit::Text::Note("space_mouse_rows"));
+                let header = format!("{} · {} · {}", crate::i18n::tr_label("Invert"), crate::i18n::tr_label("Speed"), driven_by_label);
+                ui_kit::text(ui, &header, ui_kit::Text::Note("space_mouse_rows"));
             });
             for (axis, (name, off)) in rows.iter().enumerate() {
                 let group = ui_kit::row(ui, name, |ui| {

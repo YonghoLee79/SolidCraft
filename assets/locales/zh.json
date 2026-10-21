@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "未校准",
   "ui.space_mouse_reading": "读数",
   "ui.space_mouse_reset_axes": "重置轴分配",
-  "ui.space_mouse_rows_header": "反转 · 速度 · 控制来源",
   "ui.space_mouse_step_lift": "向上提起摇杆帽，保持住，然后松开。",
   "ui.space_mouse_step_press": "向下按压摇杆帽，保持住，然后松开。",
   "ui.space_mouse_step_pull": "把摇杆帽拉向自己，保持住，然后松开。",

@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "Non calibrée",
   "ui.space_mouse_reading": "Lecture",
   "ui.space_mouse_reset_axes": "Réinitialiser l'attribution des axes",
-  "ui.space_mouse_rows_header": "Inverser · vitesse · piloté par",
   "ui.space_mouse_step_lift": "Soulevez le capuchon, maintenez, puis relâchez.",
   "ui.space_mouse_step_press": "Appuyez sur le capuchon, maintenez, puis relâchez.",
   "ui.space_mouse_step_pull": "Tirez le capuchon vers vous, maintenez, puis relâchez.",

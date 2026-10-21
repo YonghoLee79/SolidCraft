@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "Nicht kalibriert",
   "ui.space_mouse_reading": "Werte",
   "ui.space_mouse_reset_axes": "Achsenzuordnung zurücksetzen",
-  "ui.space_mouse_rows_header": "Umkehren · Geschwindigkeit · gesteuert von",
   "ui.space_mouse_step_lift": "Kappe nach oben ziehen, halten, dann loslassen.",
   "ui.space_mouse_step_press": "Kappe nach unten drücken, halten, dann loslassen.",
   "ui.space_mouse_step_pull": "Kappe zu sich heranziehen, halten, dann loslassen.",

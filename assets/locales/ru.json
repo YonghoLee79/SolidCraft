@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "Не откалибрована",
   "ui.space_mouse_reading": "Показания",
   "ui.space_mouse_reset_axes": "Сбросить назначение осей",
-  "ui.space_mouse_rows_header": "Инверсия · скорость · управляется",
   "ui.space_mouse_step_lift": "Поднимите колпачок вверх, удержите и отпустите.",
   "ui.space_mouse_step_press": "Нажмите на колпачок вниз, удержите и отпустите.",
   "ui.space_mouse_step_pull": "Потяните колпачок на себя, удержите и отпустите.",

@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "보정 안 됨",
   "ui.space_mouse_reading": "읽은 값",
   "ui.space_mouse_reset_axes": "축 지정 초기화",
-  "ui.space_mouse_rows_header": "반전 · 속도 · 제어 동작",
   "ui.space_mouse_step_lift": "캡을 위로 들어 유지한 다음 놓으세요.",
   "ui.space_mouse_step_press": "캡을 아래로 눌러 유지한 다음 놓으세요.",
   "ui.space_mouse_step_pull": "캡을 몸 쪽으로 당겨 유지한 다음 놓으세요.",

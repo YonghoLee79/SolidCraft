@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "Kalibre edilmedi",
   "ui.space_mouse_reading": "Okunan değer",
   "ui.space_mouse_reset_axes": "Eksen atamasını sıfırla",
-  "ui.space_mouse_rows_header": "Ters çevirme · hız · kumanda eden",
   "ui.space_mouse_step_lift": "Başlığı yukarı kaldırın, tutun, sonra bırakın.",
   "ui.space_mouse_step_press": "Başlığı aşağı bastırın, tutun, sonra bırakın.",
   "ui.space_mouse_step_pull": "Başlığı kendinize doğru çekin, tutun, sonra bırakın.",

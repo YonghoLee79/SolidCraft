@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "Not calibrated",
   "ui.space_mouse_reading": "Reading",
   "ui.space_mouse_reset_axes": "Reset axis assignment",
-  "ui.space_mouse_rows_header": "Invert · Speed · Driven by",
   "ui.space_mouse_step_lift": "Lift the cap up, hold it, then let go.",
   "ui.space_mouse_step_press": "Press the cap down, hold it, then let go.",
   "ui.space_mouse_step_pull": "Pull the cap toward you, hold it, then let go.",

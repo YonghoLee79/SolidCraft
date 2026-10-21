@@ -1767,7 +1767,6 @@
   "ui.space_mouse_not_calibrated": "Non calibrato",
   "ui.space_mouse_reading": "Lettura",
   "ui.space_mouse_reset_axes": "Ripristina assegnazione assi",
-  "ui.space_mouse_rows_header": "Inverti · velocità · comandato da",
   "ui.space_mouse_step_lift": "Solleva la manopola, tienila, poi lasciala.",
   "ui.space_mouse_step_press": "Premi la manopola verso il basso, tienila, poi lasciala.",
   "ui.space_mouse_step_pull": "Tira la manopola verso di te, tienila, poi lasciala.",
