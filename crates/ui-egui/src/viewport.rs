@@ -6613,7 +6613,7 @@ mod tests {
         h.app.home.open = false;
         let keys = |app: &SolveApp| (scene_key(app), highlight_key(app));
         h.call("ui.prefs", json!({"open": "Graphics"}));
-        assert!(h.widget("Colour vision").is_some() && h.widget("Mode").is_some());
+        assert!(h.widget("Color vision").is_some() && h.widget("Mode").is_some());
         let before = keys(&h.app);
         h.call("ui.prefs", json!({"color_vision": "deutan"}));
         h.frame();
