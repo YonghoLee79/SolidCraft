@@ -180,3 +180,33 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod preferences_tests {
+    /// File, then Preferences…, by clicks: the window must be open, drawn and on top (nothing of ours over it), for settings like a real
+    /// user with a 3D mouse (saved calibration, driver choice, picture in the view).
+    #[test]
+    fn preferences_open_and_draw_with_a_3d_mouse_users_settings() {
+        // An uncalibrated device (the notice card is up first), the calibrated one and none.
+        for device in [None, Some("hid 256f:c63a"), Some("spacenavd"), Some("hid 046d:c62b")] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.home.open = false;
+            h.app.load_prefs(include_str!("test_data/prefs_space_mouse_user.json"));
+            h.app.space_mouse.device = device.map(Into::into);
+            h.frames(4);
+            // The real way in: File menu, then its Preferences item, by clicks.
+            h.app.custom_titlebar = true;
+            h.frames(3);
+            h.step(&serde_json::json!({"click": {"handle": "appbar:file"}})).unwrap();
+            h.frames(3);
+            h.step(&serde_json::json!({"widget": "Preferences…"})).unwrap_or_else(|e| panic!("{device:?}: {e}"));
+            h.frames(4);
+            let window = crate::scenario::rect_of("dialog:window");
+            let centre = window.map(|r| r.center());
+            let top = centre.and_then(|c| h.ctx.layer_id_at(c));
+            assert!(top.is_some_and(|layer| layer.id == egui::Id::new("sc_prefs")), "{device:?}: the layer on top at the window centre is {top:?}");
+            assert!(h.app.prefs_window.open, "{device:?}: still open");
+            assert!(crate::scenario::rect_of("dialog:window").is_some_and(|r| r.is_positive()), "{device:?}: the window is drawn");
+        }
+    }
+}
