@@ -1,5 +1,7 @@
-//! Booleans of bodies with faces in a common plane: a face is pushed out of the plane only where
-//! that leaves the result as it is. Every expected volume is what the two bodies define.
+//! Booleans of bodies whose faces lie in each other: in a common plane, where a face is pushed
+//! out of the plane only where that leaves the result as it is; and along faces that curve,
+//! which no exact route takes and which the faceted route answers on facets (#1865). Every
+//! expected volume is what the two bodies define.
 #![allow(clippy::unwrap_used, clippy::panic)]
 use crate::*;
 use solidcraft_geom::Vec3;
@@ -153,4 +155,155 @@ fn trimming_at_a_plane_with_nothing_beyond_it() {
     let same = crate::coplanar::trim_exact(&dome, -Vec3::Z, 0.0).unwrap();
     assert!((measure(&same).unwrap().volume - measured).abs() < measured * 1e-9);
     assert!(crate::coplanar::trim_exact(&dome, -Vec3::Z, 5.0).is_err());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bodies that meet along cylindrical faces (#1865).
+//
+// Two cylinders on one axis, of one radius, overlapping along it: where they meet, each body's
+// round side lies in the other's, which the B-rep boolean cannot take, and the exact polygon
+// fallback for such a meeting takes planar faces only. Nothing retried, so the operation was
+// refused although the bodies plainly share a volume. They are faceted and combined instead,
+// which answers the operation at the cost of a result that is flat where the sides curve.
+//
+// Their join is not one of those operations any more: #1894 and #2008 take it exactly. It is
+// held to that below, so that the approximate route cannot creep forward into work that is
+// already right. What is left for the facets is the intersection, the reduction in the issue.
+//
+// What a later boolean costs on a body the route made is held here too. The route returns a
+// body of facets where the operands had a handful of faces, and two things used to follow from
+// that: the exact polygon fallback refused a body whose planar faces do not mesh flat in the
+// same words it refuses one whose faces genuinely curve, so the route read its own output as a
+// curved contact and faceted it again; and the retries underneath a boolean each run every
+// route above them, so one operation asked the last resort seven times over. The first is now
+// decided by a reason the fallback returns (`crate::polybool::NotTaken`) rather than by the
+// words of an error, and the last resort is asked by the operation rather than by its retries.
+//
+// A note on what these can and cannot show today. Since #1894 and #2008 made coincident
+// cylinders join exactly, the heaviest body the route still produces is the intersection
+// below, of a few hundred facets, and its facets do mesh flat - so the fallback takes it, and
+// the condition the first guard watches for is not reachable from any pair these tests can
+// build. What is asserted is the behaviour that condition exists to protect: a body the route
+// made is not sent back to the route, and one operation asks it once.
+
+/// The radius both cylinders are turned to, and the heights they stand between: the lower one
+/// from z 0 to 30, the upper from z 22 to 46, so they share the 8 mm from 22 to 30.
+const CURVED_R: f64 = 25.6;
+const CURVED_SHARED: f64 = 8.0;
+
+fn lower_cylinder() -> Body {
+    cylinder(Vec3::ZERO, Vec3::Z, CURVED_R, 30.0).unwrap()
+}
+
+fn upper_cylinder() -> Body {
+    cylinder(Vec3::new(0.0, 0.0, 22.0), Vec3::Z, CURVED_R, 24.0).unwrap()
+}
+
+/// The boolean, and how it was made.
+fn made(a: &Body, b: &Body, op: BoolOp) -> (Body, BooleanDiagnostics) {
+    let (r, how) = capture_boolean_diagnostics(|| boolean(a, b, op));
+    (r.unwrap_or_else(|e| panic!("{op:?}: {e}")).expect("a result"), how)
+}
+
+/// The volume of a cylinder of radius [`CURVED_R`] standing `height` tall.
+fn disc(height: f64) -> f64 {
+    std::f64::consts::PI * CURVED_R * CURVED_R * height
+}
+
+/// The faceted result is a prism on a polygon inscribed in the circle, so it holds a little
+/// less than the round body does: a thousandth of it is room enough for that and for the
+/// measuring mesh's own chords.
+fn within(got: f64, want: f64, what: &str) {
+    assert!((got - want).abs() < 2e-3 * want, "{what}: {got} mm³, want {want} mm³");
+}
+
+/// The body the faceted route leaves: the 8 mm the two share, its round side a ring of facets.
+fn faceted_body() -> Body {
+    let body = boolean(&lower_cylinder(), &upper_cylinder(), BoolOp::Intersect).unwrap().unwrap();
+    assert!(body.face_count() > 100, "the faceted route should leave a body of facets, got {} faces", body.face_count());
+    body
+}
+
+#[test]
+fn cylinders_meeting_along_their_sides_can_be_intersected() {
+    let (body, how) = made(&lower_cylinder(), &upper_cylinder(), BoolOp::Intersect);
+    // What they share is the 8 mm of one cylinder that both stand through.
+    within(measure(&body).unwrap().volume, disc(CURVED_SHARED), "the shared part");
+    assert_eq!(body.lumps().unwrap().len(), 1, "one piece");
+    assert!(body.validity().is_empty(), "{:?}", body.validity());
+    // The route that answered it says so, and says the result is flat where the sides curve.
+    assert!(used(&how, BooleanStrategy::FacetedFallback), "{how:?}");
+    assert!(how.warning().is_some(), "a result that is not the exact one is warned about");
+}
+
+#[test]
+fn the_join_of_those_cylinders_is_still_taken_exactly() {
+    // The join of the same two bodies has always worked, and it is not to start coming back
+    // faceted: the faceted route is a last resort, after every exact one has failed.
+    let (body, how) = made(&lower_cylinder(), &upper_cylinder(), BoolOp::Union);
+    within(measure(&body).unwrap().volume, disc(46.0), "the joined body");
+    assert!(!used(&how, BooleanStrategy::FacetedFallback), "{how:?}");
+}
+
+#[test]
+fn boxes_that_overlap_still_join_without_facets() {
+    // The control from the issue: a 20 mm cube and a bar through one of its sides, sharing
+    // 10 x 5 x 20. Faces that are all planar have an exact route of their own and keep it.
+    let cube = box_solid(Vec3::ZERO, Vec3::new(20.0, 20.0, 20.0)).unwrap();
+    let bar = box_solid(Vec3::new(10.0, -5.0, 0.0), Vec3::new(30.0, 5.0, 20.0)).unwrap();
+    let (body, how) = made(&cube, &bar, BoolOp::Union);
+    let want = 8000.0 + 4000.0 - 1000.0;
+    let got = measure(&body).unwrap().volume;
+    assert!((got - want).abs() < 1e-6, "the joined boxes: {got} mm³, want {want} mm³");
+    assert_eq!(body.lumps().unwrap().len(), 1, "one piece");
+    assert!(!used(&how, BooleanStrategy::FacetedFallback), "{how:?}");
+}
+
+#[test]
+fn the_faceted_route_is_asked_by_the_operation_not_by_its_retries() {
+    // The operation asks the last resort on its own behalf, once. The retries nested under it
+    // do not ask again: their tool differs from the operation's by a screw motion of two parts
+    // in a million, which decides nothing the facets decide, and asking cost seven times over.
+    let (r, how) = capture_boolean_diagnostics(|| boolean(&lower_cylinder(), &upper_cylinder(), BoolOp::Intersect));
+    r.unwrap().expect("a result");
+    let asked = how.events.iter().filter(|e| e.strategy == BooleanStrategy::FacetedFallback).count();
+    assert_eq!(asked, 1, "the faceted route answered {asked} times for one operation: {how:?}");
+    // And it is still reported as what it is: a result that is flat where the faces curve.
+    assert!(how.warning().is_some(), "a result that is not the exact one is warned about");
+}
+
+#[test]
+fn a_body_the_faceted_route_made_is_not_faceted_again() {
+    // A third cylinder overlapping the faceted body. Faceting it again answers nothing - it is
+    // already flat where it curved - and comes to hundreds of times the facets it was made
+    // from, so each pass costs more than the last. Today the fallback takes this body (its
+    // facets are planes and they mesh flat), which is the best outcome and the one asserted;
+    // what must never happen either way is that it goes back to the facets.
+    let faceted = faceted_body();
+    let third = cylinder(Vec3::new(0.0, 0.0, 26.0), Vec3::Z, CURVED_R, 20.0).unwrap();
+    let (r, how) = capture_boolean_diagnostics(|| boolean(&faceted, &third, BoolOp::Union));
+    let body = r.unwrap_or_else(|e| panic!("a boolean on a faceted body: {e}")).expect("a result");
+    assert!(!used(&how, BooleanStrategy::FacetedFallback), "a body the faceted route made was faceted again: {how:?}");
+    assert_eq!(body.lumps().unwrap().len(), 1, "one piece");
+    assert!(body.validity().is_empty(), "{:?}", body.validity());
+}
+
+#[test]
+fn a_face_flush_on_a_faceted_body_keeps_its_retry() {
+    // The nudge is skipped for a body whose planar faces do not mesh flat, and a faceted body
+    // is a candidate for that. Its caps are flat whatever the sides do, and a face set flush on
+    // one is exactly the coincident-face contact the retries underneath a boolean exist for.
+    // Skipping a retry for the body as a whole must not cost that contact its answer.
+    let faceted = faceted_body();
+    let alone = measure(&faceted).unwrap().volume;
+    // A block standing on the top cap (z 30), well inside its rim, so the two meet over the
+    // whole of the block's underside and nowhere else.
+    let block = box_solid(Vec3::new(-10.0, -10.0, 30.0), Vec3::new(10.0, 10.0, 40.0)).unwrap();
+    let joined =
+        boolean(&faceted, &block, BoolOp::Union).unwrap_or_else(|e| panic!("a block flush on the cap lost its answer: {e}")).expect("a result");
+    // Flush, not overlapping: the join is the two volumes, and one body.
+    let want = alone + 20.0 * 20.0 * 10.0;
+    let got = measure(&joined).unwrap().volume;
+    assert!((got - want).abs() < 1e-6 * want, "the joined body: {got} mm³, want {want} mm³");
+    assert_eq!(joined.lumps().unwrap().len(), 1, "the block and the body it stands on are one piece");
 }

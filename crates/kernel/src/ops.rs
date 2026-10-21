@@ -876,6 +876,31 @@ thread_local! {
     static BORES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The intersections left to the booleans running under [`with_attempt_budget`], if any.
     static ATTEMPTS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// Set while the booleans under [`without_the_last_resort`] run: the faceted route is not
+    /// offered to them.
+    static NO_FACETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `f`, with the faceted route (the last resort for bodies that meet along faces that curve,
+/// #1865) kept from the booleans it runs on this thread.
+///
+/// For a caller that has a better answer of its own for a boolean that fails, and would lose it
+/// if the boolean stopped failing. The shell is the one: it cuts a cavity out of the body, and
+/// where that cut fails it builds the same shell another way, exactly
+/// ([`crate::polyhedron::shell`]). Answered on facets instead, the cut succeeds, the caller
+/// never reaches its own route, and an exact shell becomes a shell of facets - which is the one
+/// thing this route promises not to do. So the caller asks without it first and asks again with
+/// it only when its own answer fails too: a last resort is the caller's to spend, not the
+/// boolean's.
+pub(crate) fn without_the_last_resort<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            NO_FACETS.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(NO_FACETS.with(|c| c.replace(true)));
+    f()
 }
 
 /// `f`, with the booleans it runs on this thread allowed `attempts` of the kernel's own
@@ -1408,8 +1433,8 @@ where
     // Coincident planar faces: push them apart (exactly). Tried once, before the general
     // boolean; why it failed is reported if everything else fails too.
     let mut apart_failed = String::new();
-    // The exact polygon boolean's answer, when it was asked for early.
-    let mut planar = None;
+    // The exact polygon boolean's answer, when it was asked for early, and why it refused.
+    let mut planar: Option<(Result<Option<Body>>, crate::polybool::NotTaken)> = None;
     if !APART.with(|c| c.get()) {
         APART.with(|c| c.set(true));
         let (r, diagnostics) = capture_boolean_diagnostics(|| crate::coplanar::boolean_apart(a, b, op));
@@ -1435,14 +1460,14 @@ where
         // general boolean has its tries at faces lying in each other.
         if apart_failed.contains(crate::coplanar::NO_ROOM) {
             // What its own booleans report counts only when its result is taken.
-            let (exact, diagnostics) = capture_boolean_diagnostics(|| crate::polybool::planar_boolean(a, b, op));
+            let ((exact, why), diagnostics) = capture_boolean_diagnostics(|| crate::polybool::planar_boolean_reasoned(a, b, op));
             match exact {
                 Ok(Some(body)) if check(&body).0 => {
                     merge(diagnostics);
                     record(BooleanFallback::new(BooleanStrategy::PlanarFallback));
                     return Ok(Some(body));
                 }
-                other => planar = Some(other),
+                other => planar = Some((other, why)),
             }
         }
     }
@@ -1655,8 +1680,15 @@ where
     }
     last.push_str(&apart_failed);
     // Coincident faces defeat the B-rep boolean; bodies with only planar faces have an exact
-    // polygon fallback.
-    match planar.unwrap_or_else(|| crate::polybool::planar_boolean(a, b, op)) {
+    // polygon fallback. Why it could not take these bodies is kept (`why`), because their faces
+    // curving where they meet is the one failure the faceted route at the end answers (#1865)
+    // and the routes between here and there replace the message it left behind. It is the
+    // fallback's own reason, not a phrase matched out of its words: the words say "planar faces
+    // only" for a body whose faces curve and for one whose planar faces merely mesh unevenly,
+    // and reading the second as the first is what sent a body round that route again and again.
+    let mut curved_contact = false;
+    let (exact, why) = planar.unwrap_or_else(|| crate::polybool::planar_boolean_reasoned(a, b, op));
+    match exact {
         Ok(Some(body)) => {
             let (ok, v) = check(&body);
             if ok {
@@ -1669,7 +1701,13 @@ where
             record(BooleanFallback::new(BooleanStrategy::PlanarFallback));
             return Ok(None);
         }
-        Err(e) => last = format!("{last}; {e}"),
+        Err(e) => {
+            // Their faces curving where they meet is the one failure the faceted route answers;
+            // a body whose planar faces merely mesh unevenly is one that route already made,
+            // and faceting it again is what made a later boolean endless (see `why.unflat`).
+            curved_contact = why.curved && !why.unflat;
+            last = format!("{last}; {e}");
+        }
     }
     // Prisms along one direction that end at different levels (a barrel joined between two
     // faces of a wider part, its ends flush with them) were left to the B-rep boolean, which
@@ -1685,7 +1723,16 @@ where
     // Last resort: nudge the tool by a micron-scale screw motion (turned 2e-6 rad about a
     // skew axis and moved 2e-6 of the size), which breaks tangencies and seams lying exactly on
     // the other body. The result moves by no more than that.
-    if !APART.with(|c| c.get()) {
+    //
+    // Not for a body whose planar faces do not mesh flat (`why.unflat`: a cloud of facets, what
+    // the faceted route leaves behind). The nudge is for faces that lie exactly in each other,
+    // and such a body has none to part: every one of its faces is already a hair off its own
+    // plane. What it does have is a face for every facet, and each nudge runs every route above
+    // it again - six nested rounds, eighty-four B-rep booleans for one operation, measured - on
+    // a body of seventeen hundred faces instead of four. That is minutes where the same join on
+    // the body it was made from takes a fifth of a second, and on a heavier one it was the
+    // boolean that never came back at all (#1910).
+    if !APART.with(|c| c.get()) && !why.unflat {
         APART.with(|c| c.set(true));
         let c = b.solid.vertex_iter().fold(Vec3::ZERO, |acc, v| acc + from_p3(v.point())) * (1.0 / b.solid.vertex_iter().count().max(1) as f64);
         let translation = |screw: usize| SCREWS.get(screw).map_or(Vec3::ZERO, |s| Vec3::new(s.0[0], s.0[1], s.0[2]) * (size * 2e-6));
@@ -1814,15 +1861,93 @@ where
             "boolean {op:?}: the bodies pass through each other by more than {deep:.3e} mm where they could not be intersected; {last}"
         )));
     }
-    match doubted {
-        Some(r) => {
-            let mut event = BooleanFallback::new(BooleanStrategy::UnverifiedShortcut);
-            event.tolerance_mm = 3.0 * tol_m;
-            record(event);
-            Ok(r)
-        }
-        None => Err(KernelError::Failed(format!("boolean {op:?}: {last}"))),
+    if let Some(r) = doubted {
+        let mut event = BooleanFallback::new(BooleanStrategy::UnverifiedShortcut);
+        event.tolerance_mm = 3.0 * tol_m;
+        record(event);
+        return Ok(r);
     }
+    // The bodies meet along faces that curve, which no exact route takes: the polygon fallback
+    // above is planar-only, and every other route has failed on them (#1865, a band joined to a
+    // ring over the cylinder they share). The last resort is to facet both bodies and combine
+    // the polygons. That flattens the faces where they curve, so it is asked here, after every
+    // route that would have kept those faces, and only for the bodies the exact fallback
+    // refused for being curved. The faceted boolean holds its own result to the volume identity
+    // (A ∪ B is A plus B less A ∩ B), and that result is checked and reported like any other
+    // retry's: a join that comes out wrong is worse than one that refuses.
+    // Asked by the operation itself, never by a retry running underneath it (`APART`). It is
+    // the declared last resort and by far the most expensive route here - both bodies faceted,
+    // and a BSP tree built and clipped ten times over, five tolerances each weighed against
+    // its complementary operation - while a retry's tool differs from the operation's own by a
+    // screw motion of two parts in a million, which decides nothing the facets decide. The
+    // retries nest, so one `solid.extrude` asked this route seven times over and spent
+    // sixty-four of those trees on a pair of cylinders; the operation reaches it on its own
+    // behalf anyway, with the bodies as the person drew them.
+    if curved_contact && !APART.with(|c| c.get()) && !NO_FACETS.with(|c| c.get()) {
+        // Finer than the reach the retry guard compares surfaces within, so the facets of a
+        // face the operation never touched are not read as the body having changed there.
+        let facet = (size * 1e-4).max(1e-6);
+        match faceted_contact(a, b, op, facet) {
+            Ok((result, references)) => {
+                // An empty result is the volume identity's own answer (a cut whose tool covers
+                // the target); a body is held to the checks every other route's result is.
+                match result.as_ref().map(check).filter(|(ok, _)| !*ok) {
+                    None => {
+                        let mut event = BooleanFallback::new(BooleanStrategy::FacetedFallback);
+                        event.tolerance_mm = facet;
+                        event.references_kept = references;
+                        record(event);
+                        return Ok(result);
+                    }
+                    Some((_, v)) => last = format!("{last}; the faceted bodies gave an implausible volume {v:.4}"),
+                }
+            }
+            Err(e) => last = format!("{last}; faceted: {e}"),
+        }
+    }
+    Err(KernelError::Failed(format!("boolean {op:?}: {last}")))
+}
+
+/// The most facets the two bodies may come to for the faceted route. Behind it stands a BSP
+/// tree built and clipped ten times over - five tolerances, each weighed against its
+/// complementary operation - so a pair that facets far past this costs minutes, and a boolean
+/// that takes minutes is a hang to the person waiting on it. Two cylinders that meet along
+/// their sides come to about fifteen thousand at the tolerance above. Bodies past this keep
+/// the error they had. A thread's groove is not held to it: it has no other route to take.
+const MAX_CONTACT_FACETS: usize = 25_000;
+
+/// [`crate::polybool::faceted_boolean`] of two bodies, the tool meshed at the tolerance the
+/// target's own curved faces are faceted to, so the two facetings meet where the bodies do.
+///
+/// With whether the result carries the operands' face history. The faceted boolean records one,
+/// but it numbers the tool's faces as the triangles of the mesh it was given, which is not what
+/// a boolean's caller reads a history by; the mesh says which face of the tool each triangle
+/// came from (`tri_face`), so those numbers are the tool's own faces renumbered, and the
+/// history is carried through that way. A result whose history cannot be put over the two
+/// bodies carries none, and the operation says so rather than leaving the references to go
+/// missing quietly: a sketch or a blend that refers to a face of either body keeps its
+/// reference where the history comes through, and loses it where it does not.
+fn faceted_contact(a: &Body, b: &Body, op: BoolOp, tol: f64) -> Result<(Option<Body>, bool)> {
+    let mesh = b.tessellate(tol)?;
+    let facets = a.tessellate(tol)?.triangles.len() + mesh.triangles.len();
+    if facets > MAX_CONTACT_FACETS {
+        return Err(KernelError::Failed(format!("the bodies come to {facets} facets, more than this route combines in reasonable time")));
+    }
+    let counts = [(a.face_count(), a.edge_count()), (b.face_count(), b.edge_count())];
+    let Some(body) = crate::polybool::faceted_boolean(a, &mesh, op, tol)? else { return Ok((None, true)) };
+    // The tool's edges are not in that history at all (a mesh has none), so an edge between
+    // triangles of one face of the tool stays without an origin, as it is.
+    let over_the_bodies = body
+        .history()
+        .cloned()
+        .map(|h| h.renumbered_faces_of(1, |t| mesh.tri_face.get(t).map(|f| *f as usize)))
+        .transpose()
+        .inspect_err(|e| log::debug!("the faceted route kept no face history: {e}"))
+        .ok()
+        .flatten();
+    let body = body.with_checked_history(over_the_bodies, &counts);
+    let kept = body.history().is_some();
+    Ok((Some(body), kept))
 }
 
 /// `a` cut by `b` with the walls of `b` that only touch `a` pushed outward (see

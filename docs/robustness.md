@@ -93,9 +93,10 @@ snapshots' stricter repeatability comparisons of raw topology and tessellated me
 ## Successful Boolean retries
 
 When an accepted Boolean result needs a retry that can make it differ from the
-exact one (a tool nudge, or the unverified shortcut), the feature shows a
-warning in the timeline. Every other retry works on temporary geometry or
-tolerances and leaves the exact result, so it is recorded but not warned about.
+exact one (a tool nudge, the faceted fallback, or the unverified shortcut), the
+feature shows a warning in the timeline. Every other retry works on temporary
+geometry or tolerances and leaves the exact result, so it is recorded but not
+warned about.
 `timeline.inspect` and `doc.inspect` expose every retry in the feature's
 `boolean_diagnostics`, including the strategy and the applied translation,
 rotation, face offset and tessellation tolerance in millimetres/radians.
@@ -125,6 +126,41 @@ intersect, so refining only the failing copy is too late. Every candidate must p
 the volume, membership and spatial checks; a rejected candidate continues to the
 next tolerance, then the ordinary routes. The existing acceptance checks still
 apply to all results.
+
+Where the bodies meet along faces that curve, no exact route applies: the
+polygon fallback takes planar faces only, and the operation used to be refused
+(#1865). Both bodies are then faceted and the polygons combined, reported as
+the faceted fallback with the tolerance they were faceted to. It is asked last,
+after every exact route has failed, so a result any of them gives is kept as it
+was; the faceted boolean must first agree with its complementary operation (a
+join and an intersection add up to the operands), and its result is then held
+to the same acceptance checks as every other retry's. Bodies that come to more
+facets than the route combines quickly keep the error they had. It is warned
+about: the result is flat where the faces curve.
+
+It is the boolean's last resort, not its caller's. A caller that chooses between
+routes of its own by whether a boolean failed would lose that choice if the
+boolean stopped failing: the shell trims its cavity to the open faces and goes
+on untrimmed if that fails, cuts the cavity out of the body, and where that cut
+fails builds the same shell another way. Such a caller asks for its whole
+preferred path under `ops::without_the_last_resort`, and only its final fallback
+asks with the last resort, so the facets are a result where there would be none
+and never one where a route of the caller's own had an answer.
+
+The faceted route hands the tool over as a triangle mesh, so what it records
+numbers the tool's faces as those triangles; the mesh says which face each
+triangle came from, and the history is put back over the two bodies that way, so
+a sketch on a face of either one still finds it after the step. A planar face
+comes back as the one face it was, since its facets are coplanar; a curved face
+comes back as the facets it was split into. Where the history cannot be put over
+the bodies the result carries none, and the retry says so (`references_kept`),
+rather than letting the references go missing without a word.
+
+A faceted body's edge count is not the same on every machine: the facets meet at
+shallow angles, where whether two of them come out as one edge or two depends on
+the last bits of the arithmetic. The goldens are recorded from Linux CI, and a
+seed the route answers can differ there from what the same seed gives on another
+machine without anything being wrong.
 
 A join or a cut that needed any retry is then held to what it can do at all
 (`crates/kernel/src/boolean_guard.rs`, #616): the result is closed, a join
