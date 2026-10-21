@@ -36,9 +36,12 @@ pub(crate) fn segmented(ui: &mut Ui, selected: &mut usize, options: &[&str], con
     ui.painter().rect_filled(rect, t.control_radius, t.control_fill);
     let width = rect.width() / options.len().max(1) as f32;
     let mut clicked = false;
+    // Segments are named by their choices too: two segmented rows in one panel would otherwise
+    // share ids by position and egui would give both rows' clicks to the last one.
+    let base = ui.make_persistent_id(("segment", options));
     for (index, option) in options.iter().enumerate() {
         let segment = egui::Rect::from_min_size(rect.min + vec2(index as f32 * width, 0.0), vec2(width, rect.height()));
-        let response = ui.interact(segment, ui.make_persistent_id(("segment", index)), egui::Sense::click());
+        let response = ui.interact(segment, base.with(index), egui::Sense::click());
         let on = states.get(index).copied().unwrap_or(*selected == index);
         let rounding = egui::CornerRadius {
             nw: if index == 0 { t.control_radius } else { 0 },

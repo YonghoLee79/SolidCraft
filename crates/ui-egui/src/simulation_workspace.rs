@@ -865,3 +865,39 @@ fn seek_block(app: &mut SolveApp, ui: &mut egui::Ui, name: &str, run: &mut Vec<(
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// A small duct's study, run on the CPU and shown in the Simulation workspace: its section
+    /// and its streamlines are built, and the map switches between speed and pressure.
+    #[test]
+    fn a_shown_result_draws_its_section_and_streamlines() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        let run =
+            |h: &mut crate::scenario::Harness, id: &str, p: serde_json::Value| h.app.run(id, p.clone()).unwrap_or_else(|e| panic!("{id} {p}: {e}"));
+        run(&mut h, "solid.box", json!({"length": 24, "width": 8, "height": 8, "corner": [0, -4, -4], "body_name": "Duct"}));
+        run(&mut h, "solid.box", json!({"length": 26, "width": 4, "height": 4, "corner": [-1, -2, -2], "operation": "cut", "targets": ["Duct"]}));
+        run(
+            &mut h,
+            "sim.flow.new",
+            json!({"body": "Duct", "name": "D", "cell": 1, "pad": 4, "turbulence": false,
+                "inlets": [{"name": "In", "section": {"point": [1, 0, 0], "normal": [1, 0, 0]}, "speed": 0.5}],
+                "outlets": [{"name": "Out", "section": {"point": [23, 0, 0], "normal": [1, 0, 0]}}]}),
+        );
+        run(&mut h, "sim.flow.run", json!({"study": "D", "wait": true, "max_steps": 3000}));
+        crate::workspace_switch::enter(&mut h.app, crate::workspace_switch::Workspace::Simulation).unwrap();
+        let shown = super::control(&mut h.app, &json!({"shown": "D", "streamlines": true, "section": "z"})).unwrap();
+        h.frames(2);
+        assert_eq!(shown["streamlines"], json!(true), "{shown}");
+        let o = super::overlay(&h.app).expect("the result is shown");
+        assert!(!o.tris.is_empty(), "the section is drawn");
+        assert!(o.lines.len() > 10, "streamlines are drawn: {} segments", o.lines.len());
+        let speed = o.range;
+        super::control(&mut h.app, &json!({"quantity": "pressure"})).unwrap();
+        let o = super::overlay(&h.app).expect("the result is shown");
+        assert_ne!(o.range, speed, "the map switched to pressure");
+    }
+}
