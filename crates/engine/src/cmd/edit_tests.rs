@@ -710,6 +710,21 @@ fn suppressing_a_feature_keeps_later_counted_body_names() {
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(bodies(&s), named(&[("Body1", "A"), ("Body2", "B"), ("Body3", "C")]));
     assert!(works(&s));
+
+    // A body made while A is suppressed does not take A's `Body1`, so it keeps its name once A is
+    // back (it used to be `Body1`, then `Body4`).
+    run(&mut s, "timeline.suppress", json!({"feature": "A", "suppressed": true}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [60, 0, 0], "name": "D"}));
+    assert_eq!(bodies(&s), named(&[("Body2", "B"), ("Body3", "C"), ("Body4", "D")]));
+    // Also once the design is opened again with the model its file keeps, which does not keep
+    // the names passed by: D computed again from a kept state is still `Body4`.
+    let saved = s.model.saved(&s.doc).unwrap();
+    let mut reopened = Session::opened(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap(), Some(&saved));
+    run(&mut reopened, "timeline.edit", json!({"feature": "D", "set": {"length": "12"}}));
+    assert_eq!(bodies(&reopened), named(&[("Body2", "B"), ("Body3", "C"), ("Body4", "D")]));
+    run(&mut s, "timeline.suppress", json!({"feature": "A", "suppressed": false}));
+    assert_eq!(bodies(&s), named(&[("Body1", "A"), ("Body2", "B"), ("Body3", "C"), ("Body4", "D")]));
+    assert!(works(&s));
 }
 
 /// The value at a dotted path of a definition.
