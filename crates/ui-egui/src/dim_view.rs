@@ -928,10 +928,11 @@ mod tests {
         assert_eq!(h.app.session.undo.len(), undo, "a refused definition changed nothing");
         h.step(&json!({"key":"Escape"})).unwrap();
         h.step(&json!({"key":"Escape"})).unwrap();
-        // A reserved name says what kind of word it is.
-        h.app.run("sketch.line", json!({"points":[[10,50],[40,50]],"infer":false})).unwrap();
+        // A reserved name says what kind of word it is. The line goes below the first one: the
+        // ribbon floats over the top of the canvas, and a click at sketch y = 50 would land on it.
+        h.app.run("sketch.line", json!({"points":[[10,-10],[40,-10]],"infer":false})).unwrap();
         h.step(&json!({"start":"sketch.dimension"})).unwrap();
-        h.step(&json!({"click":{"sketch":[25,50]}})).unwrap();
+        h.step(&json!({"click":{"sketch":[25,-10]}})).unwrap();
         h.step(&json!({"text":"mm = 5"})).unwrap();
         h.step(&json!({"key":"Enter"})).unwrap();
         assert!(editing(), "{:?}", h.app.status);
