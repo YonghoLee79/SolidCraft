@@ -14,10 +14,6 @@ name = "chamfer-large-holes"
 path = "src/chamfer_large_holes.rs"
 
 [[bin]]
-name = "plate-generator"
-path = "src/plate_generator.rs"
-
-[[bin]]
 name = "flatten-export-dxf"
 path = "src/flatten_export_dxf.rs"
 
@@ -32,6 +28,10 @@ path = "src/chamfer_selection.rs"
 [[bin]]
 name = "batch-mass"
 path = "src/batch_mass.rs"
+
+[[bin]]
+name = "batch-export"
+path = "src/batch_export.rs"
 
 [dependencies]
 serde_json = { workspace = true }

@@ -1,0 +1,15 @@
+{
+  "macro": {
+    "name": "Chamfer holes",
+    "description": "Find every cylindrical hole in a diameter range, including extrude cuts, and chamfer both ends of each one."
+  },
+  "params": [
+    { "name": "min_dia", "label": "Minimum diameter", "default": "5 mm" },
+    { "name": "max_dia", "label": "Maximum diameter", "default": "20 mm" },
+    { "name": "chamfer", "label": "Chamfer distance", "default": "1 mm" }
+  ],
+  "commands": [
+    { "command": "inspect.find_holes", "params": { "min_diameter": "{{min_dia}}", "max_diameter": "{{max_dia}}" }, "let": "holes" },
+    { "command": "solid.chamfer", "params": { "edges": "{{holes.edges}}", "distance": "{{chamfer}}" } }
+  ]
+}

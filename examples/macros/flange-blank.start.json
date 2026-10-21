@@ -1,0 +1,16 @@
+{
+  "commands": [
+    {"command": "sketch.create", "params": {"plane": "XY", "name": "Disc"}},
+    {"command": "sketch.circle.center", "params": {"center": [0, 0], "diameter": 100}},
+    {"command": "sketch.finish", "params": {}},
+    {"command": "solid.extrude", "params": {"distance": 10, "body_name": "Flange", "name": "Disc"}},
+    {"command": "sketch.create", "params": {"plane": {"face": [0, 0, 10]}, "name": "Hub"}},
+    {"command": "sketch.circle.center", "params": {"center": [0, 0], "diameter": 44}},
+    {"command": "sketch.finish", "params": {}},
+    {"command": "solid.extrude", "params": {"distance": 16, "operation": "join", "name": "Hub"}},
+    {"command": "sketch.create", "params": {"plane": "XY", "name": "Bore"}},
+    {"command": "sketch.circle.center", "params": {"center": [0, 0], "diameter": 24}},
+    {"command": "sketch.finish", "params": {}},
+    {"command": "solid.extrude", "params": {"distance": 26, "operation": "cut", "name": "Bore"}}
+  ]
+}

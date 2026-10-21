@@ -44,26 +44,6 @@ fn skip_without_cli() -> Option<PathBuf> {
 }
 
 #[test]
-fn plate_generator_over_mcp_makes_four_holes() {
-    let Some(cli) = skip_without_cli() else { return };
-    let mut app = App::headless_cli(&cli).expect("mcp");
-    app.run("solid.box", json!({"length": "120 mm", "width": "80 mm", "height": "8 mm", "name": "Plate"})).unwrap();
-    for (i, (x, y)) in [("10", "10"), ("120 - 10", "10"), ("10", "80 - 10"), ("120 - 10", "80 - 10")].into_iter().enumerate() {
-        app.run("solid.hole", json!({"position": [x, y, "8 mm"], "diameter": "6.5 mm", "name": format!("Hole{}", i + 1)})).unwrap();
-    }
-    let found = app.run("inspect.find_holes", json!({"max_diameter": "7 mm"})).unwrap();
-    assert_eq!(found["count"], 4, "{found}");
-}
-
-#[test]
-fn plate_generator_bin_exits_ok() {
-    let Some(cli) = skip_without_cli() else { return };
-    let bin = env!("CARGO_BIN_EXE_plate-generator");
-    let out = Command::new(bin).env("SOLIDCRAFT_CLI", &cli).env_remove("SOLIDCRAFT_CONTROL_PORT").output().expect("spawn plate-generator");
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
-}
-
-#[test]
 fn batch_mass_writes_csv_for_a_step_folder() {
     let Some(cli) = skip_without_cli() else { return };
     let dir = std::env::temp_dir().join(format!("sc-batch-mass-{}", std::process::id()));
@@ -88,4 +68,34 @@ fn batch_mass_writes_csv_for_a_step_folder() {
     assert!(text.contains("cube.step"), "{text}");
     assert!(text.lines().count() >= 2, "{text}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn batch_export_writes_a_step() {
+    let Some(cli) = skip_without_cli() else { return };
+    let root = std::env::temp_dir().join(format!("sc-batch-export-{}", std::process::id()));
+    let src = root.join("in");
+    let dest = root.join("out");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&src).unwrap();
+    let step = src.join("cube.step");
+    {
+        let mut app = App::headless_cli(&cli).expect("mcp");
+        app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        app.run("file.export", json!({"path": step.display().to_string()})).unwrap();
+    }
+    let bin = env!("CARGO_BIN_EXE_batch-export");
+    let out = Command::new(bin)
+        .arg(&src)
+        .arg(&dest)
+        .arg("step")
+        .env("SOLIDCRAFT_CLI", &cli)
+        .env_remove("SOLIDCRAFT_CONTROL_PORT")
+        .output()
+        .expect("spawn batch-export");
+    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    let written = dest.join("cube.step");
+    assert!(written.is_file(), "{}", written.display());
+    assert!(std::fs::metadata(&written).unwrap().len() > 0, "{}", written.display());
+    let _ = std::fs::remove_dir_all(&root);
 }

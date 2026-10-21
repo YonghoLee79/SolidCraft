@@ -1,5 +1,5 @@
 //! `macro.*`: recording captures design commands, pause skips, replay rolls back a failure,
-//! and a parameterized macro can flatten a sheet, build a plate, or chamfer small holes.
+//! and a parameterized macro can flatten a sheet, build a plate, or chamfer holes by size.
 
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -227,6 +227,22 @@ fn the_start_parts_build() {
     let mut cyl = Session::default();
     load_start(&mut cyl, "batch-mass/cylinder.start.json");
     assert!(volume(&mut cyl) > 0.0, "{}", volume(&mut cyl));
+
+    let mut enclosure = Session::default();
+    load_start(&mut enclosure, "enclosure.start.json");
+    let m = run(&mut enclosure, "inspect.measure", json!({}));
+    assert!(m["body_count"].as_u64().unwrap() >= 1, "{m}");
+    let holes = run(&mut enclosure, "inspect.find_holes", json!({"min_diameter": "2 mm"}));
+    assert_eq!(holes["count"], 2, "two Ø2.5 bosses: {holes}");
+
+    let mut flange = Session::default();
+    load_start(&mut flange, "flange-blank.start.json");
+    let m = run(&mut flange, "inspect.measure", json!({}));
+    assert_eq!(m["body_count"], 1, "{m}");
+    let bolts = run(&mut flange, "inspect.find_holes", json!({"max_diameter": "12 mm"}));
+    assert_eq!(bolts["count"], 0, "no bolt holes: {bolts}");
+    let bore = run(&mut flange, "inspect.find_holes", json!({"min_diameter": "20 mm"}));
+    assert_eq!(bore["count"], 1, "the Ø24 bore: {bore}");
 }
 
 #[test]
@@ -241,35 +257,15 @@ fn the_example_macros_run() {
     let expected = 120.0 * 80.0 * 8.0 - 4.0 * std::f64::consts::PI * 3.25_f64.powi(2) * 8.0;
     assert!((v - expected).abs() < 1.0, "{v} vs {expected}");
 
-    let mut small = Session::default();
-    load_start(&mut small, "chamfer-holes.start.json");
-    small.macros.loaded = Some(example("chamfer-small-holes.macro.json"));
-    let before = volume(&mut small);
-    let r = run(&mut small, "macro.play", json!({}));
+    let mut holes = Session::default();
+    load_start(&mut holes, "chamfer-holes.start.json");
+    holes.macros.loaded = Some(example("chamfer-holes.macro.json"));
+    let before = volume(&mut holes);
+    let r = run(&mut holes, "macro.play", json!({}));
     assert_eq!(r["ran"], 2, "{r}");
-    assert!(volume(&mut small) < before, "only the holes up to 8 mm were chamfered");
-    let big = run(&mut small, "inspect.find_holes", json!({"feature": "Big"}));
-    assert_eq!(big["count"], 1, "the 12 mm hole is still a hole: {big}");
-
-    let mut large = Session::default();
-    load_start(&mut large, "chamfer-holes.start.json");
-    large.macros.loaded = Some(example("chamfer-large-holes.macro.json"));
-    let before = volume(&mut large);
-    let r = run(&mut large, "macro.play", json!({}));
-    assert_eq!(r["ran"], 2, "{r}");
-    assert!(volume(&mut large) < before, "the holes larger than 5 mm were chamfered");
-    let tiny = run(&mut large, "inspect.find_holes", json!({"feature": "Small"}));
+    assert!(volume(&mut holes) < before, "the holes between 5 mm and 20 mm were chamfered");
+    let tiny = run(&mut holes, "inspect.find_holes", json!({"feature": "Small"}));
     assert_eq!(tiny["count"], 1, "the 4 mm hole is still a hole: {tiny}");
-
-    let mut plate = Session::default();
-    plate.run_script(&crate::sample::script()).unwrap();
-    let found = run(&mut plate, "inspect.find_holes", json!({"min_diameter": "5 mm"}));
-    assert!(found["count"].as_u64().unwrap() >= 3, "the sample plate's two Ø8 cuts and Ø12 bore: {found}");
-    plate.macros.loaded = Some(example("chamfer-large-holes.macro.json"));
-    let before = volume(&mut plate);
-    let r = run(&mut plate, "macro.play", json!({}));
-    assert_eq!(r["ran"], 2, "{r}");
-    assert!(volume(&mut plate) < before, "the sample plate holes were chamfered");
 
     let dir = temp_dir("dxf");
     let mut s = Session::default();
