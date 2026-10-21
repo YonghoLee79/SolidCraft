@@ -91,6 +91,8 @@ pub struct TreeState {
     /// A Section Analysis hidden with its eye in the Analysis folder: its plane (origin,
     /// normal), so the eye can bring it back (#822).
     pub hidden_section: Option<(solidcraft_engine::geom::Vec3, solidcraft_engine::geom::Vec3)>,
+    /// What the Section Analysis dialog's OK last made, for Edit to start from.
+    pub section_dialog: Option<crate::dialogs::SectionDraft>,
     /// The Analysis folder hidden with its own eye, and the Section Analysis hidden with its
     /// own: the section shows only while neither is, and each eye keeps its state.
     pub analysis_hidden: bool,
@@ -1401,7 +1403,7 @@ fn analysis_rows(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize, acts: &mut
         set_section_shown(app, !section_shown);
     }
     if r.double {
-        app.start("inspect.section");
+        crate::dialogs::edit_section(app);
     }
     if let Some(p) = r.secondary {
         acts.menu = Some((p, Target::Section));
