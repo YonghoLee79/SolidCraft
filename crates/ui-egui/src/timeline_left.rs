@@ -98,6 +98,7 @@ pub fn left_timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
 
 fn timeline_transport(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
+    let accent = crate::theme::TabAccent::for_tab(&t, &app.ui.tab);
     let n = app.session.doc.features.len();
     let marker = app.session.doc.marker.unwrap_or(n);
     ui.horizontal(|ui| {
@@ -105,24 +106,14 @@ fn timeline_transport(app: &mut SolveApp, ui: &mut egui::Ui) {
         let controls = [("first", Some(0usize)), ("back", Some(marker.saturating_sub(1))), ("forward", Some((marker + 1).min(n))), ("last", None)];
         for (what, target) in controls {
             let (rect, response) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
-            if response.hovered() {
-                ui.painter().rect_filled(rect, 3.0, t.hover);
+            crate::scenario::publish_handle(&format!("timeline-transport:{what}"), rect.center());
+            let playing = what == "last" && app.timeline_playback.is_some();
+            if playing || response.hovered() {
+                ui.painter().rect_filled(rect, 3.0, if playing { accent.soft } else { t.hover });
             }
             transport_glyph(ui.painter(), rect.center(), what, t.icon);
-            if response
-                .on_hover_text(match what {
-                    "first" => "Roll back to the start",
-                    "back" => "Step back one feature",
-                    "forward" => "Step forward one feature",
-                    _ => "Play to the end",
-                })
-                .clicked()
-            {
-                let params = match target {
-                    Some(position) if position < n => json!({"position": position}),
-                    _ => json!({}),
-                };
-                let _ = app.run_heavy("timeline.roll_to", params);
+            if response.on_hover_text(crate::timeline::transport_tooltip(what, playing)).clicked() {
+                crate::timeline::transport_action(app, ui.ctx(), what, target);
             }
         }
     });
