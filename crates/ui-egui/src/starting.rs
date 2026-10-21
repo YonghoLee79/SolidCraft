@@ -122,7 +122,7 @@ impl<T> Starting<T> {
             }
             let painter = ui.painter();
             let c = rect.center();
-            painter.text(c - vec2(0.0, 28.0), Align2::CENTER_BOTTOM, "SolidCraft", FontId::proportional(30.0), t.text);
+            painter.text(c - vec2(0.0, 28.0), Align2::CENTER_BOTTOM, "SolidCraft", FontId::proportional(t.font_display), t.text);
             // Steps done of all of them; a step that runs long holds the bar where it is.
             let bar = egui::Rect::from_center_size(c, vec2(240.0, 4.0));
             painter.rect_filled(bar, 2.0, t.border);
@@ -137,7 +137,7 @@ impl<T> Starting<T> {
                 painter.rect_filled(egui::Rect::from_min_size(egui::pos2(x, bar.min.y), vec2(24.0, bar.height())), 2.0, t.accent_soft);
             }
             if !label.is_empty() {
-                painter.text(c + vec2(0.0, 20.0), Align2::CENTER_TOP, crate::i18n::tr(label), FontId::proportional(14.0), t.text_dim);
+                painter.text(c + vec2(0.0, 20.0), Align2::CENTER_TOP, crate::i18n::tr(label), FontId::proportional(t.font_body), t.text_dim);
             }
             painter.rect_stroke(rect, 0.0, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         });
