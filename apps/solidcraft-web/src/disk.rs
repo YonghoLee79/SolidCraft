@@ -114,6 +114,11 @@ pub fn opens_design(extensions: &[&str]) -> bool {
     extensions.is_empty() || extensions.iter().any(|e| solidcraft_engine::io::DESIGN_EXTS.contains(e))
 }
 
+/// Canvas and Decal read PNG and JPEG images through their own picker.
+pub fn opens_image(extensions: &[&str]) -> bool {
+    extensions.iter().any(|e| ["png", "jpg", "jpeg"].contains(e))
+}
+
 /// The file type a Save As dialog offers for `name`: (description, MIME type, extension).
 pub fn save_type(name: &str) -> (&'static str, &'static str, &'static str) {
     let json = std::path::Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
@@ -287,6 +292,65 @@ mod web {
                 }
             }
         }
+    }
+
+    /// Pick an image and return its upload path to the Canvas or Decal continuation.
+    /// A file input also works in browsers without the File System Access API.
+    pub fn pick_image(files: &Rc<Files>, extensions: &[&str]) -> impl std::future::Future<Output = Option<String>> + use<> {
+        // Start in the click handler, before awaiting, to preserve the user gesture.
+        let picked = image_input(extensions);
+        let files = files.clone();
+        async move {
+            let read = async {
+                let value = JsFuture::from(picked?).await.map_err(err)?;
+                if value.is_null() {
+                    return Ok(None);
+                }
+                let file = value.dyn_into::<web_sys::File>().map_err(|_| "not a file".to_string())?;
+                let size = file.size();
+                if !size.is_finite() || size > solidcraft_engine::doc::canvas::MAX_CANVAS_BYTES as f64 {
+                    return Err("image file is too large".to_string());
+                }
+                let bytes = JsFuture::from(file.array_buffer()).await.map_err(err)?;
+                let path = format!("{}{}", crate::files::UPLOAD, file.name());
+                vfs::insert(&path, js_sys::Uint8Array::new(&bytes).to_vec());
+                Ok(Some(path))
+            };
+            match read.await {
+                Ok(path) => path,
+                Err(e) => {
+                    files.say(format!("open image: {e}"), true);
+                    None
+                }
+            }
+        }
+    }
+
+    fn image_input(extensions: &[&str]) -> Result<Promise, String> {
+        let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+        let input = doc.create_element("input").map_err(err)?.dyn_into::<web_sys::HtmlInputElement>().map_err(|_| "not a file input")?;
+        input.set_type("file");
+        input.set_accept(&extensions.iter().map(|e| format!(".{e}")).collect::<Vec<_>>().join(","));
+        input.set_attribute("style", "display:none").map_err(err)?;
+        doc.body().ok_or("no document body")?.append_child(&input).map_err(err)?;
+        let promise = Promise::new(&mut |resolve, _reject| {
+            // Read the input from the event so the callback does not keep its element alive.
+            let resolve = resolve.clone();
+            let done = Closure::once_into_js(move |event: web_sys::Event| {
+                let file = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok()).and_then(|input| {
+                    input.remove();
+                    input.set_onchange(None);
+                    input.set_oncancel(None);
+                    input.files().and_then(|list| list.get(0))
+                });
+                let value = file.map(JsValue::from).unwrap_or(JsValue::NULL);
+                let _ = resolve.call1(&JsValue::UNDEFINED, &value);
+            });
+            input.set_onchange(Some(done.unchecked_ref()));
+            input.set_oncancel(Some(done.unchecked_ref()));
+        });
+        input.click();
+        Ok(promise)
     }
 
     /// The options of the open dialog: a single file, designs and CAD files listed first.
@@ -619,6 +683,22 @@ mod tests {
         assert!(opens_design(&["solvecraft"]));
         assert!(!opens_design(&["step", "stp"]));
         assert!(!opens_design(&["json"]));
+    }
+
+    #[test]
+    fn canvas_and_decal_extensions_use_the_image_picker() {
+        assert!(opens_image(&["png", "jpg", "jpeg"]));
+        for extension in ["png", "jpg", "jpeg"] {
+            assert!(opens_image(&[extension]), "{extension}");
+            assert!(!opens_design(&[extension]), "{extension}");
+        }
+    }
+
+    #[test]
+    fn design_and_model_filters_do_not_use_the_image_picker() {
+        for extensions in [&[][..], &["solidcraft"][..], &["json", "zip"][..], &["step", "stp"][..], &["stl", "3mf"][..]] {
+            assert!(!opens_image(extensions), "{extensions:?}");
+        }
     }
 
     #[test]
