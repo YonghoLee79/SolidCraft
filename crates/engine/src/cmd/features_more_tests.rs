@@ -1653,6 +1653,11 @@ fn a_move_goes_the_way_it_is_shown_on_a_placed_component() {
     run(&mut s, "solid.move", json!({"bodies": ["Plate"], "translate": [0, 0, 10]}));
     let b = world_bounds(&s, "Plate");
     assert!(near(b.min.z, 10.0) && near(b.max.z, 18.0) && near(b.min.y, 0.0) && near(b.max.y, 30.0), "moved up: {b:?}");
+    // The dialog sends lengths with units: they turn with the frame too.
+    run(&mut s, "solid.move", json!({"bodies": ["Plate"], "translate": ["0 mm", "5 mm", "-10 mm"]}));
+    let b = world_bounds(&s, "Plate");
+    assert!(near(b.min.z, 0.0) && near(b.min.y, 5.0) && near(b.max.y, 35.0), "moved by units: {b:?}");
+    run(&mut s, "solid.move", json!({"bodies": ["Plate"], "translate": [0, -5, 10]}));
     // A quarter turn about the world's Z through the origin: (x, y) → (−y, x).
     run(&mut s, "solid.move", json!({"bodies": ["Plate"], "axis": [0, 0, 1], "angle": 90}));
     let b = world_bounds(&s, "Plate");

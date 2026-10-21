@@ -227,8 +227,14 @@ impl Mapper<'_> {
     }
 
     fn dir(&mut self, v: &Value) -> Option<Value> {
-        let d = vec3(v)?;
         let m = self.first.unwrap_or(self.f.active);
+        let Some(d) = vec3(v) else {
+            // A vector with expression or unit components (`["93.575 mm", 0, 0]`, as Move's
+            // dialog sends them): turned as expressions, without the frame's translation.
+            let mut turn = m;
+            turn[3] = [0.0, 0.0, 0.0, 1.0];
+            return self.make_expr(&turn, v);
+        };
         if is_identity(&m) {
             return None;
         }

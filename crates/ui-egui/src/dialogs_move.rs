@@ -92,9 +92,30 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Kind) -> bool {
     enter
 }
 
-fn sel_point(s: Option<&Sel>) -> Option<Vec3> {
+/// The point a pick stands for: a vertex or a point on a face or edge, except that a circular
+/// edge (or an arc of one, as imported holes often have) means its centre and a round face the
+/// point of its axis nearest the pick, so a move can turn about a hole or go from one hole to
+/// another.
+fn sel_point(app: &SolveApp, s: Option<&Sel>) -> Option<Vec3> {
+    use solidcraft_engine::kernel;
+    let round = |body: &str, edge: Option<usize>, face: Option<usize>, at: Vec3| -> Option<Vec3> {
+        let b = app.session.world_state().body(body).cloned()?;
+        if let Some(i) = edge {
+            return kernel::guard("move edge circle", || Ok(kernel::edge_circle(&b.body, i))).ok().flatten().map(|c| c.center);
+        }
+        let face = face?;
+        let axis = match kernel::guard("move face surface", || Ok(kernel::face_surface(&b.body, face))).ok().flatten()? {
+            kernel::FaceSurface::Cylinder { origin, axis, .. } => (origin, *axis),
+            kernel::FaceSurface::Cone { apex, axis, .. } => (apex, *axis),
+            kernel::FaceSurface::Torus { center, axis, .. } => (center, *axis),
+            _ => return None,
+        };
+        Some(axis.0 + axis.1 * (at - axis.0).dot(axis.1))
+    };
     match s? {
-        Sel::Vertex { point, .. } | Sel::Face { point, .. } | Sel::Edge { point, .. } => Some(*point),
+        Sel::Vertex { point, .. } => Some(*point),
+        Sel::Edge { body, index, point } => Some(round(body, Some(*index), None, *point).unwrap_or(*point)),
+        Sel::Face { body, index, point } => Some(round(body, None, Some(*index), *point).unwrap_or(*point)),
         _ => None,
     }
 }
@@ -103,16 +124,40 @@ fn items(d: &Dialog, i: usize) -> &[Sel] {
     crate::selection::items(&d.inputs, i)
 }
 
-/// The centre of the picked bodies where they are before this move.
+/// The centre of the picked bodies where they are shown before this move (a body in a moved
+/// or turned component, such as an imported part set upright, where the view has it).
 fn bodies_center(app: &SolveApp, d: &Dialog) -> Option<Vec3> {
-    let st = match d.editing {
-        Some((id, _)) => app.session.model.state_before(id),
-        None => app.session.model.state(),
+    let (st, frames) = match d.editing {
+        Some((id, _)) => {
+            let st = app.session.model.state_before(id);
+            let frames = app.session.placed_document().body_frames_with_source(&st);
+            (st, Some(frames))
+        }
+        None => (app.session.world_state(), None),
     };
     let mut bb: Option<(Vec3, Vec3)> = None;
     for n in items(d, 0).body_names() {
-        let Some(b) = st.body(&n) else { continue };
-        let x = b.mesh().bounds();
+        let (b, frame) = match &frames {
+            None => (st.body(&n), None),
+            Some(f) => {
+                let found = f.iter().find(|(world, own, ..)| *world == n || *own == n);
+                (found.and_then(|(_, own, ..)| st.body(own)), found.map(|(.., m)| *m))
+            }
+        };
+        let Some(b) = b else { continue };
+        let mut x = b.mesh().bounds();
+        if let Some(m) = frame {
+            let mut placed = solidcraft_engine::geom::Aabb3::EMPTY;
+            for i in 0..8 {
+                let c = Vec3::new(
+                    if i & 1 == 0 { x.min.x } else { x.max.x },
+                    if i & 2 == 0 { x.min.y } else { x.max.y },
+                    if i & 4 == 0 { x.min.z } else { x.max.z },
+                );
+                placed.add(solidcraft_engine::doc::apply_point(&m, c));
+            }
+            x = placed;
+        }
         bb = Some(match bb {
             None => (x.min, x.max),
             Some((lo, hi)) => (
@@ -127,7 +172,7 @@ fn bodies_center(app: &SolveApp, d: &Dialog) -> Option<Vec3> {
 /// What a Free Move turns about: the picked pivot, else the kept one (editing), else the
 /// bodies' centre.
 fn pivot(app: &SolveApp, d: &Dialog) -> Option<Vec3> {
-    if let Some(p) = sel_point(items(d, 1).first()) {
+    if let Some(p) = sel_point(app, items(d, 1).first()) {
         return Some(p);
     }
     if let Some(a) = d.extra.get("pivot").and_then(|v| serde_json::from_value::<[f64; 3]>(v.clone()).ok()) {
@@ -163,7 +208,7 @@ pub fn params(app: &SolveApp, d: &Dialog) -> Result<Value, String> {
     if bodies.is_empty() {
         return Err("select bodies first".into());
     }
-    let need_point = |i: usize, what: &str| sel_point(items(d, i).first()).ok_or(format!("select {what} first"));
+    let need_point = |i: usize, what: &str| sel_point(app, items(d, i).first()).ok_or(format!("select {what} first"));
     let num = |t: Vec3| json!([mm(t.x), mm(t.y), mm(t.z)]);
     let mut p = json!({ "bodies": bodies });
     match *mode {
