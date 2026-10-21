@@ -319,7 +319,7 @@ fn card(ui: &mut egui::Ui, l: &mut LibraryState, e: &Entry) -> egui::Response {
                     painter.image(tex.id(), pic.shrink(2.0), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
                 }
                 None => {
-                    painter.text(pic.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(12.0), t.text_dim);
+                    painter.text(pic.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(t.font_label), t.text_dim);
                 }
             }
             // What the file is, where it is not a design (a STEP and a design can share a name).
@@ -331,12 +331,12 @@ fn card(ui: &mut egui::Ui, l: &mut LibraryState, e: &Entry) -> egui::Response {
             if let Some(b) = badge {
                 let r = egui::Rect::from_min_size(pic.left_top() + vec2(4.0, 4.0), vec2(34.0, 14.0));
                 painter.rect_filled(r, 3.0, t.accent);
-                painter.text(r.center(), egui::Align2::CENTER_CENTER, b, egui::FontId::proportional(9.5), Color32::WHITE);
+                painter.text(r.center(), egui::Align2::CENTER_CENTER, b, egui::FontId::proportional(t.font_badge), Color32::WHITE);
             }
         }
     }
     let name = if e.name.chars().count() > 16 { format!("{}…", e.name.chars().take(15).collect::<String>()) } else { e.name.clone() };
-    painter.text(egui::pos2(rect.center().x, pic.bottom() + 9.0), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(11.5), t.text);
+    painter.text(egui::pos2(rect.center().x, pic.bottom() + 9.0), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(t.font_small), t.text);
     crate::scenario::publish_handle(&format!("library:{}", e.name), rect.center());
     resp.on_hover_text(e.path.to_string_lossy().to_string())
 }
