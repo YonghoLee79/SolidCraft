@@ -3,7 +3,7 @@
 //! moves until a value is typed or the triad is dragged.
 
 use crate::selection::SelectionExt as _;
-use crate::ui_kit::{choice_row, expr_row};
+use crate::ui_kit::{choice_row, expr_row, field, row};
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
@@ -70,14 +70,14 @@ fn bodies_empty(d: &Dialog) -> bool {
 }
 
 /// The value rows after the inputs; true when Enter was pressed in one.
-pub fn rows(ui: &mut egui::Ui, k: &mut Kind) -> bool {
+pub fn rows(ui: &mut egui::Ui, k: &mut Kind, extra: &mut serde_json::Map<String, Value>) -> bool {
     let Kind::Move { mode, x, y, z, rx, ry, rz, angle } = k else { return false };
     let mut enter = false;
     match *mode {
         FREE | TRANSLATE => {
-            enter |= expr_row(ui, "X Distance", x);
-            enter |= expr_row(ui, "Y Distance", y);
-            enter |= expr_row(ui, "Z Distance", z);
+            enter |= lock_row(ui, "X Distance", x, extra, 0);
+            enter |= lock_row(ui, "Y Distance", y, extra, 1);
+            enter |= lock_row(ui, "Z Distance", z, extra, 2);
             if *mode == FREE {
                 enter |= expr_row(ui, "X Angle", rx);
                 enter |= expr_row(ui, "Y Angle", ry);
@@ -93,6 +93,38 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Kind) -> bool {
         _ => {}
     }
     enter
+}
+
+/// A distance row with a lock toggle at its end: a locked axis ignores triad drags. The toggle's
+/// width is taken from the field, so it stays inside the row.
+fn lock_row(ui: &mut egui::Ui, label: &str, value: &mut String, extra: &mut serde_json::Map<String, Value>, axis: usize) -> bool {
+    let Some((name, key)) = LOCKS.get(axis).copied() else { return false };
+    row(ui, label, |ui| {
+        let t = crate::theme::Tokens::get();
+        let size = t.form_close_size;
+        // The field fills the width it is given, so give it the row less the toggle.
+        let full = ui.max_rect();
+        let field_rect = egui::Rect::from_min_max(full.min, egui::pos2(full.right() - size - 4.0, full.max.y));
+        let enter = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(field_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+                field(ui, value)
+            })
+            .inner;
+        let on = extra.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let rect = egui::Rect::from_center_size(egui::pos2(full.right() - size / 2.0, full.center().y), egui::vec2(size, size));
+        let r = ui.interact(rect, ui.make_persistent_id(("move_lock", key)), egui::Sense::click());
+        if r.hovered() {
+            ui.painter().rect_filled(rect, t.control_radius, t.hover);
+        }
+        let ink = if on { t.accent } else { t.form_dim };
+        crate::icons::glyphs::badge(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(12.0, 12.0)), "lock", ink);
+        crate::scenario::publish_handle(&format!("move:lock:{}", &key["lock_".len()..]), rect.center());
+        if r.clicked() {
+            extra.insert(key.into(), Value::Bool(!on));
+        }
+        r.on_hover_text(crate::i18n::tr_label(name));
+        enter
+    })
 }
 
 fn sel_point(s: Option<&Sel>) -> Option<Vec3> {
