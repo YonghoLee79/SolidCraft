@@ -414,6 +414,8 @@ preference_settings! {
     msaa: u32 = 4, PAGE_GRAPHICS;
     /// Soft contact shading in the GPU viewport; optional and applied immediately.
     ambient_occlusion: bool = false, PAGE_GRAPHICS;
+    /// Optional schematic markings on threaded cylindrical walls; off for new and older preferences.
+    cosmetic_threads: bool = false, PAGE_GRAPHICS;
     /// The grid turns to the upright origin plane facing a side view (#1470). Off by default: the
     /// grid stays on the ground plane (XY) whatever the view.
     grid_follows_view: bool = false => check("Grid follows the view", "Side views show the grid on the upright plane facing them instead of the ground");
@@ -1434,6 +1436,9 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             });
             ui_kit::checkbox(ui, crate::i18n::tr_label("Ground shadow"), &mut app.ui.ground_shadow);
             ambient_occlusion_checkbox(app, ui, "Ambient occlusion");
+            let response = ui_kit::checkbox(ui, app.tr("ui.cosmetic_thread_markings"), &mut app.preferences.cosmetic_threads)
+                .on_hover_text(app.tr("ui.cosmetic_thread_markings_help"));
+            crate::scenario::publish_handle("prefs:cosmetic_threads", response.rect.center());
             ui_kit::checkbox(ui, crate::i18n::tr_label("Perspective view"), &mut app.ui.perspective);
             ui_kit::section(ui, "colour_vision", app.tr("ui.colour_vision"), true, |ui| {
                 let mode = app.preferences.color_vision;
@@ -2190,6 +2195,36 @@ mod tests {
         assert!(!h.app.preferences.radial_context_menu, "Navigation defaults disable the ring");
         h.call("ui.prefs", json!({"button":"cancel"}));
         assert!(h.app.preferences.radial_context_menu, "Cancel restores the last Apply");
+    }
+
+    #[test]
+    fn cosmetic_threads_default_off_and_follow_preferences_transactions() {
+        assert!(!Prefs::default().cosmetic_threads);
+        let old: Prefs = serde_json::from_value(json!({"theme":"light","msaa":4})).unwrap();
+        assert!(!old.cosmetic_threads && old.theme == "light" && old.msaa == 4);
+        let malformed = lenient(&json!({"cosmetic_threads":"yes","theme":"light"}));
+        assert!(!malformed.cosmetic_threads && malformed.theme == "light");
+        let mut h = crate::scenario::Harness::new();
+        let design = h.app.session.doc.to_json();
+        h.call("ui.prefs", json!({"open":"Graphics"}));
+        let checkbox = crate::scenario::handle_at("prefs:cosmetic_threads").unwrap();
+        h.call("ui.click", json!({"x":checkbox.x,"y":checkbox.y}));
+        assert!(h.app.preferences.cosmetic_threads, "the actual checkbox enables the optional markings");
+        let mut restored = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        restored.load_prefs(&h.app.prefs());
+        assert!(restored.preferences.cosmetic_threads, "the preference survives saved application settings");
+        h.call("ui.prefs", json!({"button":"cancel"}));
+        assert!(!h.app.preferences.cosmetic_threads);
+        h.call("ui.prefs", json!({"open":"Graphics","cosmetic_threads":true,"button":"apply"}));
+        h.call("ui.prefs", json!({"button":"defaults"}));
+        assert!(!h.app.preferences.cosmetic_threads, "Graphics defaults restore the default-off policy");
+        h.call("ui.prefs", json!({"button":"cancel"}));
+        assert!(h.app.preferences.cosmetic_threads, "Cancel restores the last Apply");
+        h.call("ui.prefs", json!({"cosmetic_threads":false}));
+        restored.load_prefs(&h.app.prefs());
+        assert!(!restored.preferences.cosmetic_threads, "an explicitly disabled value also survives reload");
+        assert_eq!(h.app.session.doc.to_json(), design);
+        assert!(h.app.session.undo.is_empty());
     }
 
     #[test]
