@@ -2468,6 +2468,12 @@ fn sketch_delete(s: &mut Session, p: &Value) -> Result<Value> {
     if ids.is_empty() {
         return Err(bad(cmd, "`entities` must list sketch entity ids"));
     }
+    // Members deleted from a link stay deleted when it is next updated: by their source edges.
+    let pieces = target_sketch(s, p, cmd)
+        .ok()
+        .and_then(|id| Some((id, s.doc.sketch(id).ok()?)))
+        .map(|(id, sk)| super::sketch_project::link_pieces(s, &s.doc, id, &super::sketch_links::touched_links(sk, &ids)))
+        .unwrap_or_default();
     let (n, info) = edit(s, p, cmd, false, |sk, doc| {
         let mut curves = Vec::new();
         let mut points = Vec::new();
@@ -2519,6 +2525,7 @@ fn sketch_delete(s: &mut Session, p: &Value) -> Result<Value> {
             sk.refresh_offsets()?;
         }
         sk.constraints.retain(|c| !cons.contains(&c.id));
+        super::sketch_links::omit_removed(sk, &pieces, &curves, &points, cmd)?;
         let pids: Vec<String> = points.iter().filter_map(|q| sk.points.get(*q).map(|x| x.id.clone())).collect();
         sk.remove_curves(&curves);
         let pidx: Vec<usize> = pids.iter().filter_map(|id| sk.point_index(id)).collect();
