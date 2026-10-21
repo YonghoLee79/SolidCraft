@@ -4,14 +4,14 @@
 
 use serde_json::{Value, json};
 use solidcraft_geom::{Seg2, Vec2};
-use solidcraft_sketch::{ConstraintKind, CurveKind, Sketch};
+use solidcraft_sketch::{ConstraintKind, CurveKind, Shape, Sketch};
 
 use super::sketch::add_c;
 use crate::Result;
 use crate::params::bad;
 
 /// Exact pieces of a free-form curve (polyline lines for the few kinds without them).
-fn pieces(sk: &Sketch, ci: usize) -> Vec<Seg2> {
+pub(super) fn pieces(sk: &Sketch, ci: usize) -> Vec<Seg2> {
     sk.exact_segs(ci).unwrap_or_else(|| sk.segs(ci))
 }
 
@@ -43,54 +43,76 @@ fn project(sk: &Sketch, ci: usize, p: Vec2) -> Vec2 {
     sk.shape(ci).map(|s| s.project(p)).unwrap_or(p)
 }
 
+fn seg_x(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
+    let (r, s) = (b - a, d - c);
+    let den = r.cross(s);
+    if den.abs() < 1e-15 {
+        return None;
+    }
+    let (t, u) = ((c - a).cross(s) / den, (c - a).cross(r) / den);
+    ((-1e-9..=1.0 + 1e-9).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u)).then(|| a + r * t)
+}
+
+/// Where curve `oi` meets curve `ci` (polyline crossings refined onto both exact curves; `ends`
+/// adds `oi`'s end points lying on `ci`): (position along `ci`, the point). `mine` is `ci`'s
+/// polyline and `segs` its exact pieces. `unbounded` lets an infinite line `oi` (#1359) meet `ci`
+/// beyond its two points.
+pub(super) fn cuts_pair(sk: &Sketch, ci: usize, mine: &[Vec2], segs: &[Seg2], oi: usize, ends: bool, unbounded: bool) -> Vec<(f64, Vec2)> {
+    let tol = 1e-6;
+    let mut other = sk.polyline(oi);
+    if unbounded
+        && sk.curves.get(oi).is_some_and(|c| c.infinite)
+        && let Some(Shape::Line { a, b }) = sk.shape(oi)
+        && let Some(d) = (b - a).normalized()
+    {
+        other = vec![a - d * 1e7, b + d * 1e7];
+    }
+    let mut found: Vec<Vec2> = Vec::new();
+    for w in mine.windows(2) {
+        for v in other.windows(2) {
+            if let Some(x) = seg_x(w[0], w[1], v[0], v[1]) {
+                found.push(x);
+            }
+        }
+    }
+    // End points of the other curve lying on this one.
+    if ends && let Some((a, b)) = sk.curves.get(oi).and_then(|c| c.kind.ends()) {
+        for q in [a, b].iter().filter_map(|q| sk.point(*q)) {
+            if locate(segs, q).1 < 1e-6 {
+                found.push(q);
+            }
+        }
+    }
+    let mut out: Vec<(f64, Vec2)> = Vec::new();
+    for x in found {
+        // Refine onto both exact curves by alternating projection.
+        let mut q = x;
+        for _ in 0..40 {
+            let n = project(sk, ci, project(sk, oi, q));
+            if n.dist(q) < 1e-13 {
+                q = n;
+                break;
+            }
+            q = n;
+        }
+        let (u, d) = locate(segs, q);
+        if d < tol && project(sk, oi, q).dist(q) < tol && !out.iter().any(|(_, y)| y.dist(q) < tol * 10.0) {
+            out.push((u, q));
+        }
+    }
+    out
+}
+
 /// Where other curves meet free-form curve `ci`: (position along it, the point, the other curve).
 fn cuts(sk: &Sketch, ci: usize, segs: &[Seg2], only_freeform: bool) -> Vec<(f64, Vec2, usize)> {
     let mine = sk.polyline(ci);
-    let tol = 1e-6;
     let mut out: Vec<(f64, Vec2, usize)> = Vec::new();
-    let seg_x = |a: Vec2, b: Vec2, c: Vec2, d: Vec2| -> Option<Vec2> {
-        let (r, s) = (b - a, d - c);
-        let den = r.cross(s);
-        if den.abs() < 1e-15 {
-            return None;
-        }
-        let (t, u) = ((c - a).cross(s) / den, (c - a).cross(r) / den);
-        ((-1e-9..=1.0 + 1e-9).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u)).then(|| a + r * t)
-    };
     for (oi, curve) in sk.curves.iter().enumerate() {
         if oi == ci || (only_freeform && !curve.kind.is_freeform()) {
             continue;
         }
-        let other = sk.polyline(oi);
-        let mut found: Vec<Vec2> = Vec::new();
-        for w in mine.windows(2) {
-            for v in other.windows(2) {
-                if let Some(x) = seg_x(w[0], w[1], v[0], v[1]) {
-                    found.push(x);
-                }
-            }
-        }
-        // End points of the other curve lying on this one.
-        if let Some((a, b)) = sk.curves.get(oi).and_then(|c| c.kind.ends()) {
-            for q in [a, b].iter().filter_map(|q| sk.point(*q)) {
-                if locate(segs, q).1 < 1e-6 {
-                    found.push(q);
-                }
-            }
-        }
-        for x in found {
-            // Refine onto both exact curves by alternating projection.
-            let mut q = x;
-            for _ in 0..40 {
-                let n = project(sk, ci, project(sk, oi, q));
-                if n.dist(q) < 1e-13 {
-                    q = n;
-                    break;
-                }
-                q = n;
-            }
-            let (u, d) = locate(segs, q);
-            if d < tol && project(sk, oi, q).dist(q) < tol && !out.iter().any(|(_, y, _)| y.dist(q) < tol * 10.0) {
+        for (u, q) in cuts_pair(sk, ci, &mine, segs, oi, true, false) {
+            if !out.iter().any(|(_, y, _)| y.dist(q) < 1e-5) {
                 out.push((u, q, oi));
             }
         }

@@ -1742,6 +1742,7 @@
   "ui.smooth_wheel_zoom": "平滑滚轮缩放",
   "ui.smooth_wheel_zoom_tip": "关闭后每个滚轮事件立即生效，不做平滑延迟",
   "ui.snap": "捕捉",
+  "ui.snap_crossings": "交点",
   "ui.space_mouse_axes_reassigned": "轴已在偏好设置中重新分配，在此次校准之上仍然生效。",
   "ui.space_mouse_calibrate": "校准…",
   "ui.space_mouse_calibrate_tip": "按窗口提示移动摇杆帽，SolidCraft 会记住这个 3D 鼠标每个轴的方向和行程。校准结果按此 3D 鼠标保存。",
