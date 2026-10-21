@@ -3737,8 +3737,13 @@ fn signed_axis_view(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some((name, d, _, _)) = tips.get(i)
     {
         crate::scenario::publish_handle(&format!("axis_view_hover:{name}"), hover.unwrap_or(c));
-        ui.interact(Rect::from_center_size(hover.unwrap_or(c), vec2(2.0, 2.0)), ui.id().with("axis_view_tip"), Sense::hover())
-            .on_hover_text(format!("View from {}. Click again to reverse. Drag to orbit; hold Shift to snap.", name.to_uppercase()));
+        ui.interact(Rect::from_center_size(hover.unwrap_or(c), vec2(2.0, 2.0)), ui.id().with("axis_view_tip"), Sense::hover()).on_hover_text(
+            format!(
+                "View from {}. Click again to reverse. Drag to orbit{}.",
+                name.to_uppercase(),
+                if app.preferences.free_orbit { "" } else { "; hold Shift to snap" }
+            ),
+        );
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         if ui.input(|i| i.pointer.primary_clicked()) {
             let frame = app.cam.to_frame(*d);
@@ -3793,18 +3798,10 @@ pub(crate) fn nearest_quarter_turn(yaw: f64) -> f64 {
 /// Turn the view to face the selected planar face or plane, else the active sketch; asked again
 /// while it already faces it, from the other side (#1886).
 pub fn look_at_selection(app: &mut SolveApp) {
-    let target = app.session.selection.iter().find_map(|s| match s {
-        Sel::Face { body, index, point } => crate::dialogs::planar_face(&app.session, body, *index).map(|(_, n)| (*point, n)),
-        Sel::Plane { name } => solidcraft_engine::geom::Plane::named(name).map(|p| (p.origin, p.normal())),
-        _ => None,
-    });
-    match target {
-        Some((p, n)) => {
-            let mut to = app.cam.looking_from(crate::dialogs::facing(app, n, true));
-            to.target = p;
-            app.animate_to(to);
-        }
-        None => crate::dialogs::look_at_sketch_again(app),
+    if solidcraft_engine::find_command("view.normal_to").is_some_and(|command| command.info(&app.session).disabled_reason.is_none()) {
+        app.start("view.normal_to");
+    } else {
+        crate::dialogs::look_at_sketch_again(app);
     }
 }
 
@@ -3820,6 +3817,8 @@ fn nav_bar(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
                 crate::i18n::tr("nav.touchpad.orbit")
             } else if app.preferences.nav == crate::prefs::OPENSCAD_NAV {
                 "Orbit (left drag on empty space; Shift+left drag box-selects)"
+            } else if app.preferences.free_orbit {
+                "Orbit (right drag)"
             } else {
                 "Orbit (right drag; hold Shift to snap)"
             },
