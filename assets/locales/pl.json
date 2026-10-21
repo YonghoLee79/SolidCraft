@@ -884,7 +884,6 @@
   "ui.agent_chat_file_error": "{name}: {error}",
   "ui.agent_chat_file_heic": "{name}: obrazów HEIC nie można tutaj odczytać; najpierw wyeksportuj plik jako JPEG lub PNG",
   "ui.agent_chat_file_importing": "Importowanie do projektu…",
-  "ui.agent_chat_file_kinds": "{name}: można dołączać obrazy (PNG, JPEG, GIF, WebP, BMP, TIFF), pliki tekstowe (także SVG) i pliki CAD (STEP, IGES, FreeCAD, Rhino, STL, 3MF, OBJ, glTF)",
   "ui.agent_chat_file_loading": "Odczytywanie pliku…",
   "ui.agent_chat_file_not_a_file": "{name}: to nie jest plik",
   "ui.agent_chat_file_not_a_picture": "{name}: to nie jest obraz",
