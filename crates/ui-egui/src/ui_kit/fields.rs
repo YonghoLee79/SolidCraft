@@ -464,12 +464,9 @@ pub(crate) fn number_field<T: egui::emath::Numeric>(
 pub(crate) fn plain_number_field(ui: &mut Ui, value: &mut u32, range: std::ops::RangeInclusive<u32>) -> Response {
     let t = Tokens::get();
     let id = egui::Id::new(("plain_number_field", label(ui)));
-    let focused = ui.memory(|m| m.has_focus(id));
-    let mut text = if focused {
-        ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| value.to_string())
-    } else {
-        value.to_string()
-    };
+    // Always load from temp data first: on the lost_focus() frame, has_focus() may already be
+    // false, so gating on it would discard the in-progress text before the commit runs.
+    let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| value.to_string());
     let response = ui.add_sized(
         vec2(dimension(ui.available_width()), row_height()),
         text_input(egui::TextEdit::singleline(&mut text))
@@ -481,6 +478,7 @@ pub(crate) fn plain_number_field(ui: &mut Ui, value: &mut u32, range: std::ops::
     crate::theme::TabAccent::number_focus(ui, &response);
     if response.lost_focus() || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
         *value = text.trim().parse::<u32>().unwrap_or(*value).clamp(*range.start(), *range.end());
+        ui.data_mut(|d| d.remove::<String>(id));
     } else if response.has_focus() {
         ui.data_mut(|d| d.insert_temp(id, text));
     }
