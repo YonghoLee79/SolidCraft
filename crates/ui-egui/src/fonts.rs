@@ -719,7 +719,8 @@ pub fn setup_fonts_for(ctx: &egui::Context, language: &str, ui_font: &str) {
     if needs_cjk_font(language) {
         // Select the first installed face in language order (a duplicate Chinese face may
         // already be installed as CJK_FALLBACK). Keep explicit interface choices ahead of it.
-        if let Some(primary) = order.into_iter().find(|name| ![THAI_FALLBACK, HEBREW_FALLBACK].contains(name) && fonts.font_data.contains_key(*name)) {
+        if let Some(primary) = order.into_iter().find(|name| ![THAI_FALLBACK, HEBREW_FALLBACK].contains(name) && fonts.font_data.contains_key(*name))
+        {
             promote_font_to_front(&mut fonts, primary);
         }
     }
