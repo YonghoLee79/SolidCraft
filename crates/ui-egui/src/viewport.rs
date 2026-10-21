@@ -2498,6 +2498,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         let cb = ViewportCallback(Frame {
             ssaa,
             product: false,
+            upload_error: None,
             key: app.viewport.key,
             slot: app.viewport.slot.clone(),
             sketch_key: app.viewport.sketch_key,
