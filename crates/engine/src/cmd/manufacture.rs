@@ -20,6 +20,8 @@ use crate::{Result, Session};
 const MAX_INLINE_GCODE: usize = 4 << 20;
 /// Most moves listed in a toolpath reply.
 const MAX_LISTED_MOVES: usize = 5000;
+/// Most moves a `limit` can ask for.
+const MAX_LISTED_MOVES_HARD: usize = 200_000;
 
 pub static COMMANDS: &[CommandSpec] = &[
 CommandSpec::new("manufacture.job", "Manufacturing Job", job).noundo().doc_only()
@@ -37,9 +39,11 @@ CommandSpec::new("manufacture.operation.set", "Set Operation", operation_set).do
 CommandSpec::new("manufacture.operation.delete", "Delete Operation", operation_delete).doc_only()
     .params("id: operation number."),
 CommandSpec::new("manufacture.toolpath", "Plan Toolpath", toolpath).noundo()
-    .params("operation: number, moves?: false (list the moves, at most 5000), tolerance?: 0.005 (chord error of curves, mm), rapid_rate?: 10000 (mm/min, for the time estimate). Returns {operation, kind, moves, stats: {rapid_length, feed_length, minutes, min, max}, warnings}. Does not change the design."),
+    .params("operation: number, moves?: false (list the moves; `limit`: at most 5000 by default, 200000 at most; `expanded`: drilling cycles as plain moves, as `manufacture.simulate` numbers them), tolerance?: 0.005 (chord error of curves, mm), rapid_rate?: 10000 (mm/min, for the time estimate). Returns {operation, kind, moves, stats: {rapid_length, feed_length, minutes, min, max}, warnings}. Does not change the design."),
 CommandSpec::new("manufacture.post", "Post Process", post).noundo()
     .params("dialect: grbl|fanuc|haas, operations?: [numbers] (all, in order), program_name?, program_number?: 1001 (Fanuc/Haas O number), line_numbers?: false, tolerance?: 0.005, path?: write the program there (an existing file is kept unless overwrite: true), overwrite?: false. Returns {dialect, operations, lines, bytes, warnings} and the program text as `gcode` unless it was written to `path`. Does not change the design."),
+CommandSpec::new("manufacture.simulate", "Simulate Machining", simulate).noundo()
+    .params("setup?: number (the first setup), operations?: [numbers] (all in the setup, in order), resolution?: 0.5 (cell size, mm), tolerance? (how deep an overlap counts as a collision, mm; default one cell, at least 0.05), until?: move number to stop after, part?: true (check against the model's bodies; false: stock only), bodies?: [names] (default all), surface?: max cells of the stock surface to return for drawing (0/omitted: none), tolerance_chord?: 0.005. Cuts the setup's stock away along the toolpaths (a height map) and reports gouges into the model, shank hits (tool.flute_length), rapids through stock or the model, and cuts below the stock, with volumes removed and left over. Returns {setup, frame, grid, steps, total_steps, operations: [{operation, first_step}], volumes, counts, collisions, open_cells, tolerance, surface?}. Does not change the design. See docs/manufacture.md"),
 ];
 
 fn job(s: &mut Session, _p: &Value) -> Result<Value> {
@@ -320,9 +324,15 @@ fn toolpath(s: &mut Session, p: &Value) -> Result<Value> {
         "warnings": planned.warnings,
     });
     if p.get("moves").and_then(Value::as_bool).unwrap_or(false) {
-        let listed: Vec<_> = planned.toolpath.moves.iter().take(MAX_LISTED_MOVES).collect();
+        let limit = match p.get("limit") {
+            None => MAX_LISTED_MOVES,
+            Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).filter(|n| (1..=MAX_LISTED_MOVES_HARD).contains(n)).ok_or_else(|| bad(cmd, format!("`limit` is 1 to {MAX_LISTED_MOVES_HARD}")))?,
+        };
+        // Drilling cycles spelled out, as the simulation numbers its moves.
+        let moves: Vec<mf::Move> = if p.get("expanded").and_then(Value::as_bool).unwrap_or(false) { planned.toolpath.expanded() } else { planned.toolpath.moves.clone() };
+        let listed: Vec<_> = moves.iter().take(limit).collect();
         out["toolpath"] = json!(listed);
-        out["toolpath_truncated"] = json!(planned.toolpath.moves.len() > listed.len());
+        out["toolpath_truncated"] = json!(moves.len() > listed.len());
     }
     Ok(out)
 }
@@ -397,6 +407,107 @@ fn post(s: &mut Session, p: &Value) -> Result<Value> {
             }
             out["gcode"] = json!(text);
         }
+    }
+    Ok(out)
+}
+
+/// Most triangles taken from the model for the part.
+const MAX_PART_TRIANGLES: usize = 6_000_000;
+
+fn simulate(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "manufacture.simulate";
+    let job = s.doc.manufacture.clone();
+    let setup_id = match p.get("setup") {
+        Some(v) => number_id(v, "setup", cmd)?,
+        None => job.setups.first().map(|x| x.id).ok_or_else(|| bad(cmd, "the job has no setup"))?,
+    };
+    let setup = job.setup(setup_id).ok_or_else(|| bad(cmd, format!("there is no setup {setup_id}")))?;
+    let stock = setup.stock.ok_or_else(|| bad(cmd, format!("setup {setup_id} has no stock: give it `stock` {{min, max}} to simulate")))?;
+    let ids: Vec<u32> = match p.get("operations") {
+        None => job.operations.iter().filter(|o| o.setup == setup_id).map(|o| o.id).collect(),
+        Some(Value::Array(a)) => a.iter().map(|v| number_id(v, "operations", cmd)).collect::<Result<_>>()?,
+        Some(_) => return Err(bad(cmd, "`operations` is a list of operation numbers")),
+    };
+    if ids.is_empty() {
+        return Err(bad(cmd, format!("setup {setup_id} has no operations to simulate")));
+    }
+    let chord = match p.get("tolerance_chord") {
+        None => mf::DEFAULT_TOLERANCE,
+        Some(v) => v.as_f64().filter(|t| t.is_finite() && (1e-4..=1.0).contains(t)).ok_or_else(|| bad(cmd, "`tolerance_chord` is between 0.0001 and 1 mm"))?,
+    };
+    let mut planned = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let op = job.operation(*id).ok_or_else(|| bad(cmd, format!("there is no operation {id}")))?;
+        if op.setup != setup_id {
+            return Err(bad(cmd, format!("operation {id} is in setup {}, not {setup_id}", op.setup)));
+        }
+        let tool = job.tool(op.tool).ok_or_else(|| bad(cmd, format!("operation {id} uses tool {}, which is not in the library", op.tool)))?;
+        planned.push((op, tool, plan_operation(s, &job, op, chord, cmd)?));
+    }
+    let cell = match p.get("resolution") {
+        None => 0.5,
+        Some(v) => v.as_f64().filter(|r| r.is_finite() && (mf::sim::MIN_CELL..=100.0).contains(r)).ok_or_else(|| bad(cmd, "`resolution` is between 0.01 and 100 mm"))?,
+    };
+    let tolerance = match p.get("tolerance") {
+        None => None,
+        Some(v) => Some(v.as_f64().filter(|t| t.is_finite()).ok_or_else(|| bad(cmd, "`tolerance` must be a number"))?),
+    };
+    let until = match p.get("until") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(cmd, "`until` is a move number"))?),
+    };
+    let grid = mf::Grid::new(&stock, cell).map_err(|e| bad(cmd, e.to_string()))?;
+    let part = if p.get("part").and_then(Value::as_bool).unwrap_or(true) {
+        let names: Option<Vec<String>> = match p.get("bodies") {
+            None => None,
+            Some(Value::Array(a)) => Some(a.iter().map(|v| v.as_str().map(str::to_owned).ok_or_else(|| bad(cmd, "`bodies` is a list of names"))).collect::<Result<_>>()?),
+            Some(_) => return Err(bad(cmd, "`bodies` is a list of names")),
+        };
+        let world = s.world_state();
+        let mut triangles: Vec<[solidcraft_geom::Vec3; 3]> = Vec::new();
+        for body in &world.bodies {
+            if names.as_ref().is_some_and(|n| !n.contains(&body.name)) {
+                continue;
+            }
+            let mesh = body.mesh();
+            if triangles.len() + mesh.triangles.len() > MAX_PART_TRIANGLES {
+                return Err(bad(cmd, "the model has too many triangles to simulate against; pick `bodies` or use `part: false`"));
+            }
+            for t in &mesh.triangles {
+                let at = |i: u32| mesh.positions.get(i as usize).map(|v| setup.to_local(*v));
+                if let [Some(a), Some(b), Some(c)] = t.map(at) {
+                    triangles.push([a, b, c]);
+                }
+            }
+        }
+        Some(mf::Part::from_triangles(&grid, triangles).map_err(|e| bad(cmd, e.to_string()))?)
+    } else {
+        None
+    };
+    let ops: Vec<mf::SimOp> = planned.iter().map(|(op, tool, plan)| mf::SimOp { operation: op.id, tool, toolpath: &plan.toolpath }).collect();
+    let sim = mf::simulate(&stock, part.as_ref(), &ops, &mf::SimOptions { cell, tolerance, until, clearance: setup.clearance }).map_err(|e| bad(cmd, e.to_string()))?;
+    let at = |v: solidcraft_geom::Vec3| json!([v.x, v.y, v.z]);
+    let collisions: Vec<Value> = sim
+        .collisions
+        .iter()
+        .map(|c| json!({"operation": c.operation, "step": c.step, "kind": c.kind, "at": at(c.at), "depth": c.depth}))
+        .collect();
+    let mut out = json!({
+        "setup": setup_id,
+        "frame": {"origin": at(setup.frame.origin), "x": at(setup.frame.x), "y": at(setup.frame.y), "z": at(setup.tool_axis())},
+        "stock": {"min": stock.min, "max": stock.max},
+        "grid": sim.grid,
+        "steps": sim.steps,
+        "total_steps": sim.total_steps,
+        "operations": sim.starts.iter().map(|(o, st)| json!({"operation": o, "first_step": st})).collect::<Vec<_>>(),
+        "volumes": sim.volumes,
+        "counts": {"gouge": sim.counts[0], "shank": sim.counts[1], "rapid": sim.counts[2], "floor": sim.counts[3]},
+        "collisions": collisions,
+        "open_cells": sim.open_cells,
+        "tolerance": sim.tolerance,
+    });
+    if let Some(n) = p.get("surface").and_then(Value::as_u64).filter(|n| *n > 0) {
+        out["surface"] = json!(sim.surface(usize::try_from(n).unwrap_or(usize::MAX).min(40_000)));
     }
     Ok(out)
 }

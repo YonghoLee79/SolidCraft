@@ -8,6 +8,7 @@ use crate::path::{DrillCycle, Move, Toolpath};
 use crate::plan::{Geometry, Site, circle_sites, levels, plan, region_to_work};
 use crate::post::{Dialect, PostOptions, Step, generate};
 use crate::ring::{dist_to_segment, perimeter, signed_area};
+use crate::sim::{CollisionKind, Grid, Part, SimOp, SimOptions, simulate};
 use crate::tool::{Tool, ToolKind};
 
 fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Vec2> {
@@ -38,7 +39,7 @@ fn clearance(rings: &[Vec<Vec2>], p: Vec2) -> f64 {
 }
 
 fn tool(id: u32, dia: f64) -> Tool {
-    Tool { id, name: format!("{dia} mm end mill"), kind: ToolKind::FlatEndMill, diameter: dia, flutes: 2, corner_radius: 0.0, tip_angle: 118.0 }
+    Tool { id, name: format!("{dia} mm end mill"), kind: ToolKind::FlatEndMill, diameter: dia, flutes: 2, corner_radius: 0.0, tip_angle: 118.0, flute_length: None, shank_diameter: None }
 }
 fn drill_tool(id: u32, dia: f64) -> Tool {
     Tool { kind: ToolKind::Drill, ..tool(id, dia) }
@@ -607,4 +608,162 @@ fn a_tilted_sketch_is_refused_and_a_flipped_one_keeps_its_shape() {
     let (m, _) = region_to_work(&arc, &Plane::XY.flipped(false), &setup()).unwrap();
     let (c, r) = crate::plan::circle_of(&m.outer).unwrap();
     assert!(near(c.x, 3.0, 1e-9) && near(c.y, -4.0, 1e-9) && near(r, 2.0, 1e-9));
+}
+
+// ------------------------------------------------------------------------------- simulation
+
+fn box_triangles(lo: [f64; 3], hi: [f64; 3]) -> Vec<[Vec3; 3]> {
+    let p = |x: usize, y: usize, z: usize| Vec3::new(if x == 0 { lo[0] } else { hi[0] }, if y == 0 { lo[1] } else { hi[1] }, if z == 0 { lo[2] } else { hi[2] });
+    let quads = [
+        [p(0, 0, 0), p(0, 1, 0), p(1, 1, 0), p(1, 0, 0)],
+        [p(0, 0, 1), p(1, 0, 1), p(1, 1, 1), p(0, 1, 1)],
+        [p(0, 0, 0), p(1, 0, 0), p(1, 0, 1), p(0, 0, 1)],
+        [p(1, 0, 0), p(1, 1, 0), p(1, 1, 1), p(1, 0, 1)],
+        [p(1, 1, 0), p(0, 1, 0), p(0, 1, 1), p(1, 1, 1)],
+        [p(0, 1, 0), p(0, 0, 0), p(0, 0, 1), p(0, 1, 1)],
+    ];
+    quads.iter().flat_map(|q| [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]).collect()
+}
+fn stock_box() -> Stock {
+    Stock { min: [0.0, 0.0, -10.0], max: [60.0, 40.0, 0.0] }
+}
+fn sim_opts(cell: f64) -> SimOptions {
+    SimOptions { cell, tolerance: None, until: None, clearance: 10.0 }
+}
+fn manual(moves: Vec<Move>) -> Toolpath {
+    Toolpath { moves }
+}
+fn pocket_path(bottom: f64) -> Toolpath {
+    let mut o = pocket_op(0.4, false, 0.0);
+    o.bottom = bottom;
+    plan(&setup(), &tool(1, 6.0), &o, &geometry(vec![rect_region(10.0, 10.0, 50.0, 30.0)]), 0.005).unwrap().toolpath
+}
+
+#[test]
+fn tool_surfaces_by_kind() {
+    let ball = Tool { kind: ToolKind::BallEndMill, ..tool(1, 6.0) };
+    assert!(near(ball.lift(0.0), 0.0, 1e-12) && near(ball.lift(3.0), 3.0, 1e-12));
+    assert!(near(ball.lift(1.5), 3.0 - (9.0f64 - 2.25).sqrt(), 1e-12));
+    let bull = Tool { kind: ToolKind::BullNoseEndMill, corner_radius: 1.0, ..tool(1, 6.0) };
+    assert!(near(bull.lift(2.0), 0.0, 1e-12) && near(bull.lift(3.0), 1.0, 1e-12));
+    let drill = drill_tool(1, 6.0);
+    assert!(near(drill.lift(3.0), 3.0 / (59.0f64).to_radians().tan(), 1e-9));
+    assert!(near(tool(1, 6.0).lift(2.0), 0.0, 0.0));
+    assert!(Tool { flute_length: Some(-1.0), ..tool(1, 6.0) }.validate().is_err());
+    assert!(Tool { shank_diameter: Some(f64::NAN), ..tool(1, 6.0) }.validate().is_err());
+}
+
+#[test]
+fn a_pocket_removes_its_volume_without_collisions() {
+    let t = tool(1, 6.0);
+    let path = pocket_path(-4.0);
+    let sim = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &path }], &sim_opts(0.25)).unwrap();
+    assert!(sim.collisions.is_empty(), "{:?}", sim.collisions);
+    // 40 x 20 x 4, less the corners a round tool cannot reach.
+    assert!(near(sim.volumes.removed, 3200.0, 3200.0 * 0.03), "{}", sim.volumes.removed);
+    assert!(near(sim.volumes.removed + sim.volumes.remaining, sim.volumes.stock, 1e-6));
+    let g = sim.grid;
+    let at = |x: f64, y: f64| sim.heights[((y - g.y0) / g.cell) as usize * g.nx + ((x - g.x0) / g.cell) as usize];
+    assert!(near(f64::from(at(30.0, 20.0)), -4.0, 1e-4));
+    assert!(near(f64::from(at(5.0, 5.0)), 0.0, 1e-9));
+    assert_eq!(sim.steps, sim.total_steps);
+}
+
+#[test]
+fn cutting_into_the_part_is_a_gouge() {
+    let t = tool(1, 6.0);
+    // The part is the block under a pocket meant to stop at -6.
+    let grid = Grid::new(&stock_box(), 0.25).unwrap();
+    let part = Part::from_triangles(&grid, box_triangles([0.0, 0.0, -10.0], [60.0, 40.0, -6.0])).unwrap();
+    assert_eq!(part.open_cells, 0);
+    let deep = pocket_path(-8.0);
+    let sim = simulate(&stock_box(), Some(&part), &[SimOp { operation: 7, tool: &t, toolpath: &deep }], &sim_opts(0.25)).unwrap();
+    let gouge = sim.collisions.iter().find(|c| c.kind == CollisionKind::Gouge).expect("a gouge");
+    assert_eq!(gouge.operation, 7);
+    assert!(sim.collisions.iter().filter(|c| c.kind == CollisionKind::Gouge).any(|c| near(c.depth, 2.0, 0.1)));
+    assert!(sim.volumes.gouged > 40.0 * 20.0 * 1.5, "{}", sim.volumes.gouged);
+    let exact = pocket_path(-6.0);
+    let ok = simulate(&stock_box(), Some(&part), &[SimOp { operation: 7, tool: &t, toolpath: &exact }], &sim_opts(0.25)).unwrap();
+    assert_eq!(ok.counts, [0, 0, 0, 0], "{:?}", ok.collisions);
+    assert!(ok.volumes.gouged < 1.0);
+    // What is left to cut is the stock above the part, less the pocket.
+    assert!(near(ok.volumes.leftover, 60.0 * 40.0 * 6.0 - ok.volumes.removed, 1.0));
+}
+
+#[test]
+fn rapids_through_stock_and_the_floor_are_reported() {
+    let t = tool(1, 6.0);
+    let crash = manual(vec![Move::Rapid { to: Vec3::new(30.0, 20.0, 10.0) }, Move::Rapid { to: Vec3::new(30.0, 20.0, -5.0) }]);
+    let sim = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &crash }], &sim_opts(0.25)).unwrap();
+    assert!(sim.counts[CollisionKind::Rapid.index()] >= 1, "{:?}", sim.collisions);
+    let clear = manual(vec![Move::Rapid { to: Vec3::new(30.0, 20.0, 10.0) }, Move::Rapid { to: Vec3::new(5.0, 5.0, 5.0) }]);
+    let none = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &clear }], &sim_opts(0.25)).unwrap();
+    assert_eq!(none.counts, [0; 4]);
+    let deep = manual(vec![Move::Rapid { to: Vec3::new(30.0, 20.0, 10.0) }, Move::Feed { to: Vec3::new(30.0, 20.0, -12.0), feed: 100.0 }]);
+    let floor = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &deep }], &sim_opts(0.25)).unwrap();
+    assert!(floor.collisions.iter().any(|c| c.kind == CollisionKind::Floor && near(c.depth, 2.0, 0.2)));
+}
+
+#[test]
+fn a_short_flute_makes_the_shank_hit_stock() {
+    let side = manual(vec![
+        Move::Rapid { to: Vec3::new(5.0, 20.0, 10.0) },
+        Move::Feed { to: Vec3::new(5.0, 20.0, -6.0), feed: 100.0 },
+        Move::Feed { to: Vec3::new(40.0, 20.0, -6.0), feed: 300.0 },
+    ]);
+    let short = Tool { flute_length: Some(3.0), ..tool(1, 6.0) };
+    let sim = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &short, toolpath: &side }], &sim_opts(0.25)).unwrap();
+    assert!(sim.collisions.iter().any(|c| c.kind == CollisionKind::Shank && near(c.depth, 3.0, 0.2)), "{:?}", sim.collisions);
+    let long = Tool { flute_length: Some(12.0), ..tool(1, 6.0) };
+    let ok = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &long, toolpath: &side }], &sim_opts(0.25)).unwrap();
+    assert_eq!(ok.counts, [0; 4], "{:?}", ok.collisions);
+}
+
+#[test]
+fn the_run_can_stop_part_way() {
+    let t = tool(1, 6.0);
+    let path = pocket_path(-4.0);
+    let half = SimOptions { until: Some(path.moves.len() / 2), ..sim_opts(0.5) };
+    let part_way = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &path }], &half).unwrap();
+    let all = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &path }], &sim_opts(0.5)).unwrap();
+    assert!(part_way.steps < all.steps && part_way.volumes.removed < all.volumes.removed && part_way.volumes.removed > 0.0);
+    assert_eq!(part_way.total_steps, all.total_steps);
+    let s = all.surface(100);
+    assert!(s.nx * s.ny <= 100 && s.z.len() == s.nx * s.ny);
+}
+
+#[test]
+fn a_part_with_a_hole_in_its_surface_does_not_panic() {
+    let grid = Grid::new(&stock_box(), 0.5).unwrap();
+    let mut tris = box_triangles([10.0, 10.0, -10.0], [50.0, 30.0, -4.0]);
+    tris.remove(2);
+    let part = Part::from_triangles(&grid, tris).unwrap();
+    assert!(part.open_cells > 0);
+}
+
+#[test]
+fn hostile_simulation_input_is_an_error() {
+    let t = tool(1, 6.0);
+    let nan = manual(vec![Move::Rapid { to: Vec3::new(f64::NAN, 0.0, 0.0) }]);
+    assert!(simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &nan }], &sim_opts(0.5)).is_err());
+    let far = manual(vec![Move::Rapid { to: Vec3::new(1e300, 0.0, 0.0) }]);
+    assert!(simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &far }], &sim_opts(0.5)).is_err());
+    for cell in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e-9] {
+        assert!(simulate(&stock_box(), None, &[], &sim_opts(cell)).is_err(), "{cell}");
+    }
+    for tol in [0.0, -1.0, f64::NAN, 1e9] {
+        assert!(simulate(&stock_box(), None, &[], &SimOptions { tolerance: Some(tol), ..sim_opts(0.5) }).is_err(), "{tol}");
+    }
+    let wide = Stock { min: [-1e9, 0.0, 0.0], max: [1e9, 1.0, 1.0] };
+    assert!(Grid::new(&wide, 1.0).is_err());
+    let huge = Stock { min: [0.0, 0.0, 0.0], max: [5000.0, 5000.0, 10.0] };
+    assert!(Grid::new(&huge, 0.01).unwrap().cells() <= crate::sim::MAX_CELLS);
+    let other = Grid::new(&stock_box(), 1.0).unwrap();
+    let part = Part::from_triangles(&other, box_triangles([0.0; 3], [1.0; 3])).unwrap();
+    assert!(simulate(&stock_box(), Some(&part), &[], &sim_opts(0.5)).is_err());
+    assert!(Part::from_triangles(&other, [[Vec3::new(f64::NAN, 0.0, 0.0), Vec3::ZERO, Vec3::X]]).is_err());
+    // A very long path at a fine resolution stops with a limit error, not a hang.
+    let long = manual((0..60_000).flat_map(|i| [Move::Rapid { to: Vec3::new(0.0, 0.0, 10.0) }, Move::Rapid { to: Vec3::new(59.0, f64::from(i % 39), 10.0) }]).collect());
+    let r = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &long }], &sim_opts(0.05));
+    assert!(r.is_err());
 }

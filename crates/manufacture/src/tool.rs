@@ -53,6 +53,14 @@ pub struct Tool {
     /// Point angle of a drill (degrees).
     #[serde(default = "default_tip_angle")]
     pub tip_angle: f64,
+    /// Length of the cutting flutes from the tip (mm). Above it is the shank, which does not
+    /// cut: the simulation reports it touching stock or the part. `None` means the whole tool
+    /// can cut (nothing to collide with above the tip).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flute_length: Option<f64>,
+    /// Shank diameter (mm); the cutting diameter when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shank_diameter: Option<f64>,
 }
 
 fn default_flutes() -> u32 {
@@ -89,6 +97,45 @@ impl Tool {
         if !(self.tip_angle > 0.0 && self.tip_angle < 180.0) {
             return invalid("the point angle is between 0 and 180 degrees");
         }
+        if let Some(l) = self.flute_length {
+            finite(l, "the flute length")?;
+            if !(l > 0.0 && l <= 2000.0) {
+                return invalid("the flute length is above 0 and at most 2000 mm");
+            }
+        }
+        if let Some(d) = self.shank_diameter {
+            finite(d, "the shank diameter")?;
+            if !(d > 0.0 && d <= MAX_TOOL_DIAMETER) {
+                return invalid(format!("the shank diameter must be above 0 and at most {MAX_TOOL_DIAMETER} mm"));
+            }
+        }
         Ok(())
+    }
+
+    /// Radius of the shank (the cutting radius unless a shank diameter is set).
+    pub fn shank_radius(&self) -> f64 {
+        self.shank_diameter.map_or(self.radius(), |d| d * 0.5)
+    }
+
+    /// How far the cutting surface is above the tip at distance `r` from the axis (0 for a flat
+    /// mill's bottom, a sphere for a ball mill, a corner radius for a bull nose, a cone for a drill).
+    pub fn lift(&self, r: f64) -> f64 {
+        let big = self.radius();
+        let r = r.abs().min(big);
+        match self.kind {
+            ToolKind::FlatEndMill => 0.0,
+            ToolKind::BallEndMill => big - (big * big - r * r).max(0.0).sqrt(),
+            ToolKind::BullNoseEndMill => {
+                let rc = self.corner_radius;
+                let flat = big - rc;
+                if rc <= 1e-9 || r <= flat {
+                    0.0
+                } else {
+                    let d = r - flat;
+                    rc - (rc * rc - d * d).max(0.0).sqrt()
+                }
+            }
+            ToolKind::Drill => r / (self.tip_angle.to_radians() * 0.5).tan().max(1e-3),
+        }
     }
 }

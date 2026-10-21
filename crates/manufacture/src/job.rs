@@ -168,6 +168,11 @@ impl Setup {
         Vec3::new(d.dot(self.frame.x), d.dot(self.frame.y), d.dot(self.frame.normal()))
     }
 
+    /// A point in work coordinates, in model space.
+    pub fn to_model(&self, p: Vec3) -> Vec3 {
+        self.frame.origin + self.frame.x * p.x + self.frame.y * p.y + self.frame.normal() * p.z
+    }
+
     /// The setup's Z axis in model space.
     pub fn tool_axis(&self) -> Vec3 {
         self.frame.normal()

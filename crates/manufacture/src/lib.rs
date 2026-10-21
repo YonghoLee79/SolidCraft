@@ -8,6 +8,7 @@
 //! - [`plan`]: one operation to a [`path::Toolpath`].
 //! - [`offset`]: robust polygon offsetting under it.
 //! - [`post`]: toolpaths to G-code.
+//! - [`sim`]: material removal and collision checking against the stock and the part.
 //!
 //! Nothing here panics on hostile input: sizes and work are capped and every number is checked.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -20,6 +21,7 @@ pub mod path;
 pub mod plan;
 pub mod post;
 mod ring;
+pub mod sim;
 pub mod tool;
 
 pub use error::{ManufactureError, Result};
@@ -27,6 +29,7 @@ pub use job::{Direction, DrillPoints, Job, OpKind, Operation, Setup, Side, Sourc
 pub use path::{DrillCycle, Move, Stats, Toolpath};
 pub use plan::{DEFAULT_TOLERANCE, Geometry, Plan, Site, circle_of, circle_sites, levels, plan, region_to_work};
 pub use post::{Dialect, PostOptions, Step, generate};
+pub use sim::{Collision, CollisionKind, Grid, Part, SimOp, SimOptions, Simulation, Surface, Volumes, simulate};
 pub use tool::{Tool, ToolKind};
 
 #[cfg(test)]

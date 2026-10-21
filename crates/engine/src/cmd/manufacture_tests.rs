@@ -105,3 +105,72 @@ fn delete_refused_while_used() {
     run(&mut s, "manufacture.operation.delete", json!({"id": 1}));
     run(&mut s, "manufacture.tool.delete", json!({"id": 1}));
 }
+
+fn block_with_pocket_job(s: &mut Session) {
+    run(s, "sketch.create", json!({"plane": "XY", "name": "Plate"}));
+    run(s, "sketch.rectangle.two_point", json!({"p0": [0.0, 0.0], "p1": [40.0, 30.0]}));
+    run(s, "sketch.finish", json!({}));
+    run(s, "solid.extrude", json!({"distance": 10.0}));
+    run(s, "sketch.create", json!({"plane": "XY", "name": "Pocket"}));
+    run(s, "sketch.rectangle.two_point", json!({"p0": [10.0, 8.0], "p1": [30.0, 22.0]}));
+    run(s, "sketch.finish", json!({}));
+    run(s, "manufacture.tool.set", json!({"id": 1, "diameter": 4.0}));
+    // Work Z = 0 at the part's top (model Z = 10).
+    run(s, "manufacture.setup.set", json!({"id": 1, "plane": "XY", "origin": [0.0, 0.0, 10.0], "stock": {"min": [-5.0, -5.0, -10.0], "max": [45.0, 35.0, 3.0]}}));
+    run(
+        s,
+        "manufacture.operation.set",
+        json!({"setup": 1, "tool": 1, "kind": {"type": "pocket", "source": {"sketch": "Pocket"}, "stepover": 0.5}, "top": 0.0, "bottom": -4.0, "feed": 500.0, "spindle_rpm": 8000.0}),
+    );
+}
+
+#[test]
+fn simulate_reports_gouges_into_the_model_and_volumes() {
+    let mut s = Session::default();
+    block_with_pocket_job(&mut s);
+    let r = run(&mut s, "manufacture.simulate", json!({"resolution": 0.5, "surface": 400}));
+    // The pocket is cut out of a solid block: that is a gouge about 4 mm deep.
+    assert!(r["counts"]["gouge"].as_u64().unwrap() >= 1, "{r}");
+    let gouged = r["volumes"]["gouged"].as_f64().unwrap();
+    assert!((gouged - 20.0 * 14.0 * 4.0).abs() < 20.0 * 14.0 * 4.0 * 0.15, "{gouged}");
+    assert!(r["collisions"].as_array().unwrap().iter().any(|c| c["kind"] == "gouge" && c["operation"] == 1));
+    assert_eq!(r["steps"], r["total_steps"]);
+    let surface = &r["surface"];
+    assert_eq!(surface["z"].as_array().unwrap().len(), surface["nx"].as_u64().unwrap() as usize * surface["ny"].as_u64().unwrap() as usize);
+    // Stock alone: the same cut, no collisions, and a stop part way removes less.
+    let free = run(&mut s, "manufacture.simulate", json!({"part": false}));
+    assert_eq!(free["counts"]["gouge"], 0);
+    let removed = free["volumes"]["removed"].as_f64().unwrap();
+    assert!((removed - 20.0 * 14.0 * 4.0).abs() < 20.0 * 14.0 * 4.0 * 0.1, "{removed}");
+    let early = run(&mut s, "manufacture.simulate", json!({"part": false, "until": 40}));
+    assert!(early["volumes"]["removed"].as_f64().unwrap() < removed && early["steps"] == 40);
+    // It does not change the design.
+    let before = s.revision;
+    run(&mut s, "manufacture.simulate", json!({}));
+    assert_eq!(s.revision, before);
+}
+
+#[test]
+fn simulate_refuses_bad_requests() {
+    let mut s = Session::default();
+    block_with_pocket_job(&mut s);
+    for p in [
+        json!({"resolution": 0.0}),
+        json!({"resolution": -1.0}),
+        json!({"resolution": 1e9}),
+        json!({"tolerance": "deep"}),
+        json!({"tolerance": 1e9}),
+        json!({"until": -1}),
+        json!({"setup": 9}),
+        json!({"operations": "all"}),
+        json!({"operations": [99]}),
+        json!({"bodies": 3}),
+        json!({"tolerance_chord": 0.0}),
+        json!([]),
+    ] {
+        assert!(s.execute("manufacture.simulate", &p).is_err(), "{p}");
+    }
+    // A setup without stock cannot be simulated.
+    run(&mut s, "manufacture.setup.set", json!({"id": 2, "plane": "XY"}));
+    assert!(s.execute("manufacture.simulate", &json!({"setup": 2})).is_err());
+}
