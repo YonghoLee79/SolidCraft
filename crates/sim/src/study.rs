@@ -24,6 +24,12 @@ const SPONGE_TAU: f64 = 0.9;
 /// The least share of the Smagorinsky length scale wall damping leaves a cell.
 const DAMPING_FLOOR: f64 = 0.25;
 
+/// Van Driest's damping constant. The textbook 26 is for a wall resolved to y⁺ ≈ 1; on cells a
+/// millimetre across, the first air cell sits at y⁺ of 10 or more and 26 leaves it too much eddy
+/// viscosity. 80 brings a 50 mm pipe's pressure gradient to within 3% of a wall-resolved OpenFOAM
+/// solution and of Shah and London's developing-flow correlation (26 read 50% high).
+const VAN_DRIEST_A: f64 = 80.0;
+
 /// The bulk relaxation time: sound waves die out within a few passes instead of ringing.
 const BULK_TAU: f64 = 1.0;
 
@@ -462,7 +468,7 @@ fn thin_walls(grid: &Grid, bodies: &[&Mesh], max: usize) -> Vec<Vec3> {
     out
 }
 
-/// Van Driest's damping of the Smagorinsky length scale, 1 − exp(−y⁺/26), per cell (65535 = 1):
+/// Van Driest's damping of the Smagorinsky length scale, 1 − exp(−y⁺/A), per cell (65535 = 1):
 /// y is the distance to the nearest wall (counted in cells through the air, up to 16), and the
 /// friction velocity comes from the Blasius friction factor for air at `speed` (m/s) through a
 /// duct of diameter `diameter` (m).
@@ -514,7 +520,7 @@ fn wall_damping(grid: &Grid, speed: f64, diameter: f64, viscosity: f64) -> Vec<u
             let y_plus = (f64::from(*d) - 0.5) * per_cell;
             // A floor keeps some eddy viscosity in the first cells, where the lattice is least
             // stable at a relaxation time this close to ½.
-            ((1.0 - (-y_plus / 26.0).exp()).clamp(DAMPING_FLOOR, 1.0) * 65535.0).round() as u16
+            ((1.0 - (-y_plus / VAN_DRIEST_A).exp()).clamp(DAMPING_FLOOR, 1.0) * 65535.0).round() as u16
         })
         .collect()
 }
@@ -548,6 +554,22 @@ pub fn prepare_paced(bodies: &[&Mesh], setup: &FlowSetup, pace: f64) -> Result<P
     let mut bounds = bodies.iter().map(|m| m.bounds()).reduce(union).ok_or(SimError::EmptyMesh)?;
     let pad = Vec3::new(setup.pad, setup.pad, setup.pad);
     bounds = Aabb3 { min: bounds.min - pad, max: bounds.max + pad };
+    // Past each outlet, room for its jet: one outlet width more than the padding. Closer, the
+    // sponge at the box's edge slows the jet and pushes pressure back up the duct (a 50 mm pipe
+    // read 4 Pa at its exit with 20 mm of air past it, 1.4 Pa with 40 and with 80).
+    for outlet in &setup.outlets {
+        let (area, n) = (outlet.patch.area(), outlet.patch.normal.normalized());
+        let Some(n) = n.filter(|_| area > 0.0) else { continue };
+        let centre = outlet
+            .patch
+            .triangles
+            .iter()
+            .map(|[a, b, c]| (*a + *b + *c) * ((*b - *a).cross(*c - *a).len() * 0.5 / 3.0))
+            .fold(Vec3::new(0.0, 0.0, 0.0), |s, p| s + p)
+            * (1.0 / area);
+        let reach = centre + n * (setup.pad + (4.0 * area / std::f64::consts::PI).sqrt());
+        bounds = union(bounds, Aabb3 { min: reach, max: reach });
+    }
     // One more cell all round: the box's faces are the ambient openings and its edges walls.
     let mut grid = Grid::around(bounds, setup.cell, 1, setup.max_cells)?;
     for m in bodies {
