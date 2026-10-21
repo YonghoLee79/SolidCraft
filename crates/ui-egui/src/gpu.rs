@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use egui_wgpu::wgpu;
 pub use solidcraft_gpu::view::{
-    AccessMap, BlockBytes, Frame, GpuImage, GpuScene, GpuTarget, LINE_SIZE, PBR_SIZE, PlannedBody, Renderer, SceneBlock, SceneSlot, TRI_SIZE,
-    supersampled_size,
+    AccessMap, BlockBytes, DrawStats, DrawStatsHandle, Frame, GpuImage, GpuScene, GpuTarget, LINE_SIZE, PBR_SIZE, PlannedBody, Renderer, SceneBlock,
+    SceneSlot, TRI_SIZE, supersampled_size,
 };
 
 /// A frame of the viewport as an egui paint callback.
@@ -17,13 +17,15 @@ pub struct ViewportCallback(pub Frame);
 
 /// Create the pipelines. Call once with the app's render state and its depth/stencil/MSAA
 /// settings. Without a stencil the section cap does not hide the inside of cut bodies. Without
-/// `gpu_meshing` (safe mode) bodies are meshed on the CPU.
-pub fn install(rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32, gpu_meshing: bool) -> GpuTarget {
+/// `gpu_meshing` (safe mode) bodies are meshed on the CPU. Also returns the handle to what each
+/// frame drew.
+pub fn install(rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32, gpu_meshing: bool) -> (GpuTarget, DrawStatsHandle) {
     let tess = if gpu_meshing { solidcraft_gpu::view::tessellation(&rs.adapter, &rs.device, &rs.queue, solidcraft_gpu::SHADER) } else { None };
     let t = GpuTarget { format: rs.target_format, depth: egui_wgpu::depth_format_from_bits(depth_bits, stencil_bits), samples, tess: tess.is_some() };
     let res = Renderer::new(&rs.device, t, tess);
+    let stats = res.stats();
     rs.renderer.write().callback_resources.insert(res);
-    t
+    (t, stats)
 }
 
 /// Draw this process's headless pictures (`ui.render`, the agent's view image, thumbnails of

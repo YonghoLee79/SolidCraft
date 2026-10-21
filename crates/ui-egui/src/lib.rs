@@ -619,7 +619,11 @@ impl SolveApp {
     /// Draw the viewport on the GPU (eframe's wgpu render state, with the app's depth and
     /// stencil buffer bits and MSAA sample count). Without it the viewport renders on the CPU.
     pub fn set_wgpu(&mut self, rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32) {
-        self.viewport.gpu = Some(gpu::install(rs, depth_bits, stencil_bits, samples, !self.cpu_meshing));
+        let (target, stats) = gpu::install(rs, depth_bits, stencil_bits, samples, !self.cpu_meshing);
+        self.viewport.gpu = Some(target);
+        self.viewport.draw_stats = Some(stats);
+        let info = rs.adapter.get_info();
+        self.viewport.adapter = format!("{:?} · {}", info.backend, info.name);
         render_workspace::invalidate_scene(self);
         self.render_workspace.host = match render_workspace::host_executor(
             rs.device.limits().max_texture_dimension_2d,

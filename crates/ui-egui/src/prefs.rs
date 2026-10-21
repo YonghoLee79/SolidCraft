@@ -427,6 +427,8 @@ preference_settings! {
     supersampling_adaptive: bool = true, PAGE_GRAPHICS => check_tr("ui.supersampling_adaptive");
     /// Show the frame rate in the view's corner (the view then redraws every frame).
     show_frame_rate: bool = false, PAGE_GRAPHICS => check_id("ui.frame_rate");
+    /// With the frame rate: a frame-time graph, a histogram and what the GPU drew (#2548).
+    frame_rate_details: bool = false, PAGE_GRAPHICS;
     /// Show world X/Y/Z component dimensions beside the total distance in Measure.
     measure_axis_distances: bool = true, PAGE_GRAPHICS => check_id("settings.measure_axis_distances");
     /// Decimals shown for lengths and angles.
@@ -1512,6 +1514,10 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             response.on_hover_text(app.tr("settings.measure_axis_distances_help"));
             setting::show_frame_rate(app, ui);
             ui_kit::text(ui, app.tr("settings.frame_rate_note"), ui_kit::Text::Note("frame_rate"));
+            ui.add_enabled_ui(app.preferences.show_frame_rate, |ui| {
+                ui_kit::checkbox(ui, app.tr("ui.frame_rate_details"), &mut app.preferences.frame_rate_details);
+            });
+            ui_kit::text(ui, app.tr("settings.frame_rate_details_note"), ui_kit::Text::Note("frame_rate_details"));
         }
         5 => {
             let mut auto = app.session.auto_project;

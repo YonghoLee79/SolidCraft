@@ -34,6 +34,21 @@ pub struct PlannedBody {
     pub face_colors: Vec<[u8; 4]>,
 }
 
+/// What the viewport's last frame drew, counted as it was drawn (the performance overlay, #2548).
+/// Triangles and line segments count every pass that draws them, so a section's stencil passes
+/// count twice; that is the work the GPU did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawStats {
+    pub draw_calls: u32,
+    pub triangles: u64,
+    pub line_segments: u64,
+    /// The frame was drawn supersampled and filtered down.
+    pub supersampled: bool,
+}
+
+/// The renderer's last [`DrawStats`], shared with the UI that shows them.
+pub type DrawStatsHandle = Arc<Mutex<DrawStats>>;
+
 /// CPU-side geometry waiting to be uploaded. The model scene changes with the design; the
 /// highlight scene (hover, selection, the origin widget) changes often and is small.
 #[derive(Default, Clone)]
@@ -611,6 +626,10 @@ pub struct Renderer {
     /// Reversed depth drawn into the window's pass: egui clears its depth to 1, which is the near
     /// plane then, so the viewport first sets its rectangle to the far plane (0).
     depth_reset: Option<wgpu::RenderPipeline>,
+    /// What the last frame drew ([`Renderer::stats`]).
+    stats: DrawStatsHandle,
+    /// What the supersampled frame `prepare` drew, published when `paint` filters it down.
+    ss_stats: DrawStats,
 }
 
 /// A triangle over the whole viewport at depth 0 (the far plane of reversed depth), writing no
@@ -1120,6 +1139,8 @@ impl Renderer {
         Renderer {
             ao,
             depth_reset,
+            stats: DrawStatsHandle::default(),
+            ss_stats: DrawStats::default(),
             target: t,
             max_texture: device.limits().max_texture_dimension_2d,
             ss_blit,
@@ -1383,13 +1404,28 @@ impl Renderer {
             pass.set_pipeline(&self.ss_blit);
             pass.set_bind_group(0, &ss.bind, &[]);
             pass.draw(0..3, 0..1);
+            self.publish(DrawStats { draw_calls: self.ss_stats.draw_calls + 1, supersampled: true, ..self.ss_stats });
             return;
         }
+        let mut extra = 0;
         if let Some(reset) = &self.depth_reset {
             pass.set_pipeline(reset);
             pass.draw(0..3, 0..1);
+            extra = 1;
         }
-        self.draw(frame, pass);
+        let drawn = self.draw(frame, pass);
+        self.publish(DrawStats { draw_calls: drawn.draw_calls + extra, ..drawn });
+    }
+
+    /// What the last frame drew; the handle stays current as later frames are drawn.
+    pub fn stats(&self) -> DrawStatsHandle {
+        self.stats.clone()
+    }
+
+    fn publish(&self, drawn: DrawStats) {
+        if let Ok(mut s) = self.stats.lock() {
+            *s = drawn;
+        }
     }
 
     /// The target the pipelines draw into.
@@ -1399,25 +1435,33 @@ impl Renderer {
 }
 
 impl Renderer {
-    /// Draw the frame's scenes into `pass` (its viewport already set).
-    fn draw(&self, cb: &Frame, pass: &mut wgpu::RenderPass<'static>) {
+    /// Draw the frame's scenes into `pass` (its viewport already set), counting what it draws.
+    fn draw(&self, cb: &Frame, pass: &mut wgpu::RenderPass<'static>) -> DrawStats {
+        use std::cell::Cell;
         let res = self;
+        let (calls, triangles, segments) = (Cell::new(0_u32), Cell::new(0_u64), Cell::new(0_u64));
+        let count = |n: &Cell<u64>, k: u32| {
+            calls.set(calls.get().saturating_add(1));
+            n.set(n.get().saturating_add(u64::from(k)));
+        };
         pass.set_bind_group(0, &res.bind, &[]);
         let tris = |pass: &mut wgpu::RenderPass<'static>, p: &wgpu::RenderPipeline, b: &Option<Batch>| {
             if let Some(b) = b {
                 pass.set_pipeline(p);
-                for (buffer, count) in &b.parts {
+                for (buffer, count_) in &b.parts {
                     pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(0..*count, 0..1);
+                    pass.draw(0..*count_, 0..1);
+                    count(&triangles, count_ / 3);
                 }
             }
         };
         let lines = |pass: &mut wgpu::RenderPass<'static>, p: &wgpu::RenderPipeline, b: &Option<Batch>| {
             if let Some(b) = b {
                 pass.set_pipeline(p);
-                for (buffer, count) in &b.parts {
+                for (buffer, count_) in &b.parts {
                     pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(0..6, 0..*count);
+                    pass.draw(0..6, 0..*count_);
+                    count(&segments, *count_);
                 }
             }
         };
@@ -1439,6 +1483,7 @@ impl Renderer {
                 pass.set_vertex_buffer(1, d.colors.slice(..));
                 pass.set_index_buffer(d.mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..d.mesh.index_count, 0, 0..1);
+                count(&triangles, d.mesh.index_count / 3);
             }
         };
         let sectioned = cb.clip[..3].iter().map(|c| c * c).sum::<f32>() > 0.25;
@@ -1471,9 +1516,10 @@ impl Renderer {
             if let Some((_, bind)) = res.textures.get(id) {
                 pass.set_pipeline(&res.image);
                 pass.set_bind_group(1, bind, &[]);
-                for (buffer, count) in &q.parts {
+                for (buffer, count_) in &q.parts {
                     pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(0..*count, 0..1);
+                    pass.draw(0..*count_, 0..1);
+                    count(&triangles, count_ / 3);
                 }
             }
         }
@@ -1489,6 +1535,7 @@ impl Renderer {
         lines(pass, &res.overlay, &m.overlays);
         lines(pass, &res.overlay, &sk.overlays);
         lines(pass, &res.overlay, &h.overlays);
+        DrawStats { draw_calls: calls.get(), triangles: triangles.get(), line_segments: segments.get(), supersampled: false }
     }
 }
 
@@ -1531,7 +1578,9 @@ impl Renderer {
             })
             .forget_lifetime();
         pass.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
-        self.draw(cb, &mut pass);
+        let drawn = self.draw(cb, &mut pass);
+        drop(pass);
+        self.ss_stats = drawn;
         true
     }
 
