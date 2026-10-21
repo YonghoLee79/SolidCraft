@@ -29,7 +29,7 @@ pub(crate) fn icon_button_at(ui: &mut Ui, rect: egui::Rect, icon: &str, label: &
     icon_button_colored(ui, rect, icon, label, None)
 }
 
-pub(super) fn icon_button_colored(ui: &mut Ui, rect: egui::Rect, icon: &str, label: &str, ink: Option<egui::Color32>) -> Response {
+pub(crate) fn icon_button_colored(ui: &mut Ui, rect: egui::Rect, icon: &str, label: &str, ink: Option<egui::Color32>) -> Response {
     let t = Tokens::get();
     let response = ui.interact(rect, ui.make_persistent_id(("icon_button", icon, label)), egui::Sense::click());
     if response.clicked() {
@@ -191,8 +191,20 @@ pub(crate) struct PairButton<'a> {
 
 /// Equal-width secondary actions with optional icons and selected state. Tokens: `form_button_height, control_*, selected_bg, hover, font_label, text, icon/fill, accent, sketch_footer_icon_size, space_4/6/10`.
 pub(crate) fn button_pair(ui: &mut egui::Ui, key: &str, states: [bool; 2], buttons: [PairButton<'_>; 2]) -> (bool, bool) {
+    button_pair_surface(ui, key, states, buttons, true)
+}
+
+/// Equal-width actions inside an already bordered shell card; retain the shared action styling.
+pub(crate) fn button_pair_in_card(ui: &mut Ui, key: &str, states: [bool; 2], buttons: [PairButton<'_>; 2]) -> (bool, bool) {
+    button_pair_surface(ui, key, states, buttons, false)
+}
+
+fn button_pair_surface(ui: &mut Ui, key: &str, states: [bool; 2], buttons: [PairButton<'_>; 2], rule: bool) -> (bool, bool) {
     let t = Tokens::get();
-    ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0, t.dialog_rule));
+    let ink = if rule { t.form_ink } else { t.text };
+    if rule {
+        ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0, t.dialog_rule));
+    }
     let mut clicked = [false; 2];
     egui::Frame::NONE.inner_margin(egui::Margin::symmetric(t.space_10 as i8, t.space_6 as i8)).show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -209,30 +221,29 @@ pub(crate) fn button_pair(ui: &mut egui::Ui, key: &str, states: [bool; 2], butto
                     } else if response.hovered() || response.has_focus() {
                         t.hover
                     } else {
-                        t.control_fill
+                        if rule { t.control_fill } else { t.field }
                     },
-                    egui::Stroke::new(1.0, t.control_border),
+                    egui::Stroke::new(1.0, if rule { t.control_border } else { t.border }),
                     egui::StrokeKind::Inside,
                 );
                 let label = crate::i18n::tr_label(button.label);
-                let galley = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(t.font_label), t.form_ink);
+                let galley = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::proportional(t.font_label), ink);
                 let icon_width = if button.icon.is_some() { t.sketch_footer_icon_size + t.space_4 } else { 0.0 };
                 let left = rect.center().x - (galley.size().x + icon_width) / 2.0;
+                let text_left = left + icon_width;
+                let icon_x = if rule { left + t.sketch_footer_icon_size / 2.0 } else { (rect.left() + text_left) / 2.0 };
                 let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
                 if let Some(icon) = button.icon {
                     crate::icons::paint(
                         &painter,
-                        egui::Rect::from_center_size(
-                            egui::pos2(left + t.sketch_footer_icon_size / 2.0, rect.center().y),
-                            vec2(t.sketch_footer_icon_size, t.sketch_footer_icon_size),
-                        ),
+                        egui::Rect::from_center_size(egui::pos2(icon_x, rect.center().y), vec2(t.sketch_footer_icon_size, t.sketch_footer_icon_size)),
                         icon,
                         t.icon,
                         t.icon_fill,
                         t.form_primary,
                     );
                 }
-                painter.galley(egui::pos2(left + icon_width, rect.center().y - galley.size().y / 2.0), galley, t.form_ink);
+                painter.galley(egui::pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, ink);
                 response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, label));
                 pointer_on_hover(ui, &response);
                 crate::scenario::publish_target(&format!("{key}:{}", button.key), rect);

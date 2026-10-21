@@ -407,6 +407,9 @@ const ELEMENTS: &[Element] = &[
     element!("text", "dialog:report:gallery", Some("dialog:report:gallery"), |ui, _| {
         text(ui, "Validation report with retained units: 10 mm", Text::Report("gallery", false));
     }),
+    element!("shell_search_field", |ui, s| {
+        shell_search_field(ui, ui.id().with("shell_search"), &mut s.value, "Search");
+    }),
     element!("search_field", |ui, s| {
         search_field(ui, ui.id().with("search"), &mut s.value, "Search");
     }),
@@ -680,6 +683,21 @@ const ELEMENTS: &[Element] = &[
             [false, true],
             [PairButton { key: "look_at", label: "ui.look_at", icon: Some("lookat") }, PairButton { key: "slice", label: "Slice", icon: None }],
         );
+    }),
+    element!("button_pair_in_card", "library:insert_mesh", Some("library:insert_mesh"), |ui, _| {
+        button_pair_in_card(
+            ui,
+            "library",
+            [false; 2],
+            [
+                PairButton { key: "insert_mesh", label: "Insert Mesh", icon: Some("insert_mesh") },
+                PairButton { key: "insert_step", label: "Insert STEP", icon: Some("insert_step") },
+            ],
+        );
+    }),
+    element!("icon_button_colored", |ui, _| {
+        let (rect, _) = ui.allocate_exact_size(vec2(row_height(), row_height()), egui::Sense::hover());
+        icon_button_colored(ui, rect, "refresh", "Refresh", Some(crate::theme::Tokens::get().text));
     }),
     element!("icon_button_at", |ui, _| {
         let (rect, _) = ui.allocate_exact_size(vec2(row_height(), row_height()), egui::Sense::hover());
