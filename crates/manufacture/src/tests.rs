@@ -39,7 +39,17 @@ fn clearance(rings: &[Vec<Vec2>], p: Vec2) -> f64 {
 }
 
 fn tool(id: u32, dia: f64) -> Tool {
-    Tool { id, name: format!("{dia} mm end mill"), kind: ToolKind::FlatEndMill, diameter: dia, flutes: 2, corner_radius: 0.0, tip_angle: 118.0, flute_length: None, shank_diameter: None }
+    Tool {
+        id,
+        name: format!("{dia} mm end mill"),
+        kind: ToolKind::FlatEndMill,
+        diameter: dia,
+        flutes: 2,
+        corner_radius: 0.0,
+        tip_angle: 118.0,
+        flute_length: None,
+        shank_diameter: None,
+    }
 }
 fn drill_tool(id: u32, dia: f64) -> Tool {
     Tool { kind: ToolKind::Drill, ..tool(id, dia) }
@@ -613,7 +623,9 @@ fn a_tilted_sketch_is_refused_and_a_flipped_one_keeps_its_shape() {
 // ------------------------------------------------------------------------------- simulation
 
 fn box_triangles(lo: [f64; 3], hi: [f64; 3]) -> Vec<[Vec3; 3]> {
-    let p = |x: usize, y: usize, z: usize| Vec3::new(if x == 0 { lo[0] } else { hi[0] }, if y == 0 { lo[1] } else { hi[1] }, if z == 0 { lo[2] } else { hi[2] });
+    let p = |x: usize, y: usize, z: usize| {
+        Vec3::new(if x == 0 { lo[0] } else { hi[0] }, if y == 0 { lo[1] } else { hi[1] }, if z == 0 { lo[2] } else { hi[2] })
+    };
     let quads = [
         [p(0, 0, 0), p(0, 1, 0), p(1, 1, 0), p(1, 0, 0)],
         [p(0, 0, 1), p(1, 0, 1), p(1, 1, 1), p(0, 1, 1)],
@@ -763,7 +775,11 @@ fn hostile_simulation_input_is_an_error() {
     assert!(simulate(&stock_box(), Some(&part), &[], &sim_opts(0.5)).is_err());
     assert!(Part::from_triangles(&other, [[Vec3::new(f64::NAN, 0.0, 0.0), Vec3::ZERO, Vec3::X]]).is_err());
     // A very long path at a fine resolution stops with a limit error, not a hang.
-    let long = manual((0..60_000).flat_map(|i| [Move::Rapid { to: Vec3::new(0.0, 0.0, 10.0) }, Move::Rapid { to: Vec3::new(59.0, f64::from(i % 39), 10.0) }]).collect());
+    let long = manual(
+        (0..60_000)
+            .flat_map(|i| [Move::Rapid { to: Vec3::new(0.0, 0.0, 10.0) }, Move::Rapid { to: Vec3::new(59.0, f64::from(i % 39), 10.0) }])
+            .collect(),
+    );
     let r = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &long }], &sim_opts(0.05));
     assert!(r.is_err());
 }

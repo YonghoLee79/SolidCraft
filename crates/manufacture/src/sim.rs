@@ -386,7 +386,14 @@ impl<'a> Cutter<'a> {
     fn new(tool: &'a Tool, cell: f64) -> Self {
         let margin = (cell * 0.75).min(tool.radius() * 0.5);
         let shank = tool.shank_radius();
-        Cutter { tool, r: tool.radius(), r_check: tool.radius() - margin, shank, shank_check: shank - (cell * 0.75).min(shank * 0.5), flute: tool.flute_length }
+        Cutter {
+            tool,
+            r: tool.radius(),
+            r_check: tool.radius() - margin,
+            shank,
+            shank_check: shank - (cell * 0.75).min(shank * 0.5),
+            flute: tool.flute_length,
+        }
     }
 }
 

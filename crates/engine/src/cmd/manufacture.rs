@@ -326,10 +326,15 @@ fn toolpath(s: &mut Session, p: &Value) -> Result<Value> {
     if p.get("moves").and_then(Value::as_bool).unwrap_or(false) {
         let limit = match p.get("limit") {
             None => MAX_LISTED_MOVES,
-            Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).filter(|n| (1..=MAX_LISTED_MOVES_HARD).contains(n)).ok_or_else(|| bad(cmd, format!("`limit` is 1 to {MAX_LISTED_MOVES_HARD}")))?,
+            Some(v) => v
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| (1..=MAX_LISTED_MOVES_HARD).contains(n))
+                .ok_or_else(|| bad(cmd, format!("`limit` is 1 to {MAX_LISTED_MOVES_HARD}")))?,
         };
         // Drilling cycles spelled out, as the simulation numbers its moves.
-        let moves: Vec<mf::Move> = if p.get("expanded").and_then(Value::as_bool).unwrap_or(false) { planned.toolpath.expanded() } else { planned.toolpath.moves.clone() };
+        let moves: Vec<mf::Move> =
+            if p.get("expanded").and_then(Value::as_bool).unwrap_or(false) { planned.toolpath.expanded() } else { planned.toolpath.moves.clone() };
         let listed: Vec<_> = moves.iter().take(limit).collect();
         out["toolpath"] = json!(listed);
         out["toolpath_truncated"] = json!(moves.len() > listed.len());
@@ -434,7 +439,10 @@ fn simulate(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let chord = match p.get("tolerance_chord") {
         None => mf::DEFAULT_TOLERANCE,
-        Some(v) => v.as_f64().filter(|t| t.is_finite() && (1e-4..=1.0).contains(t)).ok_or_else(|| bad(cmd, "`tolerance_chord` is between 0.0001 and 1 mm"))?,
+        Some(v) => v
+            .as_f64()
+            .filter(|t| t.is_finite() && (1e-4..=1.0).contains(t))
+            .ok_or_else(|| bad(cmd, "`tolerance_chord` is between 0.0001 and 1 mm"))?,
     };
     let mut planned = Vec::with_capacity(ids.len());
     for id in &ids {
@@ -447,7 +455,10 @@ fn simulate(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let cell = match p.get("resolution") {
         None => 0.5,
-        Some(v) => v.as_f64().filter(|r| r.is_finite() && (mf::sim::MIN_CELL..=100.0).contains(r)).ok_or_else(|| bad(cmd, "`resolution` is between 0.01 and 100 mm"))?,
+        Some(v) => v
+            .as_f64()
+            .filter(|r| r.is_finite() && (mf::sim::MIN_CELL..=100.0).contains(r))
+            .ok_or_else(|| bad(cmd, "`resolution` is between 0.01 and 100 mm"))?,
     };
     let tolerance = match p.get("tolerance") {
         None => None,
@@ -461,7 +472,9 @@ fn simulate(s: &mut Session, p: &Value) -> Result<Value> {
     let part = if p.get("part").and_then(Value::as_bool).unwrap_or(true) {
         let names: Option<Vec<String>> = match p.get("bodies") {
             None => None,
-            Some(Value::Array(a)) => Some(a.iter().map(|v| v.as_str().map(str::to_owned).ok_or_else(|| bad(cmd, "`bodies` is a list of names"))).collect::<Result<_>>()?),
+            Some(Value::Array(a)) => {
+                Some(a.iter().map(|v| v.as_str().map(str::to_owned).ok_or_else(|| bad(cmd, "`bodies` is a list of names"))).collect::<Result<_>>()?)
+            }
             Some(_) => return Err(bad(cmd, "`bodies` is a list of names")),
         };
         let world = s.world_state();
@@ -486,13 +499,11 @@ fn simulate(s: &mut Session, p: &Value) -> Result<Value> {
         None
     };
     let ops: Vec<mf::SimOp> = planned.iter().map(|(op, tool, plan)| mf::SimOp { operation: op.id, tool, toolpath: &plan.toolpath }).collect();
-    let sim = mf::simulate(&stock, part.as_ref(), &ops, &mf::SimOptions { cell, tolerance, until, clearance: setup.clearance }).map_err(|e| bad(cmd, e.to_string()))?;
+    let sim = mf::simulate(&stock, part.as_ref(), &ops, &mf::SimOptions { cell, tolerance, until, clearance: setup.clearance })
+        .map_err(|e| bad(cmd, e.to_string()))?;
     let at = |v: solidcraft_geom::Vec3| json!([v.x, v.y, v.z]);
-    let collisions: Vec<Value> = sim
-        .collisions
-        .iter()
-        .map(|c| json!({"operation": c.operation, "step": c.step, "kind": c.kind, "at": at(c.at), "depth": c.depth}))
-        .collect();
+    let collisions: Vec<Value> =
+        sim.collisions.iter().map(|c| json!({"operation": c.operation, "step": c.step, "kind": c.kind, "at": at(c.at), "depth": c.depth})).collect();
     let mut out = json!({
         "setup": setup_id,
         "frame": {"origin": at(setup.frame.origin), "x": at(setup.frame.x), "y": at(setup.frame.y), "z": at(setup.tool_axis())},

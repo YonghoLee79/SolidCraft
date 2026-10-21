@@ -116,7 +116,11 @@ fn block_with_pocket_job(s: &mut Session) {
     run(s, "sketch.finish", json!({}));
     run(s, "manufacture.tool.set", json!({"id": 1, "diameter": 4.0}));
     // Work Z = 0 at the part's top (model Z = 10).
-    run(s, "manufacture.setup.set", json!({"id": 1, "plane": "XY", "origin": [0.0, 0.0, 10.0], "stock": {"min": [-5.0, -5.0, -10.0], "max": [45.0, 35.0, 3.0]}}));
+    run(
+        s,
+        "manufacture.setup.set",
+        json!({"id": 1, "plane": "XY", "origin": [0.0, 0.0, 10.0], "stock": {"min": [-5.0, -5.0, -10.0], "max": [45.0, 35.0, 3.0]}}),
+    );
     run(
         s,
         "manufacture.operation.set",

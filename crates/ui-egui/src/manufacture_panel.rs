@@ -65,7 +65,17 @@ pub struct MfgPanel {
 
 impl Default for MfgPanel {
     fn default() -> Self {
-        MfgPanel { resolution: 1.0, step: 0, playing: false, show_stock: true, show_path: true, revision: u64::MAX, report: None, surface: None, error: None }
+        MfgPanel {
+            resolution: 1.0,
+            step: 0,
+            playing: false,
+            show_stock: true,
+            show_path: true,
+            revision: u64::MAX,
+            report: None,
+            surface: None,
+            error: None,
+        }
     }
 }
 
@@ -127,7 +137,17 @@ fn load_surface(app: &mut SolveApp, d: &mut MfgPanel) {
             let z: Vec<f32> = s["z"].as_array().into_iter().flatten().map(|n| n.as_f64().unwrap_or(0.0) as f32).collect();
             let (nx, ny) = (s["nx"].as_u64().unwrap_or(0) as usize, s["ny"].as_u64().unwrap_or(0) as usize);
             if nx > 0 && ny > 0 && z.len() == nx * ny {
-                d.surface = Some((d.step, Surface { x0: s["x0"].as_f64().unwrap_or(0.0), y0: s["y0"].as_f64().unwrap_or(0.0), cell: s["cell"].as_f64().unwrap_or(1.0), nx, ny, z }));
+                d.surface = Some((
+                    d.step,
+                    Surface {
+                        x0: s["x0"].as_f64().unwrap_or(0.0),
+                        y0: s["y0"].as_f64().unwrap_or(0.0),
+                        cell: s["cell"].as_f64().unwrap_or(1.0),
+                        nx,
+                        ny,
+                        z,
+                    },
+                ));
             }
         }
         Err(e) => d.error = Some(e.to_string()),
@@ -160,69 +180,76 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut open = true;
     let (mut rerun, mut play, mut rewind) = (false, false, false);
     let title = RichText::new(crate::i18n::tr_label("Machining Simulation")).strong().size(t.font_button);
-    crate::frame::window(ctx, title, crate::frame::Width::Wide).id(egui::Id::new("sc_machining_simulation")).open(&mut open).resizable(true).show(ctx, |ui| {
-        if let Some(e) = &d.error {
-            ui.label(RichText::new(e).color(t.error));
-        }
-        if let Some(r) = &d.report {
-            let v = &r.reply["volumes"];
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!("Removed {}", mm3(&v["removed"])));
-                ui.separator();
-                ui.label(format!("Left to cut {}", mm3(&v["leftover"])));
-                ui.separator();
-                let gouged = v["gouged"].as_f64().unwrap_or(0.0);
-                ui.label(RichText::new(format!("Cut from the part {}", mm3(&v["gouged"]))).color(if gouged > 1.0 { t.error } else { t.text_dim }));
-            });
-            ui.horizontal(|ui| {
-                crate::ui_kit::slider(ui, &mut d.step, 0..=r.total, crate::ui_kit::Slider { integer: true, ..Default::default() });
-            });
-            ui.horizontal(|ui| {
-                play = crate::ui_kit::button(ui, if d.playing { "Pause" } else { "Play" }, crate::ui_kit::Button::Normal).clicked();
-                rewind = crate::ui_kit::button(ui, "Rewind", crate::ui_kit::Button::Normal).clicked();
-                crate::ui_kit::checkbox(ui, "Show stock", &mut d.show_stock);
-                crate::ui_kit::checkbox(ui, "Show toolpath", &mut d.show_path);
-            });
-            let counts = &r.reply["counts"];
-            let n = |k: &str| counts[k].as_u64().unwrap_or(0);
-            let any = n("gouge") + n("shank") + n("rapid") + n("floor") > 0;
-            if any {
-                ui.separator();
-                ui.label(
-                    RichText::new(format!(
-                        "Collisions: {} gouges, {} shank, {} rapid, {} below stock",
-                        n("gouge"),
-                        n("shank"),
-                        n("rapid"),
-                        n("floor")
-                    ))
-                    .color(t.error),
-                );
-                for c in r.reply["collisions"].as_array().into_iter().flatten().take(LISTED) {
+    crate::frame::window(ctx, title, crate::frame::Width::Wide).id(egui::Id::new("sc_machining_simulation")).open(&mut open).resizable(true).show(
+        ctx,
+        |ui| {
+            if let Some(e) = &d.error {
+                ui.label(RichText::new(e).color(t.error));
+            }
+            if let Some(r) = &d.report {
+                let v = &r.reply["volumes"];
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("Removed {}", mm3(&v["removed"])));
+                    ui.separator();
+                    ui.label(format!("Left to cut {}", mm3(&v["leftover"])));
+                    ui.separator();
+                    let gouged = v["gouged"].as_f64().unwrap_or(0.0);
+                    ui.label(RichText::new(format!("Cut from the part {}", mm3(&v["gouged"]))).color(if gouged > 1.0 {
+                        t.error
+                    } else {
+                        t.text_dim
+                    }));
+                });
+                ui.horizontal(|ui| {
+                    crate::ui_kit::slider(ui, &mut d.step, 0..=r.total, crate::ui_kit::Slider { integer: true, ..Default::default() });
+                });
+                ui.horizontal(|ui| {
+                    play = crate::ui_kit::button(ui, if d.playing { "Pause" } else { "Play" }, crate::ui_kit::Button::Normal).clicked();
+                    rewind = crate::ui_kit::button(ui, "Rewind", crate::ui_kit::Button::Normal).clicked();
+                    crate::ui_kit::checkbox(ui, "Show stock", &mut d.show_stock);
+                    crate::ui_kit::checkbox(ui, "Show toolpath", &mut d.show_path);
+                });
+                let counts = &r.reply["counts"];
+                let n = |k: &str| counts[k].as_u64().unwrap_or(0);
+                let any = n("gouge") + n("shank") + n("rapid") + n("floor") > 0;
+                if any {
+                    ui.separator();
                     ui.label(
                         RichText::new(format!(
-                            "{} in operation {} at move {}, {:.2} mm deep",
-                            c["kind"].as_str().unwrap_or("collision"),
-                            c["operation"],
-                            c["step"],
-                            c["depth"].as_f64().unwrap_or(0.0)
+                            "Collisions: {} gouges, {} shank, {} rapid, {} below stock",
+                            n("gouge"),
+                            n("shank"),
+                            n("rapid"),
+                            n("floor")
                         ))
-                        .small()
-                        .color(t.text_dim),
+                        .color(t.error),
                     );
+                    for c in r.reply["collisions"].as_array().into_iter().flatten().take(LISTED) {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} in operation {} at move {}, {:.2} mm deep",
+                                c["kind"].as_str().unwrap_or("collision"),
+                                c["operation"],
+                                c["step"],
+                                c["depth"].as_f64().unwrap_or(0.0)
+                            ))
+                            .small()
+                            .color(t.text_dim),
+                        );
+                    }
+                } else {
+                    ui.label(RichText::new("No collisions").color(t.text_dim));
                 }
-            } else {
-                ui.label(RichText::new("No collisions").color(t.text_dim));
+                let tolerance = r.reply["tolerance"].as_f64().unwrap_or(0.0);
+                ui.label(RichText::new(format!("Overlaps under {tolerance:.2} mm are not reported.")).small().color(t.text_dim));
             }
-            let tolerance = r.reply["tolerance"].as_f64().unwrap_or(0.0);
-            ui.label(RichText::new(format!("Overlaps under {tolerance:.2} mm are not reported.")).small().color(t.text_dim));
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Resolution (mm)");
-            rerun = crate::ui_kit::number_field(ui, &mut d.resolution, 0.05..=10.0, 0.05, "").changed();
-        });
-    });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Resolution (mm)");
+                rerun = crate::ui_kit::number_field(ui, &mut d.resolution, 0.05..=10.0, 0.05, "").changed();
+            });
+        },
+    );
     if play {
         d.playing = !d.playing;
         if d.playing && d.step >= total {
@@ -362,7 +389,11 @@ mod tests {
         run(h, "sketch.rectangle.two_point", json!({"p0": [10.0, 8.0], "p1": [30.0, 22.0]}));
         run(h, "sketch.finish", json!({}));
         run(h, "manufacture.tool.set", json!({"id": 1, "diameter": 4.0}));
-        run(h, "manufacture.setup.set", json!({"id": 1, "plane": "XY", "origin": [0.0, 0.0, 10.0], "stock": {"min": [-5.0, -5.0, -10.0], "max": [45.0, 35.0, 3.0]}}));
+        run(
+            h,
+            "manufacture.setup.set",
+            json!({"id": 1, "plane": "XY", "origin": [0.0, 0.0, 10.0], "stock": {"min": [-5.0, -5.0, -10.0], "max": [45.0, 35.0, 3.0]}}),
+        );
         let op = json!({"setup": 1, "tool": 1, "kind": {"type": "pocket", "source": {"sketch": "Pocket"}, "stepover": 0.5}, "top": 0.0, "bottom": -4.0, "feed": 500.0, "spindle_rpm": 8000.0});
         run(h, "manufacture.operation.set", op);
     }
