@@ -27,5 +27,5 @@ made by that feature's name or id. Each hole's `edges` are the round edges that 
 ends, which is what Chamfer and Fillet take.
 
 Examples: [examples/macros](../examples/macros) — a plate from five values, chamfer every hole
-under 8 mm on both sides, chamfer every hole larger than 5 mm, and flatten a sheet-metal part
-to DXF.
+under 8 mm on both sides, chamfer every cylindrical hole larger than 5 mm (extrude cuts included),
+and flatten a sheet-metal part to DXF.

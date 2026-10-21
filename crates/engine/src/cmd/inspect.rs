@@ -371,8 +371,8 @@ fn find_holes(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let max_diameter = length("max_diameter")?;
     let min_diameter = length("min_diameter")?;
-    let type_filter = str_(p, "type");
-    let feature_filter = str_(p, "feature");
+    let type_filter = str_(p, "type").map(str::trim).filter(|s| !s.is_empty());
+    let feature_filter = str_(p, "feature").map(str::trim).filter(|s| !s.is_empty());
     if max_diameter.is_none() && min_diameter.is_none() && type_filter.is_none() && feature_filter.is_none() {
         return Err(bad(cmd, "give `max_diameter`, `min_diameter`, `type` or `feature`"));
     }
@@ -380,11 +380,6 @@ fn find_holes(s: &mut Session, p: &Value) -> Result<Value> {
         && !s.doc.features.iter().any(|f| f.name.eq_ignore_ascii_case(want) || f.id.to_string() == want)
     {
         return Err(bad(cmd, format!("no feature `{want}`")));
-    }
-    if let Some(want) = type_filter
-        && !s.doc.features.iter().any(|f| feature_type_matches(&f.kind, want))
-    {
-        return Err(bad(cmd, format!("no feature of type `{want}` (Hole, Extrude, or a feature's base name)")));
     }
     let want_bodies = string_list(p, "bodies");
     let holes_only = bool_(p, "holes_only").unwrap_or(true);
@@ -555,12 +550,6 @@ fn hole_features(s: &Session) -> Vec<HoleFeat> {
             }
         })
         .collect()
-}
-
-fn feature_type_matches(kind: &solidcraft_doc::FeatureKind, want: &str) -> bool {
-    kind.base_name().eq_ignore_ascii_case(want)
-        || kind.type_name().eq_ignore_ascii_case(want)
-        || want.eq_ignore_ascii_case(&format!("solid.{}", kind.base_name().to_ascii_lowercase()))
 }
 
 fn hole_feat_matches_type(f: &HoleFeat, want: &str) -> bool {

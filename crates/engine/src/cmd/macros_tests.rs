@@ -215,6 +215,16 @@ fn the_example_macros_run() {
     let small = run(&mut t, "inspect.find_holes", json!({"feature": "Small"}));
     assert_eq!(small["count"], 1, "the 4 mm hole is still a hole: {small}");
 
+    let mut plate = Session::default();
+    plate.run_script(&crate::sample::script()).unwrap();
+    let found = run(&mut plate, "inspect.find_holes", json!({"min_diameter": "5 mm"}));
+    assert!(found["count"].as_u64().unwrap() >= 3, "the sample plate's two Ø8 cuts and Ø12 bore: {found}");
+    plate.macros.loaded = Some(example("chamfer-large-holes.macro.json"));
+    let before = volume(&mut plate);
+    let r = run(&mut plate, "macro.play", json!({}));
+    assert_eq!(r["ran"], 2, "{r}");
+    assert!(volume(&mut plate) < before, "the sample plate holes were chamfered");
+
     let dir = temp_dir("dxf");
     let mut s = Session::default();
     run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
