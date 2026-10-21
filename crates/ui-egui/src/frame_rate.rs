@@ -142,7 +142,7 @@ pub(crate) fn paint(app: &mut SolveApp, ui: &egui::Ui, painter: &egui::Painter, 
     ctx.request_repaint();
     let Some(text) = app.frame_rate.label() else { return };
     let t = Tokens::get();
-    let font = FontId::monospace(crate::theme::Tokens::get().font_body);
+    let font = FontId::monospace(t.font_body);
     let galley = painter.layout_no_wrap(text, font.clone(), t.text);
     let size = galley.size() + vec2(16.0, 8.0);
     let mut r = Rect::from_min_size(pos2(rect.right() - 12.0 - size.x, rect.bottom() - 12.0 - size.y), size);
@@ -151,6 +151,12 @@ pub(crate) fn paint(app: &mut SolveApp, ui: &egui::Ui, painter: &egui::Painter, 
         && r.intersects(nav.expand(4.0))
     {
         r = r.translate(vec2(0.0, nav.top() - 6.0 - r.bottom()));
+    }
+    // And above the floating History card, which would otherwise take its clicks (#4107).
+    if let Some(history) = app.shell.history
+        && r.intersects(history)
+    {
+        r = r.translate(vec2(0.0, history.top() - crate::shell::SHELL_GAP - r.bottom()));
     }
     let id = egui::Id::new("sc_frame_rate");
     let clicked = ui.interact(r, id, Sense::click()).on_hover_text(tr("perf.click_for_details")).clicked();
@@ -180,7 +186,7 @@ fn details(app: &SolveApp, painter: &egui::Painter, view: Rect, below: Rect, dra
     painter.rect(panel, 4.0, t.dialog_bg, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     crate::scenario::publish_handle("viewport:frame_details", panel.center());
     let inner = panel.shrink(pad);
-    let small = FontId::monospace(10.0);
+    let small = FontId::monospace(t.font_small);
     let text = |pos: egui::Pos2, align: Align2, s: &str, font: &FontId, c: Color32| {
         painter.text(pos, align, s, font.clone(), c);
     };
