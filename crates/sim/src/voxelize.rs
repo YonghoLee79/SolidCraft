@@ -136,7 +136,7 @@ fn seal(mesh: &Mesh, grid: &mut Grid) -> Result<()> {
         // A crossing two triangles share (on their common edge) counts once.
         ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
         // Both ends are air, so the crossings come in pairs: in, then out.
-        let Some((t0, t1)) = ts.chunks_exact(2).map(|p| (p[0], p[1])).find(|(t0, t1)| t1 - t0 > 1e-3) else { continue };
+        let Some((t0, t1)) = ts.as_chunks::<2>().0.iter().map(|[a, b]| (*a, *b)).find(|(t0, t1)| t1 - t0 > 1e-3) else { continue };
         let Some(e) = C.get(q) else { continue };
         let there = grid.coords(here);
         let (u, v, w) = (there[0] as i64 + i64::from(e[0]), there[1] as i64 + i64::from(e[1]), there[2] as i64 + i64::from(e[2]));
