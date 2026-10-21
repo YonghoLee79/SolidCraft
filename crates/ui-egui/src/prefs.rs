@@ -497,6 +497,9 @@ preference_settings! {
     suppress_sketch_snap: ModifierCombo = ModifierCombo::CTRL_ALT, 5;
     /// Whether Alt/Option also frees gizmo / canvas manipulator arrows (Primary always does).
     manipulator_free_alt: bool = true, 5;
+    /// A sketch tool's shortcut pressed again before the first point steps to the tool's next
+    /// creation mode (#2459). Off (the default): the key starts the tool again, as it always has.
+    shortcut_cycles_modes: bool = false, 5;
     /// When true: Shift+click adds without removing; Primary toggles.
     /// When false (default): Shift and Primary both toggle.
     selection_shift_add_only: bool = false, 6;
@@ -1408,6 +1411,14 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             if ui_kit::checkbox(ui, crate::i18n::tr_label("Project face edges into new sketches"), &mut auto).changed() {
                 let _ = app.run("sketch.auto_project", json!({"value": auto}));
             }
+            ui_kit::checkbox(
+                ui,
+                crate::i18n::tr_label("Pressing a tool's shortcut again switches its mode"),
+                &mut app.preferences.shortcut_cycles_modes,
+            )
+            .on_hover_text(crate::i18n::tr_label(
+                "Before the first point, pressing a sketch tool's shortcut again steps through its creation modes. Off: it starts the tool again.",
+            ));
             ui_kit::section(ui, "sketch_modifiers", crate::i18n::tr_label("Sketch modifiers"), true, |ui| {
                 ui_kit::row(ui, crate::i18n::tr_label("Suppress auto-snap while drawing / dragging"), |ui| {
                     let combo = &mut app.preferences.suppress_sketch_snap;
