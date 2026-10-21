@@ -27,9 +27,6 @@ pub(crate) struct Health {
     errors: BTreeMap<u64, (String, String)>,
     warnings: BTreeMap<u64, (String, String)>,
     parameter_errors: BTreeMap<String, String>,
-    /// By feature id: (name, info), and a digest of the notice's values.
-    notices: BTreeMap<u64, (String, String)>,
-    notice_digests: BTreeMap<u64, u64>,
     undo: Vec<String>,
     undo_depth: u64,
     redo_depth: u64,
@@ -60,11 +57,6 @@ impl Health {
                 .as_object()
                 .map(|o| o.iter().map(|(k, w)| (k.clone(), w.as_str().unwrap_or_default().to_string())).collect())
                 .unwrap_or_default(),
-            notices: messages("notices", "info"),
-            notice_digests: v["notices"]
-                .as_array()
-                .map(|a| a.iter().filter_map(|e| Some((e["feature"].as_u64()?, e["digest"].as_u64().unwrap_or(0)))).collect())
-                .unwrap_or_default(),
             undo: v["undo"].as_array().map(|a| a.iter().filter_map(|l| l.as_str().map(str::to_string)).collect()).unwrap_or_default(),
             undo_depth: v["undo_depth"].as_u64().unwrap_or(0),
             redo_depth: v["redo_depth"].as_u64().unwrap_or(0),
@@ -83,13 +75,11 @@ impl Health {
     /// was opened, or features came, went, broke or mended. (`model.health`'s `revision` also
     /// moves when only the view changes, a body hidden say, so it is not used.)
     fn differs(&self, b: &Health) -> bool {
-        let Health { features, errors, warnings, parameter_errors, notices, notice_digests, undo, undo_depth, redo_depth, path } = self;
+        let Health { features, errors, warnings, parameter_errors, undo, undo_depth, redo_depth, path } = self;
         *features != b.features
             || *errors != b.errors
             || *warnings != b.warnings
             || *parameter_errors != b.parameter_errors
-            || *notices != b.notices
-            || *notice_digests != b.notice_digests
             || *undo != b.undo
             || *undo_depth != b.undo_depth
             || *redo_depth != b.redo_depth
@@ -113,17 +103,6 @@ fn changes(a: &Health, b: &Health, out: &mut Map<String, Value>) {
     let new_warnings = new(&a.warnings, &b.warnings);
     if !new_warnings.is_empty() {
         out.insert("new_warnings".into(), listed(&b.warnings, new_warnings.into_iter(), "warning"));
-    }
-    // The features' own reports (a sketch's degrees of freedom, a plugin's values): the ones that
-    // are new or say something different. Their values are a `notices` call away.
-    let notices: Vec<u64> = b
-        .notices
-        .iter()
-        .filter(|(id, n)| a.notices.get(id) != Some(n) || a.notice_digests.get(id) != b.notice_digests.get(id))
-        .map(|(id, _)| *id)
-        .collect();
-    if !notices.is_empty() {
-        out.insert("notices".into(), listed(&b.notices, notices.into_iter(), "info"));
     }
     let params: Map<String, Value> =
         b.parameter_errors.iter().filter(|(k, w)| a.parameter_errors.get(*k) != Some(*w)).map(|(k, w)| (k.clone(), json!(w))).collect();
@@ -257,28 +236,6 @@ mod tests {
         // Undone in the app.
         let undone = health(0);
         assert_eq!(report(Some(&last), &undone, &undone).unwrap()["changed_since_your_last_call"]["undone"], 1);
-    }
-
-    #[test]
-    fn a_change_reports_the_notices_it_altered() {
-        let mut pre = health(4);
-        pre.notices.insert(1, ("Base".into(), "2 degrees of freedom left; 1 profile".into()));
-        pre.notices.insert(2, ("Wing".into(), "area 990 cm²".into()));
-        pre.notice_digests.insert(2, 7);
-        let mut post = health(5);
-        post.notices.insert(1, ("Base".into(), "fully constrained; 1 profile".into()));
-        post.notices.insert(2, ("Wing".into(), "area 990 cm²".into()));
-        // Same line, other values: reported too.
-        post.notice_digests.insert(2, 8);
-        let r = report(Some(&pre), &pre, &post).unwrap();
-        assert_eq!(
-            r["notices"],
-            json!([{"feature": 1, "name": "Base", "info": "fully constrained; 1 profile"}, {"feature": 2, "name": "Wing", "info": "area 990 cm²"}])
-        );
-        // An unchanged notice is not repeated.
-        post.notice_digests.insert(2, 7);
-        let r = report(Some(&pre), &pre, &post).unwrap();
-        assert_eq!(r["notices"].as_array().unwrap().len(), 1, "{r}");
     }
 
     #[test]

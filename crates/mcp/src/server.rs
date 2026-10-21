@@ -34,9 +34,8 @@ and dimension (`sketch.dimension {entities, value}`; values may name parameters)
 edge], radius}`, `solid.chamfer`, patterns, mirror, primitives). Use `batch` for several steps at once, \
 `list_commands` for ids and parameter docs, `describe_command` for a command's schemas, `inspect_design` / `measure` to verify, `body_topology` to find edge points, \
 `set_parameter` to drive the design and `screenshot` to look at it. A result may end with a \"Design feedback:\" block: \
-features the call broke (new_errors) or mended (fixed), new warnings, notices (features whose own report changed: read \
-their values with `notices`), and changed_since_your_last_call when the person at the app (or another client) changed \
-the design between your calls; act on it before going on.";
+features the call broke (new_errors) or mended (fixed), new warnings, and changed_since_your_last_call when the person \
+at the app (or another client) changed the design between your calls; act on it before going on.";
 
 pub struct Server {
     backend: Box<dyn Backend>,

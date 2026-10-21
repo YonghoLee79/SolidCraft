@@ -30,12 +30,6 @@ pub static COMMANDS: &[CommandSpec] = &[
          undo: [the last 20 undo steps' labels, oldest first], undo_depth, redo_depth, rolled_back (timeline marker or null), \
          dirty (changes not saved), path. Cheap: nothing is measured. The MCP server reads it around every tool call",
     ),
-    CommandSpec::new("model.notices", "Feature Notices", model_notices).icon("inspect").noundo().params(
-        "features?: [ids or names] (default: every feature) → notices: [{feature, name, status: ok|warning|error|skipped, \
-         info?, values?, warning?, error?}]: what each feature reports about itself beside its error and warning, a one-line \
-         `info` and structured `values` (a sketch: whether it is solved, its degrees of freedom and profiles). Read only. \
-         The MCP server's feedback block names the features whose notice a change altered",
-    ),
     CommandSpec::new("material.assign", "Physical Material", physical_material)
         .at("SOLID", "MODIFY")
         .icon("material")
@@ -251,99 +245,12 @@ fn model_health(s: &mut Session, _p: &Value) -> Result<Value> {
         "warnings": warnings,
         "parameter_errors": s.model.param_errors,
         "undo": undo,
-        "notices": notice_digests(s),
         "undo_depth": s.undo.len(),
         "redo_depth": s.redo.len(),
         "rolled_back": s.doc.marker,
         "dirty": s.is_dirty(),
         "path": s.path,
     }))
-}
-
-/// What a feature reports about itself beside its error and warning: a one-line `info` and
-/// structured `values`. A sketch reports its solve; other features have none yet. A feature kind
-/// that has something to say adds it here (it may read the session, e.g. a stored evaluation).
-pub(crate) fn feature_notice(_s: &Session, r: &solidcraft_doc::FeatureResult) -> Option<(String, Value)> {
-    if r.skipped || r.error.is_some() {
-        return None;
-    }
-    let ss = r.state.sketch(r.id)?;
-    let rep = &ss.report;
-    let solved = matches!(rep.status, solidcraft_sketch::SolveStatus::Solved);
-    let state = if !solved {
-        format!("constraints conflict ({})", rep.failing.join(", "))
-    } else if rep.dof == 0 {
-        "fully constrained".to_string()
-    } else {
-        format!("{} degrees of freedom left", rep.dof)
-    };
-    let n = ss.profiles.len();
-    let info = format!("{state}; {n} profile{}", if n == 1 { "" } else { "s" });
-    Some((info, json!({"solved": solved, "dof": rep.dof, "profiles": n, "failing": rep.failing})))
-}
-
-/// `model.health`'s notices: each feature that has one, with its `info` and a digest of its
-/// `values`, so a client can tell which notices changed without reading them all.
-fn notice_digests(s: &Session) -> Vec<Value> {
-    use std::hash::{Hash, Hasher};
-    s.model
-        .results
-        .iter()
-        .filter_map(|r| {
-            let (info, values) = feature_notice(s, r)?;
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            values.to_string().hash(&mut h);
-            Some(json!({"feature": r.id, "name": r.name, "info": info, "digest": h.finish()}))
-        })
-        .collect()
-}
-
-/// Every feature's status and notice, or those named in `features`.
-fn model_notices(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "model.notices";
-    let want: Vec<String> = match p.get("features") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(a)) => a
-            .iter()
-            .map(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string())))
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| bad(cmd, "`features` must list feature ids or names"))?,
-        Some(_) => return Err(bad(cmd, "`features` must list feature ids or names")),
-    };
-    let named = |r: &solidcraft_doc::FeatureResult, w: &str| w == r.name || w.parse::<u64>().ok() == Some(r.id);
-    if let Some(w) = want.iter().find(|w| !s.model.results.iter().any(|r| named(r, w))) {
-        return Err(bad(cmd, format!("no feature `{w}`")));
-    }
-    let notices: Vec<Value> = s
-        .model
-        .results
-        .iter()
-        .filter(|r| want.is_empty() || want.iter().any(|w| named(r, w)))
-        .map(|r| {
-            let status = if r.skipped {
-                "skipped"
-            } else if r.error.is_some() {
-                "error"
-            } else if r.warning.is_some() {
-                "warning"
-            } else {
-                "ok"
-            };
-            let mut o = json!({"feature": r.id, "name": r.name, "status": status});
-            if let Some((info, values)) = feature_notice(s, r) {
-                o["info"] = json!(info);
-                o["values"] = values;
-            }
-            if let Some(w) = &r.warning {
-                o["warning"] = json!(w);
-            }
-            if let Some(e) = &r.error {
-                o["error"] = json!(e);
-            }
-            o
-        })
-        .collect();
-    Ok(json!({"notices": notices}))
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
