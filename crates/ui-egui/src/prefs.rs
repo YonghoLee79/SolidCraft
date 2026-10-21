@@ -474,6 +474,13 @@ preference_settings! {
     up_axis: String = "z".into(), PAGE_DESIGN;
     /// After a STEP or IGES file opens, offer to stand a Y-up part up (`stand_up`).
     offer_stand_up: bool = true, PAGE_DESIGN => check("Offer to stand up Y-up files", "After a STEP or IGES file opens with Z up, offer a quarter turn about X");
+    /// Placing a Single hole snaps to the middle of the face and the centres of its round edges
+    /// (`hole_place`). Off by default: a hole goes where it is clicked.
+    hole_snaps: bool = false, PAGE_DESIGN => check("Snap to face and edge centres");
+    /// A placed Single hole has a handle that drags it, and a pick elsewhere on a face that has a
+    /// hole moves the hole there (`hole_place`). Off by default: a second pick on its face takes
+    /// the hole out, and a hole is moved by taking it out and picking again.
+    hole_moves: bool = false, PAGE_DESIGN => check("Move holes by clicking or dragging");
     /// What a middle-button double-click in the view does: `home`, `fit` or `off`.
     middle_double_click: String = "home".into(), 1;
     /// Colour vision mode (#778): `off`, `protan`, `deutan` or `tritan`.
@@ -1429,6 +1436,23 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 ui_kit::Text::Note("orientation"),
             );
             setting::offer_stand_up(app, ui);
+            // The Hole command's own settings, under its name.
+            ui_kit::section(ui, "create_hole", crate::i18n::tr_label("Create Hole"), true, |ui| {
+                setting::hole_snaps(app, ui);
+                ui_kit::text(
+                    ui,
+                    crate::i18n::tr_label("A Single hole snaps to the middle of its face and to the centres of its round edges"),
+                    ui_kit::Text::Note("hole_snaps"),
+                );
+                setting::hole_moves(app, ui);
+                ui_kit::text(
+                    ui,
+                    crate::i18n::tr_label(
+                        "A placed Single hole has a handle to drag it, and picking its face again moves the hole there instead of taking it out",
+                    ),
+                    ui_kit::Text::Note("hole_moves"),
+                );
+            });
         }
         PAGE_GRAPHICS => {
             ui_kit::row(ui, app.tr("ui.graphics_preset"), |ui| graphics_preset_selector(app, ui));
