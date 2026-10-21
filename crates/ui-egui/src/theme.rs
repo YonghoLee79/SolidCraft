@@ -254,6 +254,12 @@ pub struct IconColors {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
     /// File/start presentation, with explicit foreground/background pairs.
+    pub file_dim: Color32,
+    pub file_recovery_well: Color32,
+    pub file_action_height: f32,
+    pub file_back_height: f32,
+    pub file_recovery_icon: f32,
+    pub file_grid_gap: f32,
     pub file_background: Color32,
     pub file_surface: Color32,
     pub file_border: Color32,
@@ -663,9 +669,9 @@ mod tests {
                     (t.file_primary_ink, t.file_background),
                     (t.file_recovery_ink, t.file_recovery),
                     (t.form_ink, t.file_surface),
-                    (t.form_dim, t.file_surface),
-                    (t.form_dim, t.file_background),
-                    (t.form_dim, t.file_primary),
+                    (t.file_dim, t.file_surface),
+                    (t.file_dim, t.file_background),
+                    (t.file_dim, t.file_primary),
                 ] {
                     assert!(super::contrast_ratio(ink, surface) >= 4.5, "dark={dark}: {ink:?} on {surface:?}");
                 }

@@ -10,7 +10,7 @@ use solidcraft_engine::render::{Camera, StandardView};
 
 use crate::SolveApp;
 use crate::theme::Tokens;
-use crate::ui_kit::{self, FileView};
+use crate::ui_kit::{self, FileView, RecoveryMessage};
 
 /// Recent designs kept.
 pub const MAX_RECENT: usize = 12;
@@ -531,7 +531,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         want(&mut app.home, path);
     }
     let mut action = None;
-    egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.file_background)).show(ui, |ui| {
+    FileView::page(ui, |ui| {
         ui.add_enabled_ui(interactive, |ui| {
             let full = ui.available_rect_before_wrap();
             crate::scenario::publish_rect("home:page", full);
@@ -551,12 +551,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                 content(app, ui, &mut action, true);
             } else {
                 let rail = egui::Rect::from_min_size(full.min, vec2(t.file_nav_width, full.height()));
-                ui.scope_builder(egui::UiBuilder::new().max_rect(rail), |ui| {
-                    ui.painter().rect_filled(rail, 0, t.file_rail);
-                    FileView::navigation(ui, |ui| {
-                        egui::ScrollArea::vertical().id_salt("home_navigation").auto_shrink([false, false]).show(ui, |ui| {
-                            navigation(app, ui, &mut action);
-                        });
+                FileView::rail(ui, rail, |ui| {
+                    egui::ScrollArea::vertical().id_salt("home_navigation").auto_shrink([false, false]).show(ui, |ui| {
+                        navigation(app, ui, &mut action);
                     });
                 });
                 let body = egui::Rect::from_min_max(egui::pos2(rail.right(), full.top()), full.max);
@@ -572,26 +569,30 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
 fn navigation(app: &SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAction>) {
     let busy = app.file_picker_busy();
     let design = !crate::documents::active_is_blank(app);
-    let back = crate::i18n::format("home.back", &[("name", &app.session.doc.name)]);
-    let response = FileView::back(ui, "home:back", &back, "Esc");
+    let response = FileView::back_to(ui, "home:back", app.tr("home.back"), &app.session.doc.name, "Esc");
     publish("home:back", &response);
     if response.clicked() {
         *action = Some(FileAction::Back);
     }
     let primary = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
     let shift = if cfg!(target_os = "macos") { "⇧" } else { "Shift+" };
+    let recover = if app.recoverable.is_empty() {
+        app.tr_label("Recover").to_string()
+    } else {
+        format!("{} ({})", app.tr_label("Recover"), app.recoverable.len())
+    };
     let nav = [
         ("home:start", app.tr_label("Start"), String::new(), Some(Section::Start), true, FileAction::Section(Section::Start)),
         ("home:new", app.tr_label("New"), format!("{primary}N"), None, true, FileAction::New("preferred")),
         ("home:open", app.tr("ui.open"), format!("{primary}O"), None, true, FileAction::Open),
-        ("home:recover", app.tr_label("Recover"), String::new(), Some(Section::Recovery), true, FileAction::Section(Section::Recovery)),
+        ("home:recover", recover.as_str(), String::new(), Some(Section::Recovery), true, FileAction::Section(Section::Recovery)),
         ("home:save", app.tr("ui.save"), format!("{primary}S"), None, design, FileAction::Save),
         ("home:save_as", app.tr("ui.save_as"), format!("{primary}{shift}S"), None, design, FileAction::SaveAs),
         ("home:export", app.tr("home.export"), String::new(), Some(Section::Export), design, FileAction::Section(Section::Export)),
-        ("home:properties", app.tr_label("Design Properties"), String::new(), None, design, FileAction::Properties),
-        ("home:settings", app.tr("ui.preferences"), format!("{primary},"), None, true, FileAction::Settings),
-        ("home:shortcuts", app.tr("ui.keyboard_shortcuts"), String::new(), None, true, FileAction::Shortcuts),
-        ("home:crashes", app.tr_label("Crash Reports"), String::new(), None, true, FileAction::Crashes),
+        ("home:properties", app.tr("home.properties"), String::new(), None, design, FileAction::Properties),
+        ("home:settings", app.tr("home.settings"), format!("{primary},"), None, true, FileAction::Settings),
+        ("home:shortcuts", app.tr("home.shortcuts"), String::new(), None, true, FileAction::Shortcuts),
+        ("home:crashes", app.tr("home.crashes"), String::new(), None, true, FileAction::Crashes),
         ("home:about", app.tr_label("About SolidCraft"), String::new(), None, true, FileAction::About),
     ];
     for (index, (id, label, key, section, enabled, picked)) in nav.into_iter().enumerate() {
@@ -613,17 +614,18 @@ fn publish(id: &str, response: &egui::Response) {
 
 fn content(app: &mut SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAction>, narrow: bool) {
     let t = Tokens::get();
-    let inset = if narrow { t.space_16 } else { t.file_content_inset_x };
-    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(inset as i8, t.file_content_inset_y as i8)).show(ui, |ui| {
+    FileView::content(ui, narrow, |ui| {
         egui::ScrollArea::vertical().id_salt("home_content").auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             let (title, hint) = match app.home.section {
                 Section::Start => (app.tr_label("Start"), app.tr("home.start_hint")),
                 Section::Recovery => (app.tr_label("Recover"), app.tr("home.recovery_hint")),
                 Section::Export => (app.tr("home.export"), app.tr("home.export_hint")),
             };
             FileView::title(ui, title);
-            ui_kit::text(ui, hint, ui_kit::Text::Note("home_hint"));
-            ui.add_space(t.space_16);
+            ui.add_space(t.space_6);
+            FileView::subtitle(ui, hint);
+            ui.add_space(t.file_section_gap);
             if let Some((message, _, true)) = &app.status {
                 ui_kit::text(ui, message, ui_kit::Text::Error("home_status"));
             }
@@ -639,131 +641,131 @@ fn content(app: &mut SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAction
 fn start_content(app: &mut SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAction>) {
     let t = Tokens::get();
     if let Some(entry) = app.recoverable.first().cloned() {
-        FileView::recovery(ui, |ui| {
-            let title = crate::i18n::format("home.recovery_count", &[("count", &app.recoverable.len().to_string())]);
-            ui_kit::text(ui, &title, ui_kit::Text::Heading("home_recovery"));
-            ui_kit::text(ui, &entry.name, ui_kit::Text::Inline);
-            ui_kit::text(ui, app.tr("home.recovery_hint"), ui_kit::Text::Note("home_recovery_hint"));
-            ui.horizontal_wrapped(|ui| {
-                let recover = ui_kit::button(ui, app.tr_label("Recover"), ui_kit::Button::Normal);
-                publish("home:recovery:recover", &recover);
-                if recover.clicked() {
-                    *action = Some(if app.recoverable.len() == 1 {
-                        FileAction::Recovery(entry.clone(), true)
-                    } else {
-                        FileAction::Section(Section::Recovery)
-                    });
-                }
-                if app.recoverable.len() == 1 {
-                    let discard = ui_kit::button(ui, app.tr_label("Discard"), ui_kit::Button::Normal);
-                    publish("home:recovery:discard", &discard);
-                    if discard.clicked() {
-                        *action = Some(FileAction::Recovery(entry, false));
-                    }
-                }
-            });
-        });
+        let title = crate::i18n::format("home.recovery_count", &[("count", &app.recoverable.len().to_string())]);
+        let filename = entry
+            .path
+            .as_deref()
+            .and_then(|path| std::path::Path::new(path).file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| entry.name.clone());
+        let metadata = format!(" · {}", crate::recovery_ui::ago(entry.saved_at));
+        let (recover, discard) = FileView::recovery_banner(
+            ui,
+            "home:recovery",
+            RecoveryMessage { title: &title, before_filename: " · ", filename: &filename, after_filename: &metadata },
+            app.tr_label("Recover"),
+            (app.recoverable.len() == 1).then(|| app.tr_label("Discard")),
+        );
+        publish("home:recovery:recover", &recover);
+        if recover.clicked() {
+            *action =
+                Some(if app.recoverable.len() == 1 { FileAction::Recovery(entry.clone(), true) } else { FileAction::Section(Section::Recovery) });
+        }
+        if let Some(discard) = discard {
+            publish("home:recovery:discard", &discard);
+            if discard.clicked() {
+                *action = Some(FileAction::Recovery(entry, false));
+            }
+        }
         ui.add_space(t.file_section_gap);
     }
-    FileView::section_title(ui, app.tr_label("New"));
-    ui.add_space(t.space_12);
+    let shortcut = if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" };
+    let open_hint = crate::i18n::format("home.open_hint", &[("shortcut", shortcut)]);
     let tiles = [
         ("home:new_mm", "new", app.tr("home.new_mm"), app.tr("home.new_mm_hint"), true),
         ("home:new_inches", "new", app.tr("home.new_inches"), app.tr("home.new_inches_hint"), false),
-        ("home:open_tile", "open", app.tr("home.open"), app.tr("home.open_hint"), false),
+        ("home:open_tile", "open", app.tr("home.open"), open_hint.as_str(), false),
         ("home:import", "import", app.tr("home.import"), app.tr("home.import_hint"), false),
     ];
-    columns(ui, FileView::tile_min_width(), tiles.len(), |ui, index, width| {
-        let Some((id, icon, title, hint, primary)) = tiles.get(index) else { return };
-        let response = FileView::action_tile(ui, id, width, icon, title, hint, *primary);
-        publish(id, &response);
-        if response.clicked() {
-            *action = Some(match index {
-                0 => FileAction::New("mm"),
-                1 => FileAction::New("in"),
-                2 => FileAction::Open,
-                _ => FileAction::Import,
+    FileView::section(ui, app.tr_label("New"), t.space_12, |ui| {
+        FileView::grid(ui, "home_new", FileView::tile_min_width(), tiles.len(), |ui, index, width| {
+            let Some((id, icon, title, hint, primary)) = tiles.get(index) else { return };
+            let response = FileView::action_tile(ui, id, width, icon, title, hint, *primary);
+            publish(id, &response);
+            if response.clicked() {
+                *action = Some(match index {
+                    0 => FileAction::New("mm"),
+                    1 => FileAction::New("in"),
+                    2 => FileAction::Open,
+                    _ => FileAction::Import,
+                });
+            }
+        });
+    });
+    ui.add_space(t.file_section_gap);
+    FileView::section(ui, app.tr("home.recent"), t.space_10, |ui| {
+        if app.home.recent.is_empty() {
+            FileView::detail(ui, app.tr("home.recent_empty"));
+        }
+        if !app.home.recent.is_empty() {
+            FileView::recent_list(ui, |ui| {
+                for (index, path) in app.home.recent.clone().iter().enumerate() {
+                    let name = std::path::Path::new(path).file_stem().map(|name| name.to_string_lossy()).unwrap_or_else(|| path.as_str().into());
+                    let missing = !available(app, path);
+                    let when = if app.session.path.as_ref() == Some(path) { app.tr("home.open_now").to_string() } else { recent_time(app, path) };
+                    let shown_path = if missing {
+                        format!("{} · {}", app.tr("home.missing"), friendly_path(path))
+                    } else if path.starts_with("/disk/") {
+                        app.tr_label("On your computer").to_string()
+                    } else if path.starts_with("/opfs/") {
+                        app.tr("home.in_this_browser").to_string()
+                    } else {
+                        friendly_path(path)
+                    };
+                    let response = FileView::recent_row(
+                        ui,
+                        &format!("home:recent:{index}"),
+                        ui_kit::RecentRow {
+                            title: &name,
+                            path: &shown_path,
+                            when: &when,
+                            workspace: app.tr("home.design_workspace"),
+                            thumbnail: texture(app.home.thumbs.get(path).and_then(Option::as_ref)),
+                        },
+                    );
+                    publish(&format!("home:recent:{index}"), &response);
+                    response.clone().on_hover_text(path);
+                    response.context_menu(|ui| {
+                        if crate::context_menu::button(ui, app.tr_label("Remove from list"), "delete").clicked() {
+                            app.home.recent.retain(|x| x != path);
+                            app.home.opened_at.remove(path);
+                            ui.close();
+                        }
+                        if !cfg!(target_arch = "wasm32") && crate::context_menu::button(ui, app.tr_label("Show in folder"), "folder").clicked() {
+                            if let Some(show) = &app.services.show_in_folder {
+                                show(path);
+                            }
+                            ui.close();
+                        }
+                    });
+                    if response.clicked() {
+                        open_recent(app, path);
+                    }
+                }
             });
         }
     });
     ui.add_space(t.file_section_gap);
-    FileView::section_title(ui, app.tr("home.recent"));
-    ui.add_space(t.space_12);
-    if app.home.recent.is_empty() {
-        ui_kit::text(ui, app.tr("home.recent_empty"), ui_kit::Text::Note("home_recent_empty"));
-    }
-    for (index, path) in app.home.recent.clone().iter().enumerate() {
-        let name = std::path::Path::new(path).file_stem().map(|name| name.to_string_lossy()).unwrap_or_else(|| path.as_str().into());
-        let missing = !available(app, path);
-        let when = if app.session.path.as_ref() == Some(path) { app.tr("home.open_now").to_string() } else { recent_time(app, path) };
-        let shown_path = if missing {
-            format!("{} · {path}", app.tr("home.missing"))
-        } else if path.starts_with("/disk/") {
-            app.tr_label("On your computer").to_string()
-        } else if path.starts_with("/opfs/") {
-            app.tr("home.in_this_browser").to_string()
-        } else {
-            path.clone()
-        };
-        let response = FileView::recent_row(
-            ui,
-            &format!("home:recent:{index}"),
-            ui_kit::RecentRow {
-                title: &name,
-                path: &shown_path,
-                when: &when,
-                workspace: app.tr("home.design_workspace"),
-                thumbnail: texture(app.home.thumbs.get(path).and_then(Option::as_ref)),
-            },
-        );
-        publish(&format!("home:recent:{index}"), &response);
-        response.context_menu(|ui| {
-            if crate::context_menu::button(ui, app.tr_label("Remove from list"), "delete").clicked() {
-                app.home.recent.retain(|x| x != path);
-                app.home.opened_at.remove(path);
-                ui.close();
-            }
-            if !cfg!(target_arch = "wasm32") && crate::context_menu::button(ui, app.tr_label("Show in folder"), "folder").clicked() {
-                if let Some(show) = &app.services.show_in_folder {
-                    show(path);
+    FileView::section(ui, app.tr("home.samples"), t.space_10, |ui| {
+        let samples: Vec<_> = solidcraft_engine::sample::samples()
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| {
+                let hint = if app.home.wanted == Some(index) { app.tr("home.opening") } else { app.tr_label(sample.about) };
+                ui_kit::SampleCard {
+                    title: app.tr_label(sample.name),
+                    description: hint,
+                    icon: "box",
+                    thumbnail: texture(app.home.thumbs.get(&format!("sample:{index}")).and_then(Option::as_ref)),
                 }
-                ui.close();
+            })
+            .collect();
+        for (index, response) in FileView::sample_grid(ui, "home:sample", &samples).into_iter().enumerate() {
+            publish(&format!("home:sample:{index}"), &response);
+            if response.clicked() {
+                open_sample(app, index);
             }
-        });
-        if response.clicked() {
-            open_recent(app, path);
         }
-    }
-    ui.add_space(t.file_section_gap);
-    FileView::section_title(ui, app.tr("home.samples"));
-    ui.add_space(t.space_12);
-    let samples = solidcraft_engine::sample::samples();
-    columns(ui, FileView::sample_min_width(), samples.len(), |ui, index, width| {
-        let Some(sample) = samples.get(index) else { return };
-        let key = format!("sample:{index}");
-        let hint = if app.home.wanted == Some(index) { app.tr("home.opening") } else { app.tr_label(sample.about) };
-        let response = FileView::sample_card(
-            ui,
-            &format!("home:sample:{index}"),
-            width,
-            ui_kit::SampleCard {
-                title: app.tr_label(sample.name),
-                description: hint,
-                icon: "box",
-                thumbnail: texture(app.home.thumbs.get(&key).and_then(Option::as_ref)),
-            },
-        );
-        publish(&format!("home:sample:{index}"), &response);
-        if response.clicked() {
-            open_sample(app, index);
-        }
-    });
-    ui.add_space(t.file_section_gap);
-    ui.horizontal_wrapped(|ui| {
-        ui.visuals_mut().hyperlink_color = t.file_primary_ink;
-        ui.hyperlink_to(app.tr("home.documentation"), crate::help::DOCS_URL);
-        ui.hyperlink_to(app.tr("home.report_issue"), "https://github.com/tangency-labs/solidcraft/issues/new");
-        ui.hyperlink_to(app.tr("home.whats_new"), "https://github.com/tangency-labs/solidcraft/releases/latest");
     });
 }
 
@@ -771,51 +773,46 @@ fn texture(texture: Option<&egui::TextureHandle>) -> Option<(egui::TextureId, eg
     texture.map(|texture| (texture.id(), texture.size_vec2()))
 }
 
+/// Abbreviate only an actual home-directory ancestor; the source path is kept for actions.
+fn friendly_path(path: &str) -> String {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    abbreviated_path(path, home.as_deref().map(std::path::Path::new))
+}
+
+fn abbreviated_path(path: &str, home: Option<&std::path::Path>) -> String {
+    if let Some(relative) = home.filter(|home| !home.as_os_str().is_empty()).and_then(|home| std::path::Path::new(path).strip_prefix(home).ok()) {
+        if relative.as_os_str().is_empty() { "~".into() } else { format!("~/{}", relative.to_string_lossy()) }
+    } else {
+        path.to_owned()
+    }
+}
+
 fn recent_time(app: &SolveApp, path: &str) -> String {
     let Some(time) = app.home.opened_at.get(path) else { return String::new() };
     let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(*time);
-    let seconds = now.saturating_sub(*time);
-    let key = if seconds < 60 {
-        return app.tr("home.opened_just_now").to_string();
-    } else if seconds < 3600 {
-        "home.opened_minutes_ago"
-    } else if seconds < 86400 {
-        "home.opened_hours_ago"
-    } else {
-        "home.opened_days_ago"
-    };
-    let count = if seconds < 3600 {
-        seconds / 60
-    } else if seconds < 86400 {
-        seconds / 3600
-    } else {
-        seconds / 86400
-    };
-    crate::i18n::format(key, &[("count", &count.to_string())])
+    recent_time_at(app, *time, now)
 }
 
-fn columns(ui: &mut egui::Ui, min_width: f32, count: usize, mut cell: impl FnMut(&mut egui::Ui, usize, f32)) {
-    let gap = Tokens::get().space_14;
-    let available = ui.available_width().max(0.0);
-    let columns = (((available + gap) / (min_width + gap)).floor() as usize).max(1).min(count.max(1));
-    let width = ((available - gap * columns.saturating_sub(1) as f32) / columns as f32).max(0.0);
-    for row in (0..count).step_by(columns) {
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            for index in row..(row + columns).min(count) {
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .layout(egui::Layout::top_down(egui::Align::Min))
-                        .max_rect(egui::Rect::from_min_size(ui.next_widget_position(), vec2(width, 0.0))),
-                    |ui| {
-                        ui.set_width(width);
-                        cell(ui, index, width);
-                    },
-                );
-            }
-        });
-        ui.add_space(gap);
+fn recent_time_at(app: &SolveApp, time: u64, now: u64) -> String {
+    let seconds = now.saturating_sub(time);
+    if seconds < 60 {
+        return app.tr("home.opened_just_now").to_string();
     }
+    let (key, count) = if seconds < 3600 {
+        ("home.opened_minutes_ago", seconds / 60)
+    } else if seconds < 86400 {
+        ("home.opened_hours_ago", seconds / 3600)
+    } else if seconds < 172800 {
+        return app.tr("home.yesterday").to_string();
+    } else {
+        let date = solidcraft_engine::crash::utc(time);
+        let date = date.split_once('T').map_or(date.as_str(), |(date, _)| date);
+        let mut parts = date.rsplitn(3, '-');
+        let day = parts.next().unwrap_or("").trim_start_matches('0');
+        let month = parts.next().unwrap_or("");
+        return crate::i18n::format("home.short_date", &[("day", day), ("month", app.tr(&format!("home.month_{month}")))]);
+    };
+    crate::i18n::format(key, &[("count", &count.to_string())])
 }
 
 fn recovery_content(app: &SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAction>) {
@@ -823,7 +820,6 @@ fn recovery_content(app: &SolveApp, ui: &mut egui::Ui, action: &mut Option<FileA
         ui_kit::text(ui, app.tr("home.recovery_empty"), ui_kit::Text::Inline);
     }
     for (index, entry) in app.recoverable.iter().take(20).enumerate() {
-        ui_kit::text(ui, &entry.name, ui_kit::Text::Heading(&format!("home_recovery_{index}")));
         let detail = crate::i18n::format(
             "recovery.detail",
             &[
@@ -832,17 +828,16 @@ fn recovery_content(app: &SolveApp, ui: &mut egui::Ui, action: &mut Option<FileA
                 ("when", &crate::recovery_ui::ago(entry.saved_at)),
             ],
         );
-        ui_kit::text(ui, &detail, ui_kit::Text::Note(&format!("home_recovery_detail_{index}")));
-        ui.horizontal_wrapped(|ui| {
-            for (id, label, recover) in [("recover", "Recover", true), ("discard", "Discard", false)] {
-                let response = ui_kit::button(ui, app.tr_label(label), ui_kit::Button::Normal);
-                publish(&format!("home:recovery:{index}:{id}"), &response);
-                if response.clicked() {
-                    *action = Some(FileAction::Recovery(entry.clone(), recover));
-                }
+        let (recover, discard) =
+            FileView::recovery_review(ui, &format!("home:recovery:{index}"), &entry.name, &detail, app.tr_label("Recover"), app.tr_label("Discard"));
+        for (id, response, recover) in [("recover", Some(recover), true), ("discard", discard, false)] {
+            let Some(response) = response else { continue };
+            publish(&format!("home:recovery:{index}:{id}"), &response);
+            if response.clicked() {
+                *action = Some(FileAction::Recovery(entry.clone(), recover));
             }
-        });
-        ui_kit::divider(ui, &format!("home_recovery_{index}"));
+        }
+        ui.add_space(Tokens::get().space_12);
     }
 }
 
@@ -855,7 +850,7 @@ fn export_content(app: &SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAct
         ("urdf", "URDF", None),
         ("json", "JSON", Some("home.export_json_hint")),
     ];
-    columns(ui, FileView::tile_min_width(), formats.len(), |ui, index, width| {
+    FileView::grid(ui, "home_exports", FileView::tile_min_width(), formats.len(), |ui, index, width| {
         let Some((id, format, hint)) = formats.get(index) else { return };
         let label = if *id == "view_dxf" {
             app.tr_label("Export Current View as DXF…").to_string()
@@ -944,6 +939,26 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, action: FileAction) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_paths_only_abbreviate_complete_home_ancestors() {
+        let home = Some(std::path::Path::new("/Users/sample"));
+        assert_eq!(abbreviated_path("/Users/sample/Designs/plate.solidcraft", home), "~/Designs/plate.solidcraft");
+        assert_eq!(abbreviated_path("/Users/sample", home), "~");
+        assert_eq!(abbreviated_path("/Users/sample-other/plate.solidcraft", home), "/Users/sample-other/plate.solidcraft");
+        assert_eq!(abbreviated_path("/disk/design.solidcraft", None), "/disk/design.solidcraft");
+    }
+
+    #[test]
+    fn recent_times_use_compact_labels_and_calendar_dates() {
+        let app = crate::test_support::sample_app();
+        let now = 1_792_569_600; // 2026-10-21T08:00:00Z.
+        assert_eq!(recent_time_at(&app, now + 60, now), "Just now");
+        assert_eq!(recent_time_at(&app, now - 120, now), "2 min ago");
+        assert_eq!(recent_time_at(&app, now - 7200, now), "2 h ago");
+        assert_eq!(recent_time_at(&app, now - 86400, now), "Yesterday");
+        assert_eq!(recent_time_at(&app, now - 172800, now), "19 Oct");
+    }
 
     #[test]
     fn shipped_sample_pictures_are_bounded_and_match_the_current_scripts() {

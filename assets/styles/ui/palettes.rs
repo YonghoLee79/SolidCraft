@@ -8,6 +8,12 @@ const fn icon_primary(rgb: [u8; 3]) -> Color32 {
 impl Tokens {
     pub const fn light() -> Tokens {
         Tokens {
+            file_dim: Color32::from_rgb(58, 70, 86),
+            file_recovery_well: Color32::from_rgb(247, 226, 184),
+            file_action_height: 32.0,
+            file_back_height: 40.0,
+            file_recovery_icon: 32.0,
+            file_grid_gap: 14.0,
             file_background: Color32::from_rgb(247, 249, 251),
             file_surface: Color32::WHITE,
             file_border: Color32::from_rgb(224, 229, 236),
@@ -285,6 +291,8 @@ impl Tokens {
         t.sketch_mode_tint = 0.12;
         t.sketch_footer_icon_size = 15.0;
         t.font_section_tracking = 0.04;
+        t.file_dim = Color32::from_rgb(180, 187, 200);
+        t.file_recovery_well = Color32::from_rgb(92, 68, 32);
         t.file_background = Color32::from_rgb(31, 35, 43);
         t.file_surface = Color32::from_rgb(39, 43, 52);
         t.file_border = Color32::from_rgb(63, 69, 82);

@@ -155,37 +155,15 @@ fn home_page_renders_in_the_active_language() {
     let cases = [
         (
             "it",
-            [
-                "Nuovo progetto",
-                "Apri…",
-                "Documentazione",
-                "Segnala un problema",
-                "Novità",
-                "Scorciatoie da tastiera",
-                "Preferenze",
-                "Recenti",
-                "Esempi",
-                "Piastra di esempio",
-            ],
-            "non presente\nAperto 2 h fa",
+            ["Nuovo progetto", "Apri…", "Scorciatoie da tastiera", "Impostazioni", "Recenti", "Esempi", "Piastra di esempio"],
+            "non presente\n2 h fa",
         ),
         (
             "ja",
-            [
-                "新しいデザイン",
-                "開く…",
-                "ドキュメント",
-                "問題を報告",
-                "新機能",
-                "キーボードショートカット",
-                "環境設定",
-                "最近使用した項目",
-                "サンプル",
-                "サンプル プレート",
-            ],
-            "見つかりません\n2 時間前に開きました",
+            ["新しいデザイン", "開く…", "キーボードショートカット", "設定", "最近使用した項目", "サンプル", "サンプル プレート"],
+            "見つかりません\n2 時間前",
         ),
-        ("zh", ["新建设计", "打开…", "文档", "报告问题", "新功能", "键盘快捷键", "首选项", "最近使用", "示例", "示例板"], "文件不存在\n2 小时前打开"),
+        ("zh", ["新建设计", "打开…", "键盘快捷键", "设置", "最近使用", "示例", "示例板"], "文件不存在\n2 小时前"),
     ];
     for (lang, words, missing_recent) in cases {
         let mut h = Harness::new();
