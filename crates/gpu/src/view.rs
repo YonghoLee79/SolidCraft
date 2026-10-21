@@ -10,7 +10,6 @@
 use std::sync::{Arc, Mutex};
 
 use solidcraft_geom::Vec3;
-use wgpu::util::DeviceExt;
 
 use crate::pbr;
 
@@ -193,6 +192,10 @@ impl GpuScene {
 
 pub type SceneSlot = Arc<Mutex<Option<GpuScene>>>;
 
+/// Where the product preview's geometry upload reports a GPU error it caught (out of memory, a
+/// buffer the device refused): the preview shows it instead of drawing.
+pub type UploadError = Arc<Mutex<Option<String>>>;
+
 /// A reference image (canvas or decal): a textured quad, depth-tested against the model.
 #[derive(Clone)]
 pub struct GpuImage {
@@ -214,6 +217,8 @@ const IMG_SIZE: usize = 24;
 pub struct Frame {
     /// Product preview uses its own batches, retaining the Design viewport's uploads.
     pub product: bool,
+    /// Product preview only: receives a GPU error raised by its geometry upload.
+    pub upload_error: Option<UploadError>,
     pub key: u64,
     pub slot: SceneSlot,
     pub sketch_key: u64,
@@ -1217,10 +1222,22 @@ fn upload_with(device: &wgpu::Device, label: &str, bytes: &[u8], stride: usize, 
         .chunks(chunk)
         .filter(|part| part.len() >= stride)
         .map(|part| {
-            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: part, usage });
-            (buffer, u32::try_from(part.len() / stride).unwrap_or(0))
+            // As `create_buffer_init`, without its panic when the device refused the buffer (an
+            // allocation error caught by an error scope): the upload fails instead.
+            let len = part.len() as u64;
+            let size = len.div_ceil(wgpu::COPY_BUFFER_ALIGNMENT) * wgpu::COPY_BUFFER_ALIGNMENT;
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: true });
+            match buffer.get_mapped_range_mut(..len) {
+                Ok(mut mapped) => mapped.copy_from_slice(part),
+                Err(error) => {
+                    log::error!("geometry upload failed: {error}");
+                    return None;
+                }
+            }
+            buffer.unmap();
+            Some((buffer, u32::try_from(part.len() / stride).unwrap_or(0)))
         })
-        .collect();
+        .collect::<Option<Vec<_>>>()?;
     Some(Batch { parts, chunk })
 }
 
@@ -1299,7 +1316,25 @@ impl Renderer {
         let res = self;
         let cb = frame;
         if cb.product {
+            // A large product scene can exceed what the device will allocate. Its upload runs under
+            // its own error scopes, so the failure reaches the preview instead of the device's
+            // uncaptured-error handler, and nothing half-uploaded is drawn.
+            let scopes =
+                [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
             res.product.take(device, cb.key, &cb.slot, None);
+            let mut failed = None;
+            for scope in scopes.into_iter().rev() {
+                if let Some(e) = crate::popped(scope.pop()) {
+                    failed.get_or_insert(e.to_string());
+                }
+            }
+            if let Some(error) = failed {
+                log::error!("product preview upload failed: {error}");
+                res.product = Batches { key: Some(cb.key), ..Batches::default() };
+                if let Some(Ok(mut sink)) = cb.upload_error.as_ref().map(|e| e.lock()) {
+                    *sink = Some(error);
+                }
+            }
             res.product.sort_glass(queue, cb.back);
             queue.write_buffer(&res.uniform, 0, &uniform_bytes(cb, cb.size_px[0], cb.size_px[1], res.linear_out, res.target.reversed_depth()));
             return;
@@ -1609,6 +1644,21 @@ pub fn analysis_colors(c: &solidcraft_render::AnalysisColors) -> [f32; 36] {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rejected_geometry_allocation_returns_without_panicking() {
+        let Ok((_, device, _)) = crate::open_headless() else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        // Invalid mapping usage provides a deterministic failed allocation without exhausting memory.
+        let result =
+            super::upload_with(&device, "rejected geometry", &[0; 288], super::PBR_SIZE, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::VERTEX);
+        assert!(result.is_none());
+        assert!(pollster::block_on(scope.pop()).is_some());
+    }
 
     /// Only the FirePro under Metal skips GPU evaluation; the same card under another backend
     /// and other Metal GPUs keep it.

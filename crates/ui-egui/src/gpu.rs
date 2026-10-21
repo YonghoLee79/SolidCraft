@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use egui_wgpu::wgpu;
 pub use solidcraft_gpu::view::{
     AccessMap, BlockBytes, Frame, GpuImage, GpuScene, GpuTarget, LINE_SIZE, PBR_SIZE, PlannedBody, Renderer, SceneBlock, SceneSlot, TRI_SIZE,
-    supersampled_size,
+    UploadError, supersampled_size,
 };
 
 /// A frame of the viewport as an egui paint callback.
@@ -262,6 +262,7 @@ fn offscreen(
     let none = || Arc::new(Mutex::new(None));
     let cb = ViewportCallback(Frame {
         product,
+        upload_error: None,
         key: 1,
         slot: Arc::new(Mutex::new(Some(scene))),
         sketch_key: 0,
