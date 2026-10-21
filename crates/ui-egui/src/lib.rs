@@ -1548,6 +1548,12 @@ impl SolveApp {
         if self.home.open {
             home::show(self, ui);
             if self.home.open {
+                // Workaround to allow configuration agents while on the home page, as `agent_chat::show`
+                // is skipped below
+                agent_chat::poll(self, ui.ctx());
+                if agent_chat::shown(self) {
+                    agent_chat::settings::dialog(self, ui.ctx());
+                }
                 // Preferences and Keyboard Shortcuts open from Home too (its links, the gear, Ctrl+,).
                 prefs::show(self, ui.ctx());
                 return;
