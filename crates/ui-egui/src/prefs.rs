@@ -281,6 +281,49 @@ pub enum OrbitAround {
     Cursor,
 }
 
+/// How the parts browser sits in the window (Preferences: "Parts browser").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserLayout {
+    /// A column of its own at the left, taking its width from the view: the default, and what every
+    /// release had before the choice.
+    #[default]
+    Side,
+    /// A flat, near-opaque panel over the view, as in Fusion's browser: a background of its own
+    /// with no card chrome and no fixed width — it widens to its longest name (up to the share of
+    /// the view [`crate::browser`] allows).
+    Overlay,
+}
+
+impl BrowserLayout {
+    pub const ALL: [Self; 2] = [Self::Side, Self::Overlay];
+
+    /// The value saved for this layout.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Side => "side",
+            Self::Overlay => "overlay",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Side => "Side column",
+            Self::Overlay => "Overlay on the view",
+        }
+    }
+
+    /// What the layout does, shown under the picker.
+    pub fn help(self) -> &'static str {
+        match self {
+            Self::Side => "A column of its own at the left, taking its width from the view.",
+            Self::Overlay => {
+                "A flat panel over the view, as in Fusion: no card edge or shadow, its own background at 90%, as wide as its longest name asks for (up to two thirds of the window)."
+            }
+        }
+    }
+}
+
 /// The browser sidebar's first width, and the width [`Prefs::default`] restores; the panel
 /// itself clamps what the user drags to its own range.
 pub const DEFAULT_BROWSER_WIDTH: f32 = 250.0;
@@ -422,9 +465,12 @@ preference_settings! {
     /// Width of the left sidebar holding the browser (and the feature history above it), which
     /// the user drags wider or narrower at its right edge.
     browser_width: f32 = DEFAULT_BROWSER_WIDTH, 0;
-    /// Draw the parts browser on a translucent card over the 3D view instead of a column of its
-    /// own, so the workspace keeps the whole window width.
-    browser_float: bool = false, 0 => check("Float it over the workspace");
+    /// Where the parts browser sits: a `side` column of its own (the default), or an `overlay` on
+    /// the view, sized to its longest name.
+    browser_layout: BrowserLayout = BrowserLayout::Side, 0;
+    /// The tick box `browser_layout` replaced (it was "Float it over the workspace"): [`migrate`]
+    /// folds it in when saved preferences are read, so an existing choice survives the upgrade.
+    browser_float: bool = false, 0;
     /// The wheel zooms toward the point under the cursor (else toward the view's centre).
     zoom_to_cursor: bool = true, 1 => check("Zoom to the cursor", "The wheel zooms toward the point under the cursor (off: toward the view's centre)");
     /// Spread discrete wheel input across frames (off: apply each event immediately).
@@ -1114,13 +1160,19 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             });
             ui_kit::text(ui, app.tr("ui.timeline_left_note"), ui_kit::Text::Note("timeline"));
             ui_kit::row(ui, app.tr_label("Parts browser"), |ui| {
-                setting::browser_float(app, ui);
+                let picker = ui_kit::dropdown_menu(ui, "pref_browser_layout", crate::i18n::tr_label(app.preferences.browser_layout.label()), |ui| {
+                    for layout in BrowserLayout::ALL {
+                        let row =
+                            ui_kit::list_picker(ui, layout.id(), crate::i18n::tr_label(layout.label()), app.preferences.browser_layout == layout);
+                        crate::scenario::publish_target(&format!("prefs:browser_layout:{}", layout.id()), row.rect);
+                        if row.clicked() {
+                            app.preferences.browser_layout = layout;
+                        }
+                    }
+                });
+                crate::scenario::publish_target("prefs:browser_layout", picker.rect);
             });
-            ui_kit::text(
-                ui,
-                app.tr_label("The tree draws on a translucent card over the 3D view instead of a column of its own."),
-                ui_kit::Text::Note("browser"),
-            );
+            ui_kit::text(ui, crate::i18n::tr_label(app.preferences.browser_layout.help()), ui_kit::Text::Note("browser"));
             ui_kit::row(ui, app.tr("ui.units_of_new_designs"), |ui| {
                 let mut selected = UNITS.iter().position(|u| *u == app.preferences.default_units).unwrap_or(0);
                 ui_kit::dropdown(ui, "pref_units", &mut selected, &UNITS);
@@ -1642,6 +1694,12 @@ pub fn migrate(mut p: Prefs) -> Prefs {
         p.orbit_around = OrbitAround::Cursor;
         p.orbit_cursor = false;
     }
+    // The Browser's layout was a tick box ("Float it over the workspace") before the choice: it
+    // floats over the view, so it reads as the overlay.
+    if p.browser_float {
+        p.browser_layout = BrowserLayout::Overlay;
+        p.browser_float = false;
+    }
     p.space_mouse_calibrations.retain(|device, calibration| {
         let usable = calibration.is_usable();
         if !usable {
@@ -1893,6 +1951,47 @@ mod tests {
         assert_eq!(super::lenient(&json!({"display_quality": "ultra"})).display_quality, "ultra");
         super::defaults(&mut app, super::PAGE_GRAPHICS);
         assert_eq!(app.preferences.display_quality, "normal");
+    }
+
+    /// The Browser's layout is a choice of two: a column of its own, or the overlay on the view.
+    /// The tick box it replaced still reads as the overlay.
+    #[test]
+    fn browser_layout_is_chosen_from_two_options_and_the_old_tick_box_still_reads() {
+        use serde_json::json;
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        assert_eq!(app.preferences.browser_layout, super::BrowserLayout::Side, "the column stays the default");
+        let out = super::set(&mut app, &json!({"browser_layout": "overlay"})).unwrap();
+        assert_eq!(out["browser_layout"], "overlay");
+        assert_eq!(app.preferences.browser_layout, super::BrowserLayout::Overlay);
+        assert!(super::set(&mut app, &json!({"browser_layout": "float"})).is_err(), "only side or overlay");
+        assert_eq!(super::lenient(&json!({"browser_float": true})).browser_layout, super::BrowserLayout::Overlay);
+        assert_eq!(super::lenient(&json!({"browser_float": false})).browser_layout, super::BrowserLayout::Side);
+        super::defaults(&mut app, 0);
+        assert_eq!(app.preferences.browser_layout, super::BrowserLayout::Side);
+    }
+
+    /// The picker shows both layouts, and choosing one sets the preference.
+    #[test]
+    fn the_browser_layout_picker_offers_both_layouts() {
+        use serde_json::json;
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.prefs", json!({"open":"General"}));
+        h.frames(2);
+        let picker = crate::scenario::rect_of("prefs:browser_layout").expect("the picker is on the General page");
+        h.call("ui.click", json!({"x": picker.center().x, "y": picker.center().y}));
+        h.frames(2);
+        for layout in super::BrowserLayout::ALL {
+            assert!(
+                crate::scenario::rect_of(&format!("prefs:browser_layout:{}", layout.id())).is_some(),
+                "{} is offered: {:?}",
+                layout.id(),
+                crate::scenario::handles("prefs:")
+            );
+        }
+        let overlay = crate::scenario::rect_of("prefs:browser_layout:overlay").unwrap();
+        h.call("ui.click", json!({"x": overlay.center().x, "y": overlay.center().y}));
+        h.frames(2);
+        assert_eq!(h.app.preferences.browser_layout, super::BrowserLayout::Overlay);
     }
 
     /// Supersampling (#1288): off by default, adaptive, set by factor and checked.

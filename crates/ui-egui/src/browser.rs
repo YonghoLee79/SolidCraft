@@ -45,6 +45,10 @@ thread_local! {
     /// (`ui.at {browser | chevron}`, `ui.browser`).
     static DRAWN: std::cell::RefCell<Vec<(String, Rect, Option<Rect>, Option<bool>)>> = const { std::cell::RefCell::new(Vec::new()) };
     static OCCURRENCES: std::cell::RefCell<Vec<(Vec<u64>, String, Rect, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Whether the rows being drawn are the browser's (and so note the width their names ask for).
+    static MEASURING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The widest row drawn since the pass began: what the bare overlay sizes itself to.
+    static WIDEST: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
 }
 
 /// The rows on screen: (label, row rect, fold arrow area, open).
@@ -433,9 +437,20 @@ pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
     // whole, and dragging the panel's edge wider shows more of it.
     let badges = if row.badges.is_empty() { 0.0 } else { 6.0 + 15.0 * row.badges.len() as f32 };
     let room = (r.right() - 4.0 - x - badges).max(0.0);
-    let mut job = egui::text::LayoutJob::single_section(label_display.clone(), egui::TextFormat { font_id: font, color: col, ..Default::default() });
-    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-    let galley = ui.painter().layout_job(job);
+    let galley = ui.painter().layout_no_wrap(label_display.clone(), font.clone(), col);
+    let asked = galley.size().x;
+    // The bare overlay grows to its longest name, so the browser pass notes what each one asks for.
+    if MEASURING.with(|m| m.get()) {
+        WIDEST.with(|w| w.set(w.get().max(x - r.left() + asked + badges + 4.0)));
+    }
+    let galley = if asked > room {
+        let mut job =
+            egui::text::LayoutJob::single_section(label_display.clone(), egui::TextFormat { font_id: font, color: col, ..Default::default() });
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        ui.painter().layout_job(job)
+    } else {
+        galley
+    };
     let elided = galley.elided;
     let lw = galley.size().x;
     ui.painter().galley(pos2(x, cy - galley.size().y / 2.0), galley, col);
@@ -673,14 +688,20 @@ const MIN_BROWSER_WIDTH: f32 = 170.0;
 const MAX_BROWSER_WIDTH: f32 = 620.0;
 /// How wide a grip the sidebar's right edge offers, counted inwards from the edge.
 const BROWSER_RAIL: f32 = 6.0;
-/// How opaque the floating browser's card is; the workspace shows through the rest.
-const BROWSER_FLOAT_ALPHA: f32 = 0.4;
+/// How opaque the overlay's own background is: enough for the tree to read over the model, with
+/// just a hint of the view showing through.
+const OVERLAY_ALPHA: f32 = 0.9;
+/// How wide the overlay may grow for a long name, and the most of the view it may take.
+const MAX_OVERLAY_WIDTH: f32 = 900.0;
+const OVERLAY_SHARE: f32 = 0.6;
 
 fn browser_panel(app: &mut SolveApp, ui: &mut egui::Ui, timeline_above: bool) {
     let t = Tokens::get();
     app.tree.order.clear();
     DRAWN.with(|d| d.borrow_mut().clear());
     OCCURRENCES.with(|d| d.borrow_mut().clear());
+    WIDEST.with(|w| w.set(0.0));
+    MEASURING.with(|m| m.set(true));
     let mut acts = Actions::default();
     let width = browser_width(app.preferences.browser_width);
     let panel = egui::Panel::left("sc_browser")
@@ -737,31 +758,46 @@ fn browser_panel(app: &mut SolveApp, ui: &mut egui::Ui, timeline_above: bool) {
                     browser_rows(app, ui, &mut acts);
                 }
             } else {
-                browser_contents(app, ui, &mut acts, false);
+                browser_contents(app, ui, &mut acts, false, false);
             }
         });
-    resize_browser(app, ui, panel.response.rect, width);
+    resize_browser(app, ui, panel.response.rect, width, MAX_BROWSER_WIDTH);
+    if !timeline_above {
+        crate::scenario::publish_rect("browser:column", panel.response.rect);
+    }
     finish_browser(app, ui, acts);
 }
 
-fn browser_width(remembered: f32) -> f32 {
+pub(crate) fn browser_width(remembered: f32) -> f32 {
     if remembered.is_finite() { remembered.clamp(MIN_BROWSER_WIDTH, MAX_BROWSER_WIDTH) } else { crate::prefs::DEFAULT_BROWSER_WIDTH }
 }
 
-fn resize_browser(app: &mut SolveApp, ui: &egui::Ui, rect: Rect, width: f32) {
+/// How wide the bare overlay is: as wide as the widest name it drew on the last frame (or the
+/// width the user dragged), and never more than [`OVERLAY_SHARE`] of the view, so a very long name
+/// cannot swallow the model it names.
+fn overlay_width(app: &SolveApp, available: Rect) -> f32 {
+    let cap = (available.width() * OVERLAY_SHARE).clamp(MIN_BROWSER_WIDTH, MAX_OVERLAY_WIDTH);
+    let remembered = app.preferences.browser_width;
+    let dragged = if remembered.is_finite() { remembered } else { crate::prefs::DEFAULT_BROWSER_WIDTH };
+    // The rows are measured inside the frame margin, so the panel adds it back.
+    let widest = WIDEST.with(|w| w.get()) + 2.0 * CARD_INSET;
+    dragged.max(widest).clamp(MIN_BROWSER_WIDTH, cap)
+}
+
+fn resize_browser(app: &mut SolveApp, ui: &egui::Ui, rect: Rect, width: f32, max: f32) {
     let rail = Rect::from_x_y_ranges(rect.right() - BROWSER_RAIL..=rect.right(), rect.y_range());
     let response = ui.interact(rail, egui::Id::new("sc_browser_rail"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
     if response.dragged() {
         let delta = ui.input(|input| input.pointer.delta().x);
         if delta.is_finite() {
-            app.preferences.browser_width = (width + delta).clamp(MIN_BROWSER_WIDTH, MAX_BROWSER_WIDTH);
+            app.preferences.browser_width = (width + delta).clamp(MIN_BROWSER_WIDTH, max);
         }
     }
     crate::scenario::publish_handle("left-browser-rail", pos2(rect.right() - BROWSER_RAIL / 2.0, rect.center().y));
 }
 
-/// One browser card for the floating shell and the docked shell's optional overlay.
-/// The preference keeps its translucent overlay semantics; the floating shell always has a card.
+/// The browser as a panel over the view: a background of its own, no card chrome, as wide as its
+/// longest name asks for.
 pub fn floating(app: &mut SolveApp, ui: &mut egui::Ui, available: Rect) {
     let t = Tokens::get();
     app.tree.order.clear();
@@ -770,30 +806,62 @@ pub fn floating(app: &mut SolveApp, ui: &mut egui::Ui, available: Rect) {
     let mut acts = Actions::default();
     let gap = crate::shell::SHELL_GAP;
     let top_gap = if app.ui.layout == crate::shell::LayoutMode::Docked { gap } else { 0.0 };
-    let width = browser_width(app.preferences.browser_width);
+    // The overlay is as wide as its names ask for, read off the last frame.
+    let (width, max) = (overlay_width(app, available), MAX_OVERLAY_WIDTH);
     let bounds = floating_bounds(available, app.shell.history, width, top_gap);
     app.shell.browser = None;
     let min_height = HEADER_H + 2.0 * (CARD_INSET + 1.0);
     if bounds.is_positive() && bounds.height() >= min_height {
-        let fill = if app.preferences.browser_float { t.panel.gamma_multiply(BROWSER_FLOAT_ALPHA) } else { t.panel };
-        let frame = crate::frame::shell_card(fill).inner_margin(CARD_INSET as i8);
+        WIDEST.with(|w| w.set(0.0));
+        MEASURING.with(|m| m.set(true));
+        // The overlay keeps a background of its own (the tree has to read over the model) but no
+        // card chrome: no edge, no shadow, no rounding, and it lets a hint of the view through.
+        let frame = egui::Frame::NONE.fill(t.panel.gamma_multiply(OVERLAY_ALPHA)).inner_margin(CARD_INSET as i8);
         let inner_width = (bounds.width() - frame.total_margin().sum().x).max(0.0);
         let inner_height = (bounds.height() - frame.total_margin().sum().y).max(0.0);
         let card = crate::frame::area(egui::Id::new("sc_browser_card")).fixed_pos(bounds.min).order(egui::Order::Middle).show(ui.ctx(), |ui| {
             let response = frame.show(ui, |ui| {
                 ui.set_width(inner_width);
                 ui.set_max_height(inner_height);
-                browser_contents(app, ui, &mut acts, true);
+                browser_contents(app, ui, &mut acts, true, true);
             });
-            resize_browser(app, ui, response.response.rect, width);
+            resize_browser(app, ui, response.response.rect, width, max);
         });
         let rect = card.response.rect;
         app.shell.browser = Some(rect);
         crate::scenario::publish_rect("browser:card", rect);
         // Preserve the overlay handle used by main's automation.
-        if app.preferences.browser_float {
-            crate::scenario::publish_rect("browser:float", rect);
-        }
+        crate::scenario::publish_rect("browser:float", rect);
+    }
+    finish_browser(app, ui, acts);
+}
+
+/// The browser in a column of its own: flat, without card chrome, taking its width from the view
+/// (the floating shell draws it where the docked shell's panel would be).
+pub fn column(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = Tokens::get();
+    app.tree.order.clear();
+    DRAWN.with(|d| d.borrow_mut().clear());
+    OCCURRENCES.with(|d| d.borrow_mut().clear());
+    WIDEST.with(|w| w.set(0.0));
+    MEASURING.with(|m| m.set(true));
+    let mut acts = Actions::default();
+    let width = rect.width();
+    let frame = egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(t.space_6 as i8, t.space_6 as i8));
+    let inner_width = (rect.width() - frame.total_margin().sum().x).max(0.0);
+    let inner_height = (rect.height() - frame.total_margin().sum().y).max(0.0);
+    if rect.is_positive() && inner_height > HEADER_H {
+        let column = crate::frame::area(egui::Id::new("sc_browser_column")).fixed_pos(rect.min).order(egui::Order::Middle).show(ui.ctx(), |ui| {
+            let response = frame.show(ui, |ui| {
+                ui.set_width(inner_width);
+                ui.set_max_height(inner_height);
+                browser_contents(app, ui, &mut acts, true, false);
+            });
+            resize_browser(app, ui, response.response.rect, width, MAX_BROWSER_WIDTH);
+        });
+        let rect = column.response.rect;
+        app.shell.browser = Some(rect);
+        crate::scenario::publish_rect("browser:column", rect);
     }
     finish_browser(app, ui, acts);
 }
@@ -806,16 +874,17 @@ fn floating_bounds(available: Rect, history: Option<Rect>, width: f32, top_gap: 
     Rect::from_min_max(min, pos2((min.x + width).min(right), bottom))
 }
 
-fn browser_contents(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Actions, collapsible: bool) {
+/// The header and the tree. `foldable` adds the fold chevron; `hugging` makes the tree take only
+/// the height it needs (the floating overlay) instead of filling and scrolling (a column).
+fn browser_contents(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Actions, foldable: bool, hugging: bool) {
     let t = Tokens::get();
-    // Only the floating card folds; the docked column keeps its full height.
-    browser_header(app, ui, collapsible);
-    if collapsible && app.tree.panel_collapsed {
+    browser_header(app, ui, foldable);
+    if foldable && app.tree.panel_collapsed {
         return;
     }
     ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top() + 1.0, egui::Stroke::new(1.0, t.toolbar.lerp_to_gamma(t.border, 0.5)));
     ui.add_space(t.space_3);
-    if collapsible {
+    if hugging {
         browser_rows_hugging(app, ui, acts);
     } else {
         browser_rows(app, ui, acts);
@@ -931,6 +1000,7 @@ fn rows_scrolling(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Actions, shr
 }
 
 fn finish_browser(app: &mut SolveApp, ui: &mut egui::Ui, acts: Actions) {
+    MEASURING.with(|m| m.set(false));
     app.viewport.hover_bodies = acts.hover_bodies;
     if let Some(d) = acts.drop {
         apply_drop(app, d);

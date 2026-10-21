@@ -149,10 +149,13 @@ Section lists use 30 px command rows, 20 px semantic icons, monospace shortcuts,
 Ribbon tooltips show the full command name in bold and its registered shortcut in a key cap. Existing Render catalog descriptions are reused; commands without prose descriptions show the header alone (and their existing disabled reason when applicable). Registry parameter syntax is not presented as a description.
 
 
-The floating shell uses one Browser card with a title, body count and fold button. Its right
-edge resizes the same saved browser width as the Docked sidebar. The Browser preference
-“Float it over the workspace” switches the Docked sidebar to this card; in the Floating shell
-it keeps the card and enables the translucent overlay surface. With the left history enabled,
-the browser stays below that history unless the overlay preference is enabled, in which case
-only the history keeps its column. The bottom History card leaves a gap beneath the browser;
-the full viewport remains available through the gaps and below a short browser.
+The floating shell uses one Browser panel with a title, body count and fold button. Its right
+edge resizes the same saved browser width as the Docked sidebar. **Preferences → General →
+Parts browser** chooses where the tree sits: **Side column** (the default) is flat and flush with
+the window's left edge, from below the ribbon to the History card, and takes that width from the
+view — as the Docked sidebar does; **Overlay on the view** lays the tree on the view with a
+background of its own, 90% opaque, and no card chrome (no edge, shadow or rounding), as wide as
+its longest name asks for, up to two thirds of the view (900 px at most). The old "Float it over
+the workspace" tick box reads as the overlay. With the left history enabled, the browser stays
+below that history, and the bottom History card leaves the panel its height; the full viewport
+remains available through the shell's gaps and beside the panel.

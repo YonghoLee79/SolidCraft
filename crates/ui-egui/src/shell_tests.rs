@@ -192,7 +192,7 @@ fn floating_browser_clears_cards_shields_input_and_can_dock_again() {
             let mut h = Harness::new();
             h.call("ui.set", json!({"layout":mode}));
             h.app.preferences.timeline_left = timeline_left;
-            h.app.preferences.browser_float = true;
+            h.app.preferences.browser_layout = crate::prefs::BrowserLayout::Overlay;
             h.app.run("solid.box", json!({"length":40,"width":30,"height":20})).unwrap();
             h.settle();
             let browser = rect_of("browser:float").unwrap();
@@ -228,11 +228,14 @@ fn floating_browser_clears_cards_shields_input_and_can_dock_again() {
             // The browser remains interactive above the shielded viewport.
             h.step(&json!({"click":{"chevron":"Origin"}})).unwrap();
             assert!(crate::browser::drawn_rows().iter().any(|(name, _, _, open)| name == "Origin" && *open == Some(true)));
-            h.app.preferences.browser_float = false;
+            h.app.preferences.browser_layout = crate::prefs::BrowserLayout::Side;
             h.settle();
-            assert_eq!(h.app.shell.browser.is_some(), mode == LayoutMode::Floating && !timeline_left);
+            // The side column is in the shell, not a card over the view.
+            assert!(rect_of("browser:card").is_none());
             assert!(rect_of("browser:float").is_none());
-            assert_eq!(rect_of("browser:card").is_some(), mode == LayoutMode::Floating && !timeline_left);
+            assert_eq!(h.app.shell.browser.is_some(), mode == LayoutMode::Floating && !timeline_left);
+            // With the left history the browser shares that column instead.
+            assert_eq!(rect_of("browser:column").is_some(), !timeline_left, "{mode:?}, timeline_left={timeline_left}");
             // The saved width follows both the floating card and the docked column.
             let rail = crate::scenario::handle_at("left-browser-rail").unwrap();
             let width = h.app.preferences.browser_width;
@@ -246,6 +249,7 @@ fn floating_browser_clears_cards_shields_input_and_can_dock_again() {
 fn browser_and_history_cards_block_input_while_their_gaps_and_space_below_browser_do_not() {
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1400,"height":900}));
+    h.app.preferences.browser_layout = crate::prefs::BrowserLayout::Overlay;
     h.app.run("solid.box", json!({"length":40,"width":30,"height":20})).unwrap();
     h.settle();
     let browser = rect_of("browser:card").unwrap();

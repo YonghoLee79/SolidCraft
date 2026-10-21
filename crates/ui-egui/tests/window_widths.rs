@@ -15,7 +15,7 @@ fn window_widths(h: &Harness) -> Vec<(egui::Id, f32)> {
         m.areas()
             .visible_layer_ids()
             .into_iter()
-            .filter(|l| l.order == egui::Order::Middle && l.id != egui::Id::new("sc_browser_card"))
+            .filter(|l| l.order == egui::Order::Middle && l.id != egui::Id::new("sc_browser_card") && l.id != egui::Id::new("sc_browser_column"))
             .filter_map(|l| m.area_rect(l.id).map(|r| (l.id, r.width())))
             .collect()
     })

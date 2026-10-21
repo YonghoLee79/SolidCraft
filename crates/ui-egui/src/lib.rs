@@ -1521,17 +1521,27 @@ impl SolveApp {
         if !floating && show_timeline && !left_timeline {
             timeline::timeline(self, ui);
         }
-        // A floating browser keeps the workspace the whole width and covers viewport input.
-        let browser_float = self.ui.show_browser && (self.preferences.browser_float || (floating && !left_timeline));
+        // The side column takes its width from the view in either shell; the overlay floats over
+        // it and covers viewport input.
+        let side_column = self.ui.show_browser && self.preferences.browser_layout == crate::prefs::BrowserLayout::Side && floating && !left_timeline;
+        let browser_float = self.ui.show_browser && (self.preferences.browser_layout != crate::prefs::BrowserLayout::Side || side_column);
         if !browser_float {
             self.shell.browser = None;
         }
         self.shell.history = None;
         let full = ui.available_rect_before_wrap();
+        // Where the side column sits in the floating shell: flat, below the ribbon, over the bottom
+        // of the window (above the history card when it is out).
+        let mut side_rect = None;
         if floating {
             let cards = shell::Cards::new(full, self.ui.layout);
             self.shell.cards = vec![cards.workspace, cards.ribbon];
             self.shell.history = (show_timeline && !left_timeline).then(|| timeline::floating_rect(full));
+            if side_column {
+                let width = crate::browser::browser_width(self.preferences.browser_width);
+                let bottom = self.shell.history.map_or(full.bottom(), |r| r.top() - shell::SHELL_GAP).max(cards.ribbon.bottom());
+                side_rect = Some(egui::Rect::from_min_max(egui::pos2(full.left(), cards.ribbon.bottom()), egui::pos2(full.left() + width, bottom)));
+            }
             // Draw the scene first, then let the unchanged panel layouts cover it. The
             // viewport keeps its full projection even underneath the browser and cards.
             preview::update(self, ui.ctx());
@@ -1571,9 +1581,14 @@ impl SolveApp {
         }
         agent_chat::show(self, ui);
         if browser_float {
-            // The remaining content starts below the ribbon in either shell layout.
-            let viewport = ui.available_rect_before_wrap();
-            browser::floating(self, ui, viewport);
+            match side_rect {
+                Some(rect) => browser::column(self, ui, rect),
+                None => {
+                    // The remaining content starts below the ribbon in either shell layout.
+                    let viewport = ui.available_rect_before_wrap();
+                    browser::floating(self, ui, viewport);
+                }
+            }
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             if floating {
@@ -1583,7 +1598,9 @@ impl SolveApp {
                     content.max.y = (history.top() - shell::SHELL_GAP).max(content.top());
                 }
                 if let Some(browser) = self.shell.browser {
-                    content.min.x = (browser.right() + shell::SHELL_GAP).min(content.right());
+                    // The side column meets the view; an overlay card leaves the shell's gap.
+                    let edge = if side_column { browser.right() } else { browser.right() + shell::SHELL_GAP };
+                    content.min.x = edge.min(content.right());
                 }
                 self.shell.content = Some(content);
                 self.shell.panels = [

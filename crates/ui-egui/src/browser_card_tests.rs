@@ -1,4 +1,5 @@
 use super::*;
+use crate::prefs::BrowserLayout;
 use crate::scenario::{Harness, handle_at, rect_of};
 use crate::shell::{LayoutMode, SHELL_GAP};
 
@@ -6,6 +7,7 @@ use crate::shell::{LayoutMode, SHELL_GAP};
 fn browser_card_shrinks_and_scrolls_without_covering_history() {
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1400,"height":900}));
+    h.app.preferences.browser_layout = BrowserLayout::Overlay;
     h.settle();
     let short = rect_of("browser:card").unwrap();
     let history = rect_of("history:card").unwrap();
@@ -32,12 +34,15 @@ fn browser_card_shrinks_and_scrolls_without_covering_history() {
     assert_eq!(h.app.cam, camera);
     assert_eq!(rect_of("browser:card").unwrap(), tall);
 
+    // The side column keeps the tree in the shell rather than on a card.
+    h.app.preferences.browser_layout = BrowserLayout::Side;
     h.call("ui.set", json!({"layout":"docked"}));
     h.settle();
     assert!(rect_of("browser:card").is_none());
     assert_eq!(h.app.viewport.rect.unwrap().left(), 250.0);
     assert!(drawn_rows().iter().all(|(_, rect, _, _)| rect.height() == 26.0));
     h.call("ui.set", json!({"layout":"floating"}));
+    h.app.preferences.browser_layout = BrowserLayout::Overlay;
     h.app.tree.collapsed.insert("c0".into());
     h.settle();
     assert!(rect_of("browser:card").unwrap().height() < short.height());
@@ -103,6 +108,7 @@ fn card_and_column_keep_body_eyes_menus_and_group_drops() {
 fn browser_header_folds_the_floating_card_to_its_header_and_back() {
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1400,"height":900}));
+    h.app.preferences.browser_layout = BrowserLayout::Overlay;
     h.settle();
     let open = rect_of("browser:card").unwrap();
     assert!(!h.app.tree.panel_collapsed);
@@ -138,34 +144,37 @@ fn tiny_floating_windows_never_panic() {
     }
 }
 
-/// Both shell layouts share one tree and one saved width. Docked can switch its card
-/// back into a column; Floating keeps its card when the overlay preference is cleared.
+/// Both shell layouts share one tree and one saved width. The side column takes that width from
+/// the view; the overlay floats over it and keeps the whole view.
 #[test]
 fn one_browser_keeps_its_resized_width_across_layouts_and_overlay_preferences() {
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1400,"height":900}));
     for mode in [LayoutMode::Floating, LayoutMode::Docked] {
-        for overlay in [false, true] {
+        for layout in [BrowserLayout::Side, BrowserLayout::Overlay] {
             h.app.ui.layout = mode;
-            h.app.preferences.browser_float = overlay;
+            h.app.preferences.browser_layout = layout;
             h.app.preferences.browser_width = 310.0;
             h.settle();
-            let card = mode == LayoutMode::Floating || overlay;
-            assert_eq!(rect_of("browser:card").is_some(), card);
+            let floats = layout == BrowserLayout::Overlay;
+            assert_eq!(rect_of("browser:card").is_some(), floats, "{mode:?}, {layout:?}");
+            assert_eq!(rect_of("browser:column").is_some(), !floats, "{mode:?}, {layout:?}");
             assert_eq!(crate::scenario::handles("browser:header").len(), 1, "only one browser header");
             assert_eq!(drawn_rows().iter().filter(|(name, ..)| name == "Untitled").count(), 1, "only one tree");
-            if card {
-                assert!((rect_of("browser:card").unwrap().width() - 310.0).abs() < 1.0);
+            if floats {
+                assert!(rect_of("browser:card").unwrap().width() >= 309.0, "the overlay keeps the dragged width as its floor");
             } else {
-                assert_eq!(h.app.viewport.rect.unwrap().left(), 310.0);
+                let column = rect_of("browser:column").unwrap();
+                assert_eq!(column.left(), 0.0, "the column is flush with the window");
+                assert_eq!(column.width(), 310.0, "{mode:?}: the column is the dragged width");
             }
             let rail = handle_at("left-browser-rail").unwrap();
             h.call("ui.drag", json!({"x0":rail.x,"y0":rail.y,"x1":rail.x+60.0,"y1":rail.y,"steps":6}));
             h.settle();
             let width = h.app.preferences.browser_width;
-            assert!(width > 340.0 && width <= MAX_BROWSER_WIDTH, "{mode:?}, overlay={overlay}: {width}");
+            assert!(width > 340.0 && width <= MAX_BROWSER_WIDTH, "{mode:?}, {layout:?}: {width}");
             h.app.ui.layout = LayoutMode::Docked;
-            h.app.preferences.browser_float = false;
+            h.app.preferences.browser_layout = BrowserLayout::Side;
             h.settle();
             assert!((h.app.viewport.rect.unwrap().left() - width).abs() < 1.0, "the column uses the card's saved width");
         }
@@ -193,17 +202,17 @@ fn browser_title_uses_a_single_semibold_run() {
 }
 
 #[test]
-fn resizing_browser_card_and_column_persists_width_including_floating_preference() {
-    for (mode, float, left_history) in [
-        (LayoutMode::Floating, false, false),
-        (LayoutMode::Docked, false, false),
-        (LayoutMode::Docked, true, false),
-        (LayoutMode::Floating, true, true),
-        (LayoutMode::Docked, true, true),
+fn resizing_browser_card_and_column_persists_width_including_the_overlay_preference() {
+    for (mode, layout, left_history) in [
+        (LayoutMode::Floating, BrowserLayout::Side, false),
+        (LayoutMode::Docked, BrowserLayout::Side, false),
+        (LayoutMode::Docked, BrowserLayout::Overlay, false),
+        (LayoutMode::Floating, BrowserLayout::Overlay, true),
+        (LayoutMode::Docked, BrowserLayout::Overlay, true),
     ] {
         let mut h = Harness::new();
         h.app.ui.layout = mode;
-        h.app.preferences.browser_float = float;
+        h.app.preferences.browser_layout = layout;
         h.app.preferences.timeline_left = left_history;
         h.call("ui.resize", json!({"width":1400,"height":900}));
         h.settle();
@@ -212,17 +221,21 @@ fn resizing_browser_card_and_column_persists_width_including_floating_preference
         h.call("ui.drag", json!({"x0":at.x,"y0":at.y,"x1":at.x+80.0,"y1":at.y,"steps":8}));
         h.settle();
         let width = h.app.preferences.browser_width;
-        assert!(width > crate::prefs::DEFAULT_BROWSER_WIDTH + 40.0, "{mode:?}, float={float}, width={width}");
-        if mode == LayoutMode::Floating || float {
+        assert!(width > crate::prefs::DEFAULT_BROWSER_WIDTH + 40.0, "{mode:?}, {layout:?}, width={width}");
+        if layout == BrowserLayout::Overlay {
             assert!((rect_of("browser:card").unwrap().width() - width).abs() < 1.0);
-            assert_eq!(h.app.viewport.rect.unwrap(), before, "the card leaves the projection intact");
         } else {
-            assert!((h.app.viewport.rect.unwrap().left() - width).abs() < 1.0);
+            assert!((rect_of("browser:column").unwrap().width() - width).abs() < 1.0);
+        }
+        // A card or the floating shell's column leaves the projection whole; the docked column
+        // narrows it, as a docked panel does.
+        if mode == LayoutMode::Floating || layout == BrowserLayout::Overlay {
+            assert_eq!(h.app.viewport.rect.unwrap(), before, "{mode:?}, {layout:?}");
         }
         let mut restored = SolveApp::new(Default::default(), Default::default());
         restored.load_prefs(&h.app.prefs());
         assert_eq!(restored.preferences.browser_width, width);
-        assert_eq!(restored.preferences.browser_float, float);
+        assert_eq!(restored.preferences.browser_layout, layout);
     }
 }
 
@@ -238,4 +251,47 @@ fn browser_width_rejects_hostile_preferences_and_tiny_windows_still_fit() {
         let bounds = floating_bounds(available, None, MAX_BROWSER_WIDTH, top_gap);
         assert!(available.contains_rect(bounds));
     }
+}
+
+/// The bare overlay (#3828) is no card at all and follows its names: a long one widens it, up to
+/// the share of the view it may take, and only past that is the name shortened.
+#[test]
+fn the_bare_overlay_follows_its_longest_name_up_to_its_share_of_the_view() {
+    fn painted(h: &mut Harness) -> egui::FullOutput {
+        let ctx = h.ctx.clone();
+        crate::test_support::frame(&ctx, egui::RawInput { screen_rect: Some(ctx.content_rect()), focused: true, ..Default::default() }, |ui| {
+            h.app.logic(ui.ctx());
+            h.app.ui(ui);
+        })
+    }
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1400,"height":900}));
+    h.app.ui.layout = LayoutMode::Docked;
+    h.app.preferences.browser_layout = BrowserLayout::Overlay;
+    h.settle();
+    let narrow = rect_of("browser:card").expect("the overlay is drawn").width();
+    let cap = 0.6 * 1400.0;
+
+    let long = "Synology_ds224_10-Inch_Rackmount_2_2";
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+    h.app.run("body.rename", json!({"body":"Body1","name":long})).unwrap();
+    h.settle();
+    let wide = rect_of("browser:card").unwrap().width();
+    assert!(wide > narrow + 20.0, "the overlay widens for a long name ({narrow} -> {wide})");
+    assert!(wide <= cap + 2.0, "and keeps within its share of the view: {wide} of {cap}");
+
+    // It fits the name instead of shortening it.
+    let out = painted(&mut h);
+    let shape = crate::test_support::text_shapes(&out).find(|s| s.galley.job.text == long).expect("the body's name, painted");
+    assert!(!shape.galley.elided, "the overlay is as wide as its longest name asks for");
+
+    // A name past that share is shortened: the overlay does not swallow the view for it.
+    let absurd = "M".repeat(128);
+    h.app.run("body.rename", json!({"body":long,"name":absurd})).unwrap();
+    h.settle();
+    let capped = rect_of("browser:card").unwrap().width();
+    assert!(capped <= cap + 2.0, "a very long name cannot swallow the view: {capped} of {cap}");
+    let out = painted(&mut h);
+    let shape = crate::test_support::text_shapes(&out).find(|s| s.galley.job.text == absurd).expect("the long name, painted");
+    assert!(shape.galley.elided, "a name longer than the overlay may be is elided");
 }

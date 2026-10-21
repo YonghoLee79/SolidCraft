@@ -975,7 +975,7 @@ mod tests {
         for mode in [crate::shell::LayoutMode::Floating, crate::shell::LayoutMode::Docked] {
             let mut harness = Harness::new();
             harness.app.ui.layout = mode;
-            harness.app.preferences.browser_float = true;
+            harness.app.preferences.browser_layout = crate::prefs::BrowserLayout::Overlay;
             harness.frames(4);
             let card = crate::scenario::rect_of("browser:float").expect("the floating browser is drawn");
             assert!(card.min.x < 40.0, "the card sits at the view's left edge: {card:?}");
@@ -983,13 +983,16 @@ mod tests {
             assert!(handle_at("left-browser-rail").is_some(), "the card retains the saved-width drag grip");
             assert!(handle_at("row:Untitled").is_some(), "the tree is still drawn and usable");
 
-            harness.app.preferences.browser_float = false;
+            harness.app.preferences.browser_layout = crate::prefs::BrowserLayout::Side;
             harness.frames(4);
             assert!(crate::scenario::rect_of("browser:float").is_none(), "the explicit overlay is off");
-            assert_eq!(crate::scenario::rect_of("browser:card").is_some(), mode == crate::shell::LayoutMode::Floating);
+            assert!(crate::scenario::rect_of("browser:card").is_none(), "the side column is no card");
+            let column = crate::scenario::rect_of("browser:column").expect("the side column is drawn in either shell");
+            assert!((column.width() - harness.app.preferences.browser_width).abs() < 1.0, "{mode:?}: {column:?}");
             assert_eq!(
                 harness.app.viewport.rect.unwrap().left(),
-                if mode == crate::shell::LayoutMode::Docked { harness.app.preferences.browser_width } else { 0.0 }
+                if mode == crate::shell::LayoutMode::Docked { harness.app.preferences.browser_width } else { 0.0 },
+                "{mode:?}"
             );
             assert!(handle_at("left-browser-rail").is_some(), "both card and sidebar resize");
         }

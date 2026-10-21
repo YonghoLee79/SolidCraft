@@ -332,6 +332,7 @@ fn floating_fit_uses_the_measured_browser_and_history_cards_at_each_size() {
     for (width, height) in [(1400, 900), (900, 720), (700, 475)] {
         let mut h = Harness::new();
         h.call("ui.resize", json!({"width":width,"height":height}));
+        h.app.preferences.browser_layout = crate::prefs::BrowserLayout::Overlay;
         h.app.run("solid.box", json!({"length":40,"width":30,"height":20})).unwrap();
         h.settle();
         h.app.fit_view();
