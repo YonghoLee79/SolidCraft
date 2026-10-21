@@ -92,6 +92,101 @@ pub const LOCALES: &[&Catalog] = &[
     &CHINESE_TRADITIONAL,
 ];
 
+/// UK spellings and their US forms, by whole word (lower case, sorted; capitals are kept).
+const US_SPELLING: &[(&str, &str)] = &[
+    ("aluminium", "aluminum"),
+    ("analyse", "analyze"),
+    ("analysed", "analyzed"),
+    ("behaviour", "behavior"),
+    ("behaviours", "behaviors"),
+    ("centimetre", "centimeter"),
+    ("centimetres", "centimeters"),
+    ("centre", "center"),
+    ("centred", "centered"),
+    ("centreline", "centerline"),
+    ("centrelines", "centerlines"),
+    ("centres", "centers"),
+    ("centring", "centering"),
+    ("colour", "color"),
+    ("coloured", "colored"),
+    ("colouring", "coloring"),
+    ("colours", "colors"),
+    ("customise", "customize"),
+    ("customised", "customized"),
+    ("grey", "gray"),
+    ("greyed", "grayed"),
+    ("greys", "grays"),
+    ("licence", "license"),
+    ("metre", "meter"),
+    ("metres", "meters"),
+    ("millimetre", "millimeter"),
+    ("millimetres", "millimeters"),
+    ("modelled", "modeled"),
+    ("modelling", "modeling"),
+    ("organisation", "organization"),
+    ("organisations", "organizations"),
+    ("towards", "toward"),
+];
+
+/// `text` in US spelling: UK spellings replaced word by word, keeping their capitals.
+pub fn us_spelling(text: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = text.as_bytes();
+    let (mut out, mut last, mut i) = (None::<String>, 0, 0);
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let word = &text[start..i];
+        let Ok(at) = US_SPELLING.binary_search_by(|(uk, _)| (*uk).cmp(word.to_ascii_lowercase().as_str())) else { continue };
+        let us = US_SPELLING[at].1;
+        let cased = if word.len() > 1 && word.bytes().all(|b| b.is_ascii_uppercase()) {
+            us.to_ascii_uppercase()
+        } else if word.as_bytes()[0].is_ascii_uppercase() {
+            let mut c = us.to_string();
+            c[..1].make_ascii_uppercase();
+            c
+        } else {
+            us.to_string()
+        };
+        let o = out.get_or_insert_with(String::new);
+        o.push_str(&text[last..start]);
+        o.push_str(&cased);
+        last = i;
+    }
+    match out {
+        Some(mut o) => {
+            o.push_str(&text[last..]);
+            std::borrow::Cow::Owned(o)
+        }
+        None => std::borrow::Cow::Borrowed(text),
+    }
+}
+
+/// English's messages in US spelling.
+fn us_english() -> &'static Messages {
+    static US: OnceLock<Messages> = OnceLock::new();
+    US.get_or_init(|| ENGLISH.messages().iter().map(|(id, text)| (id.clone(), us_spelling(text).into_owned())).collect())
+}
+
+/// A source label that isn't in the catalog, in US spelling. A changed one is kept once, so it
+/// can be lent as a catalog message is (labels are a fixed set: this stays small).
+fn us_interned(text: &str) -> &str {
+    let std::borrow::Cow::Owned(us) = us_spelling(text) else { return text };
+    static KEPT: OnceLock<std::sync::Mutex<BTreeMap<String, &'static str>>> = OnceLock::new();
+    let Ok(mut kept) = KEPT.get_or_init(Default::default).lock() else { return text };
+    if let Some(s) = kept.get(text) {
+        return s;
+    }
+    let leaked: &'static str = Box::leak(us.into_boxed_str());
+    kept.insert(text.to_string(), leaked);
+    leaked
+}
+
 pub fn is_supported(id: &str) -> bool {
     LOCALES.iter().any(|catalog| catalog.id == id)
 }
@@ -109,9 +204,14 @@ impl Locale {
         self.0.name
     }
 
-    /// Stable message ID → translation → English → ID.
+    /// Stable message ID → translation → English → ID. English is shown in US spelling and
+    /// English (UK) in UK spelling, whichever spelling a message or source label was written in.
     pub fn text(self, id: &str) -> &str {
-        self.0.messages().get(id).or_else(|| ENGLISH.messages().get(id)).map_or(id, String::as_str)
+        if std::ptr::eq(self.0, &ENGLISH_UK) {
+            return self.0.messages().get(id).or_else(|| ENGLISH.messages().get(id)).map_or(id, String::as_str);
+        }
+        let own = (!std::ptr::eq(self.0, &ENGLISH)).then(|| self.0.messages().get(id)).flatten();
+        own.or_else(|| us_english().get(id)).map_or_else(|| us_interned(id), String::as_str)
     }
 
     /// Translate source labels from engine/UI tables, preserving unknown labels.
@@ -247,6 +347,25 @@ pub fn tr_name(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// English reads in US spelling and English (UK) in UK spelling, whichever spelling a
+    /// catalog message or a source label was written in.
+    #[test]
+    fn english_is_in_us_spelling_and_english_uk_in_uk_spelling() {
+        let (us, uk) = (Locale::for_language("en"), Locale::for_language("en-GB"));
+        assert_eq!(us.text("ui.colour_vision"), "Color vision");
+        assert_eq!(uk.text("ui.colour_vision"), "Colour vision");
+        assert_eq!(us.label("Centre to centre"), "Center to center");
+        assert_eq!(uk.label("Centre to centre"), "Centre to centre");
+        // A label outside the catalog too, and capitals kept.
+        assert_eq!(us.label("Circle Centre"), "Circle Center");
+        assert_eq!(us.label("CENTRE"), "CENTER");
+        assert_eq!(uk.label("Center X"), "Centre X");
+        assert_eq!(us.label("Center X"), "Center X");
+        // Words that only start like one are left alone.
+        assert_eq!(us_spelling("Centres of the centrifuge, greyish"), "Centers of the centrifuge, greyish");
+        assert!(US_SPELLING.windows(2).all(|w| w[0].0 < w[1].0), "the table is sorted for its search");
+    }
 
     /// English first, then by id, so adding a locale edits only its own line.
     #[test]

@@ -1156,7 +1156,13 @@ impl SolveApp {
     }
 
     pub fn set_status(&mut self, s: impl Into<String>, error: bool) {
-        let (text, at) = (s.into(), now_ms());
+        let (mut text, at) = (s.into(), now_ms());
+        // Engine messages are written in UK spelling; English reads them in US spelling.
+        if self.preferences.language == "en"
+            && let std::borrow::Cow::Owned(us) = crate::i18n::us_spelling(&text)
+        {
+            text = us;
+        }
         self.messages.push(&text, error, at);
         self.status = Some((text, at, error));
     }
