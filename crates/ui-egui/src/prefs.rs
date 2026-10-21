@@ -444,14 +444,19 @@ preference_settings! {
     /// Interface font: an installed font family (or a font file), or empty for the built-in one
     /// (#1290). Menus, dialogs and labels use it; glyphs it lacks fall back as before.
     ui_font: String = String::new(), 0;
-    /// Put the feature history above the parts browser in the left sidebar instead of along the
-    /// bottom of the viewport.
+    /// Put the feature history to the left of the browser instead of below the viewport.
     timeline_left: bool = false, 0;
-    /// Height of the feature-history section when it shares the left sidebar with the browser.
+    /// Measured outer width; the contents react to this width without a names mode.
+    timeline_left_width: f32 = 130.0, 0;
+    /// Share the browser column, vertically, instead of a separate left column.
+    timeline_under_browser: bool = false, 0;
+    /// Fold the shared-column history to its header.
+    timeline_collapsed: bool = false, 0;
+    /// Legacy shared-column height, retained for preference compatibility.
     timeline_left_height: f32 = 360.0, 0;
-    /// Whether the browser below the left feature history is collapsed.
+    /// Whether the browser beside the vertical history is collapsed to its rail.
     timeline_left_browser_collapsed: bool = false, 0;
-    /// Width of the left sidebar holding the browser (and the feature history above it), which
+    /// Width of the browser sidebar, which
     /// the user drags wider or narrower at its right edge.
     browser_width: f32 = DEFAULT_BROWSER_WIDTH, 0;
     /// Draw the parts browser on a translucent card over the 3D view instead of a column of its
@@ -1138,14 +1143,18 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 ui_kit::row(ui, app.tr_label("Interface font"), |ui| ui_font_row(app, ui));
             }
             ui_kit::row(ui, app.tr("ui.feature_history"), |ui| {
-                let mut selected = usize::from(app.preferences.timeline_left);
+                let mut selected = if app.preferences.timeline_left { if app.preferences.timeline_under_browser { 2 } else { 1 } } else { 0 };
                 if ui_kit::segmented(
                     ui,
                     &mut selected,
-                    &[crate::i18n::tr("ui.timeline_bottom"), crate::i18n::tr("ui.timeline_left_sidebar")],
+                    &[
+                        crate::i18n::tr("ui.timeline_bottom"),
+                        crate::i18n::tr("ui.timeline_left_sidebar"),
+                        crate::i18n::tr("ui.history_below_browser"),
+                    ],
                     Default::default(),
                 ) {
-                    app.preferences.timeline_left = selected == 1;
+                    let _ = app.run("view.history_layout", json!({"dock": match selected { 1=>"left",2=>"under_browser",_=>"bottom" }}));
                 }
             });
             ui_kit::text(ui, app.tr("ui.timeline_left_note"), ui_kit::Text::Note("timeline"));

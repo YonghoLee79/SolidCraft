@@ -230,9 +230,9 @@ fn floating_browser_clears_cards_shields_input_and_can_dock_again() {
             assert!(crate::browser::drawn_rows().iter().any(|(name, _, _, open)| name == "Origin" && *open == Some(true)));
             h.app.preferences.browser_float = false;
             h.settle();
-            assert_eq!(h.app.shell.browser.is_some(), mode == LayoutMode::Floating && !timeline_left);
+            assert_eq!(h.app.shell.browser.is_some(), mode == LayoutMode::Floating || timeline_left);
             assert!(rect_of("browser:float").is_none());
-            assert_eq!(rect_of("browser:card").is_some(), mode == LayoutMode::Floating && !timeline_left);
+            assert_eq!(rect_of("browser:card").is_some(), mode == LayoutMode::Floating || timeline_left);
             // The saved width follows both the floating card and the docked column.
             let rail = crate::scenario::handle_at("left-browser-rail").unwrap();
             let width = h.app.preferences.browser_width;
@@ -284,7 +284,7 @@ fn browser_and_history_cards_block_input_while_their_gaps_and_space_below_browse
 }
 
 #[test]
-fn left_history_keeps_the_existing_column_in_both_modes() {
+fn left_history_and_browser_share_the_left_edge_without_moving_right_controls() {
     for mode in [LayoutMode::Floating, LayoutMode::Docked] {
         let mut h = Harness::new();
         h.app.ui.layout = mode;
@@ -292,14 +292,232 @@ fn left_history_keeps_the_existing_column_in_both_modes() {
         h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"name":"First"})).unwrap();
         h.settle();
         assert!(rect_of("history:card").is_none());
-        assert!(rect_of("browser:card").is_none());
+        let history = rect_of("history:vertical").unwrap();
+        let browser = rect_of("browser:card").unwrap();
+        assert!(history.right() < browser.left());
         assert!(crate::scenario::handle_at("timeline:First").is_some());
         let viewport = h.app.viewport.rect.unwrap();
         let content = content_rect(&h.app, viewport);
-        assert_eq!(content.left(), 250.0);
+        assert_eq!(viewport.left(), if mode == LayoutMode::Floating { 0.0 } else { crate::ui_kit::history_width(true) });
+        assert_eq!(content.left(), if mode == LayoutMode::Floating { browser.right() + SHELL_GAP } else { viewport.left() });
         assert_eq!(content.bottom(), viewport.bottom());
         if mode == LayoutMode::Floating {
-            assert!(covered(&h.app, pos2(125.0, content.center().y)));
+            assert!(covered(&h.app, history.center()));
+            assert!(covered(&h.app, browser.center()));
+            let gap_x = (history.right() + browser.left()) / 2.0;
+            assert!(covered(&h.app, pos2(gap_x, history.center().y)), "the seam pill shields viewport input");
+            assert!(!covered(&h.app, pos2(gap_x, history.top() + 4.0)), "the rest of the shell gap remains available");
         }
+    }
+}
+
+#[test]
+fn assistant_floats_without_changing_projection_and_shields_the_model() {
+    for dark in [false, true] {
+        for side in ["left", "right"] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.home.open = false;
+            h.call("ui.resize", serde_json::json!({"width":1400,"height":1000}));
+            h.call("ui.set", serde_json::json!({"dark":dark,"layout":"floating"}));
+            h.frames(4);
+            let projection = h.app.viewport.rect.expect("viewport");
+            let original_controls = h.app.viewport.layout.clone().expect("layout");
+            h.call("ui.agent_chat", serde_json::json!({"open":true,"picker":false,"side":side,"width":440}));
+            h.frames(6);
+            let card = crate::scenario::rect_of("agent_chat:panel").expect("floating Assistant");
+            assert_eq!(h.app.viewport.rect, Some(projection), "opening the card preserves projection");
+            assert!(card.left() > projection.left() && card.right() < projection.right());
+            assert!(card.bottom() < projection.bottom());
+            let content = h.app.shell.content.expect("content");
+            assert!((card.top() - content.top()).abs() < 1.0, "full-height top: {card:?} {content:?}");
+            assert!((card.bottom() - content.bottom()).abs() < 1.0, "full-height bottom: {card:?} {content:?}");
+            assert!(covered(&h.app, card.center()), "chat shields viewport input");
+            if side == "right" {
+                let layout = h.app.viewport.layout.as_ref().expect("layout");
+                assert!(!card.intersect(layout.axis_view).is_positive(), "card clears compass");
+                assert!(!card.intersect(layout.navigation).is_positive(), "card clears navigation");
+                assert!(layout.axis_view.right() < original_controls.axis_view.right(), "compass moves left");
+                assert!(layout.navigation.center().x < original_controls.navigation.center().x, "navigation moves left");
+            } else {
+                let browser = h.app.shell.browser.expect("browser card");
+                assert!(card.right() < browser.left(), "left Assistant precedes browser");
+                assert!((card.top() - browser.top()).abs() < 1.0, "Assistant and browser share the top margin");
+            }
+            let camera = h.app.cam;
+            let at = card.center();
+            h.call("ui.move", json!({"x":at.x,"y":at.y}));
+            h.call("ui.scroll", json!({"x":at.x,"y":at.y,"delta":120}));
+            h.call("ui.drag", json!({"x0":at.x,"y0":at.y,"x1":at.x-30.0,"y1":at.y+15.0,"button":"middle","steps":6}));
+            assert_eq!(h.app.cam, camera, "chat consumes wheel and orbit input");
+            assert!(h.app.viewport.boxsel.is_none());
+            h.app.start("solid.extrude");
+            h.frames(5);
+            let feature = h.app.viewport.dialog_rect.expect("feature panel");
+            let beside = crate::scenario::rect_of("agent_chat:panel").expect("Assistant beside feature");
+            assert!(!beside.intersect(feature).is_positive(), "feature and Assistant coexist: {beside:?} {feature:?}");
+            assert!(
+                (beside.min - card.min).length() < 1.0 && (beside.max - card.max).length() < 1.0,
+                "opening a tool must not move Assistant: {card:?} -> {beside:?}"
+            );
+            if side == "right" {
+                assert!(feature.right() + SHELL_GAP <= beside.left() + 1.0, "tool stays inside Assistant's rail");
+            }
+            h.app.dialog = None;
+            h.app.tool = None;
+            h.frames(3);
+            h.call("ui.agent_chat", serde_json::json!({"minimized":true}));
+            h.frames(4);
+            let folded = crate::scenario::rect_of("agent_chat:panel").expect("floating folded card");
+            assert!(folded.width() < 60.0 && folded.height() < 120.0);
+            assert!(covered(&h.app, folded.center()));
+            assert_eq!(h.app.viewport.rect, Some(projection));
+            let folded_controls = h.app.viewport.layout.as_ref().expect("layout");
+            assert_eq!(folded_controls.axis_view, original_controls.axis_view);
+            if side == "right" {
+                assert_eq!(folded_controls.navigation, original_controls.navigation);
+            } else {
+                let shift = (folded.width() + SHELL_GAP) / 2.0;
+                assert!((folded_controls.navigation.center().x - original_controls.navigation.center().x - shift).abs() < 1.0);
+            }
+            h.call("ui.agent_chat", serde_json::json!({"open":false}));
+            h.frames(3);
+            assert!(!covered(&h.app, card.center()), "closed chat leaves no stale obstruction");
+        }
+    }
+}
+
+#[test]
+fn assistant_left_dock_precedes_history_and_drag_hints_match_the_result() {
+    for layout in ["floating", "docked"] {
+        for (names, stacked) in [(false, false), (true, false), (true, true)] {
+            let mut h = Harness::new();
+            h.app.home.open = false;
+            h.app.preferences.timeline_left = true;
+            h.app.preferences.timeline_under_browser = stacked;
+            h.app.preferences.timeline_left_width = crate::ui_kit::history_width(names);
+            h.call("ui.resize", json!({"width":1600,"height":1000}));
+            h.call("ui.set", json!({"layout":layout}));
+            h.call("ui.agent_chat", json!({"open":true,"side":"right","width":440,"picker":false}));
+            h.frames(6);
+            let projection = h.app.viewport.rect;
+            for left in [true, false] {
+                let grip = crate::scenario::handle_at("agent_chat:grip").expect("drag grip");
+                let target = pos2(if left { 100.0 } else { 1500.0 }, grip.y);
+                h.app.synthetic.push(egui::Event::PointerMoved(grip));
+                h.frame();
+                h.app.synthetic.push(egui::Event::PointerButton {
+                    pos: grip,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.frame();
+                h.app.synthetic.push(egui::Event::PointerMoved(target));
+                h.frames(2);
+                let hint = rect_of("agent_chat:dock_hint").expect("visible dock target");
+                h.app.synthetic.push(egui::Event::PointerButton {
+                    pos: target,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.frames(6);
+                let card = h.app.agent_chat.panel_rect.expect("docked Assistant");
+                assert_eq!(h.app.preferences.agent_chat_side, if left { "left" } else { "right" });
+                assert!((hint.min - card.min).length() < 1.0 && (hint.max - card.max).length() < 1.0, "{layout} preview {hint:?} matches {card:?}");
+                if layout == "floating" {
+                    assert_eq!(h.app.viewport.rect, projection, "docking keeps model projection");
+                }
+                if left {
+                    let history = h.app.shell.history.expect("vertical history");
+                    let browser = h.app.shell.browser.expect("browser");
+                    assert!(card.right() <= history.left(), "Assistant precedes history: {card:?} {history:?}");
+                    if stacked {
+                        assert!((history.left() - browser.left()).abs() < 1.0);
+                        assert!((history.width() - browser.width()).abs() < 1.0);
+                        assert!(browser.bottom() <= history.top(), "History stays below Browser");
+                    } else {
+                        assert!(history.right() <= browser.left(), "history precedes browser");
+                    }
+                }
+            }
+            h.call("ui.agent_chat", json!({"side":"left","minimized":true}));
+            h.frames(6);
+            let strip = h.app.agent_chat.drop_rect.expect("minimized Assistant");
+            assert!(strip.right() <= h.app.shell.history.expect("history").left());
+            h.call("ui.agent_chat", json!({"open":false}));
+            h.frames(6);
+            assert!(h.app.shell.history.expect("history returns to outer edge").left() < strip.right());
+        }
+    }
+}
+
+#[test]
+fn assistant_right_edge_survives_palette_tool_resize_and_minimize() {
+    for layout in ["floating", "docked"] {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1800,"height":1000}));
+        h.call("ui.set", json!({"layout":layout}));
+        h.call("ui.agent_chat", json!({"open":true,"side":"right","width":380,"picker":false}));
+        h.frames(5);
+        let right = h.app.agent_chat.panel_rect.unwrap().right();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.frames(6);
+        for width in [380.0, 480.0] {
+            h.call("ui.agent_chat", json!({"width":width}));
+            h.frames(6);
+            let chat = h.app.agent_chat.panel_rect.unwrap();
+            let palette = h.app.viewport.palette_rect.unwrap();
+            assert!((chat.right() - right).abs() < 1.0, "{layout}: Assistant stays outside the palette");
+            assert!(palette.right() + SHELL_GAP <= chat.left() + 1.0, "{layout}: {palette:?}, {chat:?}");
+        }
+        h.call("ui.agent_chat", json!({"minimized":true}));
+        h.frames(5);
+        let strip = h.app.agent_chat.drop_rect.unwrap();
+        let palette = h.app.viewport.palette_rect.unwrap();
+        assert!((strip.right() - right).abs() < 1.0);
+        assert!(palette.right() <= strip.left(), "palette clears the minimized Assistant too");
+        h.call("ui.agent_chat", json!({"open":false}));
+        h.frames(5);
+        assert!(h.app.viewport.palette_rect.unwrap().right() > palette.right(), "closing Assistant reclaims its rail");
+    }
+}
+
+#[test]
+fn tool_sheets_drag_over_browser_and_history_but_clear_protected_panels() {
+    for side in ["left", "right"] {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1800,"height":1000}));
+        h.call("ui.set", json!({"layout":"floating"}));
+        h.call("ui.agent_chat", json!({"open":true,"side":side,"width":380,"picker":false}));
+        h.frames(5);
+        h.app.start("sketch.create");
+        h.frames(5);
+        let chat = h.app.agent_chat.panel_rect.unwrap();
+        let browser = h.app.shell.browser.unwrap();
+        let history = h.app.shell.history.unwrap();
+        let ribbon = h.app.shell.cards[1];
+        let workspace = h.app.shell.cards[0];
+        for target in [browser.center(), history.center(), ribbon.center(), workspace.center(), egui::pos2(-1000.0, 400.0), egui::pos2(3000.0, 400.0)]
+        {
+            let title = crate::scenario::handle_at("dialog:title").unwrap();
+            h.call("ui.drag", json!({"x0":title.x,"y0":title.y,"x1":target.x,"y1":target.y,"steps":10}));
+            h.frames(4);
+            let sheet = h.app.viewport.dialog_rect.unwrap();
+            assert!(!sheet.intersect(chat).is_positive(), "{side}: {sheet:?} overlaps Assistant {chat:?}");
+            assert!(!sheet.intersect(ribbon).is_positive(), "sheet clears ribbon");
+            assert!(!sheet.intersect(workspace).is_positive(), "sheet clears workspace selector");
+            if target == browser.center() {
+                assert!(sheet.intersect(browser).is_positive(), "sheet can cover Browser");
+                let layer = h.ctx.layer_id_at(sheet.intersect(browser).center()).unwrap();
+                assert_eq!(layer.id, egui::Id::new(("sc_dialog", "CREATE SKETCH")), "sheet receives input above Browser");
+            } else if target == history.center() {
+                assert!(sheet.intersect(history).is_positive(), "sheet can cover History");
+            }
+        }
+        h.step(&json!({"widget":"Cancel"})).unwrap();
+        assert!(h.app.dialog.is_none(), "dragged sheet remains interactive");
     }
 }

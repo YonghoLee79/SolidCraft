@@ -80,6 +80,13 @@ pub(crate) struct State {
     pub panels: Vec<Rect>,
     pub browser: Option<Rect>,
     pub history: Option<Rect>,
+    /// In-memory seam drag width, never serialized as a preference.
+    pub history_drag_width: Option<f32>,
+    /// Unreserved canvas bounds used by History docking targets.
+    pub history_dock_space: Option<Rect>,
+    /// Browser/history collapse progress shared by both cards for this frame.
+    pub history_folding: Option<[f32; 2]>,
+    pub history_fold_motion: Option<[crate::timeline_left::FoldMotion; 2]>,
     pub content: Option<Rect>,
 }
 
@@ -90,6 +97,12 @@ pub(crate) fn covered_rects(app: &SolveApp) -> Vec<Rect> {
         rects.extend(app.shell.cards.iter().copied());
         rects.extend(app.shell.panels.iter().copied());
         rects.extend(app.shell.history);
+        if crate::agent_chat::shown(app) && app.agent_chat.open && !app.preferences.agent_chat_popped {
+            rects.extend(app.agent_chat.panel_rect);
+        }
+    }
+    if app.ui.show_timeline && app.preferences.timeline_left {
+        rects.extend(app.shell.history.map(|card| crate::ui_kit::HistorySeam::new(card).pill));
     }
     rects.extend(app.shell.browser.filter(|_| app.ui.show_browser));
     rects.extend(app.viewport.palette_rect.filter(|_| app.session.active_sketch.is_some()));
@@ -105,6 +118,20 @@ pub(crate) fn covered(app: &SolveApp, p: egui::Pos2) -> bool {
 /// The former central panel remains the anchor for controls and docked panels.
 pub(crate) fn content_rect(app: &SolveApp, viewport: Rect) -> Rect {
     if app.ui.layout == LayoutMode::Floating { app.shell.content.unwrap_or(viewport).intersect(viewport) } else { viewport }
+}
+
+/// Tool sheets may cover Browser and History, while shell chrome and Assistant stay clear.
+/// Assistant's outside-rail exception stays in its owner.
+pub(crate) fn tool_drag_rect(app: &SolveApp, placement: Rect) -> Rect {
+    if app.ui.layout == LayoutMode::Floating {
+        let mut bounds = crate::agent_chat::tool_space(app, app.viewport.rect.unwrap_or(placement));
+        for card in app.shell.cards.iter().filter(|r| r.is_finite() && r.is_positive()) {
+            bounds.min.y = (card.bottom() + SHELL_GAP).clamp(bounds.top(), bounds.bottom());
+        }
+        bounds
+    } else {
+        placement
+    }
 }
 
 pub(crate) fn panel_top(app: &SolveApp, viewport: Rect, bottom: f32, side: crate::frame::Side) -> f32 {
