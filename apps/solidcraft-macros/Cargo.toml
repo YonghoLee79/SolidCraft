@@ -11,27 +11,27 @@ workspace = true
 
 [[bin]]
 name = "chamfer-large-holes"
-path = "src/chamfer_large_holes.rs"
+path = "../../examples/macros/chamfer-large-holes.rs"
 
 [[bin]]
 name = "flatten-export-dxf"
-path = "src/flatten_export_dxf.rs"
+path = "../../examples/macros/flatten-export-dxf.rs"
 
 [[bin]]
 name = "bolt-circle"
-path = "src/bolt_circle.rs"
+path = "../../examples/macros/bolt-circle.rs"
 
 [[bin]]
 name = "chamfer-selection"
-path = "src/chamfer_selection.rs"
+path = "../../examples/macros/chamfer-selection.rs"
 
 [[bin]]
 name = "batch-mass"
-path = "src/batch_mass.rs"
+path = "../../examples/macros/batch-mass.rs"
 
 [[bin]]
 name = "batch-export"
-path = "src/batch_export.rs"
+path = "../../examples/macros/batch-export.rs"
 
 [dependencies]
 serde_json = { workspace = true }

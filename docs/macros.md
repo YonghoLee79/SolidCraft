@@ -27,7 +27,10 @@ filter by size. `type` and `feature` are optional. Empty `edges` on Chamfer is a
 
 ## Examples
 
-JSON and Rust examples live in [examples/macros](../examples/macros). A **start part** is a
+JSON and Rust examples live in [examples/macros](../examples/macros) (`.macro.json` and `.rs`).
+Open offers JSON and Rust files (`.json`, `.rs`, and `.exe` on Windows). A JSON file is loaded.
+A `.rs` or `.exe` is started against this window: the `.exe` beside it, or a built
+`target/debug` or `target/release` binary, otherwise `cargo run`. A **start part** is a
 command script that builds the design the macro expects. Load it, optionally edit, then Play:
 
 ```sh
@@ -54,8 +57,8 @@ solidcraft-cli run examples/macros/enclosure.start.json --save enclosure.solidcr
 solidcraft enclosure.solidcraft
 ```
 
-Rust binaries: `cargo run -p solidcraft-macros --bin chamfer-large-holes` (and the other names
-in the table). `batch-mass` / `batch-export` first need STEP files:
+Rust sources are the `.rs` files in that folder (`cargo run -p solidcraft-macros --bin chamfer-large-holes`,
+and the other names in the table). `batch-mass` / `batch-export` first need STEP files:
 `solidcraft-cli run examples/macros/batch-mass/cube.start.json --out dir/cube.step`.
 
 ## Rust (custom macros)
