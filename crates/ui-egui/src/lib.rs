@@ -372,8 +372,10 @@ pub struct SolveApp {
     pub dialog: Option<dialogs::Dialog>,
     /// The Change Parameters window, when open.
     pub params: Option<params_dialog::ParamsDialog>,
-    /// The Play Macro prompt, when a loaded macro asks for values.
+    /// The Play Macro prompt, when a loaded JSON macro asks for values.
     pub macro_run: Option<macro_run::MacroRun>,
+    /// A Rust macro Open selected (`.rs` or `.exe`). Play starts this; it is not the JSON loaded set.
+    pub rust_macro: Option<String>,
     /// The Design Properties window, when open.
     pub design_properties: Option<design_properties::DesignProperties>,
     /// The Bill of Materials window, when open.
@@ -539,6 +541,7 @@ impl SolveApp {
             dialog: None,
             params: None,
             macro_run: None,
+            rust_macro: None,
             design_properties: None,
             bom: None,
             material_card_review: None,

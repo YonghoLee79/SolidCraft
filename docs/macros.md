@@ -29,8 +29,8 @@ filter by size. `type` and `feature` are optional. Empty `edges` on Chamfer is a
 
 JSON and Rust examples live in [examples/macros](../examples/macros) (`.macro.json` and `.rs`).
 Open offers JSON and Rust files (`.json`, `.rs`, and `.exe` on Windows). A JSON file is loaded.
-A `.rs` or `.exe` is started against this window: the `.exe` beside it, or a built
-`target/debug` or `target/release` binary, otherwise `cargo run`. A **start part** is a
+A `.rs` or `.exe` is selected; Play starts it against this window (the `.exe` beside a `.rs`,
+or a built `target/debug` or `target/release` binary, otherwise `cargo run`). A **start part** is a
 command script that builds the design the macro expects. Load it, optionally edit, then Play:
 
 ```sh

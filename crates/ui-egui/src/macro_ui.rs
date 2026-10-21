@@ -64,6 +64,8 @@ pub(crate) fn toolbar(app: &mut SolveApp, id: &str) {
             });
         }
         "macro.clear" => {
+            app.rust_macro = None;
+            app.macro_run = None;
             if app.run(id, json!({})).is_ok() {
                 app.set_status(app.tr("macro.cleared").to_string(), false);
             }
@@ -75,6 +77,10 @@ pub(crate) fn toolbar(app: &mut SolveApp, id: &str) {
 }
 
 fn play_button(app: &mut SolveApp) {
+    if let Some(path) = app.rust_macro.clone() {
+        spawn_rust_macro(app, &path);
+        return;
+    }
     let loaded = app.session.macros.loaded.clone();
     match loaded {
         Some(m) if !m.params.is_empty() => crate::macro_run::open(app),
@@ -97,9 +103,28 @@ fn is_json(path: &str) -> bool {
     std::path::Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("json"))
 }
 
-/// `play_json`: Play runs a JSON macro after loading it. Open only loads it.
+/// Windows may append the first filter (`.json`) to a selected `.exe` or `.rs`.
+fn actual_macro_path(path: String) -> String {
+    let p = std::path::Path::new(&path);
+    if p.is_file() {
+        return path;
+    }
+    let stripped = path.strip_suffix(".json").or_else(|| path.strip_suffix(".JSON"));
+    let Some(stem) = stripped else { return path };
+    let alt = std::path::Path::new(stem);
+    if !alt.is_file() {
+        return path;
+    }
+    let ext = alt.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("rs") { stem.to_string() } else { path }
+}
+
+/// `play_json`: Play runs a JSON macro after loading it. Open of JSON only loads it.
+/// Open of a Rust program remembers it; Play starts it.
 fn open_picked(app: &mut SolveApp, path: String, play_json: bool) {
+    let path = actual_macro_path(path);
     if is_json(&path) {
+        app.rust_macro = None;
         match app.run("macro.open", json!({"path": path})) {
             Ok(r) => {
                 let steps = r.get("steps").and_then(Value::as_u64).unwrap_or(0);
@@ -116,7 +141,13 @@ fn open_picked(app: &mut SolveApp, path: String, play_json: bool) {
         }
         return;
     }
-    spawn_rust_macro(app, &path);
+    app.macro_run = None;
+    app.rust_macro = Some(path.clone());
+    if play_json {
+        spawn_rust_macro(app, &path);
+    } else {
+        app.set_status(format!("Opened {path}"), false);
+    }
 }
 
 /// How to start a Rust macro the user picked (a binary, or a `.rs` source).
@@ -341,13 +372,23 @@ fn design_stem(app: &SolveApp) -> String {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::rust_launch;
+    use super::{actual_macro_path, rust_launch};
 
     fn dir(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("sc-macro-launch-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn a_json_suffix_appended_to_an_exe_is_stripped() {
+        let d = dir("suffix");
+        let exe = d.join("tool.exe");
+        std::fs::write(&exe, "bin").unwrap();
+        let fake = format!("{}.json", exe.display());
+        assert_eq!(actual_macro_path(fake), exe.display().to_string());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
