@@ -378,6 +378,13 @@ pub fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::
     }))
 }
 
+/// A kit dropdown `width` wide in a row; true when the pick changed `at`.
+fn pick(ui: &mut egui::Ui, id: &str, width: f32, at: &mut usize, labels: &[&str]) -> bool {
+    let before = *at;
+    ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| crate::ui_kit::dropdown(ui, id, at, labels));
+    *at != before
+}
+
 /// The results panel on the right: one block per study.
 pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     if app.session.flow_studies().list.is_empty() {
@@ -392,11 +399,9 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
             for st in &app.session.flow_studies().list {
                 ui.separator();
                 let shown = app.simulation.shown.as_deref() == Some(st.name.as_str());
-                ui.horizontal(|ui| {
-                    if ui.radio(shown, RichText::new(&st.name).strong()).clicked() && st.result.is_some() {
-                        app.simulation.shown = Some(st.name.clone());
-                    }
-                });
+                if crate::ui_kit::list_picker(ui, &format!("sim_study:{}", st.name), &st.name, shown).clicked() && st.result.is_some() {
+                    app.simulation.shown = Some(st.name.clone());
+                }
                 let progress = st.job.as_ref().and_then(|j| {
                     j.progress.lock().ok().map(|p| {
                         (p.steps, p.max_steps, p.last.clone(), p.backend.clone(), p.cells, p.done.as_ref().map(|d| d.as_ref().err().cloned()))
@@ -405,12 +410,13 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 match &progress {
                     Some((steps, max, last, backend, cells, None)) => {
                         let frac = if *max > 0 { *steps as f32 / *max as f32 } else { 0.0 };
-                        ui.add(egui::ProgressBar::new(frac).text(crate::i18n::format("sim.running", &[("steps", &steps.to_string())])));
+                        crate::ui_kit::progress(ui, &format!("sim_run:{}", st.name), frac);
+                        ui.label(crate::i18n::format("sim.running", &[("steps", &steps.to_string())]));
                         if let Some(s) = last {
                             let q: f64 = s.inlets.iter().map(|t| t.flow).sum::<f64>() * CFM;
                             ui.label(RichText::new(format!("{q:.2} CFM · {:.3} s · {backend} · {cells} cells", s.time)).small().color(t.text_dim));
                         }
-                        if ui.button(tr("sim.cancel")).clicked() {
+                        if crate::ui_kit::button(ui, tr("sim.cancel"), crate::ui_kit::Button::Normal).clicked() {
                             run.push(("sim.flow.cancel", json!({"study": st.name})));
                         }
                     }
@@ -447,10 +453,10 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 }
                 ui.horizontal(|ui| {
                     let busy = matches!(progress, Some((.., None)));
-                    if ui.add_enabled(!busy, egui::Button::new(tr("sim.run_again"))).clicked() {
+                    if crate::ui_kit::button(ui, tr("sim.run_again"), crate::ui_kit::Button::Enabled(!busy)).clicked() {
                         run.push(("sim.flow.run", json!({"study": st.name})));
                     }
-                    if ui.button(tr("sim.delete")).clicked() {
+                    if crate::ui_kit::button(ui, tr("sim.delete"), crate::ui_kit::Button::Normal).clicked() {
                         run.push(("sim.flow.delete", json!({"study": st.name})));
                     }
                 });
@@ -464,27 +470,32 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 ui.separator();
                 ui.label(RichText::new(tr("sim.display")).strong());
                 let d = &mut app.simulation.display;
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut d.quantity, Quantity::Speed, tr("sim.speed_map"));
-                    ui.selectable_value(&mut d.quantity, Quantity::Pressure, tr("sim.pressure_map"));
-                });
+                let compact = crate::ui_kit::Segments { compact: true, ..Default::default() };
+                let mut quantity = usize::from(d.quantity == Quantity::Pressure);
+                if crate::ui_kit::segmented(ui, &mut quantity, &[tr("sim.speed_map"), tr("sim.pressure_map")], compact) {
+                    d.quantity = if quantity == 1 { Quantity::Pressure } else { Quantity::Speed };
+                }
                 let unit = if d.quantity == Quantity::Pressure { "Pa" } else { "m/s" };
                 legend(ui, r.fields.range(d.quantity).unwrap_or((0.0, 1.0)), unit);
-                ui.horizontal(|ui| {
-                    ui.label(tr("sim.section"));
-                    ui.selectable_value(&mut d.section, None, tr("sim.off"));
-                    for (axis, name) in [(0u8, "X"), (1, "Y"), (2, "Z")] {
-                        ui.selectable_value(&mut d.section, Some(axis), name);
-                    }
-                });
+                ui.label(tr("sim.section"));
+                let mut section = d.section.map_or(0, |a| usize::from(a) + 1);
+                let compact = crate::ui_kit::Segments { compact: true, ..Default::default() };
+                if crate::ui_kit::segmented(ui, &mut section, &[tr("sim.off"), "X", "Y", "Z"], compact) {
+                    d.section = section.checked_sub(1).and_then(|a| u8::try_from(a).ok());
+                }
                 if d.section.is_some() {
-                    ui.add(egui::Slider::new(&mut d.offset, 0.0..=1.0).show_value(false));
+                    crate::ui_kit::slider(ui, &mut d.offset, 0.0..=1.0, crate::ui_kit::Slider { show_value: false, ..Default::default() });
                 }
-                ui.checkbox(&mut d.streamlines, tr("sim.streamlines"));
+                crate::ui_kit::checkbox(ui, tr("sim.streamlines"), &mut d.streamlines);
                 if d.streamlines {
-                    ui.add(egui::Slider::new(&mut d.lines, 4..=400).logarithmic(true));
+                    crate::ui_kit::slider(
+                        ui,
+                        &mut d.lines,
+                        4..=400,
+                        crate::ui_kit::Slider { integer: true, format: |v| format!("{v:.0}"), ..Default::default() },
+                    );
                 }
-                ui.checkbox(&mut d.see_through, tr("sim.see_through"));
+                crate::ui_kit::checkbox(ui, tr("sim.see_through"), &mut d.see_through);
             }
         });
     });
@@ -682,7 +693,7 @@ fn plot(ui: &mut egui::Ui, k: &solidcraft_engine::seek::Seek) {
         rect.left_top() + egui::vec2(4.0, 2.0),
         egui::Align2::LEFT_TOP,
         format!("{measure} {} ({unit})", quantity.id()),
-        egui::FontId::proportional(10.0),
+        egui::FontId::proportional(t.font_badge),
         t.text_dim,
     );
     let xl = if k.spec.vary.len() == 1 {
@@ -690,7 +701,7 @@ fn plot(ui: &mut egui::Ui, k: &solidcraft_engine::seek::Seek) {
     } else {
         crate::i18n::tr("sim.seek_cycle").to_string()
     };
-    p.text(rect.right_bottom() - egui::vec2(4.0, 2.0), egui::Align2::RIGHT_BOTTOM, xl, egui::FontId::proportional(10.0), t.text_dim);
+    p.text(rect.right_bottom() - egui::vec2(4.0, 2.0), egui::Align2::RIGHT_BOTTOM, xl, egui::FontId::proportional(t.font_badge), t.text_dim);
 }
 
 /// The Goal Seek block under study `name`: the form, then each of its seeks with its cycles.
@@ -707,7 +718,7 @@ fn seek_block(app: &mut SolveApp, ui: &mut egui::Ui, name: &str, run: &mut Vec<(
     if f.measure.is_empty() {
         f.measure = outlets.first().cloned().or_else(|| openings.first().cloned()).unwrap_or_default();
     }
-    egui::CollapsingHeader::new(RichText::new(tr("sim.seek")).strong()).id_salt(("seek", name)).default_open(f.open).show(ui, |ui| {
+    crate::ui_kit::section(ui, ("seek", name), tr("sim.seek"), f.open, |ui| {
         if params.is_empty() {
             ui.label(RichText::new(tr("sim.seek_no_params")).small().color(t.text_dim));
             return;
@@ -715,20 +726,22 @@ fn seek_block(app: &mut SolveApp, ui: &mut egui::Ui, name: &str, run: &mut Vec<(
         let mut remove = None;
         for (i, v) in f.vary.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt(("seek_param", name, i))
-                    .width(90.0)
-                    .selected_text(if v.parameter.is_empty() { tr("sim.seek_parameter") } else { &v.parameter })
-                    .show_ui(ui, |ui| {
-                        for (p, unit) in &params {
-                            ui.selectable_value(&mut v.parameter, p.clone(), format!("{p} ({unit})"));
-                        }
-                    });
-                ui.add(egui::TextEdit::singleline(&mut v.min).desired_width(38.0).hint_text("min"));
-                ui.add(egui::TextEdit::singleline(&mut v.max).desired_width(38.0).hint_text("max"));
-                if !f.optimize {
-                    ui.add(egui::TextEdit::singleline(&mut v.count).desired_width(24.0)).on_hover_text(tr("sim.seek_values"));
+                let labels: Vec<String> = params.iter().map(|(p, unit)| format!("{p} ({unit})")).collect();
+                let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+                let mut at = params.iter().position(|(p, _)| *p == v.parameter).unwrap_or(usize::MAX);
+                if pick(ui, &format!("seek_param:{name}:{i}"), 90.0, &mut at, &labels)
+                    && let Some((p, _)) = params.get(at)
+                {
+                    v.parameter = p.clone();
                 }
-                if i > 0 && ui.small_button("−").clicked() {
+                ui.allocate_ui(egui::vec2(38.0, ui.spacing().interact_size.y), |ui| crate::ui_kit::text_field(ui, &mut v.min, "min"));
+                ui.allocate_ui(egui::vec2(38.0, ui.spacing().interact_size.y), |ui| crate::ui_kit::text_field(ui, &mut v.max, "max"));
+                if !f.optimize {
+                    ui.allocate_ui(egui::vec2(24.0, ui.spacing().interact_size.y), |ui| crate::ui_kit::text_field(ui, &mut v.count, ""))
+                        .response
+                        .on_hover_text(tr("sim.seek_values"));
+                }
+                if i > 0 && crate::ui_kit::button(ui, "−", crate::ui_kit::Button::Small).clicked() {
                     remove = Some(i);
                 }
             });
@@ -736,49 +749,50 @@ fn seek_block(app: &mut SolveApp, ui: &mut egui::Ui, name: &str, run: &mut Vec<(
         if let Some(i) = remove {
             f.vary.remove(i);
         }
-        if f.vary.len() < 3 && ui.small_button(tr("sim.seek_add")).clicked() {
+        if f.vary.len() < 3 && crate::ui_kit::button(ui, tr("sim.seek_add"), crate::ui_kit::Button::Small).clicked() {
             f.vary.push(VaryRow { parameter: String::new(), min: String::new(), max: String::new(), count: "5".into() });
         }
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut f.optimize, false, tr("sim.seek_sweep"));
-            ui.selectable_value(&mut f.optimize, true, tr("sim.seek_optimize"));
+            let mut mode = usize::from(f.optimize);
+            if crate::ui_kit::segmented(
+                ui,
+                &mut mode,
+                &[tr("sim.seek_sweep"), tr("sim.seek_optimize")],
+                crate::ui_kit::Segments { compact: true, ..Default::default() },
+            ) {
+                f.optimize = mode == 1;
+            }
             if f.optimize {
-                ui.add(egui::TextEdit::singleline(&mut f.budget).desired_width(30.0)).on_hover_text(tr("sim.seek_budget"));
+                ui.allocate_ui(egui::vec2(30.0, ui.spacing().interact_size.y), |ui| crate::ui_kit::text_field(ui, &mut f.budget, ""))
+                    .response
+                    .on_hover_text(tr("sim.seek_budget"));
             }
         });
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt(("seek_goal", name))
-                .width(80.0)
-                .selected_text(tr(match f.goal {
-                    GoalKind::Maximize => "sim.seek_max",
-                    GoalKind::Minimize => "sim.seek_min",
-                    GoalKind::Target => "sim.seek_target",
-                    GoalKind::Equalize => "sim.seek_equal",
-                }))
-                .show_ui(ui, |ui| {
-                    for (g, id) in [
-                        (GoalKind::Maximize, "sim.seek_max"),
-                        (GoalKind::Minimize, "sim.seek_min"),
-                        (GoalKind::Target, "sim.seek_target"),
-                        (GoalKind::Equalize, "sim.seek_equal"),
-                    ] {
-                        ui.selectable_value(&mut f.goal, g, tr(id));
-                    }
-                });
-            if f.goal != GoalKind::Equalize {
-                egui::ComboBox::from_id_salt(("seek_measure", name)).width(80.0).selected_text(f.measure.clone()).show_ui(ui, |ui| {
-                    for o in &openings {
-                        ui.selectable_value(&mut f.measure, o.clone(), o);
-                    }
-                });
+            let goals = [GoalKind::Maximize, GoalKind::Minimize, GoalKind::Target, GoalKind::Equalize];
+            let labels = ["sim.seek_max", "sim.seek_min", "sim.seek_target", "sim.seek_equal"].map(tr);
+            let mut at = goals.iter().position(|g| *g == f.goal).unwrap_or(0);
+            if pick(ui, &format!("seek_goal:{name}"), 80.0, &mut at, &labels) {
+                f.goal = goals.get(at).copied().unwrap_or(GoalKind::Maximize);
             }
-            egui::ComboBox::from_id_salt(("seek_quantity", name)).width(60.0).selected_text(f.quantity).show_ui(ui, |ui| {
-                for q in ["flow", "pressure", "speed", "max_speed"] {
-                    ui.selectable_value(&mut f.quantity, q, q);
+            if f.goal != GoalKind::Equalize {
+                let labels: Vec<&str> = openings.iter().map(String::as_str).collect();
+                let mut at = openings.iter().position(|o| *o == f.measure).unwrap_or(usize::MAX);
+                if pick(ui, &format!("seek_measure:{name}"), 80.0, &mut at, &labels)
+                    && let Some(o) = openings.get(at)
+                {
+                    f.measure = o.clone();
                 }
-            });
+            }
+            let quantities = ["flow", "pressure", "speed", "max_speed"];
+            let mut at = quantities.iter().position(|q| *q == f.quantity).unwrap_or(0);
+            if pick(ui, &format!("seek_quantity:{name}"), 60.0, &mut at, &quantities) {
+                f.quantity = quantities.get(at).copied().unwrap_or("flow");
+            }
             if f.goal == GoalKind::Target {
-                ui.add(egui::TextEdit::singleline(&mut f.target).desired_width(40.0).hint_text(if f.quantity == "flow" { "CFM" } else { "" }));
+                ui.allocate_ui(egui::vec2(40.0, ui.spacing().interact_size.y), |ui| {
+                    crate::ui_kit::text_field(ui, &mut f.target, if f.quantity == "flow" { "CFM" } else { "" })
+                });
             }
         });
         let cycles = form_cycles(f);
@@ -794,7 +808,7 @@ fn seek_block(app: &mut SolveApp, ui: &mut egui::Ui, name: &str, run: &mut Vec<(
         if let Some(e) = &f.error {
             ui.label(RichText::new(e).small().color(t.warning));
         }
-        if ui.button(tr("sim.seek_run")).clicked() {
+        if crate::ui_kit::button(ui, tr("sim.seek_run"), crate::ui_kit::Button::Normal).clicked() {
             match seek_request(f, name, &outlets) {
                 Ok(p) => {
                     f.error = None;
@@ -810,8 +824,8 @@ fn seek_block(app: &mut SolveApp, ui: &mut egui::Ui, name: &str, run: &mut Vec<(
         let total = k.plan.total();
         ui.label(RichText::new(format!("{} · {}/{}", k.name, k.cycles.len(), total)).strong().small());
         if k.state == solidcraft_engine::seek::SeekState::Running {
-            ui.add(egui::ProgressBar::new(k.cycles.len() as f32 / total.max(1) as f32));
-            if ui.small_button(tr("sim.cancel")).clicked() {
+            crate::ui_kit::progress(ui, &format!("seek_run:{}", k.name), k.cycles.len() as f32 / total.max(1) as f32);
+            if crate::ui_kit::button(ui, tr("sim.cancel"), crate::ui_kit::Button::Small).clicked() {
                 run.push(("sim.seek.cancel", json!({"seek": k.name})));
             }
         }
@@ -843,7 +857,7 @@ fn seek_block(app: &mut SolveApp, ui: &mut egui::Ui, name: &str, run: &mut Vec<(
                     .and_then(|(m, q)| shown_measure(c, m, *q))
                     .map_or_else(|| c.error.clone().unwrap_or_default(), |v| format!("{v:.3}"));
                 ui.label(RichText::new(shown).small());
-                if c.error.is_none() && ui.small_button(tr("sim.seek_apply")).clicked() {
+                if c.error.is_none() && crate::ui_kit::button(ui, tr("sim.seek_apply"), crate::ui_kit::Button::Small).clicked() {
                     run.push(("sim.seek.apply", json!({"seek": k.name, "cycle": i})));
                 }
                 ui.end_row();
