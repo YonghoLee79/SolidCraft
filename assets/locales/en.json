@@ -932,6 +932,7 @@
   "motion.to_end": "To the end",
   "motion.to_start": "To the start",
   "motion.track_name": "Track {number}",
+  "nav.perspective.sketch": "Sketch editing uses orthographic view. Finish the sketch to switch perspective.",
   "nav.touchpad.help": "Hold Shift and move the pointer to pan; hold Alt/Option and move it to orbit. No mouse button is needed. Vertical scroll zooms.",
   "nav.touchpad.label": "Touchpad",
   "nav.touchpad.orbit": "Orbit (hold Alt/Option and move; no mouse button)",

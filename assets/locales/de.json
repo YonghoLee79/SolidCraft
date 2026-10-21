@@ -926,6 +926,7 @@
   "motion.to_end": "Zum Ende",
   "motion.to_start": "Zum Anfang",
   "motion.track_name": "Spur {number}",
+  "nav.perspective.sketch": "Beim Bearbeiten einer Skizze wird die orthografische Ansicht verwendet. Beenden Sie die Skizze, um die Perspektive umzuschalten.",
   "nav.touchpad.help": "Umschalt gedrückt halten und den Zeiger zum Verschieben bewegen; mit Alt/Option drehen. Keine Maustaste nötig. Vertikales Scrollen zoomt.",
   "nav.touchpad.label": "Touchpad",
   "nav.touchpad.orbit": "Drehen (Alt/Option halten und bewegen; ohne Maustaste)",

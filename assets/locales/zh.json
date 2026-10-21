@@ -932,6 +932,7 @@
   "motion.to_end": "到结尾",
   "motion.to_start": "到开头",
   "motion.track_name": "轨道 {number}",
+  "nav.perspective.sketch": "编辑草图时使用正交视图。完成草图后才能切换透视。",
   "nav.touchpad.help": "按住 Shift 并移动指针可平移；按住 Alt/Option 并移动可旋转。无需按鼠标按钮。垂直滚动可缩放。",
   "nav.touchpad.label": "触控板",
   "nav.touchpad.orbit": "旋转（按住 Alt/Option 并移动，无需鼠标按钮）",
