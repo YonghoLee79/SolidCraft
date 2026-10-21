@@ -67,6 +67,11 @@ pub(crate) struct Rules {
 }
 
 impl Rules {
+    /// The same rules with a chord tolerance `k` times finer.
+    pub(crate) fn finer(self, k: f64) -> Rules {
+        Rules { tol: self.tol / k, ..self }
+    }
+
     /// Rules for a body of extent `extent` (see [`extent`]). `boundary_tol`: the body's declared
     /// off-surface budget (mm), `None` for a body this kernel built.
     pub(crate) fn new(tol: f64, extent: f64, turn: Option<Turn>, boundary_tol: Option<f64>) -> Rules {

@@ -50,6 +50,9 @@ pub(crate) struct Fill<'a> {
     /// varies: a plane is shaded the same by any triangles, so planar faces skip it (around many
     /// small holes it grades out from each rim and multiplies the triangles).
     pub shape: bool,
+    /// A side crossing one already kept is left out instead of refusing the loops (the last
+    /// resort for a boundary that crosses itself, see `fallback`).
+    pub lenient: bool,
 }
 
 /// Triangulate the region bounded by `loops` (ranges of `boundary`, each closed). Boundary
@@ -83,6 +86,9 @@ pub(crate) fn triangulate(boundary: &[[f64; 2]], loops: &[std::ops::Range<usize>
                 continue;
             }
             if !cdt.can_add_constraint(a, b) {
+                if fill.lenient {
+                    continue;
+                }
                 return None;
             }
             cdt.add_constraint(a, b);
@@ -447,7 +453,7 @@ mod tests {
         for refine in [false, true] {
             let refine = refine.then_some((Sag { eval: &flat, tol: 1e-3, h: 0.1, turn: None, scale: [2.0, 1.0] }, 2000));
             let label = refine.is_some();
-            let Some((extra, tris)) = triangulate(&b, &loops, Fill { seeds: &[[0.2, 0.2], [0.5, 0.5]], refine, shape: true }) else {
+            let Some((extra, tris)) = triangulate(&b, &loops, Fill { seeds: &[[0.2, 0.2], [0.5, 0.5]], refine, shape: true, lenient: false }) else {
                 panic!("meshes")
             };
             let mut uv = b.clone();
@@ -485,7 +491,7 @@ mod tests {
     fn crossing_loops_are_refused() {
         let b = [[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0]];
         let whole = std::slice::from_ref(&(0..4));
-        assert!(triangulate(&b, whole, Fill { seeds: &[], refine: None, shape: false }).is_none());
+        assert!(triangulate(&b, whole, Fill { seeds: &[], refine: None, shape: false, lenient: false }).is_none());
     }
 
     #[test]
@@ -509,7 +515,7 @@ mod tests {
         // A parameter that is zero in exact arithmetic, left at 1e-300 by projection.
         let b = [[1e-300, 0.0], [1.0, -1e-310], [1.0, 1.0], [0.0, 1.0]];
         let whole = std::slice::from_ref(&(0..4));
-        let Some((extra, tris)) = triangulate(&b, whole, Fill { seeds: &[], refine: None, shape: false }) else { panic!("meshes") };
+        let Some((extra, tris)) = triangulate(&b, whole, Fill { seeds: &[], refine: None, shape: false, lenient: false }) else { panic!("meshes") };
         assert!(extra.is_empty());
         assert_eq!(tris.len(), 2);
     }

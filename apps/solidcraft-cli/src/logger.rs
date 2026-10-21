@@ -4,7 +4,7 @@
 //! other crates' warnings, whose debug output is large), `RUST_LOG=error|warn|info|debug|trace`
 //! sets one level for every crate.
 
-use log::{Level, LevelFilter, Log, Metadata, Record};
+use log::{LevelFilter, Log, Metadata, Record};
 
 struct Stderr {
     /// The level for SolidCraft's crates.
@@ -22,21 +22,11 @@ impl Log for Stderr {
         if self.enabled(r.metadata()) {
             use std::io::Write as _;
             // A closed stderr is no reason to stop.
-            let _ = writeln!(std::io::stderr().lock(), "[{} {}] {}", level(r.level()), r.target(), r.args());
+            let _ = writeln!(std::io::stderr().lock(), "[{} {}] {}", r.level().as_str().to_ascii_lowercase(), r.target(), r.args());
         }
     }
 
     fn flush(&self) {}
-}
-
-fn level(l: Level) -> &'static str {
-    match l {
-        Level::Error => "error",
-        Level::Warn => "warn",
-        Level::Info => "info",
-        Level::Debug => "debug",
-        Level::Trace => "trace",
-    }
 }
 
 /// Removes `--debug` from `args`, wherever it is (every subcommand takes it), and installs the

@@ -13,6 +13,10 @@ use truck_modeling as mt;
 
 use super::geom::{Frame, R, conic_arc};
 
+/// How far a band's ring edge may lie off its surface, as a fraction of the body, for a body that
+/// declares no accuracy of its own.
+const RING_OFF_SURFACE: f64 = 1e-3;
+
 /// Samples per edge when looking for the split crossing.
 const SAMPLES: usize = 48;
 
@@ -521,12 +525,9 @@ pub(crate) fn split_seams(body: &crate::Body) -> Option<crate::Body> {
     if !body.solid.face_iter().any(seamed) {
         return None;
     }
-    // How far a ring edge of such a face may lie off the surface it bounds (see `iso_curve`).
-    // A body read from a file is held to the file's own declared uncertainty; one this kernel
-    // built declares none and keeps the kernel's own bound, a thousandth of the body. The same
-    // two cases as `accept` in `crate::tess::plan_face`, without its chord-tolerance term:
-    // nothing is meshed here, so no mesh tolerance is asked for.
-    let tol = body.boundary_tol.unwrap_or(body.size() * crate::tess::OFF_SURFACE).max(1e-6);
+    // How far a ring edge of such a face may lie off the surface it bounds (see `iso_curve`):
+    // the file's own declared uncertainty for a body read from one, else a thousandth of the body.
+    let tol = body.boundary_tol.unwrap_or(body.size() * RING_OFF_SURFACE).max(1e-6);
     let mut shells: Vec<mt::Shell> = Vec::new();
     for sh in body.solid.boundaries() {
         let mut faces: Vec<mt::Face> = sh.face_iter().cloned().collect();

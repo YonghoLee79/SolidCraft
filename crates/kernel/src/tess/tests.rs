@@ -435,16 +435,17 @@ fn a_point_on_a_long_helical_spline_projects() {
 }
 
 /// A sliver face as STEP files write one: two edges between the same two vertices, a rounding
-/// apart, so its boundary runs out and back along itself and encloses nothing. It is planned
-/// empty; a boundary enclosing anything is not.
+/// apart, so its boundary runs out and back along itself. Its slits dropped, nothing is left to
+/// bound a face (it is planned empty); a boundary enclosing anything keeps its loop.
 #[test]
-fn a_boundary_running_back_along_itself_is_folded() {
+fn a_boundary_running_back_along_itself_is_all_slit() {
     let out: Vec<Vec3> = (0..5).map(|i| Vec3::new(f64::from(i), 0.5 * f64::from(i), 0.0)).collect();
     let mut sliver = out.clone();
     sliver.extend(out.iter().rev().skip(1).take(3).map(|p| *p + Vec3::new(0.0, 1e-14, 0.0)));
-    assert!(folded(&[sliver], 1e-9));
+    let (left, _) = drop_slits(&[sliver], &[Vec::new()], 1e-9);
+    assert!(left.iter().all(|l| l.len() < 3), "{left:?}");
     let mut lens = out.clone();
     lens.extend(out.iter().rev().skip(1).take(3).map(|p| *p + Vec3::new(0.0, 1e-3, 0.0)));
-    assert!(!folded(&[lens], 1e-9));
-    assert!(!folded(&[vec![Vec3::ZERO, Vec3::X, Vec3::Y]], 1e-9));
+    let (kept, _) = drop_slits(std::slice::from_ref(&lens), &[Vec::new()], 1e-9);
+    assert_eq!(kept, vec![lens]);
 }

@@ -29,12 +29,9 @@ pub struct Body {
     /// `crate::step_in::Units::tol`); `None` for a body this kernel built, which has no such
     /// declaration.
     ///
-    /// This one tolerance is deliberately **not** a fraction of [`Body::size`], unlike the rest:
-    /// a file's uncertainty says how accurately that file was written, and that does not grow
-    /// with the part. A fraction of the size let a 2 m part accept a boundary 2 mm off its
-    /// surface and project it there without a word, while a 20 mm copy of the very same part
-    /// accepted only 0.02 mm. The exception is the point of the field; see `accept` in
-    /// [`crate::tess::plan_face`].
+    /// A band face's ring edges are held to it when the importer splits the band (see
+    /// `crate::step_in::split`). The display planner takes it only where it is more than its own
+    /// bound, a hundredth of the body (see `accept` in [`crate::tess::plan_face`]).
     pub(crate) boundary_tol: Option<f64>,
     /// The last volume measured for this solid and the tolerance it was measured at, shared by
     /// clones because they share the solid. A boolean measures its operands, and a later boolean
