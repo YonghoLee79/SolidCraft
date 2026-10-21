@@ -4333,6 +4333,7 @@ dependencies = [
 name = "solidcraft-macros"
 version = "0.18.3"
 dependencies = [
+ "rfd",
  "serde_json",
  "solidcraft-macro-client",
 ]

@@ -30,7 +30,8 @@ filter by size. `type` and `feature` are optional. Empty `edges` on Chamfer is a
 JSON and Rust examples live in [examples/macros](../examples/macros) (`.macro.json` and `.rs`).
 Open offers JSON and Rust files (`.json`, `.rs`, and `.exe` on Windows). A JSON file is loaded.
 A `.rs` or `.exe` is selected; Play starts it against this window (the `.exe` beside a `.rs`,
-or a built `target/debug` or `target/release` binary, otherwise `cargo run`). A **start part** is a
+or a built `target/debug` or `target/release` binary, otherwise `cargo run`). A successful
+Rust Play is one undo step; a failed Play restores the design. A **start part** is a
 command script that builds the design the macro expects. Load it, optionally edit, then Play:
 
 ```sh
@@ -48,6 +49,10 @@ solidcraft part.solidcraft
 | `batch-mass` | Rust | `batch-mass/*.start.json` | Folder of STEP → mass CSV |
 | `batch-export` | Rust | same | Folder of STEP → STEP/STL (`file.export`) |
 | `chamfer-large-holes` | Rust | `enclosure.start.json` | Complex part: find holes ≥ 2 mm and chamfer |
+| `python-macro` | Rust host | (script) | Picks a `.py`; Python on PATH only for this binary |
+| `python/mounting_plate.py` | Python | empty | 8 mm plate, M8 holes 12 mm from the edges, even ~50 mm pitch |
+| `python/chamfer_large_holes.py` | Python | `enclosure.start.json` | Same as the Rust chamfer |
+| `python/batch_mass.py` | Python | `batch-mass/*.start.json` | Folder of STEP → mass CSV |
 
 Try the enclosure: load the start, Open it, then Play the `chamfer-large-holes` binary. The two
 Ø2.5 mm screw bosses pick up a 1 mm chamfer.
@@ -83,5 +88,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 The desktop app starts a loopback control port; Play a binary from MACRO, or set
 `SOLIDCRAFT_CONTROL_PORT`. Headless needs `solidcraft-cli` on `PATH` (or `SOLIDCRAFT_CLI`).
 The browser keeps JSON only.
+
+Play `python-macro` (or `cargo run -p solidcraft-macros --bin python-macro -- examples/macros/python/mounting_plate.py`).
+It asks for a `.py` if you pass no path. SolidCraft does not link Python; only that host needs
+`python3` on PATH. The helper is `examples/macros/python/solidcraft.py`.
+
+Mounting plate: prompts for length and width. Thickness 8 mm, edge offset 12 mm,
+M8 clearance holes, target pitch 50 mm. Gaps shorter than 40 mm drop a hole so spacing stays even.
 
 Desktop may spawn a user binary for a Rust macro; the CAD binary does not load plugins.

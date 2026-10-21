@@ -77,6 +77,10 @@ pub(crate) fn toolbar(app: &mut SolveApp, id: &str) {
 }
 
 fn play_button(app: &mut SolveApp) {
+    if app.session.macros.playing {
+        app.set_status("a macro is playing".to_string(), true);
+        return;
+    }
     if let Some(path) = app.rust_macro.clone() {
         spawn_rust_macro(app, &path);
         return;
@@ -289,6 +293,57 @@ fn cargo_launch(path: &std::path::Path) -> Result<RustLaunch, String> {
     Ok(RustLaunch { program: "cargo".into(), args, dir: manifest.parent().map(std::path::Path::to_path_buf) })
 }
 
+/// A spawned Rust Play; `tick` waits and collapses undo.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct RustPlay {
+    child: std::process::Child,
+    checkpoint: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for RustPlay {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub(crate) fn tick(app: &mut SolveApp, ctx: &egui::Context) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (app, ctx);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ctx.request_repaint();
+        let result = {
+            let Some(play) = app.rust_play.as_mut() else { return };
+            match play.child.try_wait() {
+                Ok(None) => return,
+                Ok(Some(status)) => Ok((play.checkpoint, status.success())),
+                Err(e) => Err((play.checkpoint, e.to_string())),
+            }
+        };
+        app.rust_play = None;
+        match result {
+            Ok((id, ok)) => finish_play(app, id, ok),
+            Err((id, e)) => {
+                let _ = app.session.finish_external_play(id, false);
+                app.set_status(format!("Rust macro: {e}"), true);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn finish_play(app: &mut SolveApp, checkpoint: u64, ok: bool) {
+    match app.session.finish_external_play(checkpoint, ok) {
+        Ok(()) if ok => app.set_status("Played the Rust macro as one undo step".to_string(), false),
+        Ok(()) => app.set_status("Rust macro failed; the design was restored".to_string(), true),
+        Err(e) => app.set_status(format!("Rust macro: {e}"), true),
+    }
+}
+
 fn spawn_rust_macro(app: &mut SolveApp, path: &str) {
     #[cfg(target_arch = "wasm32")]
     {
@@ -297,6 +352,10 @@ fn spawn_rust_macro(app: &mut SolveApp, path: &str) {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if app.session.macros.playing || app.rust_play.is_some() {
+            app.set_status("a macro is playing".to_string(), true);
+            return;
+        }
         let Some(port) = app.control_port.or_else(|| std::env::var("SOLIDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok()).filter(|p| *p != 0))
         else {
             app.set_status("SolidCraft could not start a control port for Rust macros", true);
@@ -309,6 +368,8 @@ fn spawn_rust_macro(app: &mut SolveApp, path: &str) {
                 return;
             }
         };
+        let checkpoint = app.session.checkpoint();
+        app.session.macros.playing = true;
         let mut cmd = std::process::Command::new(&launch.program);
         cmd.args(&launch.args).env("SOLIDCRAFT_CONTROL_PORT", port.to_string());
         if let Some(dir) = &launch.dir {
@@ -325,8 +386,14 @@ fn spawn_rust_macro(app: &mut SolveApp, path: &str) {
         }
         let shown = if launch.program == "cargo" { format!("cargo run {path}") } else { launch.program.clone() };
         match cmd.spawn() {
-            Ok(_) => app.set_status(format!("Started {shown}"), false),
-            Err(e) => app.set_status(format!("Rust macro: {e}"), true),
+            Ok(child) => {
+                app.rust_play = Some(RustPlay { child, checkpoint });
+                app.set_status(format!("Started {shown}"), false);
+            }
+            Err(e) => {
+                let _ = app.session.finish_external_play(checkpoint, false);
+                app.set_status(format!("Rust macro: {e}"), true);
+            }
         }
     }
 }
@@ -341,18 +408,33 @@ pub(crate) fn play(app: &mut SolveApp, params: Value) {
     }
 }
 
-/// A chip that stays up for the whole recording, including while it is paused.
+/// A chip that stays up for the whole recording, including while it is paused, and while a Rust Play runs.
 pub(crate) fn chip(app: &SolveApp, ctx: &egui::Context) {
-    if !app.session.macros.recording {
+    let rust_running = {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.rust_play.is_some()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+    };
+    if !app.session.macros.recording && !rust_running {
         return;
     }
-    let steps = app.session.macros.steps();
+    let text = if rust_running {
+        "Playing Rust macro…".to_string()
+    } else {
+        let steps = app.session.macros.steps();
+        let paused = app.session.macros.paused;
+        let id = if paused { "macro.chip_paused" } else { "macro.chip_recording" };
+        crate::i18n::format(id, &[("steps", &steps.to_string())])
+    };
     let paused = app.session.macros.paused;
-    let id = if paused { "macro.chip_paused" } else { "macro.chip_recording" };
-    let text = crate::i18n::format(id, &[("steps", &steps.to_string())]);
     let t = Tokens::get();
     egui::Area::new(egui::Id::new("sc_macro_recording")).anchor(Align2::CENTER_TOP, vec2(0.0, 36.0)).interactable(false).show(ctx, |ui| {
-        let color = if paused { t.warning } else { t.error };
+        let color = if rust_running || paused { t.warning } else { t.error };
         let galley = ui.painter().layout_no_wrap(text, FontId::proportional(t.font_label), t.text);
         let size = galley.size() + vec2(22.0, 8.0);
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());

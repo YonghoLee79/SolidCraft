@@ -938,6 +938,32 @@ impl Session {
         }
     }
 
+    /// After a spawned Rust macro exits: keep the design as one undo step, or restore on failure.
+    pub fn finish_external_play(&mut self, checkpoint_id: u64, ok: bool) -> Result<()> {
+        self.macros.playing = false;
+        if !ok {
+            return self.restore_checkpoint(checkpoint_id);
+        }
+        let i = self
+            .checkpoints
+            .iter()
+            .position(|c| c.id == checkpoint_id)
+            .ok_or_else(|| EngineError::Other(format!("no checkpoint {checkpoint_id}")))?;
+        let Some(c) = self.checkpoints.drain(i..).next() else {
+            return Err(EngineError::Other(format!("no checkpoint {checkpoint_id}")));
+        };
+        let changed = !Arc::ptr_eq(&self.doc, &c.doc) || self.active_sketch != c.active_sketch || self.pending_moves != c.pending_moves;
+        self.undo = c.undo;
+        self.redo.clear();
+        if changed {
+            self.undo.push(Snapshot { label: "Play Macro".into(), doc: c.doc, active_sketch: c.active_sketch, pending_moves: c.pending_moves });
+            if self.undo.len() > MAX_UNDO {
+                self.undo.remove(0);
+            }
+        }
+        Ok(())
+    }
+
     /// A scratch copy of the session (same design and model, no history or log) to try
     /// commands on without touching this one.
     pub fn scratch(&self) -> Session {

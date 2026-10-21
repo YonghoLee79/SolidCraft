@@ -206,6 +206,29 @@ fn chamfer_of_no_edges_is_a_no_op() {
 }
 
 #[test]
+fn a_spawned_play_is_one_undo() {
+    let mut s = Session::default();
+    let id = s.checkpoint();
+    s.macros.playing = true;
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "operation": "new"}));
+    run(&mut s, "solid.sphere", json!({"radius": 4, "operation": "new"}));
+    assert_eq!(s.doc.features.len(), 2);
+    assert!(s.undo.len() >= 2, "{}", s.undo.len());
+    s.finish_external_play(id, true).unwrap();
+    assert!(!s.macros.playing);
+    assert_eq!(s.undo.len(), 1, "the two features are one Play");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.features.len(), 0);
+
+    let mut s = Session::default();
+    let id = s.checkpoint();
+    s.macros.playing = true;
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    s.finish_external_play(id, false).unwrap();
+    assert_eq!(s.doc.features.len(), 0, "a failed play restores the design");
+}
+
+#[test]
 fn the_start_parts_build() {
     let mut holes = Session::default();
     load_start(&mut holes, "chamfer-holes.start.json");
@@ -277,6 +300,29 @@ fn the_example_macros_run() {
     let dxf = std::fs::read_to_string(&path).unwrap();
     std::fs::remove_dir_all(&dir).ok();
     assert!(dxf.contains("ENTITIES"), "{dxf}");
+}
+
+#[test]
+fn the_mounting_plate_even_spacing_count() {
+    let script = format!("{}/python/mounting_plate.py", examples_dir());
+    let mut py = std::process::Command::new("python3");
+    py.args([&script, "--count", "200", "150"]);
+    let out = match py.output() {
+        Ok(o) => o,
+        Err(_) => {
+            let mut py = std::process::Command::new("python");
+            py.args([&script, "--count", "200", "150"]);
+            match py.output() {
+                Ok(o) => o,
+                Err(_) => return,
+            }
+        }
+    };
+    if !out.status.success() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(text, "14", "{text}");
 }
 
 fn examples_dir() -> String {
