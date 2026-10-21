@@ -335,7 +335,7 @@ jobs:
           # Pull requests lint the affected packages (scripts/ci/affected.py); everything else, all.
           scope=(--workspace)
           if [ "$FULL" != true ]; then scope=(); for p in $PACKAGES; do scope+=(-p "$p"); done; fi
-          cargo clippy "${scope[@]}" --all-targets --profile ci --locked -- -D warnings
+          cargo clippy "${scope[@]}" --all-features --all-targets --profile ci --locked -- -D warnings
 
   build-tests:
     name: Build tests
@@ -377,7 +377,7 @@ jobs:
           # Pull requests archive only the affected packages (scripts/ci/affected.py).
           scope=(--workspace)
           if [ "$FULL" != true ]; then scope=(); for p in $PACKAGES; do scope+=(-p "$p"); done; fi
-          cargo nextest archive "${scope[@]}" --cargo-profile ci --locked --archive-file tests.tar.zst
+          cargo nextest archive "${scope[@]}" --all-features --cargo-profile ci --locked --archive-file tests.tar.zst
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nextest-archive

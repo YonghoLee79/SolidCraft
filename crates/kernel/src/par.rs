@@ -8,7 +8,13 @@ use crate::{Result, guard};
 /// thread. Waking the pool's workers costs tens of microseconds, so callers ask for it only
 /// when the items carry more work than that (decided from the work, not the item count).
 pub(crate) fn map<T: Sync, R: Send>(what: &'static str, items: &[T], parallel: bool, f: impl Fn(&T) -> Result<R> + Sync) -> Vec<Result<R>> {
-    let one = |item: &T| guard(what, || f(item));
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    let context = opentelemetry::Context::current();
+    let one = |item: &T| {
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        let _context = context.clone().attach();
+        guard(what, || f(item))
+    };
     // The browser build has no worker pool: everything runs on the calling thread.
     #[cfg(target_arch = "wasm32")]
     let _ = parallel;
@@ -53,7 +59,13 @@ pub fn map_with_local_pools<T: Sync, R: Send>(items: &[T], max_threads: usize, f
                 let _ = cell.set(pool);
             }
             let pool = cell.get().ok_or_else(|| crate::KernelError::Failed("missing mesh worker".into()))?;
-            pool.install(|| guard("mesh worker", || f(item)))
+            #[cfg(feature = "telemetry")]
+            let context = opentelemetry::Context::current();
+            pool.install(|| {
+                #[cfg(feature = "telemetry")]
+                let _context = context.clone().attach();
+                guard("mesh worker", || f(item))
+            })
         })
     };
     #[cfg(target_arch = "wasm32")]
@@ -67,7 +79,13 @@ pub fn map_with_local_pools<T: Sync, R: Send>(items: &[T], max_threads: usize, f
 /// `f` over `items` as [`for_each_on_threads`] runs it, results in item order (`None` where an
 /// item panicked).
 pub fn map_on_threads<T: Sync, R: Send>(items: &[T], max_threads: usize, f: impl Fn(&T) -> R + Sync) -> Vec<Option<R>> {
-    let one = |item: &T| guard("parallel item", || Ok(f(item))).ok();
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    let context = opentelemetry::Context::current();
+    let one = |item: &T| {
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        let _context = context.clone().attach();
+        guard("parallel item", || Ok(f(item))).ok()
+    };
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -112,6 +130,32 @@ pub fn map_on_threads<T: Sync, R: Send>(items: &[T], max_threads: usize, f: impl
 mod tests {
     use super::*;
     use crate::KernelError;
+
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    #[test]
+    fn all_dispatchers_preserve_trace_context_and_restore_the_callers_context() {
+        use opentelemetry::Context;
+        use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
+        let before = Context::current().span().span_context().clone();
+        let expected = SpanContext::new(TraceId::from(42), SpanId::from(7), TraceFlags::SAMPLED, false, TraceState::default());
+        let context = Context::new().with_remote_span_context(expected.clone());
+        let read = |_: &i32| Ok(Context::current().span().span_context().clone());
+        {
+            let _attached = context.attach();
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+            let outer = Context::current();
+            let pooled = pool.install(|| {
+                let _attached = outer.attach();
+                map("telemetry test", &[0; 16], true, read)
+            });
+            assert!(pooled.into_iter().all(|r| r.unwrap() == expected));
+            let threaded = map_on_threads(&[0; 16], 2, |_| Context::current().span().span_context().clone());
+            assert!(threaded.into_iter().all(|r| r.unwrap() == expected));
+            let local = map_with_local_pools(&[0; 16], 2, read);
+            assert!(local.into_iter().all(|r| r.unwrap() == expected));
+        }
+        assert_eq!(Context::current().span().span_context(), &before);
+    }
 
     #[test]
     fn local_pools_keep_order_and_errors_and_bound_nested_parallelism() {

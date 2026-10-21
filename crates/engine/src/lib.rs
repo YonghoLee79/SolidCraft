@@ -23,6 +23,8 @@ pub mod sample;
 pub mod schema;
 mod slicer_icon;
 pub mod slicers;
+#[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+pub mod telemetry;
 pub mod timing;
 pub mod view;
 
@@ -614,7 +616,11 @@ impl Session {
     }
 
     pub fn refresh(&mut self) {
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        let trace = telemetry::Evaluation::start();
         self.model.evaluate(&self.doc);
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        trace.finish(&self.model);
         #[cfg(test)]
         {
             self.evaluations += 1;
@@ -754,6 +760,15 @@ impl Session {
     /// gesture's end (`sketch.drag_end`, or whatever runs next after an abandoned gesture) brings
     /// the model up to date before anything reads it.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        {
+            telemetry::command(id, || self.execute_inner(id, params))
+        }
+        #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+        self.execute_inner(id, params)
+    }
+
+    fn execute_inner(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         let host_viewport = self.render_viewport.clone();
         let host_jobs = self.render_jobs.host.clone();

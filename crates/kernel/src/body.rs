@@ -1194,12 +1194,23 @@ impl Body {
     /// [`Body::tessellate_with`] in which no facet turns more than `angle` radians either
     /// (infinite: the chord tolerance alone).
     fn tessellate_within(&self, tol: f64, angle: f64, refine: bool) -> Result<Mesh> {
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        {
+            crate::telemetry::mesh(self, "reference", tol, angle, refine, || self.tessellate_within_cached(tol, angle, refine))
+        }
+        #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+        self.tessellate_within_cached(tol, angle, refine)
+    }
+
+    fn tessellate_within_cached(&self, tol: f64, angle: f64, refine: bool) -> Result<Mesh> {
         let mesh = || crate::profile::timed(crate::profile::Kind::Tessellate, || self.tessellate_within_untimed(tol, angle, refine));
         let memo = self.meshes.as_ref().filter(|m| std::sync::Arc::ptr_eq(&m.solid, &self.solid));
         // Held while meshing: threads asking for the same mesh wait for it rather than make it too.
         let Some(Ok(mut made)) = memo.map(|m| m.made.lock()) else { return mesh() };
         let key = (tol.to_bits(), angle.to_bits(), refine);
         if let Some((_, m)) = made.iter().find(|(k, _)| *k == key) {
+            #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+            crate::telemetry::cached_mesh();
             return Ok(Mesh::clone(m));
         }
         let m = mesh()?;
@@ -1346,7 +1357,13 @@ impl Body {
     }
 
     fn plan_within(&self, tol: f64, angle: Option<f64>) -> Result<solidcraft_geom::tess::TessPlan> {
-        crate::profile::timed(crate::profile::Kind::Tessellate, || self.plan_within_untimed(tol, angle))
+        let run = || crate::profile::timed(crate::profile::Kind::Tessellate, || self.plan_within_untimed(tol, angle));
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        {
+            crate::telemetry::plan(self, tol, angle, run)
+        }
+        #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+        run()
     }
 
     fn plan_within_untimed(&self, tol: f64, angle: Option<f64>) -> Result<solidcraft_geom::tess::TessPlan> {
@@ -1468,7 +1485,13 @@ impl Body {
     /// body's [`Body::display_plan`] (shared edge nodes, structured grids), or the way
     /// [`Body::tessellate`] meshes when no plan can be made.
     pub fn display_mesh(&self, tol: f64) -> Result<Mesh> {
-        crate::profile::timed(crate::profile::Kind::Tessellate, || self.display_mesh_untimed(tol))
+        let run = || crate::profile::timed(crate::profile::Kind::Tessellate, || self.display_mesh_untimed(tol));
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        {
+            crate::telemetry::mesh(self, "display", tol, f64::INFINITY, false, run)
+        }
+        #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+        run()
     }
 
     fn display_mesh_untimed(&self, tol: f64) -> Result<Mesh> {
@@ -1491,7 +1514,13 @@ impl Body {
     /// sagitta of a small radius on a large body (a sheet-metal bend, a small hole), which the
     /// tolerance alone leaves as one flat facet.
     pub fn display_mesh_angular(&self, tol: f64, angle: f64) -> Result<Mesh> {
-        crate::profile::timed(crate::profile::Kind::Tessellate, || self.display_mesh_angular_untimed(tol, angle))
+        let run = || crate::profile::timed(crate::profile::Kind::Tessellate, || self.display_mesh_angular_untimed(tol, angle));
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        {
+            crate::telemetry::mesh(self, "display_angular", tol, angle, false, run)
+        }
+        #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+        run()
     }
 
     fn display_mesh_angular_untimed(&self, tol: f64, angle: f64) -> Result<Mesh> {
@@ -1510,7 +1539,13 @@ impl Body {
     /// The display mesh of a plan made from this body ([`Body::display_plan`],
     /// [`Body::display_plan_angular`]): evaluated on the CPU, with its edges flagged.
     pub fn display_mesh_of(&self, plan: &solidcraft_geom::tess::TessPlan) -> Result<Mesh> {
-        crate::profile::timed(crate::profile::Kind::Tessellate, || self.display_mesh_of_untimed(plan))
+        let run = || crate::profile::timed(crate::profile::Kind::Tessellate, || self.display_mesh_of_untimed(plan));
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        {
+            crate::telemetry::mesh(self, "display_plan", f64::NAN, f64::NAN, false, run)
+        }
+        #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+        run()
     }
 
     fn display_mesh_of_untimed(&self, plan: &solidcraft_geom::tess::TessPlan) -> Result<Mesh> {
@@ -1520,7 +1555,13 @@ impl Body {
     /// The reference mesher's angular display mesh: what [`Body::display_mesh_angular`] falls
     /// back to when no plan can be made.
     pub fn reference_display_mesh_angular(&self, tol: f64, angle: f64) -> Result<Mesh> {
-        crate::profile::timed(crate::profile::Kind::Tessellate, || self.reference_display_mesh_angular_untimed(tol, angle))
+        let run = || crate::profile::timed(crate::profile::Kind::Tessellate, || self.reference_display_mesh_angular_untimed(tol, angle));
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        {
+            crate::telemetry::mesh(self, "reference_display", tol, angle, false, run)
+        }
+        #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+        run()
     }
 
     fn reference_display_mesh_angular_untimed(&self, tol: f64, angle: f64) -> Result<Mesh> {

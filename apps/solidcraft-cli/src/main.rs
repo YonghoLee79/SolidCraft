@@ -85,6 +85,8 @@ const USAGE: &str = "usage:
 ";
 
 fn main() -> ExitCode {
+    #[cfg(feature = "telemetry")]
+    let _telemetry = solidcraft_engine::telemetry::init("solidcraft-cli");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("run") => cmd_run(&args[1..]),

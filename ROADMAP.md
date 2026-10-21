@@ -256,6 +256,9 @@ completed drawings publish atomically. The browser still exports synchronously.
   Crash Reports…) with a reviewed issue draft; agents read them through
   `diagnostics.crash_reports`, the MCP `crash_reports` tool or the CLI. Nothing is sent
   anywhere. See [crash reports](docs/crash-reports.md).
+- Local development: optional native OpenTelemetry geometry, command and model-evaluation traces,
+  with kernel timings and labeled reproduction runs. Any OTLP/HTTP collector can receive them;
+  Logal is one optional local example. See [local telemetry](docs/local-telemetry.md).
 - Agent chat (off by default, desktop): a side panel that drives a coding agent the user
   already has (Claude Code through its ACP adapter, Codex, Gemini CLI, OpenCode, Grok Build, …) over the
   Agent Client Protocol, under the user's own login; SolidCraft stores no keys. The agent works

@@ -140,6 +140,8 @@ mod sweep_path;
 #[cfg(test)]
 mod sweep_rails_tests;
 mod tangent_cylinders;
+#[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+mod telemetry;
 mod tess;
 #[cfg(test)]
 mod thin_face_tests;
@@ -260,14 +262,19 @@ pub fn guard<T>(what: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let depth = Depth;
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     drop(depth);
-    match r {
+    let result = match r {
         Ok(r) => r,
         Err(p) => {
             let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
             log::warn!("kernel panic in {what}: {msg}");
             Err(KernelError::Internal(format!("{what}: {msg}")))
         }
+    };
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    if let Err(error) = &result {
+        telemetry::guard_error(error);
     }
+    result
 }
 
 #[cfg(test)]

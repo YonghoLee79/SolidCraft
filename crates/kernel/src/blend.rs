@@ -1845,6 +1845,15 @@ fn closed(input: &Body, b: Body) -> Result<Body> {
 /// faces around the edges is refused with [`KernelError::TooLarge`] ([`fillet_max`] finds the
 /// largest that works).
 pub fn fillet(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    {
+        crate::telemetry::blend("solidcraft.kernel.fillet", body, edges.len(), radius, || fillet_inner(body, edges, radius))
+    }
+    #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+    fillet_inner(body, edges, radius)
+}
+
+fn fillet_inner(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
     body.require_brep("fillet")?;
     // A round that would run past its faces into other geometry or another round (#1080).
     // Checked once built, so a refusal of the build itself stands as it is.
@@ -2081,6 +2090,15 @@ fn interacting_groups(body: &Body, pts: &[Vec3]) -> Option<Vec<Vec<usize>>> {
 /// prism whose only face inside the body is the chamfer plane (so neighbouring chamfers meet in
 /// a mitre); the local operation is the fallback.
 pub fn chamfer(body: &Body, edges: &[Vec3], distance: f64) -> Result<Body> {
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    {
+        crate::telemetry::blend("solidcraft.kernel.chamfer", body, edges.len(), distance, || chamfer_inner(body, edges, distance))
+    }
+    #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+    chamfer_inner(body, edges, distance)
+}
+
+fn chamfer_inner(body: &Body, edges: &[Vec3], distance: f64) -> Result<Body> {
     body.require_brep("chamfer")?;
     if !(distance.is_finite() && distance > 1e-6 && distance < 1e6) {
         return Err(KernelError::Invalid("chamfer size must be positive".into()));

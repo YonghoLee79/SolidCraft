@@ -343,7 +343,13 @@ fn faceted_polys(b: &Body, tol: f64, operand: usize) -> Option<Vec<Poly>> {
 /// triangles of `b`; an edge between facets of one face of `a`, or between triangles of `b`,
 /// has no origin.
 pub fn faceted_boolean(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<Option<Body>> {
-    crate::profile::timed(crate::profile::Kind::Boolean, || faceted_boolean_untimed(a, b, op, tol))
+    let run = || crate::profile::timed(crate::profile::Kind::Boolean, || faceted_boolean_untimed(a, b, op, tol));
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    {
+        crate::telemetry::faceted_boolean(a, b, op, tol, run)
+    }
+    #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+    run()
 }
 
 fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<Option<Body>> {

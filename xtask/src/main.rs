@@ -356,7 +356,7 @@ fn wasm_check() -> Result<(Command, usize), String> {
         crates.iter().filter(|c| matches!(layers::classify(&c.name), Some(layers::Class::Layer(_)))).map(|c| c.name.clone()).collect();
     set.push("solidcraft-web".into());
     let mut c = cargo();
-    c.args(["check", "--target", "wasm32-unknown-unknown", "--profile", "ci"]);
+    c.args(["check", "--target", "wasm32-unknown-unknown", "--all-features", "--profile", "ci"]);
     for p in &set {
         c.args(["-p", p]);
     }
@@ -375,10 +375,14 @@ fn cmd_ci() -> Result<(), String> {
     lists::run(&root(), false)?;
     cmd_layers()?;
     let mut c = cargo();
-    c.args(["clippy", "--workspace", "--all-targets", "--profile", "ci", "--", "-D", "warnings"]);
+    c.args(["clippy", "--workspace", "--all-targets", "--all-features", "--profile", "ci", "--", "-D", "warnings"]);
     run(c, "cargo clippy -D warnings")?;
     let (wasm, n) = wasm_check()?;
-    test::run(&[], &[], vec![(format!("wasm32-unknown-unknown check ({n} crates)"), wasm), test::doc_tests(&[], &[])])?;
+    test::run(
+        &["--all-features"],
+        &[],
+        vec![(format!("wasm32-unknown-unknown check ({n} crates)"), wasm), test::doc_tests(&["--all-features"], &[])],
+    )?;
     web_offline_test::run(&root(), None, false)?;
     eprintln!("ci: all gates passed");
     Ok(())

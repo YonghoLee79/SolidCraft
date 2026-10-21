@@ -139,6 +139,9 @@ the most complete description of the house style.
 
 ## Tests
 
+For optional OTLP traces during local bug investigation, see [local telemetry](docs/local-telemetry.md).
+The guide covers collector setup and comparison of reproductions before and after a fix.
+
 | What | Where | Run |
 |---|---|---|
 | Unit and engine tests | next to the code, or `*_tests.rs` files | `cargo xtask test` (or `cargo test --workspace --profile ci`) |

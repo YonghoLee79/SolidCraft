@@ -40,6 +40,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 schemars = "1.2"
 serde_path_to_error = "0.1"
 log = "0.4"
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
 sha2 = "0.10"
 moxcms = { version = "0.8.1", default-features = false, features = ["extended_range"] }
 semver = "1"

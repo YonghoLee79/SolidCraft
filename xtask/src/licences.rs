@@ -46,7 +46,9 @@ struct Crate {
 }
 
 fn generate(root: &Path) -> Result<String, String> {
-    let out = cargo().args(["metadata", "--format-version", "1", "--locked"]).output().map_err(|e| format!("cargo metadata: {e}"))?;
+    // Include optional native integrations in the licence audit and generated notices too.
+    let out =
+        cargo().args(["metadata", "--format-version", "1", "--all-features", "--locked"]).output().map_err(|e| format!("cargo metadata: {e}"))?;
     if !out.status.success() {
         return Err(format!("cargo metadata failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }

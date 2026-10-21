@@ -917,7 +917,13 @@ fn take_attempt() -> bool {
 /// The result carries its exact history ([`Body::history`]) over the operands `[a, b]`,
 /// whichever way it was made, or none where a step it took does not report one.
 pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
-    crate::profile::timed(crate::profile::Kind::Boolean, || boolean_untimed(a, b, op))
+    let run = || crate::profile::timed(crate::profile::Kind::Boolean, || boolean_untimed(a, b, op));
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    {
+        crate::telemetry::boolean(a, b, op, run)
+    }
+    #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+    run()
 }
 
 fn boolean_untimed(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
@@ -1313,19 +1319,47 @@ where
             reject(reason);
             return (false, f64::NAN);
         }
-        let Ok(mr) = r.tessellate_with(tol_m, true) else { return (false, f64::NAN) };
+        let Ok(mr) = r.tessellate_with(tol_m, true) else {
+            #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+            crate::telemetry::candidate("mesh_failed", f64::NAN, va, vb, slack);
+            return (false, f64::NAN);
+        };
         let v = mr.measure().volume;
         let bounds = plausible(v, op, va, vb, slack);
         if !bounds {
+            #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+            crate::telemetry::candidate("volume_bounds", v, va, vb, slack);
             return (false, v);
         }
-        if unfused(r) || crate::coplanar::has_skin(r, &mr) {
+        if unfused(r) {
+            #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+            crate::telemetry::candidate("unfused_shells", v, va, vb, slack);
             return (false, v);
         }
-        let consistent = match &meshes {
-            (Some(ma), Some(mb)) => mismatch(ma, mb, &mr, op).is_none_or(|f| f < 0.004),
-            _ => true,
+        if crate::coplanar::has_skin(r, &mr) {
+            #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+            crate::telemetry::candidate("skin", v, va, vb, slack);
+            return (false, v);
+        }
+        let membership = match &meshes {
+            (Some(ma), Some(mb)) => mismatch(ma, mb, &mr, op),
+            _ => None,
         };
+        let consistent = membership.is_none_or(|f| f < 0.004);
+        #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+        crate::telemetry::candidate(
+            if membership.is_none() {
+                "membership_unchecked"
+            } else if consistent {
+                "passed"
+            } else {
+                "membership"
+            },
+            v,
+            va,
+            vb,
+            slack,
+        );
         (consistent, v)
     };
     if refine {
@@ -1908,31 +1942,39 @@ pub(crate) fn truck_boolean(a: &Body, b: &Body, op: BoolOp, shift: Option<mt::Ve
     if !take_attempt() {
         return Err(KernelError::Failed("no result in the tries it was given".into()));
     }
-    guard("boolean", || {
-        let (mut sa, mut sb) = (a.deep_copy(), b.deep_copy());
-        if let Some(shift) = shift {
-            sa = mt::builder::translated(&sa, shift);
-            sb = mt::builder::translated(&sb, shift);
-        }
-        let tool_edges = (op == BoolOp::Cut).then(|| record::edge_origins(&sb, 1));
-        // A body that keeps its meshes is meshed once for all its booleans at this tolerance.
-        let meshed = shift.is_none().then(|| a.boolean_meshes(tol)).flatten();
-        let and = |sa: &Solid, sb: &Solid| match &meshed {
-            Some(m) => truck_shapeops::and_with_history_meshed(sa, m, sb, tol),
-            None => truck_shapeops::and_with_history(sa, sb, tol),
-        };
-        let res = match op {
-            BoolOp::Union => truck_shapeops::or_with_history(&sa, &sb, tol),
-            BoolOp::Cut => {
-                sb.not();
-                and(&sa, &sb)
+    let run = || {
+        guard("boolean", || {
+            let (mut sa, mut sb) = (a.deep_copy(), b.deep_copy());
+            if let Some(shift) = shift {
+                sa = mt::builder::translated(&sa, shift);
+                sb = mt::builder::translated(&sb, shift);
             }
-            BoolOp::Intersect => and(&sa, &sb),
-        };
-        let (s, h) = res.ok_or_else(|| KernelError::Failed("no result".into()))?;
-        let h = h.and_then(|h| recorded::shapeops(&h, &sb, tool_edges.as_ref()));
-        Ok((if let Some(shift) = shift { mt::builder::translated(&s, -shift) } else { s }, h))
-    })
+            let tool_edges = (op == BoolOp::Cut).then(|| record::edge_origins(&sb, 1));
+            // A body that keeps its meshes is meshed once for all its booleans at this tolerance.
+            let meshed = shift.is_none().then(|| a.boolean_meshes(tol)).flatten();
+            let and = |sa: &Solid, sb: &Solid| match &meshed {
+                Some(m) => truck_shapeops::and_with_history_meshed(sa, m, sb, tol),
+                None => truck_shapeops::and_with_history(sa, sb, tol),
+            };
+            let res = match op {
+                BoolOp::Union => truck_shapeops::or_with_history(&sa, &sb, tol),
+                BoolOp::Cut => {
+                    sb.not();
+                    and(&sa, &sb)
+                }
+                BoolOp::Intersect => and(&sa, &sb),
+            };
+            let (s, h) = res.ok_or_else(|| KernelError::Failed("no result".into()))?;
+            let h = h.and_then(|h| recorded::shapeops(&h, &sb, tool_edges.as_ref()));
+            Ok((if let Some(shift) = shift { mt::builder::translated(&s, -shift) } else { s }, h))
+        })
+    };
+    #[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+    {
+        crate::telemetry::attempt(op, tol, shift.map_or(0.0, |s| Vec3::new(s.x, s.y, s.z).len()), run)
+    }
+    #[cfg(not(all(feature = "telemetry", not(target_arch = "wasm32"))))]
+    run()
 }
 
 /// A boolean of `a` and `b` given as their pieces (`la`, `lb`); the result's pieces in one body.
