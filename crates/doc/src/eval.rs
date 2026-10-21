@@ -3,7 +3,7 @@
 #[path = "placed_mesh.rs"]
 mod placed_mesh;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
@@ -850,6 +850,10 @@ pub struct Model {
     pub last_restored: usize,
     /// Results by inputs, shared with this model's copies.
     pub cache: Arc<std::sync::Mutex<EvalCache>>,
+    /// What features that read only their own component's bodies left of it, by what they read
+    /// ([`scoped_key`]): small, and kept apart so that the whole states above, which a change
+    /// early in a large design replaces by the dozen, do not push them out.
+    scoped: Arc<std::sync::Mutex<EvalCache>>,
     /// Evaluate everything from scratch (no reuse; tests compare the two).
     pub no_cache: bool,
     /// The imported texts' digests the last `evaluate` fingerprinted the features with.
@@ -1104,6 +1108,181 @@ fn cache_key(f: &Feature, chain_fp: u64, local: u64, ctx: u64, state: &ModelStat
         chain_fp.hash(&mut h);
     }
     h.finish()
+}
+
+/// The bodies a feature reads, when that is all it reads of the model: none for a new body (a
+/// primitive, an import, a sketch on a fixed plane that projects nothing, an extrusion or
+/// revolution of a sketch in its component, without To or From Objects), the ones it names (its
+/// targets or participants, the body a fillet, chamfer or thread is on, a combine's target and
+/// tools), else its component's bodies (a primitive, plain hole, extrusion or revolution joined
+/// to or cut from them, which shapes its tools against those alone: see [`tool_view`]). Every body read
+/// must be its component's own; a component with sheet metal is left out. Such a feature
+/// after a change elsewhere (a parameter that resizes another part) gives what it gave before on
+/// the same bodies: [`scoped_key`] finds that result. `None`: it reads more, or isn't known to.
+fn scoped_reads(doc: &Document, f: &Feature, state: &ModelState) -> Option<Vec<String>> {
+    let own = |n: &str| state.body(n).is_some_and(|b| b.component == f.component && !b.transferred);
+    let component = || state.bodies.iter().filter(|b| b.component == f.component).map(|b| b.name.clone()).collect::<Vec<_>>();
+    let named = |names: Vec<String>| (!names.is_empty() && names.iter().all(|n| n != "*")).then_some(names);
+    // A tool joined to, cut from or intersected with bodies: those it names, else (as
+    // `apply_traced` takes them) the component's.
+    let tool = |op: Operation, targets: &[String]| {
+        let targets = if targets.is_empty() { &f.participants[..] } else { targets };
+        match op {
+            Operation::NewBody => Some(Vec::new()),
+            _ if targets.is_empty() => Some(component()),
+            _ => named(targets.to_vec()),
+        }
+    };
+    // A sketch this feature draws from, as its own component holds it.
+    let sketch_here = |id: u64| state.sketch(id).is_some() && doc.feature(id).is_some_and(|s| s.component == f.component);
+    let reads = match &f.kind {
+        FeatureKind::Box { operation, .. }
+        | FeatureKind::Cylinder { operation, .. }
+        | FeatureKind::Sphere { operation, .. }
+        | FeatureKind::Torus { operation, .. } => tool(*operation, &f.participants)?,
+        FeatureKind::Fillet { body: Some(b), .. } | FeatureKind::Chamfer { body: Some(b), .. } => vec![b.to_string()],
+        // Where it drills is found over every body: [`scoped_key`] holds it.
+        // (A drilled hole's point asks every body whether it ends in the air.)
+        FeatureKind::Hole { points: None, to: None, thread: None, hole, .. } => {
+            if matches!(hole, HoleKind::Drilled { .. }) || more::any_eligible_sheet(f, state, &[]) {
+                return None;
+            }
+            tool(Operation::Cut, &f.participants)?
+        }
+        FeatureKind::Import { .. } => Vec::new(),
+        FeatureKind::Sketch { plane, sketch } => {
+            if !(fixed_plane(plane) && sketch.links.is_empty()) {
+                return None;
+            }
+            Vec::new()
+        }
+        // Without To or From Objects, an extrusion looks at no body but those it joins to or
+        // cuts (see `tool_view`).
+        FeatureKind::Extrude { sketch, extent, operation, targets, .. } => {
+            if extent.to.is_some() || extent.from.is_some() || !sketch_here(sketch.0) {
+                return None;
+            }
+            tool(*operation, &crate::plain(targets))?
+        }
+        FeatureKind::Revolve { sketch, to: None, operation, targets, .. } => {
+            if !sketch_here(sketch.0) {
+                return None;
+            }
+            tool(*operation, &crate::plain(targets))?
+        }
+        // The body is the one nearest the point over every body: [`scoped_key`] holds it.
+        FeatureKind::Thread { face, designation, .. } => vec![thread_on(state, f.id, face.0, designation.as_deref(), None).ok()?.body],
+        FeatureKind::Combine { target, tools, .. } => std::iter::once(target).chain(tools).map(|t| t.to_string()).collect(),
+        _ => return None,
+    };
+    let sheet = state.bodies.iter().any(|b| b.component == f.component && state.sheets.iter().any(|s| s.body == b.name));
+    (!sheet && reads.iter().all(|n| own(n)) && f.participants.iter().all(|p| own(p))).then_some(reads)
+}
+
+/// The key of a feature that [`scoped_reads`] `reads` by what it reads: its own inputs, those
+/// bodies, its sketch, every body's name and the body counter (the names new bodies take), not
+/// the rest of the model.
+fn scoped_key(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, local: u64, state: &ModelState, reads: &[String]) -> Option<u64> {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if matches!(f.kind, FeatureKind::Hole { .. }) {
+        let (spots, dir) = hole_spots(vals, state, f).ok()?;
+        for p in spots.iter().chain([&dir]) {
+            [p.x, p.y, p.z].map(f64::to_bits).hash(&mut h);
+        }
+        // Its tools are sized by the bodies its axis meets, whichever part they belong to.
+        for p in &spots {
+            hole_axis_size(state, p, dir).to_bits().hash(&mut h);
+        }
+    }
+    if let FeatureKind::Extrude { sketch, .. } | FeatureKind::Revolve { sketch, .. } = &f.kind {
+        sketch.0.hash(&mut h);
+        state.sketch_keys.get(&sketch.0)?.hash(&mut h);
+    }
+    "scoped".hash(&mut h);
+    local.hash(&mut h);
+    f.id.hash(&mut h);
+    f.component.hash(&mut h);
+    doc.units.hash(&mut h);
+    serde_json::to_string(&doc.body_components).unwrap_or_default().hash(&mut h);
+    for b in &state.bodies {
+        b.name.hash(&mut h);
+    }
+    for n in reads {
+        let b = state.body(n)?;
+        b.name.hash(&mut h);
+        b.key.hash(&mut h);
+        b.feature.hash(&mut h);
+        b.transferred.hash(&mut h);
+    }
+    state.body_counter.hash(&mut h);
+    Some(h.finish())
+}
+
+/// What a feature that [`scoped_reads`] `reads` left of them: those bodies after it and what it
+/// made (bodies by names `before` did not have), the body counter and its own blends, threads
+/// and sketch; nothing else of the model.
+fn own_part(f: &Feature, reads: &[String], before: &BTreeSet<String>, after: &ModelState) -> ModelState {
+    ModelState {
+        bodies: after.bodies.iter().filter(|b| reads.contains(&b.name) || !before.contains(&b.name)).cloned().collect(),
+        body_counter: after.body_counter,
+        threads: after.threads.iter().filter(|t| t.feature == f.id).cloned().collect(),
+        blend_edges: after.blend_edges.get(&f.id).map(|v| BTreeMap::from([(f.id, v.clone())])).unwrap_or_default(),
+        fitted: after.fitted.get(&f.id).map(|v| BTreeMap::from([(f.id, v.clone())])).unwrap_or_default(),
+        tapered: after.tapered.get(&f.id).map(|v| BTreeMap::from([(f.id, v.clone())])).unwrap_or_default(),
+        sketches: after.sketches.iter().filter(|s| s.feature == f.id).cloned().collect(),
+        sketch_keys: after.sketch_keys.get(&f.id).map(|k| BTreeMap::from([(f.id, *k)])).unwrap_or_default(),
+        ..ModelState::default()
+    }
+}
+
+/// A plane given without reference to any geometry: an origin plane, or one placed, offset,
+/// turned or flipped from one by numbers.
+fn fixed_plane(plane: &PlaneRef) -> bool {
+    match plane {
+        PlaneRef::Origin { .. } | PlaneRef::Custom { .. } | PlaneRef::Placed { .. } => true,
+        PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } | PlaneRef::Flipped { base, .. } => fixed_plane(base),
+        _ => false,
+    }
+}
+
+/// `state` with what [`own_part`] kept of `f`'s work: the bodies it read replaced where they
+/// are, those it no longer has left out, new ones last, as evaluating `f` again would leave them.
+fn with_own_part(f: &Feature, reads: &[String], state: &ModelState, part: &ModelState) -> ModelState {
+    let mut next = state.clone();
+    let mut bodies = Vec::with_capacity(next.bodies.len() + part.bodies.len());
+    for b in std::mem::take(&mut next.bodies) {
+        if !reads.contains(&b.name) {
+            bodies.push(b);
+        } else if let Some(p) = part.bodies.iter().find(|p| p.name == b.name) {
+            bodies.push(p.clone());
+        }
+    }
+    for p in &part.bodies {
+        if !bodies.iter().any(|b| b.name == p.name) {
+            bodies.push(p.clone());
+        }
+    }
+    next.bodies = bodies;
+    next.body_counter = part.body_counter;
+    next.threads.retain(|t| t.feature != f.id);
+    next.threads.extend(part.threads.iter().cloned());
+    for (k, v) in &part.blend_edges {
+        next.blend_edges.insert(*k, v.clone());
+    }
+    for (k, v) in &part.fitted {
+        next.fitted.insert(*k, v.clone());
+    }
+    for (k, v) in &part.tapered {
+        next.tapered.insert(*k, v.clone());
+    }
+    if !part.sketches.is_empty() {
+        next.sketches.retain(|s| s.feature != f.id);
+        next.sketches.extend(part.sketches.iter().cloned());
+    }
+    for (k, v) in &part.sketch_keys {
+        next.sketch_keys.insert(*k, *v);
+    }
+    next
 }
 
 /// Where components are placed, for a sketch that sees other components' geometry (on a face,
@@ -1441,6 +1620,32 @@ impl Model {
             } else {
                 f
             };
+            // A feature reading only its own component's bodies, after a change elsewhere: what it
+            // left of them before, when those bodies and where it acts are as they were.
+            let scoped = (!self.no_cache && warning.is_none()).then(|| scoped_reads(doc, f, &state)).flatten().and_then(|reads| {
+                let key = scoped_key(doc, &vals, f, fingerprint(0, f, &vals, false, &self.step_digests), &state, &reads)?;
+                Some((key, reads, state.bodies.iter().map(|b| b.name.clone()).collect::<BTreeSet<String>>()))
+            });
+            if let Some((skey, reads, _)) = &scoped
+                && let Some(c) = self.scoped.lock().ok().and_then(|mut m| m.get(*skey)).filter(|c| c.warning.is_none())
+            {
+                recomputed -= 1;
+                restored += 1;
+                state = Arc::new(with_own_part(f, reads, &state, &c.state));
+                out.push(FeatureResult {
+                    id: f.id,
+                    name: f.name.clone(),
+                    error: None,
+                    warning: None,
+                    boolean_diagnostics: c.boolean_diagnostics,
+                    ms: c.ms,
+                    skipped: false,
+                    stale: false,
+                    fingerprint: fp,
+                    state: state.clone(),
+                });
+                continue;
+            }
             // A parameter with an error fails the features using it, with that error.
             let bad_param = param_names(f).into_iter().find_map(|n| self.param_errors.get(&n).map(|e| format!("parameter `{n}`: {e}")));
             let (r, mut boolean_diagnostics) = kernel::capture_boolean_diagnostics(|| match bad_param {
@@ -1508,6 +1713,23 @@ impl Model {
                         state: state.clone(),
                     },
                 );
+                if let Some((skey, reads, before)) = &scoped
+                    && error.is_none()
+                    && let Ok(mut m) = self.scoped.lock()
+                {
+                    let part = own_part(f, reads, before, &state);
+                    m.put(
+                        *skey,
+                        CachedEval {
+                            error: None,
+                            warning: warning.clone(),
+                            boolean_diagnostics: boolean_diagnostics.clone(),
+                            ms,
+                            bytes: part.retained_bytes(),
+                            state: Arc::new(part),
+                        },
+                    );
+                }
             }
             out.push(FeatureResult {
                 id: f.id,
@@ -3460,6 +3682,39 @@ pub(crate) fn thin_regions(vals: &BTreeMap<String, Value>, ss: &SolvedSketch, th
 /// How far apart (mm) profiles must stay for their extruded tools to be cut as one.
 const APART_GAP: f64 = 1e-3;
 
+/// The bodies an extrusion or revolution that names no targets shapes its tools against: those
+/// it joins to or cuts (as [`apply_traced`] takes them: its participants, else its component's
+/// bodies and what it made), not every body of the model. Other components' bodies lie in their
+/// own frames here, and are left alone by the boolean. With To or From Objects, which may be
+/// any body's faces, the whole model.
+fn tool_view<'a>(f: &Feature, st: &'a ModelState) -> std::borrow::Cow<'a, ModelState> {
+    let plain = match &f.kind {
+        FeatureKind::Extrude { extent, targets, .. } => extent.to.is_none() && extent.from.is_none() && targets.is_empty(),
+        FeatureKind::Revolve { to, targets, .. } => to.is_none() && targets.is_empty(),
+        _ => false,
+    };
+    let all = f.participants.len() == 1 && f.participants.first().is_some_and(|t| t == "*");
+    let keep =
+        |b: &ModelBody| if f.participants.is_empty() { b.component == f.component || b.feature == f.id } else { f.participants.contains(&b.name) };
+    if !plain || all || st.bodies.iter().all(keep) {
+        return std::borrow::Cow::Borrowed(st);
+    }
+    let bodies: Vec<ModelBody> = st.bodies.iter().filter(|b| keep(b)).cloned().collect();
+    let view = ModelState {
+        threads: st.threads.clone(),
+        sheets: st.sheets.iter().filter(|s| bodies.iter().any(|b| b.name == s.body)).cloned().collect(),
+        bodies,
+        sketches: st.sketches.clone(),
+        body_counter: st.body_counter,
+        construct: st.construct.clone(),
+        sketch_keys: st.sketch_keys.clone(),
+        blend_edges: st.blend_edges.clone(),
+        fitted: st.fitted.clone(),
+        tapered: st.tapered.clone(),
+    };
+    std::borrow::Cow::Owned(view)
+}
+
 /// The tool bodies a feature adds or removes (extrude, revolve, primitives), in the current state.
 fn feature_tools_with_constructor(
     doc: &Document,
@@ -3469,6 +3724,8 @@ fn feature_tools_with_constructor(
     constructor: &mut Option<ExtrudeConstructor>,
 ) -> Result<Vec<Traced>> {
     let unnamed = |bodies: Vec<Body>| -> Vec<Traced> { bodies.into_iter().map(Traced::unnamed).collect() };
+    let view = tool_view(f, st);
+    let st: &ModelState = &view;
     match &f.kind {
         FeatureKind::Extrude { sketch, profiles, extent, operation, targets, thin } => {
             let ss = sketch_in_feature_frame(

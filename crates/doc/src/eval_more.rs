@@ -888,7 +888,7 @@ fn sheet_eligible(f: &Feature, st: &ModelState, targets: &[String], original: &c
 }
 
 /// Whether a cut of `f` with these targets machines any sheet metal body.
-fn any_eligible_sheet(f: &Feature, st: &ModelState, targets: &[String]) -> bool {
+pub(super) fn any_eligible_sheet(f: &Feature, st: &ModelState, targets: &[String]) -> bool {
     st.sheets.iter().any(|original| sheet_eligible(f, st, targets, original))
 }
 

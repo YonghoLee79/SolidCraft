@@ -2304,6 +2304,211 @@ fn cached_evaluation_matches_from_scratch() {
     }
 }
 
+/// Parts in components of their own, jointed to a plate whose width is a parameter: a width
+/// change rebuilds the plate, and each part's features (a foot, its upright, a hole, a fillet
+/// of its own body) are taken from what they gave before on the same part, not rebuilt. The
+/// result is what evaluating from scratch gives, and the parts still sit on their holes.
+#[test]
+fn parts_of_other_components_are_reused_when_a_parameter_resizes_another() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.change", json!({"name": "W", "expression": "300 mm"}));
+    run(&mut s, "component.create", json!({"name": "Plate"}));
+    run(&mut s, "solid.box", json!({"length": "W", "width": 100, "height": 1, "corner": [0, 0, 0]}));
+    for k in 1..=3 {
+        run(&mut s, "solid.hole", json!({"position": [format!("{k} * W / 4"), 50, 1], "diameter": 6}));
+    }
+    let plate = s.doc.find_component("Plate").and_then(|c| s.doc.occurrence_of(c)).map(|o| o.id).unwrap_or(0);
+    run(&mut s, "occurrence.ground", json!({"occurrence": plate, "grounded": true}));
+    for k in 1..=3 {
+        let name = format!("Bracket{k}");
+        let x = 100.0 * k as f64;
+        run(&mut s, "component.activate", json!({"component": "root"}));
+        run(&mut s, "component.create", json!({"name": name}));
+        run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 2, "corner": [x, 200, 0], "body_name": name}));
+        run(&mut s, "solid.box", json!({"length": 2, "width": 20, "height": 15, "corner": [x + 18.0, 200, 0], "operation": "join"}));
+        run(&mut s, "solid.hole", json!({"position": [x + 10.0, 210, 2], "diameter": 6}));
+        run(&mut s, "solid.fillet", json!({"edges": [[x + 18.0, 210, 15]], "radius": 0.5, "body": name}));
+        let r = run(
+            &mut s,
+            "joint.create",
+            json!({"type": "rigid", "a": {"occurrence": "Plate", "circle": [75.0 * k as f64 + 3.0, 50, 0.8], "x": [1, 0, 0]},
+                   "b": {"occurrence": name, "circle": [x + 13.0, 210, 0.4], "x": [1, 0, 0]}}),
+        );
+        assert_eq!(r["errors"].as_array().map(Vec::len), Some(0), "{r}");
+    }
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    let shape = |st: &solidcraft_doc::ModelState| {
+        st.bodies
+            .iter()
+            .map(|b| {
+                let m = solidcraft_kernel::measure(&b.body).unwrap();
+                let c = [m.centroid.x, m.centroid.y, m.centroid.z].map(|v| (v * 1e6).round());
+                (b.name.clone(), b.component, (m.volume * 1e6).round(), (m.area * 1e6).round(), c, m.faces, m.edges, m.vertices)
+            })
+            .collect::<Vec<_>>()
+    };
+    for w in [320.0, 400.0, 300.0, 333.0] {
+        let r = run(&mut s, "parameters.change", json!({"name": "W", "expression": format!("{w} mm")}));
+        // The plate's box and holes are rebuilt (or, at a width seen before, restored too); the
+        // brackets' four features each are not.
+        assert!(r["recomputed"].as_u64().is_some_and(|n| n <= 4), "W = {w}: {r}");
+        assert!(r["restored"].as_u64().is_some_and(|n| n >= 12), "W = {w}: {r}");
+        let mut fresh = solidcraft_doc::Model::new();
+        fresh.no_cache = true;
+        fresh.evaluate(&s.doc);
+        assert!(fresh.results.iter().all(|r| r.error.is_none()), "W = {w}");
+        assert_eq!(shape(&s.model.state()), shape(&fresh.state()), "W = {w}");
+        let solved = run(&mut s, "joint.solve", json!({}));
+        assert_eq!(solved["errors"].as_array().map(Vec::len), Some(0), "W = {w}: {solved}");
+        for k in 1..=3 {
+            let c = s.doc.find_component(&format!("Bracket{k}")).unwrap_or(0);
+            let o = s.doc.occurrence_of(c).map(|o| o.id).unwrap_or(0);
+            let at = solidcraft_doc::apply_point(
+                &solidcraft_doc::joints::occurrence_world(&s.doc, o),
+                solidcraft_geom::Vec3::new(100.0 * k as f64 + 10.0, 210.0, 0.0),
+            );
+            let want = solidcraft_geom::Vec3::new(k as f64 * w / 4.0, 50.0, 1.0);
+            assert!(at.dist(want) < 1e-6, "W = {w}: Bracket{k}'s hole at {at:?}, the plate's at {want:?}");
+        }
+    }
+}
+
+/// Imported parts and sketches on a fixed plane in other components are reused too.
+#[test]
+fn imported_and_sketched_parts_are_reused_when_a_parameter_resizes_another() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-scoped-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let step = dir.join("bracket.step");
+    let mut b = Session::default();
+    run(&mut b, "solid.box", json!({"length": 20, "width": 20, "height": 2, "corner": [0, 0, 0]}));
+    run(&mut b, "solid.hole", json!({"position": [10, 10, 2], "diameter": 6}));
+    run(&mut b, "file.export", json!({"path": step.to_string_lossy()}));
+    let mut s = Session::default();
+    run(&mut s, "parameters.change", json!({"name": "W", "expression": "300 mm"}));
+    run(&mut s, "component.create", json!({"name": "Plate"}));
+    run(&mut s, "solid.box", json!({"length": "W", "width": 100, "height": 1, "corner": [0, 0, 0]}));
+    for k in 1..=2 {
+        run(&mut s, "solid.hole", json!({"position": [format!("{k} * W / 3"), 50, 1], "diameter": 6}));
+    }
+    let plate = s.doc.find_component("Plate").and_then(|c| s.doc.occurrence_of(c)).map(|o| o.id).unwrap_or(0);
+    run(&mut s, "occurrence.ground", json!({"occurrence": plate, "grounded": true}));
+    for k in 1..=2 {
+        let name = format!("Bracket{k}");
+        let x = 100.0 * k as f64;
+        run(&mut s, "component.activate", json!({"component": "root"}));
+        run(&mut s, "file.insert_step", json!({"path": step.to_string_lossy(), "name": name, "matrix": [1, 0, 0, x, 0, 1, 0, 200, 0, 0, 1, 0]}));
+        let r = run(
+            &mut s,
+            "joint.create",
+            json!({"type": "rigid", "a": {"occurrence": "Plate", "circle": [100.0 * k as f64 + 3.0, 50, 0.8], "x": [1, 0, 0]},
+                   "b": {"occurrence": name, "circle": [x + 13.0, 210, 0.4], "x": [1, 0, 0]}}),
+        );
+        assert_eq!(r["errors"].as_array().map(Vec::len), Some(0), "{r}");
+    }
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "component.create", json!({"name": "Clip"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 400], "p1": [30, 410]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 3}));
+    // A hole cut through the clip, naming no targets: it cuts the clip's own bodies.
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [15, 405], "radius": 2}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 3, "operation": "cut"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    let shape = |st: &solidcraft_doc::ModelState| {
+        let mut v = st
+            .bodies
+            .iter()
+            .map(|b| {
+                let m = solidcraft_kernel::measure(&b.body).unwrap();
+                let c = [m.centroid.x, m.centroid.y, m.centroid.z].map(|v| (v * 1e6).round());
+                (b.name.clone(), b.component, (m.volume * 1e6).round(), (m.area * 1e6).round(), c, m.faces, m.edges, m.vertices)
+            })
+            .collect::<Vec<_>>();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        (v, st.sketches.iter().map(|k| (k.feature, k.profiles.len())).collect::<Vec<_>>())
+    };
+    for w in [330.0, 420.0, 300.0] {
+        let r = run(&mut s, "parameters.change", json!({"name": "W", "expression": format!("{w} mm")}));
+        // The plate's box and holes are rebuilt; the two imports and the clip's sketches,
+        // extrusion and cut are not.
+        assert!(r["recomputed"].as_u64().is_some_and(|n| n <= 3), "W = {w}: {r}");
+        assert!(r["restored"].as_u64().is_some_and(|n| n >= 6), "W = {w}: {r}");
+        let mut fresh = solidcraft_doc::Model::new();
+        fresh.no_cache = true;
+        fresh.evaluate(&s.doc);
+        assert!(fresh.results.iter().all(|r| r.error.is_none()), "W = {w}");
+        assert_eq!(shape(&s.model.state()), shape(&fresh.state()), "W = {w}");
+        let solved = run(&mut s, "joint.solve", json!({}));
+        assert_eq!(solved["errors"].as_array().map(Vec::len), Some(0), "W = {w}: {solved}");
+        for k in 1..=2 {
+            let c = s.doc.find_component(&format!("Bracket{k}")).unwrap_or(0);
+            let o = s.doc.occurrence_of(c).map(|o| o.id).unwrap_or(0);
+            let at = solidcraft_doc::apply_point(&solidcraft_doc::joints::occurrence_world(&s.doc, o), solidcraft_geom::Vec3::new(10.0, 10.0, 0.0));
+            let want = solidcraft_geom::Vec3::new(k as f64 * w / 3.0, 50.0, 1.0);
+            assert!(at.dist(want) < 1e-6, "W = {w}: Bracket{k}'s hole at {at:?}, the plate's at {want:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Parts beside a resized one in the same component are reused when they read only their own
+/// bodies: primitives with their fillets, cuts and chamfers, an extrusion with a thread and a
+/// join to it, a revolution and a combine.
+#[test]
+fn parts_beside_a_resized_one_are_reused_by_the_bodies_they_read() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.change", json!({"name": "W", "expression": "200 mm"}));
+    run(&mut s, "solid.box", json!({"length": "W", "width": 100, "height": 2, "corner": [0, 0, 0], "body_name": "Plate"}));
+    run(&mut s, "solid.cylinder", json!({"radius": 10, "height": 20, "base": [-300, 0, 0], "body_name": "Pin"}));
+    run(&mut s, "solid.fillet", json!({"edges": [[-290, 0, 20]], "radius": 2, "body": "Pin"}));
+    run(&mut s, "solid.cylinder", json!({"radius": 4, "height": 30, "base": [-300, 0, -5], "operation": "cut", "targets": ["Pin"]}));
+    run(&mut s, "solid.chamfer", json!({"edges": [[-296, 0, 0]], "distance": 0.5, "body": "Pin"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [-200, 0], "radius": 5}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 20, "operation": "new", "body_name": "Shaft"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "offset": 20}));
+    run(&mut s, "sketch.circle.center", json!({"center": [-200, 0], "radius": 8}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 4, "operation": "join", "targets": ["Shaft"]}));
+    run(&mut s, "solid.thread", json!({"face": [-195, 0, 10], "designation": "M10", "length": 6, "modeled": true}));
+    run(&mut s, "sketch.create", json!({"plane": "XZ"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-120, 0], "p1": [-110, 10]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.revolve", json!({"axis": "Z", "operation": "new", "body_name": "Ring"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [-400, 0, 0], "body_name": "A"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [-395, 5, 0], "body_name": "B"}));
+    run(&mut s, "solid.combine", json!({"target": "A", "tools": ["B"]}));
+    let shape = |st: &solidcraft_doc::ModelState| {
+        let bodies = st
+            .bodies
+            .iter()
+            .map(|b| {
+                let m = solidcraft_kernel::measure(&b.body).unwrap();
+                let c = [m.centroid.x, m.centroid.y, m.centroid.z].map(|v| (v * 1e6).round());
+                (b.name.clone(), (m.volume * 1e6).round(), (m.area * 1e6).round(), c, m.faces, m.edges, m.vertices)
+            })
+            .collect::<Vec<_>>();
+        let threads = st.threads.iter().map(|t| (t.feature, t.body.clone(), t.designation.clone())).collect::<Vec<_>>();
+        (bodies, threads, st.sketches.iter().map(|k| (k.feature, k.profiles.len())).collect::<Vec<_>>())
+    };
+    let features = s.doc.features.len() as u64;
+    for w in [250.0, 320.0, 200.0, 275.0] {
+        let r = run(&mut s, "parameters.change", json!({"name": "W", "expression": format!("{w} mm")}));
+        // Only the plate is rebuilt (at a width seen before, not even that).
+        assert!(r["recomputed"].as_u64().is_some_and(|n| n <= 1), "W = {w}: {r}");
+        assert!(r["restored"].as_u64().is_some_and(|n| n + 1 >= features), "W = {w}: {r}");
+        let mut fresh = solidcraft_doc::Model::new();
+        fresh.no_cache = true;
+        fresh.evaluate(&s.doc);
+        assert!(fresh.results.iter().all(|r| r.error.is_none()), "W = {w}");
+        assert_eq!(shape(&s.model.state()), shape(&fresh.state()), "W = {w}");
+    }
+}
+
 /// A fillet keeps its edge when an earlier sketch dimension resizes the body (QA s06).
 #[test]
 fn fillet_follows_its_edge_after_an_upstream_resize() {
