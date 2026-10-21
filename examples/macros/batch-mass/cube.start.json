@@ -1,0 +1,5 @@
+{
+  "commands": [
+    {"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10, "name": "Cube"}}
+  ]
+}

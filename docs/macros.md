@@ -26,7 +26,22 @@ parameter as `{{name}}`. An earlier step's result is kept with `"let"`:
 `inspect.find_holes` finds cylindrical holes (extrude cuts included). `max_diameter` / `min_diameter`
 filter by size. `type` and `feature` are optional. Empty `edges` on Chamfer is a no-op.
 
-JSON examples: [examples/macros](../examples/macros).
+JSON examples: [examples/macros](../examples/macros). A **start part** is a command script that
+builds the design the macro expects. Load it, optionally edit, then Play:
+
+```sh
+solidcraft-cli run examples/macros/chamfer-holes.start.json --save holes.solidcraft
+solidcraft holes.solidcraft
+```
+
+| Macro | Start part | Notes |
+|---|---|---|
+| `chamfer-large-holes` | `chamfer-holes.start.json` | Plate with Ø4, Ø8, Ø12; chamfers holes ≥ 5 mm |
+| `chamfer-small-holes` | `chamfer-holes.start.json` | Same plate; chamfers holes ≤ 8 mm |
+| `flatten-export-dxf` | `flatten-export-dxf.start.json` | Sheet L-bracket |
+| `chamfer-selection` | `chamfer-holes.start.json` | Select edges, then Play the binary |
+| `batch-mass` | `batch-mass/*.start.json` | `run --out dir/part.step`, then the binary on `dir` |
+| `plate-generator`, `bolt-circle` | (empty design) | They create the part |
 
 ## Rust (custom macros)
 
@@ -51,7 +66,7 @@ Example binaries (`cargo run -p solidcraft-macros --bin chamfer-large-holes`):
 
 | Binary | What it does |
 |---|---|
-| `chamfer-large-holes` | Chamfer both ends of holes wider than 5 mm (sample plate extrude cuts) |
+| `chamfer-large-holes` | Chamfer both ends of holes wider than 5 mm (`chamfer-holes.start.json`) |
 | `plate-generator` | Plate with four corner holes from argv |
 | `flatten-export-dxf` | Flat pattern + DXF |
 | `bolt-circle` | N holes on a pitch circle |

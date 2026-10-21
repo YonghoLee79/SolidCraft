@@ -206,6 +206,30 @@ fn chamfer_of_no_edges_is_a_no_op() {
 }
 
 #[test]
+fn the_start_parts_build() {
+    let mut holes = Session::default();
+    load_start(&mut holes, "chamfer-holes.start.json");
+    let found = run(&mut holes, "inspect.find_holes", json!({"max_diameter": "20 mm"}));
+    assert_eq!(found["count"], 3, "{found}");
+    let mut names: Vec<_> = found["holes"].as_array().unwrap().iter().filter_map(|h| h["feature"]["name"].as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Big", "Small", "Wide"], "{found}");
+
+    let mut sheet = Session::default();
+    load_start(&mut sheet, "flatten-export-dxf.start.json");
+    let m = run(&mut sheet, "inspect.measure", json!({}));
+    assert_eq!(m["body_count"], 1, "{m}");
+    assert_eq!(m["bodies"][0]["sheet_metal"], true, "{m}");
+
+    let mut cube = Session::default();
+    load_start(&mut cube, "batch-mass/cube.start.json");
+    assert!((volume(&mut cube) - 1000.0).abs() < 1e-6, "{}", volume(&mut cube));
+    let mut cyl = Session::default();
+    load_start(&mut cyl, "batch-mass/cylinder.start.json");
+    assert!(volume(&mut cyl) > 0.0, "{}", volume(&mut cyl));
+}
+
+#[test]
 fn the_example_macros_run() {
     let mut s = Session::default();
     s.macros.loaded = Some(example("plate-generator.macro.json"));
@@ -217,26 +241,25 @@ fn the_example_macros_run() {
     let expected = 120.0 * 80.0 * 8.0 - 4.0 * std::f64::consts::PI * 3.25_f64.powi(2) * 8.0;
     assert!((v - expected).abs() < 1.0, "{v} vs {expected}");
 
-    run(&mut s, "solid.hole", json!({"position": [60, 40, 8], "diameter": "12 mm", "name": "Big"}));
-    s.macros.loaded = Some(example("chamfer-small-holes.macro.json"));
-    let before = volume(&mut s);
-    let r = run(&mut s, "macro.play", json!({}));
+    let mut small = Session::default();
+    load_start(&mut small, "chamfer-holes.start.json");
+    small.macros.loaded = Some(example("chamfer-small-holes.macro.json"));
+    let before = volume(&mut small);
+    let r = run(&mut small, "macro.play", json!({}));
     assert_eq!(r["ran"], 2, "{r}");
-    assert!(volume(&mut s) < before, "only the small holes were chamfered");
-    let big = run(&mut s, "inspect.find_holes", json!({"feature": "Big"}));
+    assert!(volume(&mut small) < before, "only the holes up to 8 mm were chamfered");
+    let big = run(&mut small, "inspect.find_holes", json!({"feature": "Big"}));
     assert_eq!(big["count"], 1, "the 12 mm hole is still a hole: {big}");
 
-    let mut t = Session::default();
-    run(&mut t, "solid.box", json!({"length": 40, "width": 30, "height": 10}));
-    run(&mut t, "solid.hole", json!({"position": [10, 10, 10], "diameter": "4 mm", "name": "Small"}));
-    run(&mut t, "solid.hole", json!({"position": [30, 20, 10], "diameter": "8 mm", "name": "Wide"}));
-    t.macros.loaded = Some(example("chamfer-large-holes.macro.json"));
-    let before = volume(&mut t);
-    let r = run(&mut t, "macro.play", json!({}));
+    let mut large = Session::default();
+    load_start(&mut large, "chamfer-holes.start.json");
+    large.macros.loaded = Some(example("chamfer-large-holes.macro.json"));
+    let before = volume(&mut large);
+    let r = run(&mut large, "macro.play", json!({}));
     assert_eq!(r["ran"], 2, "{r}");
-    assert!(volume(&mut t) < before, "the hole larger than 5 mm was chamfered");
-    let small = run(&mut t, "inspect.find_holes", json!({"feature": "Small"}));
-    assert_eq!(small["count"], 1, "the 4 mm hole is still a hole: {small}");
+    assert!(volume(&mut large) < before, "the holes larger than 5 mm were chamfered");
+    let tiny = run(&mut large, "inspect.find_holes", json!({"feature": "Small"}));
+    assert_eq!(tiny["count"], 1, "the 4 mm hole is still a hole: {tiny}");
 
     let mut plate = Session::default();
     plate.run_script(&crate::sample::script()).unwrap();
@@ -250,11 +273,7 @@ fn the_example_macros_run() {
 
     let dir = temp_dir("dxf");
     let mut s = Session::default();
-    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
-    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [50, 30]}));
-    run(&mut s, "sketch.finish", json!({}));
-    run(&mut s, "sheet.flange", json!({"sketch": "Base"}));
-    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20}));
+    load_start(&mut s, "flatten-export-dxf.start.json");
     s.macros.loaded = Some(example("flatten-export-dxf.macro.json"));
     let path = dir.join("flat.dxf");
     let r = run(&mut s, "macro.play", json!({"params": {"path": path.display().to_string()}}));
@@ -264,8 +283,18 @@ fn the_example_macros_run() {
     assert!(dxf.contains("ENTITIES"), "{dxf}");
 }
 
+fn examples_dir() -> String {
+    format!("{}/../../examples/macros", env!("CARGO_MANIFEST_DIR"))
+}
+
 fn example(name: &str) -> super::macros::Macro {
-    let file = format!("{}/../../examples/macros/{}", env!("CARGO_MANIFEST_DIR"), name);
+    let file = format!("{}/{}", examples_dir(), name);
     let raw: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file}: {e}"))).unwrap();
     super::macros::parse_macro("macro.open", &raw).unwrap()
+}
+
+fn load_start(s: &mut Session, name: &str) {
+    let file = format!("{}/{}", examples_dir(), name);
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file}: {e}"))).unwrap();
+    s.run_script(&raw).unwrap_or_else(|e| panic!("{name}: {e}"));
 }
