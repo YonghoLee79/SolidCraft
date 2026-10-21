@@ -2256,6 +2256,8 @@ mod header_report_tests {
             assert!(crate::issue_report::pending(&h.app));
             assert_eq!(before, (h.app.session.doc.to_json(), h.app.session.undo.len(), h.app.session.revision));
             captured_frame(&mut h);
+            // The report card takes a few frames to reach its full height.
+            h.frames(16);
             // Existing review content scrolls vertically when the window is narrow.
             if width < 700.0 {
                 let [x, y] = h.widget("Close draft").unwrap();
