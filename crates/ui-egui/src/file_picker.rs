@@ -175,7 +175,7 @@ mod tests {
         if let Some(waker) = answer.waker.borrow_mut().take() {
             waker.wake();
         }
-        tick(app, &egui::Context::default());
+        tick(app, &crate::fonts::test_context());
         // A save the answer started is written on a worker: wait for it.
         crate::save_job::tick(app, true);
         assert!(!app.file_picker_busy());
