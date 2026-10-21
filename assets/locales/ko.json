@@ -1796,6 +1796,8 @@
   "ui.start": "시작",
   "ui.start_over": "처음부터 다시",
   "ui.start_page": "시작 페이지",
+  "ui.step_values": "화살표 키와 휠로 값 조절",
+  "ui.step_values_tip": "입력 중인 값 필드에서 위/아래 화살표 키와 필드 위의 마우스 휠로 숫자를 1씩 바꿉니다(Shift: 10, Alt: 0.1). 수식은 입력한 그대로 둡니다.",
   "ui.stretch": "늘이기",
   "ui.supersampling": "슈퍼샘플링 (SSAA)",
   "ui.supersampling_adaptive": "뷰가 멈춰 있을 때만",
