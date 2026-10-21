@@ -2367,6 +2367,20 @@ pub(crate) fn preview_should_roll_back(app: &SolveApp, held: crate::tool_modifie
     app.dialog.as_ref().is_some_and(|d| d.previews()) && app.preview.active && crate::tool_modifiers::preview_reselect(held, manipulator_dragging)
 }
 
+/// A drag of geometry begun in the view is under way (a sketch point or curve, a 3D sketch
+/// handle, a manipulator's arrow, a dimension, a joint, sketch text, a shape being dragged out):
+/// it keeps the pointer when the pointer crosses a floating card.
+pub(crate) fn drag_holds_pointer(app: &SolveApp) -> bool {
+    app.viewport.point_drag.is_some()
+        || crate::tool_modifiers::manipulator_dragging()
+        || app.viewport.draw_drag.is_some()
+        || app.viewport.text_drag.is_some()
+        || crate::sketch3d::dragging()
+        || crate::dim_view::dragging()
+        || crate::joint_drag::active(app)
+        || crate::sketch_text_handles::dragging(app)
+}
+
 pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let rect = ui.max_rect();

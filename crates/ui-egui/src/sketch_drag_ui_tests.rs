@@ -374,3 +374,29 @@ fn a_window_selected_circle_still_takes_its_radius_from_a_drag_on_its_edge() {
     let r = sk.radius(sk.curve_index("c1").expect("the circle")).expect("a radius");
     assert!((r - 15.0).abs() < 0.05, "{r}");
 }
+
+/// A drag that began in the view keeps following the pointer over a floating card (here the
+/// sketch palette) and ends where it is let go there. 0.18's floating layout dropped the
+/// pointer over cards, so the point stopped at the card's edge.
+#[test]
+fn a_point_drag_keeps_following_the_pointer_over_a_floating_card() {
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    run(&mut h, "sketch.create", json!({"plane":"XY"}));
+    run(&mut h, "sketch.line", json!({"points":[[0,0],[10,0]],"ids":["l"],"infer":false}));
+    run(&mut h, "sketch.options", json!({"snap":false,"show_dimensions":false,"show_constraints":false}));
+    h.call("ui.view", json!({"view":"top"}));
+    h.settle();
+    let palette = h.app.viewport.palette_rect.expect("the sketch palette is shown");
+    let a = screen(&mut h, 10.0, 0.0);
+    let target = palette.center();
+    assert!(crate::shell::covered(&h.app, target), "the target is under the palette");
+    let mut path = vec![a];
+    path.extend(steps(a, target, 12));
+    press_and_move(&mut h, &path);
+    assert_eq!(h.app.viewport.point_drag.as_ref().map(|(id, _, _)| id.as_str()), Some("l.end"));
+    release(&mut h, target);
+    let end = point(&h, "l.end");
+    let at = screen(&mut h, end.x, end.y);
+    assert!(at.distance(target) < 2.0, "the end stopped at {at:?}, the pointer was let go at {target:?}");
+}
