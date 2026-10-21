@@ -1488,6 +1488,32 @@ fn align_snaps_to_centres_and_edge_middles() {
     assert_eq!(p["to"]["snap"], json!("edge_mid"));
 }
 
+/// The Align dialog takes a plane (viewport or browser click) and the origin plane stays a plane
+/// in the command, so the bodies follow it when it moves.
+#[test]
+fn align_accepts_a_plane_click() {
+    let mut app = boxed();
+    let mut d = start(&mut app, vec![], "solid.align");
+    d.inputs[0].items = vec![Sel::Body { name: "Body1".into() }];
+    d.inputs[1].items = vec![face(&app, Vec3::new(20.0, 15.0, 0.0))];
+    let plane = crate::viewport::Hit::Plane { name: "XZ".into(), point: Vec3::ZERO };
+    d.active = 2;
+    let sel = d.candidate(&app.session, &plane);
+    assert_eq!(sel, Some(Sel::Plane { name: "XZ".into() }), "the To input takes a plane");
+    d.pick(&app.session, sel.unwrap());
+    let p = apply_commands(&app, &d).unwrap().remove(0).1;
+    assert_eq!(p["to_plane"], json!("XZ"));
+    assert!(p.get("to").is_none() && p["from_face"].is_array());
+    // The origin point is a From/To too.
+    let origin = crate::viewport::Hit::Vertex { body: String::new(), point: Vec3::ZERO };
+    let sel = d.candidate(&app.session, &origin);
+    assert!(sel.is_some(), "the To input takes the origin point");
+    d.inputs[2].items.clear();
+    d.pick(&app.session, sel.unwrap());
+    let p = apply_commands(&app, &d).unwrap().remove(0).1;
+    assert_eq!(p["to"], json!("origin"));
+}
+
 #[test]
 fn surface_dialogs_make_their_commands() {
     // A planar patch of a sketch's rectangle, then thickened; Edit Feature brings both back.
