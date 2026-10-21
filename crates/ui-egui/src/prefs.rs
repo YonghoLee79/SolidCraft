@@ -281,6 +281,33 @@ pub enum OrbitAround {
     Cursor,
 }
 
+/// Which program reads the 3D mouse on Linux when both spacenavd and the device itself (hidraw)
+/// are there (Preferences: "3D mouse driver"). Read by the app's reader, not by this crate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceMouseDriver {
+    /// spacenavd when it runs, else the device itself (how it always was).
+    #[default]
+    Automatic,
+    Spacenavd,
+    /// The hidraw device, bypassing spacenavd's settings.
+    Direct,
+}
+
+impl SpaceMouseDriver {
+    pub const ALL: [Self; 3] = [Self::Automatic, Self::Spacenavd, Self::Direct];
+
+    /// The choice as the reader thread shares it (an `AtomicU8`).
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Back from [`Self::to_u8`]; anything else reads as Automatic.
+    pub fn from_u8(value: u8) -> Self {
+        Self::ALL.into_iter().find(|driver| driver.to_u8() == value).unwrap_or_default()
+    }
+}
+
 /// The browser sidebar's first width, and the width [`Prefs::default`] restores; the panel
 /// itself clamps what the user drags to its own range.
 pub const DEFAULT_BROWSER_WIDTH: f32 = 250.0;
@@ -377,6 +404,11 @@ preference_settings! {
     space_mouse_reverse: [bool; 6] = [false; 6], 1;
     /// Per physical axis of the cap, a multiplier on top of `space_mouse_speed`; 0 switches it off.
     space_mouse_axis_speed: [f32; 6] = [1.0; 6], 1;
+    /// Per physical axis of the cap, which of its motions drives it (`space_mouse::reassigned`),
+    /// applied after calibration; each motion drives exactly one axis.
+    space_mouse_axis_source: [usize; 6] = crate::space_mouse::SAME_AXES, 1;
+    /// Which program reads the 3D mouse when spacenavd and the device itself are both there (Linux).
+    space_mouse_driver: SpaceMouseDriver = SpaceMouseDriver::default(), 1;
     /// Per 3D mouse (`space_mouse::Input::device`), the calibration that puts its axes on
     /// 3Dconnexion's. A device without one is read as it reports. Page resets keep calibrations.
     #[serde(deserialize_with = "calibrations_that_read")]
@@ -1385,23 +1417,103 @@ fn space_mouse_section(app: &mut SolveApp, ui: &mut egui::Ui) {
         setting::space_mouse_enabled(app, ui);
         setting::space_mouse_in_view(app, ui).on_hover_text(crate::i18n::tr("ui.space_mouse_show_in_view_tip"));
         setting::space_mouse_speed(app, ui);
-        for (axis, name) in SPACE_MOUSE_AXES.iter().enumerate() {
-            ui_kit::row(ui, crate::i18n::tr_label(name), |ui| {
+        // Rows say what they do to the view, through the mapping navigation uses; the choices
+        // are the device's calibrated motions. Neither names a kind of device.
+        let mapping = app.space_mouse.mapping;
+        let rows: Vec<(String, bool)> = (0..6)
+            .map(|row| {
+                let label = crate::space_mouse::row_label(mapping, row);
+                let text = crate::i18n::Locale::for_language(&app.preferences.language).format(label, &[("n", &(row + 1).to_string())]);
+                (text, label == "ui.space_mouse_view_off")
+            })
+            .collect();
+        let (driven_by, driven_by_label) = (app.tr("ui.space_mouse_driven_by").to_owned(), app.tr("ui.space_mouse_driven_by_label").to_owned());
+        let off_tip = app.tr("ui.space_mouse_view_off_tip").to_owned();
+        let motions: Vec<String> = crate::space_mouse::MOTIONS.iter().map(|motion| app.tr(motion).to_owned()).collect();
+        ui_kit::row(ui, app.tr("ui.space_mouse_view_axis"), |ui| {
+            let header = format!("{} · {} · {}", crate::i18n::tr_label("Invert"), crate::i18n::tr_label("Speed"), driven_by_label);
+            ui_kit::text(ui, &header, ui_kit::Text::Note("space_mouse_rows"));
+        });
+        for (axis, (name, off)) in rows.iter().enumerate() {
+            let group = ui_kit::row(ui, name, |ui| {
                 ui.add_enabled_ui(app.preferences.space_mouse_enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        if let Some(reverse) = app.preferences.space_mouse_reverse.get_mut(axis) {
-                            ui_kit::checkbox(ui, crate::i18n::tr_label("Invert"), reverse);
+                    // Invert and speed do nothing on a row the driver turns off. The motion
+                    // choice below stays live, so a motion can still be swapped out of it.
+                    ui.add_enabled_ui(!off, |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(reverse) = app.preferences.space_mouse_reverse.get_mut(axis) {
+                                ui_kit::checkbox(ui, crate::i18n::tr_label("Invert"), reverse);
+                            }
+                            if let Some(speed) = app.preferences.space_mouse_axis_speed.get_mut(axis) {
+                                ui_kit::slider(
+                                    ui,
+                                    speed,
+                                    0.0..=3.0,
+                                    ui_kit::Slider { step: Some(0.05), format: |v| format!("{v:.2}×"), ..Default::default() },
+                                );
+                            }
+                        });
+                    });
+                })
+                .response
+            });
+            if *off {
+                group.on_hover_text(&off_tip);
+            }
+            ui_kit::row(ui, &driven_by_label, |ui| {
+                ui.add_enabled_ui(app.preferences.space_mouse_enabled, |ui| {
+                    let source = &mut app.preferences.space_mouse_axis_source;
+                    let current = source.get(axis).copied().unwrap_or(axis);
+                    let mut chosen = current;
+                    ui_kit::dropdown_menu(ui, ("sc_space_mouse_source", axis), motions.get(current).map_or("", String::as_str), |ui| {
+                        for (from, name) in motions.iter().enumerate() {
+                            if ui_kit::list_picker(ui, name, name, chosen == from).clicked() {
+                                chosen = from;
+                            }
                         }
-                        if let Some(speed) = app.preferences.space_mouse_axis_speed.get_mut(axis) {
-                            ui_kit::slider(
-                                ui,
-                                speed,
-                                0.0..=3.0,
-                                ui_kit::Slider { step: Some(0.05), format: |v| format!("{v:.2}×"), ..Default::default() },
-                            );
+                    })
+                    .on_hover_text(&driven_by);
+                    if chosen != current {
+                        crate::space_mouse::reassign(source, axis, chosen);
+                    }
+                });
+            });
+        }
+        ui_kit::row(ui, "", |ui| {
+            let reassigned = app.preferences.space_mouse_axis_source != crate::space_mouse::SAME_AXES;
+            ui.add_enabled_ui(app.preferences.space_mouse_enabled && reassigned, |ui| {
+                if ui_kit::button(ui, app.tr("ui.space_mouse_reset_axes"), ui_kit::Button::Normal).clicked() {
+                    app.preferences.space_mouse_axis_source = crate::space_mouse::SAME_AXES;
+                }
+            });
+        });
+        // Only where the reader has seen the choice: Linux, with spacenavd and the device both there.
+        if let Some(present) = app.space_mouse.drivers.filter(|present| present.spacenavd || present.direct) {
+            let [label, auto, direct, only_spacenavd, only_direct] =
+                ["driver", "driver_auto", "driver_direct", "driver_only_spacenavd", "driver_only_direct"]
+                    .map(|key| app.tr(&format!("ui.space_mouse_{key}")).to_owned());
+            let driver = &mut app.preferences.space_mouse_driver;
+            ui_kit::row(ui, &label, |ui| match (present.spacenavd, present.direct) {
+                (true, true) => {
+                    let name = |driver| match driver {
+                        SpaceMouseDriver::Automatic => auto.as_str(),
+                        SpaceMouseDriver::Spacenavd => "spacenavd",
+                        SpaceMouseDriver::Direct => direct.as_str(),
+                    };
+                    ui_kit::dropdown_menu(ui, "sc_space_mouse_driver", name(*driver), |ui| {
+                        for choice in SpaceMouseDriver::ALL {
+                            if ui_kit::list_picker(ui, name(choice), name(choice), *driver == choice).clicked() {
+                                *driver = choice;
+                            }
                         }
                     });
-                });
+                }
+                (true, false) => {
+                    ui_kit::text(ui, &only_spacenavd, ui_kit::Text::Note("space_mouse_driver"));
+                }
+                (false, _) => {
+                    ui_kit::text(ui, &only_direct, ui_kit::Text::Note("space_mouse_driver"));
+                }
             });
         }
         ui_kit::row(ui, app.tr("ui.space_mouse_calibration"), |ui| {
@@ -1784,10 +1896,6 @@ fn current_theme_file(app: &SolveApp) -> serde_json::Value {
     }
 }
 
-/// The cap's physical axes, in the order of `Prefs::space_mouse_reverse`.
-pub(crate) const SPACE_MOUSE_AXES: [&str; 6] =
-    ["Push left / right", "Push forward / back", "Lift / press", "Tilt forward / back", "Tilt left / right", "Twist"];
-
 /// Fold a setting an older release kept in its own field into the one this version reads.
 /// `orbit_cursor` (`true` = the point under the cursor) became `orbit_around`. A 3D mouse
 /// calibration that can't be used as it is (a hand edit) is dropped, so the device is read as it
@@ -1796,6 +1904,10 @@ pub fn migrate(mut p: Prefs) -> Prefs {
     if p.orbit_cursor {
         p.orbit_around = OrbitAround::Cursor;
         p.orbit_cursor = false;
+    }
+    if !crate::space_mouse::drives_each_once(p.space_mouse_axis_source) {
+        log::warn!("preferences: the 3D mouse axis assignment {:?} doesn't drive each axis once; using the default", p.space_mouse_axis_source);
+        p.space_mouse_axis_source = crate::space_mouse::SAME_AXES;
     }
     p.space_mouse_calibrations.retain(|device, calibration| {
         let usable = calibration.is_usable();

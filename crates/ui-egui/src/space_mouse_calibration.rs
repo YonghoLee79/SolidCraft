@@ -126,9 +126,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         (Stage::Done, Some(Ok(_))) => "ui.space_mouse_calibration_done",
         (Stage::Done, _) => "ui.space_mouse_calibration_no_response",
     };
-    // The axis that barely moved, as Preferences names it.
+    // The calibrated motion that barely moved, as Preferences names it.
     let weak = match result {
-        Some(Err(Problem::NoResponse(axis))) => crate::prefs::SPACE_MOUSE_AXES.get(axis).copied(),
+        Some(Err(Problem::NoResponse(axis))) => crate::space_mouse::MOTIONS.get(axis).copied(),
         _ => None,
     };
     let counter = match stage {
@@ -148,7 +148,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 |ui| {
                     text(ui, app.tr(prompt), "prompt");
                     if let Some(axis) = weak {
-                        crate::ui_kit::text(ui, app.tr_label(axis), crate::ui_kit::Text::Heading("weak_axis"));
+                        crate::ui_kit::text(ui, app.tr(axis), crate::ui_kit::Text::Heading("weak_axis"));
                     }
                     // The device doesn't behave like the kind picked: say so, and offer the other.
                     if let Some(other) = mismatch {
@@ -197,6 +197,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         &format!("{}: {reading}", app.tr("ui.space_mouse_reading")),
                         crate::ui_kit::Text::MonoNote("space_mouse_reading"),
                     );
+                    // A reassignment made in Preferences stays on top of whatever this records.
+                    if app.preferences.space_mouse_axis_source != crate::space_mouse::SAME_AXES {
+                        crate::ui_kit::text(ui, app.tr("ui.space_mouse_axes_reassigned"), crate::ui_kit::Text::Note("space_mouse_axes_reassigned"));
+                    }
                     crate::ui_kit::row(ui, app.tr("ui.space_mouse_dead_zone"), |ui| {
                         dead_zone_slider(ui, &mut dead_zone).on_hover_text(app.tr("ui.space_mouse_dead_zone_tip"));
                     });
