@@ -385,9 +385,20 @@ fn align(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(cmd, format!("no body `{b}`")));
         }
     }
-    let pick = |s: &Session, pk: &str, fk: &str| -> Result<(Vec3, Option<Vec3>)> {
+    // Picks and snaps are where the view shows them (the world); the feature moves the bodies
+    // in their component's frame, so both ends go into the first moved body's frame. A body
+    // picked in another placed component (aligning two imported parts) is found where it
+    // is shown, not where its own frame has it.
+    let frame = s
+        .placed_document()
+        .body_frames_with_source(&s.model.state())
+        .into_iter()
+        .find(|(world, own, ..)| *world == bodies[0] || *own == bodies[0])
+        .map(|(.., m)| m);
+    let inverse = frame.and_then(|m| solidcraft_doc::mat_inverse(&m)).unwrap_or(solidcraft_doc::IDENTITY);
+    let world_pick = |s: &Session, pk: &str, fk: &str| -> Result<(Vec3, Option<Vec3>)> {
         if let Some(fp) = p.get(fk).and_then(vec3) {
-            let n = super::face::face_normal(s, fp).ok_or_else(|| bad(cmd, format!("`{fk}` must be on a planar face")))?;
+            let n = super::face::face_normal_world(s, fp).ok_or_else(|| bad(cmd, format!("`{fk}` must be on a planar face")))?;
             return Ok((fp, Some(n)));
         }
         // A snap point: {snap: vertex|edge_mid|face_center|circle_center, at: [x,y,z]}.
@@ -397,6 +408,10 @@ fn align(s: &mut Session, p: &Value) -> Result<Value> {
             return snap_point(s, kind, at).map(|q| (q, None)).ok_or_else(|| bad(cmd, format!("no {kind} to snap to near `{pk}`")));
         }
         p.get(pk).and_then(vec3).map(|v| (v, None)).ok_or_else(|| bad(cmd, format!("give `{pk}` or `{fk}` as [x, y, z]")))
+    };
+    let pick = |s: &Session, pk: &str, fk: &str| -> Result<(Vec3, Option<Vec3>)> {
+        let (at, n) = world_pick(s, pk, fk)?;
+        Ok((solidcraft_doc::apply_point(&inverse, at), n.and_then(|n| solidcraft_doc::apply_vector(&inverse, n).normalized())))
     };
     let (from, from_normal) = pick(s, "from", "from_face")?;
     let (to, to_normal) = pick(s, "to", "to_face")?;
