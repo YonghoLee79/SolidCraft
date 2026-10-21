@@ -648,7 +648,7 @@ fn further_bends_in_the_flange_dialog_make_one_chained_flap() {
     }
 }
 
-/// The Add bend button and the x beside a further bend work in the real dialog.
+/// The Add bend button and a further bend's bin work in the real dialog.
 #[test]
 fn add_bend_and_remove_bend_buttons_work() {
     let mut h = crate::scenario::Harness::new();
@@ -671,9 +671,9 @@ fn add_bend_and_remove_bend_buttons_work() {
         assert_eq!(bends(&h).len(), want);
     }
     assert_eq!(bends(&h)[0], ("45 deg".to_string(), "20 mm".to_string(), false));
-    h.step(&json!({"click": {"handle": "dialog:button:Bend 2:×"}})).unwrap();
+    h.step(&json!({"click": {"handle": "dialog:button:Bend 2:Delete"}})).unwrap();
     h.frames(3);
-    assert_eq!(bends(&h).len(), 1, "the x takes one bend out");
+    assert_eq!(bends(&h).len(), 1, "the bin takes one bend out");
 }
 
 /// Convert takes a fixed face and, for a solid or shelled body, its bend edges; Edit Feature

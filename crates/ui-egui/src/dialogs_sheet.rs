@@ -233,33 +233,18 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     });
                     let mut drop = None;
                     for (n, (a, h, other)) in then.iter_mut().enumerate() {
-                        form_row(ui, &format!("Bend {}", n + 2), |ui| {
-                            ui.horizontal(|ui| {
-                                let close = Tokens::get().control_height;
-                                // The angle ("45 deg") is the longer text of the two.
-                                let room = (ui.available_width() - ui.spacing().item_spacing.x * 2.0 - close).max(0.0);
-                                for (text, hint, what, id, share) in
-                                    [(&mut *a, "angle", "angle", "sm_then_angle", 0.55), (&mut *h, "height", "height", "sm_then_height", 0.45)]
-                                {
-                                    let w = room * share;
-                                    ui.push_id((id, n), |ui| {
-                                        ui.allocate_ui_with_layout(
-                                            vec2(w, Tokens::get().control_height),
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                            |ui| {
-                                                enter |= crate::ui_kit::hint_field(ui, text, hint);
-                                            },
-                                        );
-                                        crate::scenario::publish_handle(&format!("dialog:Bend {} {what}", n + 2), ui.min_rect().center());
-                                    });
-                                }
-                                if crate::ui_kit::bin_button(ui, crate::i18n::tr_label("Remove this bend")).clicked() {
-                                    drop = Some(n);
-                                }
-                            });
+                        let bend = n + 2;
+                        // The bend's heading: what it makes, and a bin to take it out.
+                        form_row(ui, &format!("Bend {bend}"), |ui| {
+                            if crate::ui_kit::bin_button(ui, crate::i18n::tr_label("Remove this bend")).clicked() {
+                                drop = Some(n);
+                            }
+                            ui.label(format!("{} · {}", a.trim(), h.trim()));
                         });
+                        enter |= expr_row(ui, &format!("Bend {bend} angle"), a);
+                        enter |= expr_row(ui, &format!("Bend {bend} height"), h);
                         let mut way = usize::from(*other);
-                        choice_row(ui, &format!("Bend {} turns", n + 2), &format!("sm_then_way_{n}"), &mut way, &BEND_WAY_LABELS);
+                        choice_row(ui, &format!("Bend {bend} turns"), &format!("sm_then_way_{n}"), &mut way, &BEND_WAY_LABELS);
                         *other = way == 1;
                     }
                     if let Some(n) = drop {
