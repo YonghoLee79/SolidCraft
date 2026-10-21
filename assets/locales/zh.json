@@ -1212,6 +1212,8 @@
   "ui.agent_chat_view_attached": "已附加视图",
   "ui.agent_cursor": "代理光标",
   "ui.agent_cursor_speed": "代理光标速度",
+  "ui.agent_off_thread": "代理运行命令时保持窗口响应",
+  "ui.agent_off_thread_note": "代理（来自 AI 面板或 MCP 客户端）的耗时命令在窗口之外计算：运行时仍可旋转和查看视图，并可在视图中的提示上停止它。关闭：每条命令在窗口线程上运行，窗口会等待其完成。",
   "ui.ai_add": "添加",
   "ui.ai_add_agent": "添加智能体…",
   "ui.ai_add_agent_title": "添加智能体",
