@@ -24,6 +24,8 @@ pub enum Target {
     Mid(String),
     /// On a curve (its id): point on curve on release.
     On(String),
+    /// Where two curves cross (their ids): point on both curves on release.
+    Cross(String, String),
     /// Lined up with other points: no constraint.
     Align,
 }
@@ -45,6 +47,7 @@ impl Snap {
             Target::Point(_) => "Pt",
             Target::Mid(_) => "Mid",
             Target::On(_) => "On",
+            Target::Cross(..) => "X",
             Target::Align => "",
         }
     }
@@ -108,6 +111,16 @@ pub fn find(sk: &Sketch, moving: &[(usize, Vec2)], exclude: &[usize], mm_px: f64
             if d < POINT_PX * mm_px {
                 offer(&mut best, d, Snap { point: id(mi), at: t, offset: t - p, target: Target::Point(id(ti)), guides: Vec::new() });
             }
+        }
+    }
+    // A crossing of two curves that stay put beats a midpoint or a curve (when the sketch
+    // snaps to crossings).
+    if best.is_none() && sk.view.snaps_crossings() {
+        for &(mi, p) in moving {
+            let Some(x) = solidcraft_engine::crossing_near(sk, p, CURVE_PX * mm_px, |c| free_curves.contains(&c)) else { continue };
+            let (Some(a), Some(b)) = (sk.curves.get(x.a), sk.curves.get(x.b)) else { continue };
+            let t = Target::Cross(a.id.clone(), b.id.clone());
+            offer(&mut best, p.dist(x.at), Snap { point: id(mi), at: x.at, offset: x.at - p, target: t, guides: Vec::new() });
         }
     }
     if best.is_none() {
@@ -197,18 +210,31 @@ pub fn moving_points(sk: &Sketch, entity: &str) -> (Vec<usize>, Vec<usize>) {
     (own, ex)
 }
 
-/// The drag let go: the constraint of the snap it ended on (none for lining up), as
-/// `sketch.drag_end` takes it.
-pub fn release() -> Option<Value> {
-    let s = current()?;
+/// The drag let go: the constraint(s) of the snap it ended on (none for lining up), as
+/// `sketch.drag_end` takes them (`constraint`, or `constraints` for a crossing).
+pub fn release(sk: &Sketch) -> Value {
+    let Some(s) = current() else { return json!({}) };
     clear();
+    if let Target::Cross(a, b) = &s.target {
+        // Both curves or none; a curve the point is an end of already holds it.
+        let end_of = |c: &String| {
+            let (p, c) = (sk.point_index(&s.point), sk.curve_index(c).and_then(|c| sk.curves.get(c)));
+            p.zip(c).is_some_and(|(p, c)| c.kind.uses(p))
+        };
+        let cs: Vec<Value> = [a, b]
+            .into_iter()
+            .filter(|c| !end_of(c))
+            .map(|c| json!({"command": "sketch.constraint.coincident", "params": {"a": s.point, "b": c}}))
+            .collect();
+        return json!({"constraints": cs});
+    }
     let (cmd, params) = match &s.target {
         Target::Point(t) => ("sketch.constraint.coincident", json!({"a": s.point, "b": t})),
         Target::Mid(l) => ("sketch.constraint.midpoint", json!({"point": s.point, "line": l})),
         Target::On(c) => ("sketch.constraint.coincident", json!({"a": s.point, "b": c})),
-        Target::Align => return None,
+        Target::Cross(..) | Target::Align => return json!({}),
     };
-    Some(json!({"command": cmd, "params": params}))
+    json!({"constraint": {"command": cmd, "params": params}})
 }
 
 /// The snap of the drag in progress: its dashed guides, a ring on the target and its label.
@@ -265,6 +291,69 @@ mod tests {
         let on = drag(&s, &end, Vec2::new(7.5, 0.3)).expect("on");
         assert_eq!(on.target, Target::On("l1".into()));
         assert!(on.at.y.abs() < 1e-12);
+    }
+
+    fn crossing_sk() -> Sketch {
+        let mut s = Sketch::new();
+        let _ = s.add_line(Vec2::new(0.0, 0.0), Vec2::new(20.0, 20.0), None, None, Some("l1"));
+        let _ = s.add_line(Vec2::new(0.0, 20.0), Vec2::new(20.0, 0.0), None, None, Some("l2"));
+        let _ = s.add_line(Vec2::new(40.0, 5.0), Vec2::new(50.0, 15.0), None, None, Some("l3"));
+        s.view.snap_crossings = true;
+        s
+    }
+
+    #[test]
+    fn a_crossing_is_no_target_until_the_option_is_on() {
+        let mut s = crossing_sk();
+        s.view.snap_crossings = false;
+        let end = s.points[s.resolve_point("l3.start").unwrap_or(0)].id.clone();
+        let x = drag(&s, &end, Vec2::new(10.3, 9.8)).expect("a curve");
+        assert!(!matches!(x.target, Target::Cross(..)), "{:?}", x.target);
+    }
+
+    #[test]
+    fn snap_off_turns_the_crossing_off_too() {
+        let mut s = crossing_sk();
+        s.view.no_snap = true;
+        let end = s.points[s.resolve_point("l3.start").unwrap_or(0)].id.clone();
+        let x = drag(&s, &end, Vec2::new(10.3, 9.8)).expect("a curve");
+        assert!(!matches!(x.target, Target::Cross(..)), "{:?}", x.target);
+    }
+
+    #[test]
+    fn a_dragged_end_snaps_to_a_crossing() {
+        let s = crossing_sk();
+        let end = s.points[s.resolve_point("l3.start").unwrap_or(0)].id.clone();
+        let x = drag(&s, &end, Vec2::new(10.3, 9.8)).expect("crossing");
+        assert_eq!(x.target, Target::Cross("l1".into(), "l2".into()));
+        assert!(x.at.dist(Vec2::new(10.0, 10.0)) < 1e-6);
+        assert_eq!(x.label(), "X");
+        let both = release(&s);
+        assert_eq!(both["constraints"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn a_dragged_line_resting_on_a_curve_still_finds_the_crossing() {
+        // The dragged line is drawn first and its end rests on l1 near the l1×l2 crossing: its
+        // own touch of l1 is nearer, but it moves with the drag, so it is no target.
+        let mut s = Sketch::new();
+        let _ = s.add_line(Vec2::new(40.0, 5.0), Vec2::new(10.3, 10.3), None, None, Some("l0"));
+        let _ = s.add_line(Vec2::new(0.0, 0.0), Vec2::new(20.0, 20.0), None, None, Some("l1"));
+        let _ = s.add_line(Vec2::new(0.0, 20.0), Vec2::new(20.0, 0.0), None, None, Some("l2"));
+        s.view.snap_crossings = true;
+        let end = s.points[s.resolve_point("l0.end").unwrap_or(0)].id.clone();
+        let x = drag(&s, &end, Vec2::new(10.35, 10.25)).expect("crossing");
+        assert_eq!(x.target, Target::Cross("l1".into(), "l2".into()));
+        assert!(x.at.dist(Vec2::new(10.0, 10.0)) < 1e-6);
+    }
+
+    #[test]
+    fn a_point_beats_a_crossing() {
+        let mut s = crossing_sk();
+        let _ = s.add_point(Vec2::new(10.0, 10.0), None);
+        let end = s.points[s.resolve_point("l3.start").unwrap_or(0)].id.clone();
+        let x = drag(&s, &end, Vec2::new(10.3, 9.8)).expect("point");
+        assert!(matches!(x.target, Target::Point(_)), "{:?}", x.target);
     }
 
     #[test]

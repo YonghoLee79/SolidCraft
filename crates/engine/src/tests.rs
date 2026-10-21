@@ -689,6 +689,9 @@ pub(crate) fn hostile_values() -> Vec<Value> {
         json!(["origin", "origin"]),
         json!({}),
         json!({"x": 1}),
+        json!("x:[\"l1\",\"l2\"]:1,1"),
+        json!("x:[\"l1\",\"l1\"]:NaN,1e999"),
+        json!(["x:[\"l1\",\"l2\"]:1,1", "x:[[[[:1"]),
         json!([{"point": [0, 0]}]),
         json!([{"body": "Body1", "index": 999999}]),
     ]

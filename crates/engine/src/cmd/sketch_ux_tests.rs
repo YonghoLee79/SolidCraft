@@ -482,6 +482,25 @@ fn palette_options_are_kept_with_each_sketch() {
     assert!(!sketch(&s).view.hide_points);
 }
 
+/// Snapping to where curves cross is an option of the sketch that starts off, and is only in
+/// force while Snap is on too.
+#[test]
+fn crossing_snap_starts_off_and_needs_snap() {
+    let mut s = new_sketch();
+    let o = run(&mut s, "sketch.options", json!({}));
+    assert_eq!(o["options"]["snap_crossings"], false);
+    assert!(!sketch(&s).view.snaps_crossings());
+    // Off is not written, so designs from before the option read the same.
+    let id = s.active_sketch.expect("sketch");
+    assert!(!serde_json::to_string(&s.doc.sketch(id).expect("sketch").view).expect("json").contains("snap_crossings"));
+    let o = run(&mut s, "sketch.options", json!({"snap_crossings": true}));
+    assert_eq!(o["options"]["snap_crossings"], true);
+    assert!(sketch(&s).view.snaps_crossings());
+    run(&mut s, "sketch.options", json!({"snap": false}));
+    assert!(sketch(&s).view.snap_crossings, "kept while Snap is off");
+    assert!(!sketch(&s).view.snaps_crossings());
+}
+
 /// Construction Geometries is a display option of one sketch, saved with it, and it changes
 /// nothing about the geometry: construction curves were already outside every profile, and
 /// they still are while hidden. Centerlines are a line type of their own and keep showing. A
