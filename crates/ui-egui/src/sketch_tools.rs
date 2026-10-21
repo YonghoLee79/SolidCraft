@@ -86,40 +86,78 @@ thread_local! {
     static ISO: RefCell<Vec<Vec<[Vec3; 2]>>> = const { RefCell::new(Vec::new()) };
     /// Center of Mass has just started: measure everything on the next frame.
     static DEFERRED: Cell<bool> = const { Cell::new(false) };
+    /// A Trim drag: the pieces its path would remove (sketch polylines), and where the path's
+    /// last point is on screen.
+    static TRIM_REMOVED: RefCell<Vec<Vec<Vec2>>> = const { RefCell::new(Vec::new()) };
+    static TRIM_LAST: Cell<Option<Pos2>> = const { Cell::new(None) };
 }
 
-/// Commands registered on one panel that another panel also lists: the analyses (sketch
-/// INSPECT) on SOLID INSPECT, and Interference (SOLID INSPECT) on sketch INSPECT.
-const ALSO_IN: &[(&str, &str, &str)] = &[
-    ("SOLID", "INSPECT", "inspect.zebra"),
-    ("SOLID", "INSPECT", "inspect.draft"),
-    ("SOLID", "INSPECT", "inspect.curvature_map"),
-    ("SOLID", "INSPECT", "inspect.environment_map"),
-    ("SOLID", "INSPECT", "inspect.accessibility"),
-    ("SOLID", "INSPECT", "inspect.minimum_radius"),
-    ("SOLID", "INSPECT", "inspect.isocurve"),
-    ("SOLID", "INSPECT", "inspect.curvature_comb"),
-    ("SOLID", "INSPECT", "inspect.center_of_mass"),
-    ("SKETCH", "INSPECT", "inspect.interference"),
-];
+/// Screen distance the pointer moves before a Trim drag's path takes another point.
+const TRIM_STEP_PX: f32 = 4.0;
 
-/// A panel's commands plus the ones it shares with another panel (see [`ALSO_IN`]).
-pub fn also_in<'a>(
-    tab: &str,
-    panel: &str,
-    mut cmds: Vec<&'a solidcraft_engine::CommandSpec>,
-    specs: &[&'a solidcraft_engine::CommandSpec],
-) -> Vec<&'a solidcraft_engine::CommandSpec> {
-    for (t, p, id) in ALSO_IN {
-        if *t == tab
-            && *p == panel
-            && !cmds.iter().any(|c| c.id == *id)
-            && let Some(c) = specs.iter().find(|c| c.id == *id)
-        {
-            cmds.push(c);
-        }
+/// The sketch-plane position under screen position `pos`.
+fn on_sketch_plane(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<Vec2> {
+    let st = app.session.world_state();
+    let ss = st.sketch(active_sketch(app)?)?;
+    let (o, d) = proj.ray(pos);
+    ss.plane.intersect_ray(o, d).map(|w| ss.plane.to_local(w))
+}
+
+/// A press and drag with Trim draws a path from `press`; true when it started one. Each piece
+/// the path crosses is trimmed when it is let go (`sketch.trim.path`).
+pub fn trim_drag_start(app: &mut SolveApp, proj: &Proj, press: Pos2) -> bool {
+    let Some(q) = on_sketch_plane(app, proj, press) else { return false };
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim") else { return false };
+    tool.pts = vec![(q, None)];
+    TRIM_LAST.with(|c| c.set(Some(press)));
+    TRIM_REMOVED.with(|r| r.borrow_mut().clear());
+    true
+}
+
+/// The Trim drag's path reaches `pos`: the pieces it would remove light up (a dry run of the
+/// command the release runs).
+pub fn trim_drag_to(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
+    if TRIM_LAST.with(Cell::get).is_some_and(|last| last.distance(pos) < TRIM_STEP_PX) {
+        return;
     }
-    cmds
+    let Some(q) = on_sketch_plane(app, proj, pos) else { return };
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim" && !t.pts.is_empty()) else { return };
+    if tool.pts.len() >= TRIM_PATH_MAX {
+        return;
+    }
+    tool.pts.push((q, None));
+    TRIM_LAST.with(|c| c.set(Some(pos)));
+    let points: Vec<[f64; 2]> = tool.pts.iter().map(|p| [p.0.x, p.0.y]).collect();
+    let removed = app
+        .session
+        .execute("sketch.trim.path", &json!({"points": points, "dry_run": true}))
+        .map(|v| {
+            v["removed"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|piece| piece.as_array().into_iter().flatten().filter_map(solidcraft_engine::params::vec2).collect())
+                .collect()
+        })
+        .unwrap_or_default();
+    TRIM_REMOVED.with(|r| *r.borrow_mut() = removed);
+}
+
+/// Most points a Trim drag's path keeps (the command's limit).
+const TRIM_PATH_MAX: usize = 2_000;
+
+/// The Trim drag is let go: trim every piece its path crossed, in one undo step. False when the
+/// path crossed nothing (the caller takes the release as a click).
+pub fn trim_drag_end(app: &mut SolveApp) -> bool {
+    TRIM_LAST.with(|c| c.set(None));
+    let crossed = TRIM_REMOVED.with(|r| !std::mem::take(&mut *r.borrow_mut()).is_empty());
+    let Some(tool) = app.tool.as_mut().filter(|t| t.cmd == "sketch.trim") else { return false };
+    let points: Vec<[f64; 2]> = std::mem::take(&mut tool.pts).iter().map(|p| [p.0.x, p.0.y]).collect();
+    if !crossed || points.len() < 2 {
+        return false;
+    }
+    let _ = app.run("sketch.trim.path", json!({"points": points}));
+    true
 }
 
 /// Run an analysis and keep its result as a marker.
@@ -161,7 +199,7 @@ fn continuity_legend(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     // Stable ids: this Gap is a hole between faces, not the sheet-metal gap (`ui.sheet_gap`).
     let tr = crate::i18n::tr;
     let rows = [(tr("ui.continuity_g2"), smooth), (tr("ui.continuity_g1"), jump), (tr("ui.continuity_g0"), sharp), (tr("ui.continuity_gap"), gap)];
-    let font = egui::FontId::proportional(12.0);
+    let font = egui::FontId::proportional(tk.font_body);
     let (row, pad, swatch) = (18.0, 8.0, 22.0);
     let text_width = rows.iter().map(|(label, _)| painter.layout_no_wrap(label.to_string(), font.clone(), tk.text).size().x).fold(0.0, f32::max);
     let size = egui::vec2(pad + swatch + 8.0 + text_width + pad, rows.len() as f32 * row + 2.0 * pad);
@@ -206,9 +244,21 @@ fn marks(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
             painter.circle(q, 6.0, tk.panel.gamma_multiply(0.8), Stroke::new(1.6, tk.accent));
             painter.line_segment([q - egui::vec2(10.0, 0.0), q + egui::vec2(10.0, 0.0)], Stroke::new(1.2, tk.accent));
             painter.line_segment([q - egui::vec2(0.0, 10.0), q + egui::vec2(0.0, 10.0)], Stroke::new(1.2, tk.accent));
-            let r = painter.text(q + egui::vec2(12.0, -12.0), egui::Align2::LEFT_BOTTOM, label, egui::FontId::proportional(12.0), tk.text);
+            let r = painter.text(
+                q + egui::vec2(12.0, -12.0),
+                egui::Align2::LEFT_BOTTOM,
+                label,
+                egui::FontId::proportional(crate::theme::Tokens::get().font_body),
+                tk.text,
+            );
             painter.rect_filled(r.expand(3.0), 3.0, tk.panel.gamma_multiply(0.85));
-            painter.text(q + egui::vec2(12.0, -12.0), egui::Align2::LEFT_BOTTOM, label, egui::FontId::proportional(12.0), tk.text);
+            painter.text(
+                q + egui::vec2(12.0, -12.0),
+                egui::Align2::LEFT_BOTTOM,
+                label,
+                egui::FontId::proportional(crate::theme::Tokens::get().font_body),
+                tk.text,
+            );
         }
     });
 }
@@ -276,7 +326,8 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
         return true;
     }
     let command = id.to_string();
-    app.pick_open(move |app, path| {
+    // Offer the image types first: the default Open filter lists only designs and meshes.
+    app.pick_open_for(&["png", "jpg", "jpeg"], move |app, path| {
         if let Some(path) = path {
             IMAGE.with(|i| *i.borrow_mut() = Some(path));
             app.last_command = solidcraft_engine::find_command(&command).map(|spec| (spec.id.into(), spec.label.into()));
@@ -505,6 +556,7 @@ pub fn tool_for(id: &str) -> Option<Tool> {
         pts: Vec::new(),
         hover: None,
         picks: Vec::new(),
+        point_picks: Vec::new(),
         dims: Vec::new(),
         dim_history: Vec::new(),
         dims_stage: usize::MAX,
@@ -527,7 +579,7 @@ pub fn hint(id: &str) -> Option<String> {
             "inspect.continuity" => "Continuity: click an edge for its numbers (the button again turns the colours off)",
             "canvas.insert" => "Canvas: click a plane or a planar face where the image's centre goes",
             "canvas.decal" => "Decal: click a planar face where the image's centre goes",
-            "sketch.trim" => "Trim: click the piece of a curve to remove",
+            "sketch.trim" => "Trim: click the piece of a curve to remove, or drag across the pieces to remove",
             "sketch.extend" => "Extend: click a curve near the end to extend",
             "sketch.break" => "Break: click a curve where it should split",
             "sketch.line.midpoint" => "Midpoint line: click the middle, then an end",
@@ -999,6 +1051,33 @@ pub fn finish(app: &mut SolveApp, tool: &mut Tool) -> bool {
     }
 }
 
+/// The cursor's Trim piece, keyed by design revision, sketch, curve and cursor: the viewport's
+/// hover and the preview both ask for it each frame, and it intersects the curve with every other.
+type TrimPieceKey = (u64, u64, String, [u64; 2]);
+
+thread_local! {
+    static TRIM_PIECE: std::cell::RefCell<Option<(TrimPieceKey, Option<Vec<Vec2>>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// With Trim active and the cursor over curve `id` of `sketch` (the active sketch): the piece a
+/// click takes away (#3052), which the hover shows in place of the whole curve. `None` with
+/// another tool, or for a curve trim cuts otherwise (`solidcraft_engine::cmd::trim_piece`).
+pub(crate) fn trim_hover_piece(app: &SolveApp, sketch: u64, id: &str) -> Option<Vec<Vec2>> {
+    let tool = app.tool.as_ref().filter(|t| t.cmd == "sketch.trim")?;
+    let (at, _) = tool.hover.as_ref()?;
+    if active_sketch(app) != Some(sketch) {
+        return None;
+    }
+    let key = (app.session.revision, sketch, id.to_string(), [at.x.to_bits(), at.y.to_bits()]);
+    if let Some(piece) = TRIM_PIECE.with(|c| c.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, p)| p.clone())) {
+        return piece;
+    }
+    let st = app.session.world_state();
+    let piece = solidcraft_engine::cmd::trim_piece(&st.sketch(sketch)?.sketch, id, *at);
+    TRIM_PIECE.with(|c| *c.borrow_mut() = Some((key, piece.clone())));
+    piece
+}
+
 /// Rubber band for point tools and pick markers.
 pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
     let Some(sid) = active_sketch(app) else { return };
@@ -1006,13 +1085,32 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
     let Some(ss) = st.sketch(sid) else { return };
     let to = |p: Vec2| proj.to_screen(ss.plane.to_world(p));
     let tk = crate::theme::Tokens::get();
-    let stroke = Stroke::new(1.5, tk.rubber_band);
+    if let Some(crate::viewport::Hit::SketchCurve { sketch, id, .. }) = &app.viewport.hover
+        && let Some(piece) = trim_hover_piece(app, *sketch, id)
+    {
+        let world: Vec<_> = piece.iter().map(|p| ss.plane.to_world(*p)).collect();
+        // In the error colour, thicker than a hover: it is what the click deletes.
+        crate::tools::paint_sketch_path(&world, 0, painter, proj, Stroke::new(4.5, tk.error));
+    }
+    let stroke = Stroke::new(1.5, tk.sketch_accent);
+    // A Trim drag: the pieces it will remove, then the path drawn so far.
+    if t.cmd == "sketch.trim" && !t.pts.is_empty() {
+        TRIM_REMOVED.with(|r| {
+            for piece in r.borrow().iter() {
+                let line: Vec<Pos2> = piece.iter().filter_map(|p| to(*p)).collect();
+                painter.add(egui::Shape::line(line, Stroke::new(4.0, tk.error.gamma_multiply(0.8))));
+            }
+        });
+        let path: Vec<Pos2> = t.pts.iter().filter_map(|p| to(p.0)).collect();
+        painter.add(egui::Shape::line(path, stroke));
+        return;
+    }
     if let Some((hp, snap)) = &t.hover
         && let Some(sp) = to(*hp)
     {
         painter.circle_stroke(sp, if snap.is_some() { 6.0 } else { 3.0 }, stroke);
     }
-    let faint = Stroke::new(1.0, tk.rubber_band.gamma_multiply(0.6));
+    let faint = Stroke::new(1.0, tk.sketch_accent.gamma_multiply(0.6));
     let mode = crate::sketch_palette::mode(app);
     for w in t.pts.windows(2) {
         crate::tools::paint_sketch_path(&[ss.plane.to_world(w[0].0), ss.plane.to_world(w[1].0)], mode, painter, proj, faint);
@@ -1033,7 +1131,7 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
         }
     }
     if let Some((h, _)) = t.hover.as_ref()
-        && let Some(curve) = crate::tools::preview_curve(t, *h, None, crate::sketch_dims::locked_value(app, t, "Rho"))
+        && let Some(curve) = crate::tools::preview_curve(t, *h, None, crate::sketch_dims::locked_value(app, t, "Rho"), None)
     {
         crate::tools::paint_preview_curve(curve, &ss.plane, painter, proj, stroke, crate::sketch_palette::mode(app));
     }
@@ -1162,7 +1260,13 @@ fn glyphs(app: &SolveApp, painter: &egui::Painter, proj: &Proj, hover: Option<Po
         match pattern_icon.or_else(|| glyph_icon(c.kind.name())) {
             Some(icon) => crate::icons::paint(painter, r.shrink(2.0), icon, col, tk.glyph_bg, col),
             None => {
-                painter.text(*sp, egui::Align2::CENTER_CENTER, glyph_letter(c.kind.name()), egui::FontId::proportional(10.5), col);
+                painter.text(
+                    *sp,
+                    egui::Align2::CENTER_CENTER,
+                    glyph_letter(c.kind.name()),
+                    egui::FontId::proportional(crate::theme::Tokens::get().font_panel),
+                    col,
+                );
             }
         }
         drawn.push((id.clone(), *sp));
@@ -1176,7 +1280,7 @@ fn glyphs(app: &SolveApp, painter: &egui::Painter, proj: &Proj, hover: Option<Po
             format!("{} ({id})", c.kind.name())
         };
         let at = h + egui::vec2(12.0, 12.0);
-        let g = painter.layout_no_wrap(label, egui::FontId::proportional(11.0), tk.text);
+        let g = painter.layout_no_wrap(label, egui::FontId::proportional(crate::theme::Tokens::get().font_small), tk.text);
         painter.rect_filled(egui::Rect::from_min_size(at, g.size()).expand(3.0), 3.0, tk.panel);
         painter.galley(at, g, tk.text);
     }
@@ -1258,7 +1362,7 @@ fn snap_hint(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     let tk = crate::theme::Tokens::get();
     let r = egui::Rect::from_min_size(sp + egui::vec2(12.0, -24.0), egui::vec2(24.0, 14.0));
     painter.rect_filled(r, 3.0, tk.accent_soft);
-    painter.text(r.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(10.0), tk.text);
+    painter.text(r.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(crate::theme::Tokens::get().font_micro), tk.text);
 }
 
 /// Per frame, after the viewport is drawn: constraint glyphs, snap hints and analysis marks.
@@ -1285,3 +1389,7 @@ mod corner_ui_tests;
 #[cfg(test)]
 #[path = "sketch_continuity_tests.rs"]
 mod continuity_tests;
+
+#[cfg(test)]
+#[path = "sketch_trim_drag_ui_tests.rs"]
+mod trim_drag_ui_tests;

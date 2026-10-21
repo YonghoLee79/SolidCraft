@@ -26,7 +26,7 @@ pub static COMMANDS: &[CommandSpec] = &[
          length? (mm; screws, bolts, set screws, pins; default a standard length near 2.5 d); \
          at?: [x,y,z] on a hole's rim or wall (the part seats on the hole's face with a rigid joint) | point?: [x,y,z] with direction?: [x,y,z] (no joint); name?",
     ),
-    CommandSpec::new("parts.resize", "Change Part Size", resize).icon("scale")
+    CommandSpec::new("parts.resize", "Change Part Size", resize_atomic).icon("scale")
         .params("component: id|name of an inserted part; size?; length? — rebuilds it (joints keep it seated)"),
 ];
 
@@ -215,16 +215,20 @@ fn run(s: &mut Session, id: &str, p: Value) -> Result<Value> {
 
 /// A hex prism (across flats `af`) from z0 to z1, joined or cut.
 fn hex(s: &mut Session, af: f64, z0: f64, z1: f64, op: &str) -> Result<()> {
-    run(s, "sketch.create", json!({"plane": "XY", "offset": z0}))?;
+    run(s, "sketch.create", json!({"plane": "XY", "offset": format!("{z0} mm")}))?;
     run(s, "sketch.polygon.circumscribed", json!({"center": [0, 0], "radius": af / 2.0, "sides": 6}))?;
     run(s, "sketch.finish", json!({}))?;
     let (dist, dir) = if z1 >= z0 { (z1 - z0, "positive") } else { (z0 - z1, "negative") };
-    run(s, "solid.extrude", json!({"distance": dist, "direction": dir, "operation": op}))?;
+    run(s, "solid.extrude", json!({"distance": format!("{dist} mm"), "direction": dir, "operation": op}))?;
     Ok(())
 }
 
 fn cyl(s: &mut Session, d: f64, z0: f64, z1: f64, op: &str) -> Result<()> {
-    run(s, "solid.cylinder", json!({"diameter": d, "height": z1 - z0, "base": [0, 0, z0], "axis": [0, 0, 1], "operation": op}))?;
+    run(
+        s,
+        "solid.cylinder",
+        json!({"diameter": format!("{d} mm"), "height": format!("{} mm", z1 - z0), "base": [0, 0, z0], "axis": [0, 0, 1], "operation": op}),
+    )?;
     Ok(())
 }
 
@@ -245,6 +249,7 @@ fn thread(s: &mut Session, d: f64, pitch: f64, at: Vec3) {
 
 /// Build a part in the active component.
 fn build(s: &mut Session, sh: &Shape) -> Result<()> {
+    let _frame = crate::frames::local_geometry();
     match *sh {
         Shape::Screw { d, pitch, len, head, socket } => {
             let k = match head {
@@ -454,6 +459,19 @@ fn shape_len(sh: &Shape) -> Option<f64> {
     }
 }
 
+/// Building the replacement runs several feature commands. Keep their intermediate history
+/// and any failed build on a scratch session; the outer command records one complete undo.
+fn resize_atomic(s: &mut Session, p: &Value) -> Result<Value> {
+    let mut computed = s.scratch();
+    let result = resize(&mut computed, p)?;
+    computed.undo.clear();
+    computed.active_component = s.active_component;
+    computed.active_occurrence_path = s.active_occurrence_path.clone();
+    computed.active_sketch = s.active_sketch.filter(|id| computed.doc.feature(*id).is_some());
+    s.accept_computed(computed);
+    Ok(result)
+}
+
 fn resize(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "parts.resize";
     let key = match p.get("component") {
@@ -505,13 +523,12 @@ mod tests {
     fn bbox(s: &Session, prefix: &str) -> (solidcraft_geom::Vec3, solidcraft_geom::Vec3) {
         let st = s.world_state();
         let comp = s.doc.components.iter().find(|c| c.name.starts_with(prefix)).map(|c| c.id).unwrap_or(0);
-        let (mut lo, mut hi) = (solidcraft_geom::Vec3::new(f64::MAX, f64::MAX, f64::MAX), solidcraft_geom::Vec3::new(f64::MIN, f64::MIN, f64::MIN));
-        for b in st.bodies.iter().filter(|b| s.doc.model_body_component(b) == comp) {
-            let m = b.mesh().bounds();
-            lo = solidcraft_geom::Vec3::new(lo.x.min(m.min.x), lo.y.min(m.min.y), lo.z.min(m.min.z));
-            hi = solidcraft_geom::Vec3::new(hi.x.max(m.max.x), hi.y.max(m.max.y), hi.z.max(m.max.z));
-        }
-        (lo, hi)
+        let b = st
+            .bodies
+            .iter()
+            .filter(|b| s.doc.model_body_component(b) == comp)
+            .fold(solidcraft_geom::Aabb3::EMPTY, |a, b| a.union(&b.mesh().bounds()));
+        (b.min, b.max)
     }
 
     #[test]
@@ -556,5 +573,83 @@ mod tests {
         run(&mut s, "parts.resize", json!({"component": comp, "size": "M8", "length": 25}));
         let (lo, hi) = bbox(&s, "SHCS M8x25");
         assert!((hi.z - 18.0).abs() < 1e-6 && (lo.z + 15.0).abs() < 1e-6, "{lo:?} {hi:?}");
+        assert!(s.model.state().threads.iter().any(|t| t.designation == "M8" && (t.pitch - 1.25).abs() < 1e-9));
+    }
+
+    #[test]
+    fn resizing_placed_parts_uses_local_geometry_and_millimetres_in_every_design_unit() {
+        for (family, initial, resized, prefix) in [
+            ("socket_head_cap_screw", "M6", "M8", "SHCS"),
+            ("hex_bolt", "M6", "M8", "Hex Bolt"),
+            ("hex_nut", "M6", "M8", "Hex Nut"),
+            ("washer", "M6", "M8", "Washer"),
+            ("set_screw", "M6", "M8", "Set Screw"),
+            ("dowel_pin", "6", "8", "Dowel Pin"),
+            ("bearing", "608", "6200", "Bearing"),
+        ] {
+            let mut bounds = Vec::new();
+            for units in ["mm", "in"] {
+                let mut s = Session::default();
+                run(&mut s, "document.units", json!({"units":units}));
+                let part = run(&mut s, "parts.insert", json!({"family":family,"size":initial,"length":20,"point":[40,50,60],"direction":[1,0,0]}));
+                run(&mut s, "parts.resize", json!({"component":part["component"],"size":resized,"length":30}));
+                assert!(s.model.results.iter().all(|r| r.error.is_none()), "{family} {units}");
+                let b = bbox(&s, prefix);
+                assert!(b.0.x < b.1.x && b.0.y < b.1.y && b.0.z < b.1.z, "{family} {units}: {b:?}");
+                if matches!(family, "socket_head_cap_screw" | "hex_bolt" | "hex_nut" | "set_screw") {
+                    assert!(s.model.state().threads.iter().any(|t| t.designation == "M8" && (t.pitch - 1.25).abs() < 1e-9), "{family} {units}");
+                }
+                if family == "dowel_pin" {
+                    assert!(b.0.dist(solidcraft_geom::Vec3::new(10., 46., 56.)) < 1e-6, "{b:?}");
+                    assert!(b.1.dist(solidcraft_geom::Vec3::new(40., 54., 64.)) < 1e-6, "{b:?}");
+                }
+                bounds.push(b);
+            }
+            assert!(bounds[0].0.dist(bounds[1].0) < 1e-6 && bounds[0].1.dist(bounds[1].1) < 1e-6, "{family}: {bounds:?}");
+        }
+    }
+
+    #[test]
+    fn resizing_a_part_is_one_undo_and_keeps_the_active_occurrence() {
+        let mut s = Session::default();
+        let part = run(&mut s, "parts.insert", json!({"family":"socket_head_cap_screw","size":"M6","length":20}));
+        let id = part["component"].as_u64().unwrap_or(0);
+        let copied = run(&mut s, "occurrence.copy", json!({"component":id,"translate":[40,0,0]}));
+        let path = vec![copied["occurrence"].as_u64().unwrap_or(0)];
+        run(&mut s, "component.activate", json!({"component":id,"occurrence":copied["occurrence"],"path":path}));
+        let before = s.doc.clone();
+        let undo = s.undo.len();
+        run(&mut s, "parts.resize", json!({"component":id,"size":"M8","length":25}));
+        assert_eq!(s.undo.len(), undo + 1);
+        assert_eq!(s.active_component, id);
+        assert_eq!(s.active_occurrence_path, Some(path.clone()));
+        let after = s.doc.clone();
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc, before);
+        let redo = s.redo.len();
+        assert!(s.execute("parts.resize", &json!({"component":id,"length":0})).is_err());
+        assert_eq!(s.doc, before);
+        assert_eq!(s.redo.len(), redo);
+        assert_eq!(s.active_occurrence_path, Some(path));
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc, after);
+    }
+
+    #[test]
+    fn resizing_a_part_at_the_history_limit_drops_only_one_old_step() {
+        let mut s = Session::default();
+        let part = run(&mut s, "parts.insert", json!({"family":"washer","size":"M6"}));
+        let Some(snapshot) = s.undo.last().cloned() else { panic!("insert did not record history") };
+        s.undo = (0..crate::MAX_UNDO)
+            .map(|index| {
+                let mut old = snapshot.clone();
+                old.label = format!("Earlier step {index}");
+                old
+            })
+            .collect();
+        run(&mut s, "parts.resize", json!({"component":part["component"],"size":"M8"}));
+        assert_eq!(s.undo.len(), crate::MAX_UNDO);
+        assert_eq!(s.undo.first().map(|step| step.label.as_str()), Some("Earlier step 1"));
+        assert_eq!(s.undo.last().map(|step| step.label.as_str()), Some("Change Part Size"));
     }
 }

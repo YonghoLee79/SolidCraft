@@ -2,6 +2,32 @@ use super::*;
 use solidcraft_engine::sketch::CurveKind;
 
 #[test]
+fn three_point_arc_follows_its_snapped_through_point_after_dimension_change() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.run("sketch.line", json!({"points":[[-20,0],[20,0]],"ids":["base"]})).unwrap();
+    h.app.run("sketch.constraint.fix", json!({"entity":"base"})).unwrap();
+    h.app.run("sketch.line", json!({"points":["origin",[0,10]],"ids":["height"],"infer":true})).unwrap();
+    let dim = h.app.run("sketch.dimension", json!({"entities":["height"],"value":10})).unwrap();
+    h.settle();
+    h.step(&json!({"start":"sketch.arc.three_point"})).unwrap();
+    for point in [[-20, 0, 0], [20, 0, 0], [0, 10, 0]] {
+        h.step(&json!({"click":{"world":point}})).unwrap();
+    }
+    h.app.run("parameters.change", json!({"name":dim["param"],"expression":"15 mm"})).unwrap();
+    let sid = h.app.session.active_sketch.unwrap();
+    let state = h.app.session.model.state();
+    let ss = state.sketch(sid).unwrap();
+    let sk = &ss.sketch;
+    let arc = sk.curves.iter().position(|c| matches!(c.kind, CurveKind::Arc { .. })).unwrap();
+    let through = sk.point(sk.resolve_point("height.end").unwrap()).unwrap();
+    assert!(ss.report.ok());
+    assert!(through.dist(Vec2::new(0.0, 15.0)) < 1e-6, "{through:?}");
+    let distance = sk.shape(arc).unwrap().dist(through);
+    assert!(distance < 1e-6, "the arc misses its snapped through point by {distance} mm");
+}
+
+#[test]
 fn clicked_periodic_fit_closes_at_start_and_right_click_keeps_natural() {
     let mut h = crate::scenario::Harness::new();
     h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
@@ -469,6 +495,9 @@ fn fully_constrained_center_rectangle_corners_can_be_picked_and_filleted() {
     h.frames(2);
     h.step(&json!({"start":"sketch.fillet"})).unwrap();
     h.frames(2);
+    // Fit after opening the dialog so all four corners clear the shell and both panels.
+    h.app.fit_view();
+    h.settle();
     for corner in [[-20, -15, 0], [20, -15, 0], [20, 15, 0], [-20, 15, 0]] {
         h.step(&json!({"click":{"world":corner}})).unwrap();
         h.frames(2);
@@ -594,4 +623,29 @@ fn fillet_chamfer_corner_preview_draws_curves() {
 
     let sk = h.app.session.world_state().sketch(sid).unwrap().sketch.clone();
     assert_eq!(sk.curves.len(), 2, "chamfer preview must not modify the sketch");
+}
+
+/// #3052: with Trim, the hover over a line crossed by two others is the piece between them, the
+/// one a click takes away; the whole line is no longer shown hovered. With another tool, nothing.
+#[test]
+fn trim_hover_shows_the_piece_a_click_takes_away() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    let line = h.app.run("sketch.line", json!({"points": [[0,0],[30,0]], "connect": false})).unwrap()["curves"][0].as_str().unwrap().to_string();
+    h.app.run("sketch.line", json!({"points": [[10,-5],[10,5]], "connect": false})).unwrap();
+    h.app.run("sketch.line", json!({"points": [[20,-5],[20,5]], "connect": false})).unwrap();
+    h.settle();
+    let sid = h.app.session.active_sketch.unwrap();
+    h.step(&json!({"start":"sketch.trim"})).unwrap();
+    h.step(&json!({"move":{"world":[15,0,0]}})).unwrap();
+    assert!(matches!(&h.app.viewport.hover, Some(crate::viewport::Hit::SketchCurve { id, .. }) if *id == line), "{:?}", h.app.viewport.hover);
+    let piece = trim_hover_piece(&h.app, sid, &line).unwrap();
+    let ends = [piece[0], piece[piece.len() - 1]];
+    assert!(
+        ends.iter().all(|p| p.y.abs() < 1e-6) && ends.iter().any(|p| (p.x - 10.0).abs() < 1e-6) && ends.iter().any(|p| (p.x - 20.0).abs() < 1e-6),
+        "{ends:?}"
+    );
+    h.step(&json!({"key":"Escape"})).unwrap();
+    h.step(&json!({"move":{"world":[15,0,0]}})).unwrap();
+    assert!(trim_hover_piece(&h.app, sid, &line).is_none(), "only Trim shows a piece");
 }

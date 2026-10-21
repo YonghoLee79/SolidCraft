@@ -119,9 +119,11 @@ pub fn anchor(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Option<Vec3>)> {
         // Fillet radii and chamfer distances grow the way `blend_grow_dir` gives (into the body
         // on an outside edge, into the open corner on an inside one); shell thickness grows into
         // the body.
+        // A chamfer of two distances measures Distance 1 along its own face, not along the bisector.
         Kind::Fillet { .. } if matches!(first, Sel::Edge { .. }) => {
             let Sel::Edge { body, index, .. } = first else { return None };
-            (at, st.body(body).and_then(|b| blend_grow_dir(&b.mesh(), *index, at)))
+            let along_face = chamfer_face_dirs(app, d, at).map(|(first_face, _)| first_face);
+            (at, along_face.or_else(|| st.body(body).and_then(|b| blend_grow_dir(&b.mesh(), *index, at))))
         }
         Kind::Fillet { .. } | Kind::Shell { .. } => (at, normal.map(|n| -n)),
         Kind::Sheet(_) => (at, crate::dialogs_sheet::arrow(app, d).or(normal)),
@@ -241,11 +243,35 @@ pub(crate) fn blend_grow_dir(m: &Mesh, index: usize, p: Vec3) -> Option<Vec3> {
     Some(if edge_concave(m, index, p).unwrap_or(false) { n } else { -n })
 }
 
+/// The directions Distance 1 and Distance 2 of a chamfer of two distances run from its edge at
+/// `at`: along the face that faces up most, or the other one with Flip, and along the remaining
+/// face (the kernel's `chamfer_tool_sides` picks them the same way). None for any other dialog.
+pub(crate) fn chamfer_face_dirs(app: &SolveApp, d: &Dialog, at: Vec3) -> Option<(Vec3, Vec3)> {
+    let Kind::Fillet { chamfer: true, ctype: 1, flip, .. } = &d.kind else { return None };
+    let Some(Sel::Edge { body, index, .. }) = d.inputs.first()?.items.first() else { return None };
+    let st = app.session.world_state();
+    let mesh = st.body(body)?.mesh();
+    let sides = edge_sides(&mesh, *index, at)?;
+    let [(n1, c1), (n2, c2)] = sides.as_slice() else { return None };
+    let along = n1.cross(*n2).normalized()?;
+    // From the edge into each face: the way to its centroid, square to the edge.
+    let into = |c: Vec3| {
+        let v = c - at;
+        (v - along * v.dot(along)).normalized()
+    };
+    let (t1, t2) = (into(*c1)?, into(*c2)?);
+    let up = Vec3::new(1e-6, 1e-3, 1.0);
+    Some(if (n2.dot(up) > n1.dot(up)) != *flip { (t2, t1) } else { (t1, t2) })
+}
+
 /// Whether a dynamically registered canvas handle owns this point before navigation.
 pub(crate) fn owns_pointer(app: &SolveApp, proj: &Proj, p: Pos2) -> bool {
     // The triad only registers an egui hit widget after a handle is under the pointer.
     // Test its geometry before navigation, including the first frame entering a handle.
     app.dialog.as_ref().and_then(|d| crate::dialogs_move::triad(app, d)).is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p))
+        || (app.dialog.is_none()
+            && app.tool.is_none()
+            && crate::browser::occurrence_triad_model(app).is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p)))
 }
 
 /// Draw the manipulator and the value box (called by the viewport after the model is drawn).
@@ -253,6 +279,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj
     // While OK computes, the inputs hold what it computes: no arrow to drag, no box to type in.
     if app.applying.is_some() {
         return;
+    }
+    if app.dialog.is_none() && app.tool.is_none() {
+        crate::browser::occurrence_triad(app, ui, painter, proj);
     }
     let Some(mut d) = app.dialog.take() else { return };
     if matches!(d.kind, Kind::Assembly(_)) {
@@ -417,6 +446,13 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
     {
         drag_arrow(ui, painter, proj, base, bs, -(n * sign), l2, true, egui::Id::new("sc_manipulator2"), half_height, distance2);
     }
+    // A chamfer of two distances: Distance 2 gets its own arrow along the other face.
+    let faces = chamfer_face_dirs(app, d, base);
+    if let (Kind::Fillet { distance2, .. }, Some((_, t2))) = (&mut d.kind, faces)
+        && let Some(l2) = app.session.doc.eval(distance2, ValueKind::Length).ok().filter(|v| v.is_finite())
+    {
+        drag_arrow(ui, painter, proj, base, bs, t2, l2, false, egui::Id::new("sc_manipulator2"), half_height, distance2);
+    }
     // A rectangular pattern's second direction gets its own arrow for Spacing 2 (#2462), as the
     // first direction's arrow sets Spacing.
     if let Some(n2) = pattern_dir2(app, d) {
@@ -535,7 +571,7 @@ fn value_box(ui: &mut egui::Ui, label: &str, value: &mut String, at: Pos2, selec
     crate::frame::area(egui::Id::new("sc_canvas_area")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(crate::i18n::tr_label(label)).color(t.text_dim).size(11.5));
+                ui.label(egui::RichText::new(crate::i18n::tr_label(label)).color(t.text_dim).size(crate::theme::Tokens::get().font_caption));
                 let r = ui.add(egui::TextEdit::singleline(value).id(id).desired_width(72.0));
                 crate::params_dialog::complete(ui, &r, value);
                 if select_all {
@@ -853,10 +889,9 @@ fn measure_line(app: &SolveApp, painter: &egui::Painter, proj: &Proj, r: &serde_
         painter.circle(s, 3.5, t.manipulator, Stroke::new(1.0, Color32::WHITE));
     }
     let mid = sa + (sb - sa) * 0.5 + vec2(10.0, -14.0);
-    let galley = painter.layout_no_wrap(crate::prefs::show_mm(app, d, 1), egui::FontId::proportional(12.5), t.text);
+    let galley = painter.layout_no_wrap(crate::prefs::show_mm(app, d, 1), egui::FontId::proportional(crate::theme::Tokens::get().font_label), t.text);
     let rect = egui::Rect::from_min_size(mid, galley.size() + vec2(10.0, 6.0));
-    crate::scenario::publish_handle("measure:label", rect.center());
-    crate::scenario::publish_rect("measure:label", rect);
+    crate::scenario::publish_target("measure:label", rect);
     if app.preferences.measure_axis_distances {
         measure_components(app, painter, proj, a, b, rect);
     }
@@ -895,7 +930,7 @@ fn measure_components(app: &SolveApp, painter: &egui::Painter, proj: &Proj, a: V
             (total.center(), vec2(20.0, 20.0))
         };
         let text = format!("{}: {}", axis.to_uppercase(), crate::prefs::show_mm(app, distance, 1));
-        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.5), t.text);
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(crate::theme::Tokens::get().font_label), t.text);
         let size = galley.size() + vec2(10.0, 6.0);
         let bounds = proj.rect.shrink(4.0);
         let clamp = |rect: egui::Rect| {
@@ -923,8 +958,7 @@ fn measure_components(app: &SolveApp, painter: &egui::Painter, proj: &Proj, a: V
         painter.rect(rect, 3.0, t.overlay, Stroke::new(1.0, color), egui::StrokeKind::Inside);
         painter.galley(rect.min + vec2(5.0, 3.0), galley, t.text);
         let handle = format!("measure:label:{axis}");
-        crate::scenario::publish_handle(&handle, rect.center());
-        crate::scenario::publish_rect(&handle, rect);
+        crate::scenario::publish_target(&handle, rect);
         occupied.push(rect);
     }
 }
@@ -1142,7 +1176,10 @@ fn draw_revolve(
         }
     }
     if to_mode {
-        crate::frame::area(egui::Id::new("sc_canvas_area")).fixed_pos(box_at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+        // This badge is read-only. Its placement follows the model and can overlap the
+        // command dialog, whose buttons must keep receiving clicks.
+        let area = crate::frame::area(egui::Id::new("sc_canvas_area")).fixed_pos(box_at).order(egui::Order::Foreground).interactable(false);
+        area.show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
                 let text = if extent.curved_to {
                     "To surface".into()

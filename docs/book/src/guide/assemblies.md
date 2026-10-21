@@ -46,6 +46,28 @@ expression stops working out (say a parameter becomes an angle), the joint is le
 solve and `joint.solve` gives the reason, instead of placing the part from old numbers. Typing a
 plain number, or driving the value, drops that expression.
 
+**Relations** are joints that tie only part of a placement, so a part is placed the way a
+designer describes it, one relation at a time: `parallel` (z along z, free to move and turn
+about it), `perpendicular` and `angle` (z square to z, or at the joint's `angle` from mated),
+`point_on_plane` (a point on a face's plane, `offset` off it), `point_on_line` (a point on an
+axis) and `line_on_plane` (an axis on a face's plane: a cylinder's radius as `offset` lays it
+tangent). A relation is made where the parts are: B moves no further than the relation needs.
+Several relations between the same two parts add up; the solver meets them together, each one's
+degrees of freedom come off what is left, and one that can't be met is reported, not forced:
+
+```json
+{"command": "joint.create", "params": {"type": "parallel", "a": "Panel top", "b": "Bracket bottom"}}
+{"command": "joint.create", "params": {"type": "point_on_plane", "a": "Panel top", "b": "Bracket corner"}}
+{"command": "joint.create", "params": {"type": "parallel", "a": "Panel front", "b": "Bracket face", "flip": true}}
+{"command": "joint.create", "params": {"type": "point_on_plane", "a": "Panel front", "b": "Bracket corner", "offset": -40}}
+{"command": "joint.create", "params": {"type": "point_on_plane", "a": "Panel end", "b": "Bracket corner", "offset": -40}}
+```
+
+leaves the bracket flat on the panel, square to its front, its corner 40 mm in from the front and
+the end, wherever the panel's size takes them. Coincident faces are a `planar` joint, a distance
+between faces is `planar` with an `offset`, concentric is `cylindrical` and two points that meet
+are `ball`.
+
 The check behind it, `inspect.clearance`, does all of that in one call for any number of bodies,
 which suits scripts and agents checking a whole assembly:
 
@@ -67,6 +89,10 @@ pairs whose meshes stay apart without intersecting them, intersects the rest in 
 returns after `budget_s` seconds (default 240) at most, listing the pairs it had no time for as
 not checked.
 
+Mesh bodies (STL, 3MF and OBJ imports) are not checked by either command: each is listed in
+`unchecked` as `{a: name, b: null, reason: "mesh body: not checked"}`, so `count: 0` or an empty
+`overlaps` is not mistaken for "no overlap" when a mesh body was in the design.
+
 **Gear**, **Rack and Pinion** and **Screw** (on the **ASSEMBLE** panel) are motion links whose
 ratio comes from the parts rather than a typed number:
 
@@ -86,7 +112,9 @@ ratio comes from the parts rather than a typed number:
 A radius or pitch may be an expression of the design's parameters, and a picked face is found
 again whenever the design changes. Change the parameter or the gear's diameter, and the ratio
 follows. The new link leaves the driven joint where it is, so teeth modelled in mesh stay in mesh.
-**Reverse** turns the driven joint the other way, for joints whose axes point opposite ways. These
+**Reverse** turns the driven joint the other way, for joints whose axes point opposite ways.
+Redefining a link (`link: i`, such as turning it the other way with **Reverse**) also leaves the
+driven joint where it is, so the gears stay in mesh at the pose they are in. These
 couplings are motion links, so they work in closed loops, with contact sets and in motion studies:
 a rack can push the piston of a slider-crank, or a pinion can steer through a rack and its tie
 rods. Drive the joint that drives the coupling (joint 1, the pinion, or the screw's turn), not the
@@ -136,7 +164,8 @@ example driving a rocker beyond its swing, the motion stops at the last position
 closes, and the drive reports `stopped_by_loop`. A loop that cannot close at all is listed
 under `conflicts` and nothing in it moves. `joint.list` reports how many degrees of freedom each
 part still has with its loops closed: the moving parts of a four-bar have one between them, and a
-loop locked by a rigid joint has none. The Drive Joints dialog says when a drive stops short and
+loop locked by a rigid joint has none. A joint a motion link drives adds no freedom of its own:
+two meshed gears on a fixed housing have one between them, each turning with the driving gear. The Drive Joints dialog says when a drive stops short and
 why. While it previews, a row under the values gives the value the joint reached and the reason
 (the loop that can't close further, or the two parts a contact set keeps apart), and after OK the
 status line repeats it. The value box keeps what you typed. The dialog opens on the joint
@@ -169,7 +198,7 @@ it where it is), and it moves.
 with their units and limits, and `moved` says whether any part moved. A joint's origins are mated
 by default: B's z axis is turned against A's, as two faces meet. `flip: true` lines them up
 instead, so two origins given at one point with the same z stay as they are. Without an
-`angle`, a new joint takes no turn or a half turn about its axis, whichever turns B less: two
+`angle`, a new joint (other than a relation, which starts where its parts are) takes no turn or a half turn about its axis, whichever turns B less: two
 faces that already meet, a plate under a panel, stay as they are instead of B spinning about
 their shared normal. For scripts that drive many steps, `quiet: true` leaves the per-part
 degrees of freedom out of joint answers, and

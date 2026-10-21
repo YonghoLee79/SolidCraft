@@ -301,8 +301,8 @@ impl SweepOrientation {
     }
 }
 
-/// A sweep's guide rail: a chain of curves of a sketch, followed from the end nearest the path's
-/// start.
+/// A sweep's or a loft's guide rail: a chain of curves of a sketch, followed from the end nearest
+/// the path's start (the loft's first section).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, solidcraft_derive::Walk)]
 pub struct SweepRail {
     pub sketch: SketchId,
@@ -742,6 +742,12 @@ pub enum FeatureKind {
         operation: Operation,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<BodyName>,
+        /// Guide rails (one or two) the loft follows between its sections.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rails: Vec<SweepRail>,
+        /// How the rails reshape the sections between.
+        #[serde(default, skip_serializing_if = "RailFit::is_scale")]
+        rail_fit: RailFit,
     },
     /// Sweep profiles along a chain of sketch curves.
     Sweep {
@@ -1374,6 +1380,12 @@ pub enum FeatureKind {
         continuity: [Continuity; 2],
         #[serde(default, skip_serializing_if = "loft_crown_is_plain")]
         crown: [f64; 2],
+        /// Guide rails (one or two) the loft follows between its sections.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rails: Vec<SweepRail>,
+        /// How the rails reshape the sections between.
+        #[serde(default, skip_serializing_if = "RailFit::is_scale")]
+        rail_fit: RailFit,
     },
     /// The faces at `faces` copied out at a signed `distance` along their normals as a new
     /// surface body (0 copies them); `chain` takes each pick's whole smooth chain of faces;
@@ -1443,6 +1455,11 @@ pub enum FeatureKind {
         /// Points the blend leaves towards, when the faces at the picks do not say: [from, to].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         align: Option<[Position; 2]>,
+        /// Where each chain's stations start, when two closed chains should not pair the way
+        /// that keeps the blend from twisting: a point on each chain, [from, to]. An open chain
+        /// starts at the end nearer its point.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seam: Option<[Position; 2]>,
         /// Sew the blend onto its two bodies where the boundaries meet.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stitch: bool,
@@ -2620,6 +2637,103 @@ impl Document {
         }
     }
 
+    /// Rename body `old` to `new` where the design keeps things by body name outside its
+    /// features: materials, appearances, configuration columns, offsets, components and the
+    /// browser's groups and order. (The features are the rename command's to change.)
+    pub fn rename_body_keys(&mut self, old: &str, new: &str) {
+        if let Some(m) = self.materials.remove(old) {
+            self.materials.insert(new.to_string(), m);
+        }
+        if let Some(c) = self.appearances.bodies.remove(old) {
+            self.appearances.bodies.insert(new.to_string(), c);
+        }
+        for f in self.appearances.faces.iter_mut().filter(|f| f.body == old) {
+            f.body = new.to_string();
+        }
+        for column in &mut self.configs.columns {
+            match column {
+                crate::config::Column::Material(body) | crate::config::Column::Appearance(body) if *body == old => {
+                    *body = new.to_string();
+                }
+                crate::config::Column::FaceAppearance(target) if target.body == old => {
+                    target.body = new.to_string();
+                }
+                _ => {}
+            }
+        }
+        if let Some(o) = self.body_offsets.remove(old) {
+            self.body_offsets.insert(new.to_string(), o);
+        }
+        if let Some(c) = self.body_components.remove(old) {
+            self.body_components.insert(new.to_string(), c);
+        }
+        for g in self.browser_groups.iter_mut().filter(|g| g.folder == "bodies") {
+            for k in g.items.iter_mut().filter(|k| *k == old) {
+                *k = new.to_string();
+            }
+        }
+        for (_, v) in self.browser_order.iter_mut().filter(|(k, _)| k.ends_with("/bodies")) {
+            for k in v.iter_mut().filter(|k| *k == old) {
+                *k = new.to_string();
+            }
+        }
+    }
+
+    /// The single body rename (old name, new name) that turns `previous` into this design,
+    /// when that is all that changed: the features' stored body names (`made` gives the names
+    /// each feature's bodies have now, by feature id) and what [`Document::rename_body_keys`]
+    /// renames. `None` for any other change.
+    pub fn body_rename_from(&self, previous: &Document, made: impl Fn(u64) -> Vec<String>) -> Option<(String, String)> {
+        if self.features.len() != previous.features.len() {
+            return None;
+        }
+        let mut rename: Option<(String, String)> = None;
+        for (a, b) in previous.features.iter().zip(&self.features) {
+            if a.id != b.id {
+                return None;
+            }
+            if a.body_names == b.body_names {
+                continue;
+            }
+            let now = made(a.id);
+            for (k, name) in b.body_names.iter().enumerate() {
+                let current = now.get(k);
+                // Slots the rename left alone, and the ones it set to the names they have now.
+                if a.body_names.get(k) == Some(name) || name.trim().is_empty() || current == Some(name) {
+                    continue;
+                }
+                let pair = (current?.clone(), name.clone());
+                match &rename {
+                    Some(r) if *r != pair => return None,
+                    _ => rename = Some(pair),
+                }
+            }
+        }
+        let (old, new) = rename?;
+        let mut expected = previous.clone();
+        for (f, g) in expected.features.iter_mut().zip(&self.features) {
+            f.body_names.clone_from(&g.body_names);
+        }
+        expected.rename_body_keys(&old, &new);
+        (expected == *self).then_some((old, new))
+    }
+
+    /// The feature whose name alone turns `previous` into this design, when that is all that
+    /// changed.
+    pub fn feature_rename_from(&self, previous: &Document) -> Option<u64> {
+        if self.features.len() != previous.features.len() {
+            return None;
+        }
+        let mut renamed = previous.features.iter().zip(&self.features).filter(|(a, b)| a.id == b.id && a.name != b.name);
+        let (_, b) = renamed.next()?;
+        if renamed.next().is_some() {
+            return None;
+        }
+        let mut expected = previous.clone();
+        expected.feature_mut(b.id)?.name.clone_from(&b.name);
+        (expected == *self).then_some(b.id)
+    }
+
     /// A complete structural proof: no non-render field is allowed to differ. Keeping this
     /// comparison based on the whole Document also includes fields added in future versions.
     /// The clone/comparison is only needed when render intent actually differs.
@@ -2916,9 +3030,10 @@ impl Document {
     /// Insert a feature as given, keeping its id, name, parameter names and stored edge and
     /// face names, at the marker (or the end), with the model parameters its sketch dimensions
     /// use: a feature replayed from a script (`timeline.add`) is the feature the design had.
-    /// An id of 0 or an empty name gets a new one. Refused, changing nothing, when the id, the
-    /// name or a parameter name is already used, or the feature belongs to a component this
-    /// design does not have.
+    /// An id of 0 or an empty name gets a new one. The name is kept even when another feature
+    /// has it, as a sketch and the feature built from it often share one (#1990). Refused,
+    /// changing nothing, when the id or a parameter name is already used, or the feature
+    /// belongs to a component this design does not have.
     pub fn insert_feature(&mut self, mut f: Feature, params: Vec<Param>) -> Result<u64> {
         if self.features.len() >= MAX_FEATURES {
             return Err(DocError::Invalid("too many features".into()));
@@ -2933,8 +3048,6 @@ impl Document {
         f.name = f.name.trim().to_string();
         if f.name.is_empty() {
             f.name = self.unique_name(f.kind.base_name());
-        } else if self.features.iter().any(|x| x.name == f.name) {
-            return Err(DocError::Invalid(format!("a feature named `{}` already exists", f.name)));
         }
         if f.component != 0 && !self.components.iter().any(|c| c.id == f.component) {
             return Err(DocError::Invalid(format!("feature `{}` belongs to an unknown component", f.name)));
@@ -3357,13 +3470,35 @@ impl Document {
         stored: &solidcraft_sketch::DrivingValues,
         moved_from: Option<&Sketch>,
     ) -> Result<solidcraft_sketch::SolveReport> {
+        self.solve_sketch_with_analysis(vals, sk, stored, moved_from, solidcraft_sketch::Analysis::Full)
+    }
+
+    /// [`Self::solve_sketch`] with the diagnostics needed by an internal edit. Parameter
+    /// application, continuation and offset refreshes run regardless of the requested level.
+    /// Model evaluation uses `solve_sketch` so its published report always has full diagnostics.
+    pub fn solve_sketch_with_analysis(
+        &self,
+        vals: &std::collections::BTreeMap<String, expr::Value>,
+        sk: &mut Sketch,
+        stored: &solidcraft_sketch::DrivingValues,
+        moved_from: Option<&Sketch>,
+        analysis: solidcraft_sketch::Analysis,
+    ) -> Result<solidcraft_sketch::SolveReport> {
         self.apply_dimension_values(vals, sk)?;
         let was = |sk: &Sketch| moved_from.and_then(|from| sk.positions_in(from));
-        let mut report = solidcraft_sketch::solve_after_edit(sk, stored, was(sk).as_deref());
-        if !sk.offsets.is_empty() || !sk.freeform_offsets.is_empty() {
+        let offsets = !sk.offsets.is_empty() || !sk.freeform_offsets.is_empty();
+        // Offsets always require another solve after refresh. Only that last report is
+        // published; the first report only decides which state the second solve starts from.
+        let first_analysis = if offsets { solidcraft_sketch::Analysis::StatusOnly } else { analysis };
+        let mut report = solidcraft_sketch::solve_after_edit_with_analysis(sk, stored, was(sk).as_deref(), first_analysis);
+        if offsets {
             // Source dimensions may have moved curves during the solve.
             sk.refresh_offsets()?;
-            report = if report.ok() { solidcraft_sketch::solve(sk) } else { solidcraft_sketch::solve_after_edit(sk, stored, was(sk).as_deref()) };
+            report = if report.ok() {
+                solidcraft_sketch::solve_with(sk, &solidcraft_sketch::Hold::default(), None, analysis, None)
+            } else {
+                solidcraft_sketch::solve_after_edit_with_analysis(sk, stored, was(sk).as_deref(), analysis)
+            };
         }
         Ok(report)
     }
