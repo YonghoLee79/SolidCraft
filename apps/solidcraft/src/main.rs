@@ -28,9 +28,36 @@ mod open_documents;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod space_mouse;
 mod startup;
+#[cfg(any(target_os = "windows", test))]
+mod window_fit;
 
 use solidcraft_engine::{Session, io};
 use solidcraft_ui_egui::{Services, SolveApp};
+
+/// Windows: put the restored window back inside the monitor's work area if it is out of reach
+/// (a gone monitor, another scale, a taskbar edge). Sizes are in points, the work area in pixels.
+#[cfg(target_os = "windows")]
+fn fit_window_to_work_area(ctx: &egui::Context, frame: &eframe::Frame) {
+    use window_fit::Area;
+    let Some((x, y, w, h)) = native_frame::work_area(frame) else { return };
+    let (outer, inner, scale, maximized) = ctx.input(|i| {
+        let v = i.viewport();
+        (v.outer_rect, v.inner_rect, v.native_pixels_per_point, v.maximized.unwrap_or(false) || v.fullscreen.unwrap_or(false))
+    });
+    let (Some(outer), Some(inner), Some(scale)) = (outer, inner, scale.filter(|s| s.is_finite() && *s > 0.0)) else { return };
+    if maximized {
+        return;
+    }
+    let work = Area::new(x as f32 / scale, y as f32 / scale, w as f32 / scale, h as f32 / scale);
+    let now = Area::new(outer.min.x, outer.min.y, outer.width(), outer.height());
+    let fitted = window_fit::fit(now, work, (960.0, 600.0));
+    if fitted != now {
+        // The frame (title bar, borders) keeps its size; only the inner size follows.
+        let inner_size = egui::vec2((inner.width() - (now.w - fitted.w)).max(1.0), (inner.height() - (now.h - fitted.h)).max(1.0));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(inner_size));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(fitted.x, fitted.y)));
+    }
+}
 
 /// `SOLIDCRAFT_PROFILE_STARTUP=1` prints the time since launch at each startup step.
 fn mark(step: &str) {
@@ -57,6 +84,11 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.frames < 2 {
             self.frames += 1;
+            // Before the window is shown: its title bar must be within reach (window_fit.rs).
+            #[cfg(target_os = "windows")]
+            if self.frames == 1 {
+                fit_window_to_work_area(ctx, _frame);
+            }
             mark(if self.frames == 1 { "first frame begins" } else { "second frame begins (first presented)" });
             // A second frame right away, which means the first was presented: the app is up.
             ctx.request_repaint();
