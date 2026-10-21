@@ -1157,16 +1157,23 @@ impl SolveApp {
         v
     }
 
-    /// Is the origin widget shown? Origin planes and axes are drawn and pickable. While Create
-    /// Sketch picks its plane the Origin is always shown, drawn through the model (a plane
-    /// inside a body stays visible), even when the browser hides it.
+    /// Is the origin widget shown? Origin planes and axes are drawn and pickable. While a dialog
+    /// picks a plane ([`SolveApp::picking_plane`]) the Origin is always shown, drawn through the
+    /// model (a plane inside a body stays visible), even when the browser hides it.
     pub fn origin_visible(&self) -> bool {
-        self.ui.show_origin || self.picking_sketch_plane()
+        self.ui.show_origin || self.picking_plane()
     }
 
     /// Is Create Sketch open, waiting for its plane?
     pub fn picking_sketch_plane(&self) -> bool {
         self.dialog.as_ref().is_some_and(|d| matches!(d.kind, dialogs::Kind::Sketch))
+    }
+
+    /// Is a dialog waiting for a plane: Create Sketch, or a dialog whose active input takes origin
+    /// planes (Mirror's plane, Offset Plane, Midplane, the construct tools)? The origin planes are
+    /// shown for it, so they can be picked in the view rather than only in the browser (#2581).
+    pub fn picking_plane(&self) -> bool {
+        self.picking_sketch_plane() || self.dialog.as_ref().is_some_and(|d| d.inputs.get(d.active).is_some_and(|i| i.accept & selection::PLANES != 0))
     }
 
     /// Is the view drawn in perspective? The perspective preference, except while a sketch is

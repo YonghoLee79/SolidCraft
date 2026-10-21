@@ -965,9 +965,9 @@ pub fn origin_planes(app: &SolveApp) -> Vec<(&'static str, Vec3, [Vec3; 4])> {
     if !app.origin_visible() {
         return Vec::new();
     }
-    // While the Origin is hidden, Create Sketch brings the planes back: then every plane;
-    // otherwise only those not hidden one by one.
-    let creating = !app.ui.show_origin && app.picking_sketch_plane();
+    // While the Origin is hidden, a dialog picking a plane brings the planes back: then every
+    // plane; otherwise only those not hidden one by one.
+    let creating = !app.ui.show_origin && app.picking_plane();
     origin_quads(origin_size(app.cam.half_height()))
         .into_iter()
         .filter(|(n, _, _)| creating || !app.session.visibility.hidden_origin.iter().any(|h| h == n))
@@ -1964,7 +1964,7 @@ fn highlight_geometry_key(app: &SolveApp) -> u64 {
     app.preview.effective_replaced().hash(&mut h);
     app.preview.rolled_back.hash(&mut h);
     app.origin_visible().hash(&mut h);
-    app.picking_sketch_plane().hash(&mut h);
+    app.picking_plane().hash(&mut h);
     app.session.visibility.hidden_origin.hash(&mut h);
     app.session.visibility.hidden_bodies.hash(&mut h);
     app.session.visibility.hidden_occurrences.hash(&mut h);
@@ -2021,7 +2021,7 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
     };
     let mut planes: Vec<(String, [Vec3; 4], Color32)> = origin_planes(app).into_iter().map(|(n, _, q)| (n.to_string(), q, t.origin_plane)).collect();
     planes.extend(construction_quads(app).into_iter().map(|(n, _, q)| (n, q, t.construction_plane)));
-    let through = app.picking_sketch_plane();
+    let through = app.picking_plane();
     for (name, q, base) in &planes {
         let (selected, hovered) = plane_state(name);
         let fill = if hovered {
@@ -6858,6 +6858,26 @@ mod grid_plane_tests {
         app.ui.show_origin = true;
         let sc = build_highlight(&app);
         assert!(sc.xray.is_empty() && !sc.guide_trans.is_empty(), "outside Create Sketch the planes are depth-tested");
+    }
+
+    /// #2581: a dialog waiting for a plane (here Mirror's plane) shows the origin planes in the
+    /// view as Create Sketch does, so the plane can be picked there; while it waits for its
+    /// objects it doesn't.
+    #[test]
+    fn a_dialog_picking_a_plane_shows_the_origin_planes() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        app.run("solid.box", json!({"length":40,"width":40,"height":40})).unwrap();
+        app.ui.show_origin = false;
+        app.start("solid.mirror");
+        let d = app.dialog.as_ref().expect("the Mirror dialog");
+        assert_eq!(d.active, 0, "it starts on its objects");
+        assert!(!app.picking_plane() && origin_planes(&app).is_empty(), "no planes while picking objects");
+        app.dialog.as_mut().unwrap().active = 1;
+        assert!(app.picking_plane());
+        assert_eq!(origin_planes(&app).len(), 3, "every origin plane is offered for the mirror plane");
+        assert!(!build_highlight(&app).xray.is_empty(), "drawn through the model");
+        app.dialog = None;
+        assert!(origin_planes(&app).is_empty());
     }
 
     /// Primary rolls a live preview back for reselect, but not while a manipulator is dragged
