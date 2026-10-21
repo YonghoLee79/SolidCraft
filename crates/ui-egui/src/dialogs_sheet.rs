@@ -227,10 +227,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                         form_row(ui, &format!("Bend {}", n + 2), |ui| {
                             ui.horizontal(|ui| {
                                 let close = Tokens::get().control_height;
-                                let w = ((ui.available_width() - ui.spacing().item_spacing.x * 2.0 - close) / 2.0).max(0.0);
-                                for (text, hint, what, id) in
-                                    [(&mut *a, "angle", "angle", "sm_then_angle"), (&mut *h, "height", "height", "sm_then_height")]
+                                // The angle ("45 deg") is the longer text of the two.
+                                let room = (ui.available_width() - ui.spacing().item_spacing.x * 2.0 - close).max(0.0);
+                                for (text, hint, what, id, share) in
+                                    [(&mut *a, "angle", "angle", "sm_then_angle", 0.55), (&mut *h, "height", "height", "sm_then_height", 0.45)]
                                 {
+                                    let w = room * share;
                                     ui.push_id((id, n), |ui| {
                                         ui.allocate_ui_with_layout(
                                             vec2(w, Tokens::get().control_height),
