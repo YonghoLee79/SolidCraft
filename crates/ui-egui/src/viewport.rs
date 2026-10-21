@@ -1964,6 +1964,7 @@ fn highlight_geometry_key(app: &SolveApp) -> u64 {
     app.ui.pick_bodies.hash(&mut h);
     app.session.active_sketch.hash(&mut h);
     (app.dialog.is_some(), app.tool.is_some()).hash(&mut h);
+    picks_bodies(app).hash(&mut h);
     crate::theme::is_dark().hash(&mut h);
     crate::theme::vision().hash(&mut h);
     app.preview.effective_replaced().hash(&mut h);
@@ -2207,8 +2208,8 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
     }
     // Hover (pre-highlight).
     match hover {
-        // Body selection: the whole body lights up.
-        Some(Hit::Face { body, .. }) if app.ui.pick_bodies && app.dialog.is_none() && app.tool.is_none() => {
+        // Body selection, or a dialog input that takes bodies: the whole body lights up.
+        Some(Hit::Face { body, .. }) if (app.ui.pick_bodies && app.dialog.is_none() && app.tool.is_none()) || picks_bodies(app) => {
             if let Some(b) = st.body(body) {
                 let k = t.hover_face_lift;
                 let c = body_rgb(app, body);
@@ -2283,6 +2284,12 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
     }
 
     sc
+}
+
+/// Does the open dialog's active input take a face hit as its body (it takes bodies, not faces)?
+fn picks_bodies(app: &SolveApp) -> bool {
+    use crate::selection::{BODIES, FACES, PLANAR_FACES};
+    app.dialog.as_ref().and_then(|d| d.active_input()).is_some_and(|i| i.accept & BODIES != 0 && i.accept & (FACES | PLANAR_FACES) == 0)
 }
 
 /// A body's display colour (appearance, material or imported colour), if it has one.
@@ -5370,6 +5377,23 @@ mod tests {
         app.session.visibility.hidden_bodies.clear();
         let shown = build_highlight(&app);
         assert_eq!(shown.blocks[0].bytes.tris, bytes.tris);
+    }
+
+    /// Hovering a face while Combine waits for its target lights the whole body, as the pick
+    /// will take it; with no dialog only the face lights.
+    #[test]
+    fn a_dialog_that_takes_bodies_lights_the_whole_hovered_body() {
+        let mut app = cylinder_app();
+        let body = app.session.world_state().bodies[0].clone();
+        let whole = shown_mesh(&app, &body, &None).triangles.len() * 3 * crate::gpu::TRI_SIZE;
+        app.viewport.hover = Some(Hit::Face { body: body.name.clone(), index: 0, point: Vec3::ZERO });
+        let face = build_highlight(&app).merged().tris.len();
+        assert!(face > 0 && face < whole, "a face alone lights: {face} of {whole}");
+        let key = highlight_key(&app);
+        app.dialog = crate::dialogs::Dialog::for_command(&app, "solid.combine");
+        assert!(picks_bodies(&app), "Combine's target takes bodies");
+        assert_ne!(highlight_key(&app), key);
+        assert_eq!(build_highlight(&app).merged().tris.len(), whole, "the whole body lights");
     }
 
     #[test]
