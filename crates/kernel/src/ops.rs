@@ -527,7 +527,20 @@ fn trivial(
     // The same surface as the kernel takes it elsewhere (see `coaxial_overlap`).
     let same = (a.size().max(b.size()) * 1e-7).max(1e-9) * 10.0;
     let shared = || shared_cylinders(a, b, ma, mb, same);
-    let sure = !contradicted((ma, &ia), (mb, &ib), (disjoint, b_in_a > ALL, a_in_b > ALL), tol, &shared);
+    // A sample inside both bodies is material they share — unless both meshes stand for one
+    // cylinder the two bodies have faces on, where their facets are chords of one circle at
+    // different angles and cross by the facetings' error alone, so samples land in the lens
+    // between them though the surfaces only touch (a pin in a bore of its own size). Where
+    // there is no such cylinder, "they share nothing" is not sure while the samples say
+    // otherwise, however small the share: the facets' evidence below is read at facet middles,
+    // so an interference shallower than a facet is long is witnessed only where one happens to
+    // straddle it. A pin sunk 0.01 mm into a plate had that witness only because its wall came
+    // out of a join sewn as two faces, split a hair above the plate; sewing that wall as the one
+    // face it is left the interference unwitnessed and the intersection came back empty (#1986).
+    // Being unsure costs the general boolean a try and leaves this answer as the unverified
+    // fallback, which the clearance checks report as unchecked rather than as no overlap.
+    let share_sampled = disjoint && (b_in_a > 0.0 || a_in_b > 0.0) && shared().cylinders.is_empty();
+    let sure = !share_sampled && !contradicted((ma, &ia), (mb, &ib), (disjoint, b_in_a > ALL, a_in_b > ALL), tol, &shared);
     let answer = match op {
         // Sampling only selects this candidate. Validate every shell boundary and the
         // complete material/void nesting before preserving a disconnected union.
