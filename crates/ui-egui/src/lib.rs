@@ -1620,10 +1620,7 @@ impl SolveApp {
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             if floating {
                 let panel_content = ui.max_rect();
-                let mut content = panel_content;
-                if let Some(history) = self.shell.history.filter(|_| !left_timeline) {
-                    content.max.y = (history.top() - shell::SHELL_GAP).max(content.top());
-                }
+                let mut content = shell::bottom_overlay_rect(self, panel_content);
                 if left_timeline && let Some(history) = self.shell.history {
                     content.min.x = (history.right() + shell::SHELL_GAP).min(content.right());
                 }
