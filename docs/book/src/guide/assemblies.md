@@ -329,7 +329,7 @@ revision, other tools' data under a reverse-DNS key (the same rules as the desig
 properties), and free text properties such as a material grade or a finish. Every occurrence of
 the component shares them, Paste New copies them, and they are saved with the component.
 `component.metadata {component}` reads them and
-`component.metadata.set {component, part_number?, description?, revision?, values?, properties?}`
+`component.metadata.set {component, part_number?, description?, revision?, bom_type?, values?, properties?}`
 changes them in one undo step (an empty value removes a field). The root component is the
 design itself: its properties are `document.metadata`'s. Standard parts (`parts.insert`) get a
 part number from their standard and size (`ISO 4762 M6x20`, or a bearing's designation) and a
@@ -351,11 +351,34 @@ description; **Change Part Size** renumbers them, keeping a field you changed yo
   rows. `total_occurrences` counts the children too, so it is the same either way.
 - `component` lists one subassembly's parts instead of the design's.
 
+A component's **bill of materials type** (`bom_type`, a part property set with
+`component.metadata.set {component, bom_type}`) decides how it counts in the assemblies it is
+placed in. Without one it is `normal`.
+
+| Type | For | In the assembly it is placed in |
+|---|---|---|
+| `normal` | Something you make | A row of its own; every occurrence adds to its quantity |
+| `phantom` | Something just to group (a fastener set) | No row: what it holds counts as if it were placed there directly, in the same rows as the same parts placed there |
+| `reference` | Something to use as a reference (a fixture shown for context) | Counted nowhere, and nothing inside it is counted either |
+| `purchased` | Something you buy (a gearbox) | One row; nothing inside it is counted or listed |
+| `inseparable` | Something made as one piece: welded, glued, riveted and so on (a welded frame) | One row; in parts only, the purchased parts inside it are listed too, and the rest of what it holds is listed in its own bill of materials |
+
+Two components with the same part number share a row only when their types agree. A
+component's own bill of materials (`component`) lists what it holds whatever its type.
+
+One occurrence can count as another type than its component:
+`occurrence.bom_type {occurrence, bom_type}` sets it for that occurrence only (one bracket of
+four kept for reference, or one bought instead of made), and `same_as_component` (or `null`)
+clears it. Occurrences of one component that count as different types are different rows. An
+occurrence inside a subassembly belongs to the subassembly's definition, so its type holds
+wherever the subassembly is placed. Paste New keeps the types of the occurrences it copies;
+Paste (Instance) places one that counts as its component.
+
 Rows are sorted by part number (rows without one come last) and hold `item`, `part_number`,
-`description`, `revision`, `count`, `definition` (the component names), `components` (their ids)
+`description`, `revision`, `bom_type`, `count`, `definition` (the component names), `components` (their ids)
 and `properties`, with `total_occurrences` beside them. `path` writes them to a `.csv` file
 (the columns item, part_number, description, revision, count and definition, every field
 quoted; children follow their row) or a `.json` file. The window lists the same rows, switches
 between the levels and groupings and shows children under their part, edits a picked row's part
-number, description and revision, and exports them. Changing part properties changes no
-geometry, so it doesn't evaluate the model or re-seat joints again.
+number, description and revision, and exports them. Changing part properties or a bill of
+materials type changes no geometry, so it doesn't evaluate the model or re-seat joints again.
