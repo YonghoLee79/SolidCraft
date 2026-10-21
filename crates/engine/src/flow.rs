@@ -95,8 +95,14 @@ pub struct Spec {
     pub cell: Option<f64>,
     pub pad: f64,
     pub turbulence: bool,
+    /// The walls' equivalent sand-grain roughness, mm (0: smooth).
+    pub roughness: f64,
     pub max_steps: u64,
 }
+
+/// Surface finishes as equivalent sand-grain roughness, mm: about three times the arithmetic
+/// mean roughness Ra commonly reported for each (a rough guide; a measured Ra gives a better one).
+pub const SURFACES: [(&str, f64); 4] = [("smooth", 0.0), ("machined", 0.005), ("resin", 0.01), ("fdm", 0.06)];
 
 pub struct Study {
     pub name: String,
@@ -475,8 +481,16 @@ pub fn setup(st: &ModelState, spec: &Spec, max_cells: u64) -> std::result::Resul
             (c / scale).ceil() * scale
         }
     };
-    let setup =
-        sim::FlowSetup { cell, pad: spec.pad, air: sim::AIR, inlets, outlets, turbulence: if spec.turbulence { 0.14 } else { 0.0 }, max_cells };
+    let setup = sim::FlowSetup {
+        cell,
+        pad: spec.pad,
+        air: sim::AIR,
+        inlets,
+        outlets,
+        turbulence: if spec.turbulence { 0.14 } else { 0.0 },
+        roughness: spec.roughness,
+        max_cells,
+    };
     Ok((setup, meshes))
 }
 
@@ -777,6 +791,7 @@ pub fn spec_params(name: &str, spec: &Spec) -> Value {
         "cell": spec.cell,
         "pad": spec.pad,
         "turbulence": spec.turbulence,
+        "roughness_mm": spec.roughness,
         "max_steps": spec.max_steps,
     })
 }

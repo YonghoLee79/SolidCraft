@@ -99,6 +99,8 @@ pub struct FlowForm {
     /// mm.
     pub pad: String,
     pub turbulence: bool,
+    /// The walls' finish: an index into the engine's surface finishes.
+    pub surface: usize,
 }
 
 impl Default for FlowForm {
@@ -113,6 +115,7 @@ impl Default for FlowForm {
             cell: String::new(),
             pad: "20".into(),
             turbulence: true,
+            surface: 0,
         }
     }
 }
@@ -184,6 +187,9 @@ pub fn rows(app: &SolveApp, ui: &mut egui::Ui, k: &mut Sim) -> bool {
     enter |= field(ui, "Cell size", &mut f.cell, "mm", tr("sim.auto"));
     enter |= field(ui, "Open air", &mut f.pad, "mm", "");
     crate::ui_kit::checkbox(ui, tr("sim.turbulence"), &mut f.turbulence);
+    // In the order of the engine's surface finishes.
+    let labels = ["sim.surface_smooth", "sim.surface_machined", "sim.surface_resin", "sim.surface_fdm"].map(tr);
+    choice_row(ui, tr("sim.label_surface"), "sim_surface", &mut f.surface, &labels);
     text(ui, &crate::i18n::format("sim.runs_on", &[("solver", &app.session.flow_backend_name())]), Text::Hint("sim_runs_on"));
     enter
 }
@@ -243,6 +249,9 @@ pub fn commands(app: &SolveApp, k: &Sim, inputs: &[SelInput]) -> Result<Vec<(Str
         json!({"body": body, "name": name, "inlets": inlets, "outlets": outlets, "pad": number(&f.pad, "open air")?, "turbulence": f.turbulence});
     if !f.cell.trim().is_empty() {
         params["cell"] = json!(number(&f.cell, "cell size")?);
+    }
+    if let Some((surface, _)) = solidcraft_engine::flow::SURFACES.get(f.surface) {
+        params["surface"] = json!(surface);
     }
     Ok(vec![("sim.flow.new".to_string(), params), ("sim.flow.run".to_string(), json!({"study": name}))])
 }

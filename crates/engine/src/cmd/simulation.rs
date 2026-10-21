@@ -22,7 +22,7 @@ const OPENING_DOC: &str = "Openings are faces: `{\"face\": [x, y, z] (a point on
 
 pub static COMMANDS: &[CommandSpec] = &[
 CommandSpec::new("sim.flow.new", "Airflow Study", flow_new).noundo().at("SIMULATION", "STUDY").icon("sim_flow")
-    .params("Set up an Airflow study (steady, low-speed air through ducts, fans and cooling paths); `sim.flow.run` runs it. body: the duct's body; inlets: list of openings each with `speed` (m/s) or `fan`: {\"type\": \"axial\" | \"radial\" | \"linear\", \"free_flow_cfm\", \"max_pressure_pa\"} or {\"curve\": [[cfm, pa], ...]}; outlets: list of openings (where the air is expected to leave; measured, and the air flows on past them into open air); bodies?: every body in the air's way (default: all visible bodies); cell?: cell size, mm (default: about 8 cells across the narrowest opening); pad?: open air around the bodies, mm (default 20); turbulence?: bool (default true); max_steps?: (default 200000); name?: the study's name. The design is unchanged. Openings: see sim.flow.edit."),
+    .params("Set up an Airflow study (steady, low-speed air through ducts, fans and cooling paths); `sim.flow.run` runs it. body: the duct's body; inlets: list of openings each with `speed` (m/s) or `fan`: {\"type\": \"axial\" | \"radial\" | \"linear\", \"free_flow_cfm\", \"max_pressure_pa\"} or {\"curve\": [[cfm, pa], ...]}; outlets: list of openings (where the air is expected to leave; measured, and the air flows on past them into open air); bodies?: every body in the air's way (default: all visible bodies); cell?: cell size, mm (default: about 8 cells across the narrowest opening); pad?: open air around the bodies, mm (default 20); turbulence?: bool (default true); surface?: the walls' finish, smooth | machined | resin | fdm (default smooth), or roughness_mm?: their equivalent sand-grain roughness (it acts through the turbulence model); max_steps?: (default 200000); name?: the study's name. The design is unchanged. Openings: see sim.flow.edit."),
 CommandSpec::new("sim.flow.edit", "Edit Airflow Study", flow_edit).noundo().icon("sim_flow")
     .params("Change a study's setup: study: its name; any of sim.flow.new's keys (inlets/outlets replace the lists). Its results are cleared."),
 CommandSpec::new("sim.flow.run", "Run Airflow Study", flow_run).noundo().icon("sim_flow")
@@ -210,12 +210,24 @@ fn spec(s: &Session, p: &Value, cmd: &str, base: Option<Spec>) -> Result<Spec> {
         None => base.as_ref().map_or(20.0, |b| b.pad),
     };
     let turbulence = bool_(p, "turbulence").or(base.as_ref().map(|b| b.turbulence)).unwrap_or(true);
+    // A roughness given but not a usable number is an error, not the default.
+    let given = p.get("roughness_mm").map(|_| num(p, "roughness_mm").unwrap_or(f64::NAN));
+    let roughness = match (str_(p, "surface"), given) {
+        (Some(_), Some(_)) => return Err(bad(cmd, "give `surface` or `roughness_mm`, not both")),
+        (Some(name), None) => match flow::SURFACES.iter().find(|(n, _)| *n == name) {
+            Some((_, k)) => *k,
+            None => return Err(bad(cmd, format!("surface `{name}`: use smooth, machined, resin or fdm"))),
+        },
+        (None, Some(k)) if k.is_finite() && (0.0..=5.0).contains(&k) => k,
+        (None, Some(_)) => return Err(bad(cmd, "`roughness_mm` is 0…5")),
+        (None, None) => base.as_ref().map_or(0.0, |b| b.roughness),
+    };
     let max_steps = match num(p, "max_steps") {
         Some(v) if v.is_finite() && (1000.0..=10_000_000.0).contains(&v) => v as u64,
         Some(_) => return Err(bad(cmd, "`max_steps` is 1000…10000000")),
         None => base.as_ref().map_or(200_000, |b| b.max_steps),
     };
-    Ok(Spec { body, bodies, inlets, outlets, cell, pad, turbulence, max_steps })
+    Ok(Spec { body, bodies, inlets, outlets, cell, pad, turbulence, roughness, max_steps })
 }
 
 fn max_cells(s: &Session) -> u64 {
@@ -437,6 +449,7 @@ fn flow_list(s: &mut Session, _: &Value) -> Result<Value> {
                 "cell": st.spec.cell,
                 "pad": st.spec.pad,
                 "turbulence": st.spec.turbulence,
+                "roughness_mm": st.spec.roughness,
                 "max_steps": st.spec.max_steps,
                 "state": flow::status(st).get("state").cloned().unwrap_or(Value::Null),
             })
@@ -1003,6 +1016,10 @@ mod tests {
             json!({"body": "Duct", "inlets": inlet, "cell": 0.05}),
             json!({"body": "Duct", "inlets": inlet, "pad": -1}),
             json!({"body": "Duct", "inlets": inlet, "bodies": ["Nope"]}),
+            json!({"body": "Duct", "inlets": inlet, "surface": "sandpaper"}),
+            json!({"body": "Duct", "inlets": inlet, "roughness_mm": -0.1}),
+            json!({"body": "Duct", "inlets": inlet, "roughness_mm": f64::MAX}),
+            json!({"body": "Duct", "inlets": inlet, "surface": "fdm", "roughness_mm": 0.1}),
         ] {
             assert!(s.execute("sim.flow.new", &p).is_err(), "{p}");
         }
@@ -1014,5 +1031,23 @@ mod tests {
             assert!(s.execute(id, &p).is_err(), "{id} {p}");
         }
         assert!(s.flow.list.is_empty());
+    }
+
+    /// A surface finish is kept as its roughness, listed, and saved with the study; an edit
+    /// that names neither keeps it.
+    #[test]
+    fn a_study_keeps_its_surface_finish() {
+        let mut s = Session::default();
+        duct(&mut s);
+        let inlet = json!([{"face": [0, 1, 6], "speed": 0.05}]);
+        s.execute("sim.flow.new", &json!({"body": "Duct", "name": "D", "inlets": inlet, "cell": 1, "pad": 4, "surface": "fdm"})).unwrap();
+        assert_eq!(s.flow.get("D").map(|st| st.spec.roughness), Some(0.06));
+        let listed = s.execute("sim.flow.list", &json!({})).unwrap();
+        assert!(listed.to_string().contains("\"roughness_mm\":0.06"), "{listed}");
+        assert_eq!(crate::flow::spec_params("D", &s.flow.get("D").unwrap().spec)["roughness_mm"], json!(0.06));
+        s.execute("sim.flow.edit", &json!({"study": "D", "pad": 5})).unwrap();
+        assert_eq!(s.flow.get("D").map(|st| st.spec.roughness), Some(0.06));
+        s.execute("sim.flow.edit", &json!({"study": "D", "roughness_mm": 0.2})).unwrap();
+        assert_eq!(s.flow.get("D").map(|st| st.spec.roughness), Some(0.2));
     }
 }

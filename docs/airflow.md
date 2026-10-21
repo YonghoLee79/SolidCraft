@@ -22,11 +22,14 @@ in the design changes; studies are kept beside the design in `<design>.sim.json`
    also lets the solver time its steps for the jets they make; without them a fast jet can make
    the run unstable.
 4. **Bodies in the air's way.** By default every visible body: the bed, the nozzle, the hotend.
-5. **Cell size.** `auto` puts about eight cells across the narrowest opening and keeps cells no
+5. **Surface finish.** Smooth, machined or moulded, resin print (SLA) or FDM print, or a
+   roughness of your own (`roughness_mm`, the equivalent sand-grain roughness). See
+   [Surface finish](#surface-finish) for what it changes.
+6. **Cell size.** `auto` puts about eight cells across the narrowest opening and keeps cells no
    thicker than the thinnest walls. Smaller is more accurate and slower (cells are cubes, so
    half the size is eight times the cells). **Open air** is how far the box of air reaches past
    the bodies on every side; it also reaches one outlet width past each outlet.
-6. **Run.** It runs until flows and pressures change by less than 0.5% between checks
+7. **Run.** It runs until flows and pressures change by less than 0.5% between checks
    (**Settled**) or until the step limit. Then **Results**: flow, pressure and speed at each
    opening, the pressure drop, and **Show in the view**: speed or pressure on a section,
    streamlines, see-through bodies.
@@ -63,6 +66,29 @@ are using. Without a GPU, studies run on the CPU up to 2 million cells.
   this cell size; the fan's flow is measured one cell in, where it really enters.
 - **Went unstable:** the air moved faster than the time step allows. Name the outlets, use
   smaller cells or a lower speed.
+
+### Surface finish
+
+A rough wall slows the air near it more than a smooth one. The study models this the way
+Cebeci and Chang did for mixing-length models: roughness shifts the wall distance y⁺ used in
+the near-wall damping by Δy⁺ = 0.9 (√k⁺ − k⁺ e^(−k⁺/6)), where k⁺ is the roughness in wall
+units. The presets are equivalent sand-grain roughness, taken as about three times the mean
+roughness Ra usually reported for each finish:
+
+| finish | roughness |
+|---|---|
+| smooth | 0 |
+| machined or moulded | 0.005 mm |
+| resin print (SLA) | 0.01 mm |
+| FDM print | 0.06 mm |
+
+Below k⁺ of about 4.5 the roughness sits inside the wall's viscous layer and changes nothing:
+the wall is *hydraulically smooth*. At part-cooling speeds that covers most prints. At 5 m/s
+in a 20 mm duct, roughness starts to count at about 0.2 mm, rougher than a typical FDM wall.
+So on most printer ducts the finish makes little difference, and the presets say so rather
+than inventing one. It matters for fast jets and coarse prints (large nozzles, thick layers,
+unsanded supports), where you can give your own `roughness_mm`. It does nothing with the
+turbulence model off.
 
 ## How it works
 
@@ -120,5 +146,6 @@ gives 20% more flow at the nozzle in SolidCraft will in OpenFOAM too.
 - Steady, low-speed air only (below about 30% of the speed of sound). Not compressible flow,
   shocks or external aerodynamics yet (`sim.gas.new` and `sim.aero.new` say so).
 - No heat: temperatures and heat transfer are not simulated.
-- Smooth walls: surface roughness (a printed part's layers) is not modelled.
+- Roughness acts only through the near-wall damping. Ridges larger than a cell are geometry,
+  and are better drawn.
 - One uniform cell size over the whole box. Thin passages need small cells everywhere.

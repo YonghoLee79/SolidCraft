@@ -269,6 +269,7 @@ fn a_study_runs_on_the_gpu_as_on_the_cpu() {
             inlets: vec![Inlet { name: "in".into(), patch: across(0.0), source: source.clone(), cap: true }],
             outlets: vec![Outlet { name: "out".into(), patch: across(len) }],
             turbulence: 0.0,
+            roughness: 0.0,
             max_cells: 200_000,
         };
         let limits = Limits { max_steps: 30_000, check_every: 250, tolerance: 0.005, soft_start: true };
@@ -317,6 +318,7 @@ fn the_default_pipe_case_runs_stably() {
         inlets: vec![Inlet { name: "inlet".into(), patch: disk(0.0), source: Source::Speed(speed), cap: true }],
         outlets: vec![Outlet { name: "outlet".into(), patch: disk(len) }],
         turbulence: 0.17,
+        roughness: 0.0,
         max_cells: 20_000_000,
     };
     let t = std::time::Instant::now();

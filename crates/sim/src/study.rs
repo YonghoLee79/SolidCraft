@@ -238,6 +238,9 @@ pub struct FlowSetup {
     pub outlets: Vec<Outlet>,
     /// The Smagorinsky constant (0: laminar).
     pub turbulence: f64,
+    /// The walls' equivalent sand-grain roughness, mm (0: smooth). It acts through the turbulence
+    /// model's wall damping, so it does nothing in a laminar study.
+    pub roughness: f64,
     /// Most cells the grid may have.
     pub max_cells: u64,
 }
@@ -471,8 +474,11 @@ fn thin_walls(grid: &Grid, bodies: &[&Mesh], max: usize) -> Vec<Vec3> {
 /// Van Driest's damping of the Smagorinsky length scale, 1 − exp(−y⁺/A), per cell (65535 = 1):
 /// y is the distance to the nearest wall (counted in cells through the air, up to 16), and the
 /// friction velocity comes from the Blasius friction factor for air at `speed` (m/s) through a
-/// duct of diameter `diameter` (m).
-fn wall_damping(grid: &Grid, speed: f64, diameter: f64, viscosity: f64) -> Vec<u16> {
+/// duct of diameter `diameter` (m). Rough walls (equivalent sand-grain roughness `roughness`, m)
+/// damp less: Cebeci and Chang's shift of y⁺ by Δy⁺ = 0.9 (√k⁺ − k⁺ e^(−k⁺/6)) (AIAA J. 16(7),
+/// 1978), which applies from k⁺ of about 4.5 (below it the wall is hydraulically smooth) and grows
+/// with k⁺.
+fn wall_damping(grid: &Grid, speed: f64, diameter: f64, viscosity: f64, roughness: f64) -> Vec<u16> {
     const FAR: u8 = 16;
     let n = grid.len();
     let [nx, ny, nz] = grid.dims;
@@ -512,17 +518,28 @@ fn wall_damping(grid: &Grid, speed: f64, diameter: f64, viscosity: f64) -> Vec<u
     let re = (speed * diameter / viscosity).max(2300.0);
     let u_tau = speed * (0.316 * re.powf(-0.25) / 8.0).sqrt();
     let per_cell = grid.spacing * 1e-3 * u_tau / viscosity;
+    let shift = rough_shift(roughness * u_tau / viscosity);
     dist.iter()
         .map(|d| {
             if *d == 0 {
                 return 0;
             }
-            let y_plus = (f64::from(*d) - 0.5) * per_cell;
+            let y_plus = (f64::from(*d) - 0.5) * per_cell + shift;
             // A floor keeps some eddy viscosity in the first cells, where the lattice is least
             // stable at a relaxation time this close to ½.
             ((1.0 - (-y_plus / VAN_DRIEST_A).exp()).clamp(DAMPING_FLOOR, 1.0) * 65535.0).round() as u16
         })
         .collect()
+}
+
+/// Cebeci and Chang's roughness shift Δy⁺ for a roughness of `k_plus` wall units.
+fn rough_shift(k_plus: f64) -> f64 {
+    // Below this the roughness sits inside the viscous sublayer.
+    const SMOOTH: f64 = 4.535;
+    if !(k_plus.is_finite() && k_plus >= SMOOTH) {
+        return 0.0;
+    }
+    (0.9 * (k_plus.sqrt() - k_plus * (-k_plus / 6.0).exp())).max(0.0)
 }
 
 /// The lattice for `setup` around `bodies` (closed triangle meshes, mm).
@@ -547,7 +564,9 @@ pub fn prepare_paced(bodies: &[&Mesh], setup: &FlowSetup, pace: f64) -> Result<P
         && setup.air.density.is_finite()
         && setup.air.density > 0.0
         && setup.air.viscosity.is_finite()
-        && setup.air.viscosity > 0.0)
+        && setup.air.viscosity > 0.0
+        && setup.roughness.is_finite()
+        && setup.roughness >= 0.0)
     {
         return Err(SimError::InvalidSpacing);
     }
@@ -684,7 +703,13 @@ pub fn prepare_paced(bodies: &[&Mesh], setup: &FlowSetup, pace: f64) -> Result<P
         .with_walls(crate::wall_links(bodies, &grid)?)?;
     if setup.turbulence > 0.0 {
         let largest = inlet_cells.iter().map(|(_, c)| c.len()).max().unwrap_or(0) as f64 * units_dx * units_dx;
-        lattice = lattice.with_damping(wall_damping(&grid, fastest, (4.0 * largest / std::f64::consts::PI).sqrt(), setup.air.viscosity))?;
+        lattice = lattice.with_damping(wall_damping(
+            &grid,
+            fastest,
+            (4.0 * largest / std::f64::consts::PI).sqrt(),
+            setup.air.viscosity,
+            setup.roughness * 1e-3,
+        ))?;
     }
     // A sponge over the outer part of the padding (never reaching the bodies) damps what would
     // otherwise reflect off the box's faces.
@@ -953,6 +978,7 @@ pub(crate) mod tests {
             inlets: vec![Inlet { name: "in".into(), patch: across(a, w, 0.0), source, cap: true }],
             outlets: vec![Outlet { name: "out".into(), patch: across(a, w, len) }],
             turbulence: 0.0,
+            roughness: 0.0,
             max_cells: 200_000,
         }
     }
@@ -1027,6 +1053,18 @@ pub(crate) mod tests {
         assert!(moved < 0.02, "still moving {moved}");
         assert!((seen.flow - on_curve).abs() / on_curve < 0.05, "{:e} m³/s at {} Pa; the curve gives {on_curve:e}", seen.flow, seen.pressure);
         assert!(seen.flow < 0.95 * fan.free_flow() && seen.pressure > 0.0, "{seen:?}");
+    }
+
+    /// Cebeci and Chang's roughness shift: none on smooth walls or below k⁺ ≈ 4.5, then it grows
+    /// toward 0.9 √k⁺ as the roughness takes over from the viscous layer.
+    #[test]
+    fn rough_walls_shift_the_damping() {
+        assert_eq!(rough_shift(0.0), 0.0);
+        assert_eq!(rough_shift(f64::NAN), 0.0);
+        assert_eq!(rough_shift(4.0), 0.0);
+        assert!(rough_shift(5.0) > 0.0, "{}", rough_shift(5.0));
+        assert!((rough_shift(60.0) - 0.9 * 60f64.sqrt()).abs() < 0.01, "{}", rough_shift(60.0));
+        assert!(rough_shift(20.0) > rough_shift(10.0) && rough_shift(10.0) > rough_shift(5.0));
     }
 
     #[test]
