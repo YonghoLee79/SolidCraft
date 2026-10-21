@@ -1691,6 +1691,8 @@ fn tool_results_tell_the_agent_what_changed_in_the_design() {
             .is_some_and(|n| n.iter().any(|x| x["name"] == "Plate" && x["info"].as_str().is_some_and(|i| i.contains("degrees of freedom")))),
         "{f}"
     );
+    let plate = f["notices"].as_array().unwrap().iter().find(|x| x["name"] == "Plate").unwrap();
+    assert_eq!(plate["issues"][0]["code"], "sketch_underconstrained", "a structured issue, not a sentence: {f}");
     let n = tool(&mut s, "notices", json!({"features": ["Plate"]}));
     assert_eq!(n["notices"][0]["values"]["profiles"], 1, "{n}");
     // The `notices` tool is a plain read-only tool: it answers without the block too.

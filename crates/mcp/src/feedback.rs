@@ -27,9 +27,11 @@ pub(crate) struct Health {
     errors: BTreeMap<u64, (String, String)>,
     warnings: BTreeMap<u64, (String, String)>,
     parameter_errors: BTreeMap<String, String>,
-    /// By feature id: (name, info), and a digest of the notice's values.
+    /// By feature id: (name, info), a digest of the whole notice, and its structured issues
+    /// beyond the error and warning text.
     notices: BTreeMap<u64, (String, String)>,
     notice_digests: BTreeMap<u64, u64>,
+    notice_issues: BTreeMap<u64, Value>,
     undo: Vec<String>,
     undo_depth: u64,
     redo_depth: u64,
@@ -65,6 +67,10 @@ impl Health {
                 .as_array()
                 .map(|a| a.iter().filter_map(|e| Some((e["feature"].as_u64()?, e["digest"].as_u64().unwrap_or(0)))).collect())
                 .unwrap_or_default(),
+            notice_issues: v["notices"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|e| Some((e["feature"].as_u64()?, e.get("issues").filter(|i| !i.is_null())?.clone()))).collect())
+                .unwrap_or_default(),
             undo: v["undo"].as_array().map(|a| a.iter().filter_map(|l| l.as_str().map(str::to_string)).collect()).unwrap_or_default(),
             undo_depth: v["undo_depth"].as_u64().unwrap_or(0),
             redo_depth: v["redo_depth"].as_u64().unwrap_or(0),
@@ -83,7 +89,8 @@ impl Health {
     /// was opened, or features came, went, broke or mended. (`model.health`'s `revision` also
     /// moves when only the view changes, a body hidden say, so it is not used.)
     fn differs(&self, b: &Health) -> bool {
-        let Health { features, errors, warnings, parameter_errors, notices, notice_digests, undo, undo_depth, redo_depth, path } = self;
+        let Health { features, errors, warnings, parameter_errors, notices, notice_digests, notice_issues: _, undo, undo_depth, redo_depth, path } =
+            self;
         *features != b.features
             || *errors != b.errors
             || *warnings != b.warnings
@@ -115,15 +122,26 @@ fn changes(a: &Health, b: &Health, out: &mut Map<String, Value>) {
         out.insert("new_warnings".into(), listed(&b.warnings, new_warnings.into_iter(), "warning"));
     }
     // The features' own reports (a sketch's degrees of freedom, a plugin's values): the ones that
-    // are new or say something different. Their values are a `notices` call away.
-    let notices: Vec<u64> = b
+    // are new or say something different, each with its info and its structured issues. Their
+    // values are a `notices` call away.
+    let notices: Vec<Value> = b
         .notices
         .iter()
         .filter(|(id, n)| a.notices.get(id) != Some(n) || a.notice_digests.get(id) != b.notice_digests.get(id))
-        .map(|(id, _)| *id)
+        .take(MAX_LISTED)
+        .map(|(id, (name, info))| {
+            let mut o = json!({"feature": id, "name": name});
+            if !info.is_empty() {
+                o["info"] = json!(info);
+            }
+            if let Some(issues) = b.notice_issues.get(id) {
+                o["issues"] = issues.clone();
+            }
+            o
+        })
         .collect();
     if !notices.is_empty() {
-        out.insert("notices".into(), listed(&b.notices, notices.into_iter(), "info"));
+        out.insert("notices".into(), Value::Array(notices));
     }
     let params: Map<String, Value> =
         b.parameter_errors.iter().filter(|(k, w)| a.parameter_errors.get(*k) != Some(*w)).map(|(k, w)| (k.clone(), json!(w))).collect();
@@ -267,13 +285,18 @@ mod tests {
         pre.notice_digests.insert(2, 7);
         let mut post = health(5);
         post.notices.insert(1, ("Base".into(), "fully constrained; 1 profile".into()));
+        post.notice_issues.insert(1, json!([{"severity": "warning", "code": "sketch_open_profile", "message": "1 open end", "entities": ["p3"]}]));
         post.notices.insert(2, ("Wing".into(), "area 990 cm²".into()));
         // Same line, other values: reported too.
         post.notice_digests.insert(2, 8);
         let r = report(Some(&pre), &pre, &post).unwrap();
         assert_eq!(
             r["notices"],
-            json!([{"feature": 1, "name": "Base", "info": "fully constrained; 1 profile"}, {"feature": 2, "name": "Wing", "info": "area 990 cm²"}])
+            json!([
+                {"feature": 1, "name": "Base", "info": "fully constrained; 1 profile",
+                 "issues": [{"severity": "warning", "code": "sketch_open_profile", "message": "1 open end", "entities": ["p3"]}]},
+                {"feature": 2, "name": "Wing", "info": "area 990 cm²"}
+            ])
         );
         // An unchanged notice is not repeated.
         post.notice_digests.insert(2, 7);

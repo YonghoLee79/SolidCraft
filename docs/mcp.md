@@ -159,7 +159,7 @@ They cover the workflow, the command shapes, how to verify with `measure`, and t
 | `inspect_design` | `measure?` (default true), `sketches?` (default true), `joints?` (default true) | Design properties (`metadata`: project, author… and other tools' keys; set them with `execute` `document.metadata.set`), parameters, timeline (type, suppressed, rolled back, error, warning, timing), bodies (volume, area, centre of mass, bbox, face/edge/vertex counts, visible; `removed_later: true` while a sketch is being edited on a rolled-back timeline and a later feature deletes the body, which is then not shown), sketches (curves, points, constraints, profiles, DOF, solve status, visible), joints when the design has any (as `joint.inspect` gives them: each origin's occurrence, component and path, the snap as saved, the feature, face, edge or sketch curve (`sketch: {id, name, curve}`) its persistent names refer to, `resolves` and the `error` when it is lost; kind, offset, angle, flip, values, limits, expressions, motion links; `execute` `joint.inspect {joint}` gives one joint), selection, undo depth. Hide helper sketches, bodies or construction planes with `execute` `browser.visibility` (`{items, visible}` or `{folder, visible}`), and joint glyphs with `{joints: [id or name], visible}` or `{folder: "joints", visible}` (a hidden joint still constrains and drives; `joint.list` reports each joint's `visible`). |
 | `measure` | `body?` or `items?` | Volume (mm³), area (mm²), centre of mass, bbox and topology counts per body, with totals. With `items` (one or two selections as `execute` takes them: `face`, `edge`, `vertex`, `sketch_curve`, `profile`), the picked geometry instead: see below. |
 | `body_topology` | `body` | Edges (index, midpoint, length, ends) and faces (index, name, area, centroid, normal, `point`, and for a cylindrical face its `cylinder`: `origin`, `axis`, `radius`). An edge midpoint is the `[x,y,z]` that picks that edge for fillet and chamfer. A face's `point` lies on it and picks it (its centroid may not: that of a face with a hole is in the hole); a face's `name` picks it for the commands that take faces (`face.delete`, `solid.shell`, `solid.draft`, `solid.offset_face`, `solid.split_face`, `solid.replace_face`, and `face` of `sheet.convert`). |
-| `notices` | `features?` (names or ids; default all) | What each feature reports about itself: `status` (ok, warning, error, skipped), its `error` or `warning`, a one-line `info` and structured `values`. A sketch reports whether it is solved, its degrees of freedom and its profiles; a plugin feature, its notice and published values. The feedback block names the features whose notice changed; their values are read here. |
+| `notices` | `features?` (names or ids; default all) | What each feature reports about itself, for an agent: `status` (ok, warning, error, skipped), a one-line `info`, structured `values` and `issues` (see [Feature notices](#feature-notices)). The feedback block names the features whose notice changed; their values are read here. |
 | `set_parameter` | `name`, `value` or `expression` (number or expression), `unit?`, `comment?` | Create or change a user parameter and recompute. `expression` is another name for `value` (the one `parameters.change` uses): give one of them, or both only when they agree; neither, or two that differ, is an error. Reports `recomputed` (features rebuilt), `restored` (features whose earlier result for the same inputs was reused, e.g. a value set back) and features that now fail. |
 | `screenshot` | `view?` (iso, top, front, back, bottom, left, right, home, fit, or a named view saved with `view.save`), `camera?` (`{target, yaw, pitch, distance, fov?}`, as `view.apply`), `path?`, `width?`, `height?`, `source?` (window, model), `grid?`, `axes?` | A PNG image content block. Headless: a render with the viewport's pipelines on a headless GPU device (see `solidcraft-cli gpu`; with no adapter, the CPU rasterizer, without analysis colours), fitted to the model, or from the named view or camera; the reply's `renderer` says which (`gpu`, `gpu-software`, `cpu`, with a `warning` for `cpu`). Bridged: the app window (default) or a model render with the app's camera; a named view or camera moves the app's viewport there first (`execute` `view.apply` does the same without a screenshot). `grid: false` and `axes: false` leave the ground grid (it lies on Z 0 and cuts through a part that straddles it) and the origin's axes out of a model render; axes hidden with `browser.visibility` stay out whatever `axes` says. Bridged, a screenshot that gives `grid` or `axes` is a model render, which follows the app's Grid and Origin switches for what it does not give; `source: "window"` with either is an error. A window that is minimised or on another macOS Space presents no frame: with no `source` the reply is a model render and says so (`fallback`); `source: "window"` is an error saying why, at once. Agents that don't need the app's chrome can ask for `source: "model"`. |
 | `export` | `path`, `format?` (step, 3mf, 3mf-tagged, stl, stla, obj, urdf), `bodies?`, `mesh_prefix?`, `effort?`, `velocity?` | STEP, 3MF or mesh export; URDF writes the whole assembly with its meshes next to it (`docs/urdf.md`). |
@@ -236,13 +236,40 @@ something to tell, the call's result ends with one more text block, `Design feed
   person modelling alongside) or by another client: `done` (the new undo steps' labels),
   `undone`, `redone`, `opened` (another design), and what broke or mended meanwhile. The agent
   should inspect the design before relying on what it knew.
-- `notices` (`[{feature, name, info}]`): the features whose own report changed, a sketch that
-  became fully constrained or a feature whose values moved. Their `values` are read with the
-  `notices` tool (`model.notices`).
+- `notices` (`[{feature, name, info?, issues?}]`): the features whose own report changed, a
+  sketch that became fully constrained or a feature whose values moved, with their specific
+  issues (see below). Their `values` are read with the `notices` tool (`model.notices`).
 - `failing_features`: on the first call, the features already failing.
 
 A call that changes nothing has no block. Bridged to an app that predates `model.health`, results
 come without it. In code, `Server::with_design_feedback(true)` turns it on.
+
+## Feature notices
+
+A notice is what a feature reports about itself, written for an agent first:
+
+- `info`: one line, for a quick read and for logs.
+- `values`: structured numbers and flags. A key names its unit (`span_mm`, `area_cm2`,
+  `angle_deg`, `speed_kmh`); counts and ratios have none. Compare and check these, not `info`.
+- `issues`: one object per problem, so an agent can act without parsing a sentence:
+
+```json
+{"severity": "warning", "code": "hole_too_deep", "message": "bolt 1: a 12 mm hole leaves 0 mm under it",
+ "parameter": "hubHoleDepth", "value": 12, "limit": 8, "suggestion": {"hubHoleDepth": 8}}
+```
+
+  `severity` is `error`, `warning` or `info`; `code` is stable, so a repeated issue is
+  recognised; `parameter`, `value` and `limit` say what is out of range; `suggestion` is the
+  change that clears it (`{parameter: value}`, or what to do, such as
+  `{"constraint": "coincident", "point": "p3"}`); `entities` names the sketch ids involved and
+  `at` where they are, in sketch coordinates.
+
+Every feature's error and warning text become issues (`feature_error`, `feature_warning`). A
+sketch reports whether it is solved, its degrees of freedom (`sketch_underconstrained`, severity
+info), conflicting constraints (`sketch_conflict`), open profile ends (`sketch_open_profile`) and
+ends that touch another curve untied (`sketch_untied_end`). A feature kind with more to say,
+such as a plugin feature, adds its own codes. The feedback block repeats only the specific issues,
+since `new_errors` and `new_warnings` already carry the error and warning text.
 
 ## Compact replies
 

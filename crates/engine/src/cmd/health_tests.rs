@@ -51,7 +51,15 @@ fn notices_report_what_each_feature_says_about_itself() {
     assert_eq!(sketch["values"]["profiles"], 1, "{n}");
     assert!(sketch["values"]["dof"].as_u64().unwrap() > 0, "an undimensioned rectangle moves: {n}");
     assert!(sketch["info"].as_str().unwrap().contains("degrees of freedom left"), "{n}");
-    assert!(all[1].get("info").is_none(), "{n}");
+    // Its issues are objects an agent can act on: here, the freedom left (severity info).
+    let free = &sketch["issues"][0];
+    assert_eq!(
+        (free["severity"].clone(), free["code"].clone(), free["limit"].clone()),
+        (json!("info"), json!("sketch_underconstrained"), json!(0)),
+        "{n}"
+    );
+    assert_eq!(free["value"], sketch["values"]["dof"], "{n}");
+    assert!(all[1].get("info").is_none() && all[1].get("issues").is_none(), "{n}");
     // By name or id; an unknown name is refused.
     let one = run(&mut s, "model.notices", json!({"features": ["Base"]}));
     assert_eq!(one["notices"].as_array().unwrap().len(), 1, "{one}");
@@ -64,4 +72,28 @@ fn notices_report_what_each_feature_says_about_itself() {
     run(&mut s, "sketch.finish", json!({}));
     let after = run(&mut s, "model.health", json!({}))["notices"].clone();
     assert_ne!(before[0]["digest"], after[0]["digest"], "{before} {after}");
+}
+
+#[test]
+fn notice_issues_say_where_a_sketch_is_open_and_why_a_feature_failed() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Open"}));
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [10, 0], [10, 5]]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let n = run(&mut s, "model.notices", json!({"features": ["Open"]}));
+    let issues = n["notices"][0]["issues"].as_array().unwrap();
+    let open = issues.iter().find(|i| i["code"] == "sketch_open_profile").unwrap_or_else(|| panic!("{n}"));
+    assert_eq!(open["severity"], "warning", "{n}");
+    assert_eq!(open["entities"].as_array().unwrap().len(), 2, "two open ends: {n}");
+    assert_eq!(open["at"].as_array().unwrap().len(), 2, "{n}");
+    assert_eq!(n["notices"][0]["values"]["open_ends"], 2, "{n}");
+    // A failing feature's error is an issue too.
+    run(&mut s, "parameters.add", json!({"name": "L", "expression": "20", "unit": "mm"}));
+    run(&mut s, "solid.box", json!({"length": "L", "width": 10, "height": 10, "corner": [50, 0, 0]}));
+    run(&mut s, "solid.fillet", json!({"edges": [[70, 5, 10]], "radius": 3}));
+    run(&mut s, "parameters.change", json!({"name": "L", "expression": "2"}));
+    let n = run(&mut s, "model.notices", json!({}));
+    let failed = n["notices"].as_array().unwrap().iter().find(|x| x["status"] == "error").unwrap_or_else(|| panic!("{n}"));
+    assert_eq!((failed["issues"][0]["severity"].clone(), failed["issues"][0]["code"].clone()), (json!("error"), json!("feature_error")), "{n}");
+    assert!(failed["issues"][0]["message"].as_str().is_some_and(|m| !m.is_empty()), "{n}");
 }
