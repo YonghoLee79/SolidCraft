@@ -1,9 +1,8 @@
 //! The API backend (desktop only): a model behind an OpenAI-compatible chat completions endpoint
 //! (Ollama, LM Studio, OpenAI, any URL the user gives). SolidCraft runs the tool loop itself, with
-//! the same tools the ACP agents get: it starts the same MCP server (`solidcraft-cli mcp
-//! --connect` to the chat's own endpoint) and is its client, so every tool call passes the same
-//! gate, limits and folder checks. The key, when there is one, comes from the system keychain for
-//! this connection only.
+//! the same MCP tools ACP agents get, reached in-process through the chat's own control channel
+//! so no `solidcraft-cli` subprocess is needed. The key, when there is one, comes from the system
+//! keychain for this connection only.
 //!
 //! The loop runs on a thread of its own: a model request can take a while.
 
@@ -16,7 +15,6 @@ use serde_json::{Value, json};
 
 use super::acp::ModelInfo;
 use super::backend::{ChatBackend, Event, HttpFn, HttpRequest, PromptPart, StartContext, ToolStatus};
-use super::process::{AgentProcess, FromAgent, ProcessHandle};
 
 /// Model requests for one message, at most (each answer with tool calls is one).
 pub const MAX_REQUESTS_PER_TURN: usize = 24;
@@ -52,7 +50,6 @@ pub struct ApiBackend {
     cmds: Option<Sender<Cmd>>,
     events: Receiver<Event>,
     cancel: Arc<AtomicBool>,
-    mcp: Option<ProcessHandle>,
 }
 
 impl ApiBackend {
@@ -60,25 +57,28 @@ impl ApiBackend {
         if cfg.key.is_some() && !super::agents::key_safe_for(&cfg.base_url) {
             return Err(crate::i18n::tr("ui.ai_key_needs_https").to_string());
         }
-        // The same MCP server an ACP agent would get.
-        let mcp = match &ctx.bridge {
-            Some(b) => {
-                let argv = vec![b.cli.to_string_lossy().into_owned(), "mcp".into(), "--connect".into(), format!("127.0.0.1:{}", b.port)];
-                Some(AgentProcess::spawn(&argv, &ctx.cwd, &["SOLIDCRAFT_CONTROL_TOKEN"], || {})?)
-            }
-            None => None,
-        };
-        let handle = mcp.as_ref().map(AgentProcess::handle);
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(ctx.wake);
+        // Build an in-process MCP backend through the chat's control channel (no subprocess).
+        let mcp_backend = ctx.tools.map(|tools_tx| {
+            let w = Arc::clone(&wake);
+            solidcraft_mcp::FnBackend::new(move |method: &str, params: Value| {
+                let (req, rx) = crate::control::ControlRequest::new(method, params);
+                if tools_tx.send(req).is_err() {
+                    return json!({"ok": false, "error": "the design channel closed"});
+                }
+                w(); // trigger repaint so the main thread processes the request
+                rx.recv_timeout(TOOL_TIMEOUT)
+                    .unwrap_or_else(|_| json!({"ok": false, "error": "timed out waiting for the design"}))
+            })
+        });
         let (cmd_tx, cmd_rx) = channel::<Cmd>();
         let (ev_tx, events) = channel::<Event>();
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
-        let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(ctx.wake);
         std::thread::spawn(move || {
             let mut w = Worker {
                 cfg,
-                mcp,
-                next: 0,
+                mcp_backend,
                 tools: Vec::new(),
                 history: Vec::new(),
                 events: ev_tx,
@@ -88,7 +88,7 @@ impl ApiBackend {
             };
             w.run(cmd_rx);
         });
-        Ok(ApiBackend { cmds: Some(cmd_tx), events, cancel, mcp: handle })
+        Ok(ApiBackend { cmds: Some(cmd_tx), events, cancel })
     }
 }
 
@@ -119,15 +119,9 @@ impl ChatBackend for ApiBackend {
     }
     fn answer_permission(&mut self, _key: u64, _option: Option<&str>) {}
     fn authenticate(&mut self, _method: &str) {}
-    fn pid(&self) -> Option<u32> {
-        self.mcp.as_ref().and_then(ProcessHandle::pid)
-    }
-    fn shutdown(&mut self, wait: bool) {
+    fn shutdown(&mut self, _wait: bool) {
         self.cancel.store(true, Ordering::Relaxed);
         self.cmds = None;
-        if let Some(h) = self.mcp.take() {
-            h.shutdown(wait);
-        }
     }
 }
 
@@ -139,8 +133,7 @@ impl Drop for ApiBackend {
 
 struct Worker {
     cfg: ApiConfig,
-    mcp: Option<AgentProcess>,
-    next: u64,
+    mcp_backend: Option<solidcraft_mcp::FnBackend>,
     /// The MCP tools as OpenAI function tools.
     tools: Vec<Value>,
     history: Vec<Value>,
@@ -158,11 +151,9 @@ impl Worker {
     }
 
     fn run(&mut self, cmds: Receiver<Cmd>) {
-        if let Err(e) = self.start_mcp() {
-            self.emit(Event::Error(e));
-        }
+        self.start_mcp();
         self.history.push(json!({"role": "system", "content": super::acp::SYSTEM_NOTE}));
-        self.emit(Event::Ready { agent: format!("{} · {}", self.cfg.name, self.cfg.model), images: true });
+        self.emit(Event::Ready { agent: format!("{} \u{b7} {}", self.cfg.name, self.cfg.model), images: true });
         // The endpoint's models for the picker; an endpoint that does not list them shows none.
         if let Ok(list) = model_list(&self.cfg.http, &self.cfg.base_url, self.cfg.key.as_deref()) {
             let mut available = list;
@@ -180,61 +171,16 @@ impl Worker {
                 Cmd::NewChat => {
                     self.history.truncate(1);
                     self.cancel.store(false, Ordering::Relaxed);
-                    self.emit(Event::Ready { agent: format!("{} · {}", self.cfg.name, self.cfg.model), images: true });
+                    self.emit(Event::Ready { agent: format!("{} \u{b7} {}", self.cfg.name, self.cfg.model), images: true });
                 }
-            }
-        }
-        if let Some(mut m) = self.mcp.take() {
-            m.shutdown(false);
-        }
-    }
-
-    /// One MCP request to the server; its `result`.
-    fn mcp_call(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        let Some(m) = self.mcp.as_ref() else { return Err("no SolidCraft tools in this session".into()) };
-        self.next += 1;
-        let id = self.next;
-        m.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
-        let deadline = std::time::Instant::now() + TOOL_TIMEOUT;
-        loop {
-            // Wait in short slices so Stop and Send now do not wait for a slow tool: its late
-            // answer is skipped later (its id no longer matches).
-            if self.cancel.load(Ordering::Relaxed) {
-                return Err("cancelled by the user".into());
-            }
-            let left = deadline.saturating_duration_since(std::time::Instant::now()).min(CANCEL_POLL);
-            match m.from_agent.recv_timeout(left) {
-                Ok(FromAgent::Line(l)) => {
-                    let Ok(v) = serde_json::from_str::<Value>(l.trim()) else { continue };
-                    if v.get("id").and_then(Value::as_u64) != Some(id) {
-                        continue;
-                    }
-                    if let Some(e) = v.get("error") {
-                        return Err(e.get("message").and_then(Value::as_str).unwrap_or("error").to_string());
-                    }
-                    return Ok(v.get("result").cloned().unwrap_or(Value::Null));
-                }
-                Ok(FromAgent::Exited(_)) => return Err("the SolidCraft tools stopped".into()),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if std::time::Instant::now() < deadline => {}
-                Err(_) => return Err("the SolidCraft tools did not answer".into()),
             }
         }
     }
 
-    fn start_mcp(&mut self) -> Result<(), String> {
-        if self.mcp.is_none() {
-            return Ok(());
+    fn start_mcp(&mut self) {
+        if self.mcp_backend.is_some() {
+            self.tools = openai_tools(&json!({"tools": solidcraft_mcp::tool_definitions()}));
         }
-        self.mcp_call(
-            "initialize",
-            json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "solidcraft-agent-chat", "version": env!("CARGO_PKG_VERSION")}}),
-        )?;
-        if let Some(m) = &self.mcp {
-            m.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
-        }
-        let list = self.mcp_call("tools/list", json!({}))?;
-        self.tools = openai_tools(&list);
-        Ok(())
     }
 
     fn turn(&mut self, parts: Vec<PromptPart>) {
@@ -292,7 +238,7 @@ impl Worker {
                 let parsed = tool_arguments(c.pointer("/function/arguments"));
                 let args = parsed.clone().unwrap_or_else(|_| json!({}));
                 let title = tool_title(&name, &args);
-                let tool_id = format!("{id}-{}", self.next);
+                let tool_id = format!("{id}-{i}");
                 self.emit(Event::Tool {
                     id: tool_id.clone(),
                     title: Some(title),
@@ -310,9 +256,9 @@ impl Worker {
                 {
                     (format!("unknown tool `{name}`"), true)
                 } else {
-                    match self.mcp_call("tools/call", json!({"name": name, "arguments": args})) {
-                        Ok(r) => tool_text(&r),
-                        Err(e) => (e, true),
+                    match self.mcp_backend.as_mut() {
+                        Some(backend) => tool_text(&solidcraft_mcp::call_tool(backend, &name, &args)),
+                        None => ("no SolidCraft tools in this session".to_string(), true),
                     }
                 };
                 let shown: String = text.chars().take(2000).collect();

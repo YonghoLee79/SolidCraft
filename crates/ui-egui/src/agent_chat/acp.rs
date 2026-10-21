@@ -61,12 +61,23 @@ pub struct McpBridge {
 
 impl McpBridge {
     pub fn to_json(&self) -> Value {
-        json!({
-            "name": BRIDGE_NAME,
-            "command": self.cli.to_string_lossy(),
-            "args": ["mcp", "--connect", format!("127.0.0.1:{}", self.port)],
-            "env": [],
-        })
+        // solidcraft-cli uses `mcp --connect ADDR`; the app binary fallback uses `--mcp-bridge ADDR`.
+        let is_cli = self.cli.file_stem().map(|n| n.to_string_lossy().starts_with("solidcraft-cli")).unwrap_or(false);
+        if is_cli {
+            json!({
+                "name": BRIDGE_NAME,
+                "command": self.cli.to_string_lossy(),
+                "args": ["mcp", "--connect", format!("127.0.0.1:{}", self.port)],
+                "env": [],
+            })
+        } else {
+            json!({
+                "name": BRIDGE_NAME,
+                "command": self.cli.to_string_lossy(),
+                "args": ["--mcp-bridge", format!("127.0.0.1:{}", self.port)],
+                "env": [],
+            })
+        }
     }
 }
 
