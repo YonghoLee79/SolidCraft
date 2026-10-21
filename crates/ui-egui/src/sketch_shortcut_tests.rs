@@ -67,9 +67,12 @@ fn a_sketch_key_with_nothing_selected_asks_for_the_plane_then_starts_the_tool() 
     assert!(h.app.dialog.is_none());
 }
 
-/// #1804: Escape puts down the sketch tool. Another Escape does not leave the sketch.
+/// #1804: Escape puts down the sketch tool. Another Escape, on its own, does not leave the
+/// sketch; only a quick second press does (and finishes it, keeping it).
 #[test]
 fn a_second_escape_stays_in_the_sketch() {
+    // Presses further apart than the double-press window.
+    let pause = |h: &mut Harness| h.frames((crate::toolbar::ESCAPE_TWICE_S * 60.0) as usize + 6);
     let mut h = Harness::new();
     h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
     let sketch = h.app.session.active_sketch;
@@ -79,15 +82,21 @@ fn a_second_escape_stays_in_the_sketch() {
     press(&mut h, "Escape");
     assert!(tool(&h).is_none(), "the first Escape puts the tool down");
     assert_eq!(h.app.session.active_sketch, sketch);
+    pause(&mut h);
     press(&mut h, "Escape");
     assert_eq!(h.app.session.active_sketch, sketch, "a second Escape stays in the sketch");
     h.app.run("sketch.line", json!({"points":[[0,0],[10,0]]})).unwrap();
     h.app.session.selection = vec![Sel::SketchCurve { id: "l1".into() }];
+    pause(&mut h);
     press(&mut h, "Escape");
     assert!(h.app.session.selection.is_empty(), "Escape still clears a selection");
     assert_eq!(h.app.session.active_sketch, sketch);
+    pause(&mut h);
     press(&mut h, "Escape");
     assert_eq!(h.app.session.active_sketch, sketch, "Escape after clearing the selection stays in the sketch");
+    press(&mut h, "Escape");
+    assert!(h.app.session.active_sketch.is_none(), "a quick second Escape finishes the sketch");
+    assert_eq!(h.app.session.doc.features.len(), 1, "and keeps it");
 }
 
 #[test]

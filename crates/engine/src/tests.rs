@@ -1785,6 +1785,23 @@ fn checkpoint_restores_with_a_full_undo_history() {
     assert!(s.execute("edit.restore_checkpoint", &json!({"checkpoint": id})).is_err());
 }
 
+/// Regression (#3242): `file.new` replaced the session and its checkpoints with it, so a
+/// batch that failed after `file.new` could not go back to the design it began in.
+#[test]
+fn a_checkpoint_survives_file_new() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 1.0, "width": 1.0, "height": 1.0}));
+    let id = run(&mut s, "edit.checkpoint", json!({}))["checkpoint"].as_u64().unwrap();
+    run(&mut s, "file.new", json!({"name": "Replacement"}));
+    run(&mut s, "solid.box", json!({"length": 2.0, "width": 2.0, "height": 2.0}));
+    assert_eq!(run(&mut s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64(), Some(8.0));
+    run(&mut s, "edit.restore_checkpoint", json!({"checkpoint": id}));
+    assert_eq!(run(&mut s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64(), Some(1.0));
+    // The undo history is the restored design's own: one step back is the empty design.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(run(&mut s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64(), Some(0.0));
+}
+
 #[test]
 fn components_occurrences_and_world_placement() {
     let mut s = Session::default();

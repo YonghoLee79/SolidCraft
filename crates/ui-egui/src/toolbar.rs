@@ -779,6 +779,12 @@ fn ribbon_text(ui: &egui::Ui, at: egui::Pos2, text: &str, size: f32, color: Colo
     ui.painter().galley(origin, galley, color);
 }
 
+/// SKETCH while editing a sketch and SHEET METAL while a sheet body is active take the contextual
+/// tab style; SHEET METAL is an ordinary tab otherwise.
+fn contextual_tab(app: &SolveApp, tab: &str) -> bool {
+    tab == "SKETCH" || (tab == "SHEET METAL" && crate::workspace::sheet_body(app).is_some())
+}
+
 fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
     let t = Tokens::get();
     let tabs = crate::workspace::visible_tabs(app);
@@ -791,7 +797,7 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
         .collect();
     let tabs_width: f32 = widths.iter().sum::<f32>()
         + tabs.len().saturating_sub(1) as f32 * 2.0
-        + tabs.iter().filter(|tab| matches!(**tab, "SKETCH" | "SHEET METAL")).count() as f32 * 6.0;
+        + tabs.iter().filter(|tab| contextual_tab(app, tab)).count() as f32 * 6.0;
     let search_width = crate::ui_kit::CommandSearch::closed_width(ui.ctx());
     // The first tab and the search field sit the same distance from the card's top, left and right
     // edges, so their outer corners are concentric with the card's corners.
@@ -821,7 +827,7 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
                 let (all, _) = ui.allocate_exact_size(vec2(tabs_width, TAB_ROW_HEIGHT), Sense::hover());
                 let mut x = all.left();
                 for (tab, width) in tabs.into_iter().zip(widths) {
-                    let contextual = matches!(tab, "SKETCH" | "SHEET METAL");
+                    let contextual = contextual_tab(app, tab);
                     if contextual {
                         x += 6.0;
                     }
@@ -1527,6 +1533,10 @@ fn ribbon_tooltip(app: &SolveApp, response: egui::Response, command: &solidcraft
         if let Some(description) = description {
             ui.add(egui::Label::new(description).wrap());
         }
+        // The tool's own help, when it has one (#2758).
+        if let Some(help) = crate::command_help::help(command.id) {
+            ui.add(egui::Label::new(egui::RichText::new(help).color(t.text_dim)).wrap());
+        }
         if let Some(reason) = disabled {
             ui.add(egui::Label::new(egui::RichText::new(reason).color(t.text_dim)).wrap());
         }
@@ -1628,9 +1638,11 @@ fn dropdown_row(app: &SolveApp, ui: &mut egui::Ui, c: &'static solidcraft_engine
     if pin.on_hover_text(tip).clicked() {
         return RowAction::TogglePin;
     }
-    let resp = match &info.disabled_reason {
-        Some(why) if !info.enabled => resp.on_hover_text(why),
-        _ => resp,
+    // A disabled row says why; a documented command also shows its help (#2758).
+    let reason = info.disabled_reason.as_deref().filter(|_| !info.enabled);
+    let resp = match crate::command_help::row_tip(c.id, &label, c.shortcut, reason) {
+        Some(tip) => crate::command_help::tooltip(resp, c.id, tip),
+        None => resp,
     };
     if resp.secondary_clicked() {
         return RowAction::Menu(resp.interact_pointer_pos().unwrap_or(rect.left_bottom()));
@@ -1775,6 +1787,9 @@ pub(crate) fn selection_filter(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
+/// Two Esc presses within this many seconds finish the open sketch.
+pub const ESCAPE_TWICE_S: f64 = 0.4;
+
 /// Global keyboard shortcuts (when no text field has focus).
 pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     if app.file_load.busy() {
@@ -1803,6 +1818,10 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     }
     for k in keys {
         use egui::Key;
+        // Only Esc pressed twice in a row finishes a sketch: any other key in between resets it.
+        if k != Key::Escape {
+            app.last_escape = None;
+        }
         if shown && crate::navigation::view_key(app, ctx, k, mods) {
             continue;
         }
@@ -1833,6 +1852,29 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         match k {
             Key::Escape => {
                 app.esc_handled = true;
+                // Two quick presses in a sketch finish it (keeping it, like Finish Sketch);
+                // the first one has already cancelled whatever was active.
+                let now = ctx.input(|i| i.time);
+                let again = app.last_escape.is_some_and(|t| now - t <= ESCAPE_TWICE_S);
+                app.last_escape = Some(now);
+                // Not while a tool is still out (its first Esc only ended a chain): this press
+                // puts it down, and the next quick one finishes.
+                if again
+                    && app.tool.is_none()
+                    && app.dialog.is_none()
+                    && let Some(sketch) = app.session.active_sketch
+                {
+                    app.last_escape = None;
+                    // A sketch left blank is taken away instead, in one undo step, so no empty
+                    // sketch stays behind.
+                    let blank = app.session.doc.sketch(sketch).is_ok_and(crate::sketch_palette::is_blank);
+                    let depth = app.session.undo.len();
+                    app.finish_sketch();
+                    if blank && app.session.active_sketch.is_none() && app.run("timeline.delete", json!({ "feature": sketch.to_string() })).is_ok() {
+                        app.session.undo.truncate(depth + 1);
+                    }
+                    continue;
+                }
                 if crate::sketch_text_move::cancel_drag(app) {
                     continue;
                 }
@@ -1846,8 +1888,8 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                     app.tree.picked_joints.clear();
                     let _ = app.run("select.clear", json!({}));
                 }
-                // An open sketch with nothing left to cancel stays open (#1804). Finish Sketch
-                // is what leaves it, so a second Escape after putting a tool down is harmless.
+                // A single Esc with nothing left to cancel keeps the sketch open (#1804); a quick
+                // second press finishes it (above).
             }
             Key::S if !mods.shift && !mods.alt => {
                 app.start("ui.palette");
@@ -2373,7 +2415,7 @@ mod home_tests {
     fn needs_design_tooltip_is_translated() {
         let english = crate::i18n::Locale::for_language("en").text("ui.needs_design");
         assert!(english.contains("{command}"));
-        for catalog in crate::i18n::LOCALES.iter().filter(|c| c.id != "en") {
+        for catalog in crate::i18n::LOCALES.iter().filter(|c| !matches!(c.id, "en" | "en-GB")) {
             let text = crate::i18n::Locale::for_language(catalog.id).text("ui.needs_design");
             assert!(text != english && text.contains("{command}"), "{} must translate ui.needs_design", catalog.id);
         }

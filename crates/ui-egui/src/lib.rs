@@ -20,6 +20,7 @@ pub mod canvas;
 mod colour_tokens_tests;
 #[cfg(test)]
 mod colour_vision_tests;
+pub mod command_help;
 pub mod context_menu;
 pub mod control;
 pub mod crash_ui;
@@ -247,7 +248,7 @@ pub use control::{ControlRequest, ControlResponse};
 pub struct UiState {
     /// Automation-only shell mode; never persisted in preferences.
     pub layout: shell::LayoutMode,
-    /// Ribbon tab; contextual SKETCH and SHEET METAL join the seven design tabs.
+    /// Ribbon tab; SHEET METAL and the contextual SKETCH join the seven design tabs.
     pub tab: String,
     /// Last contextual body/sketch, only used to select on entry.
     #[serde(skip)]
@@ -430,6 +431,8 @@ pub struct SolveApp {
     pub last_command: Option<(String, String)>,
     /// Esc was already acted on this frame (by the shortcuts), so later handlers skip it.
     pub esc_handled: bool,
+    /// When Esc was last pressed (input time): a second press soon after finishes the sketch.
+    pub last_escape: Option<f64>,
     pub status: Option<(String, f64, bool)>,
     pub quit_requested: bool,
     /// Autosave into the recovery folder (the desktop app turns it on).
@@ -559,6 +562,7 @@ impl SolveApp {
             apply_gate: None,
             last_command: None,
             esc_handled: false,
+            last_escape: None,
             status: None,
             quit_requested: false,
             autosave: None,
