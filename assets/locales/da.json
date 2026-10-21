@@ -1764,7 +1764,7 @@
   "ui.space_mouse_navigate": "Navigér med SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Ingen 3D-mus fundet",
   "ui.space_mouse_not_calibrated": "Ikke kalibreret",
-  "ui.space_mouse_offer": "Din 3D-mus er ikke kalibreret. Kalibrering retter ombyttede eller vendte akser.",
+  "ui.space_mouse_offer": "Kalibrering af din 3D-mus retter ombyttede eller vendte akser og indstiller dens hastighed og fornemmelse.",
   "ui.space_mouse_reading": "Aflæser",
   "ui.space_mouse_section": "3D-mus",
   "ui.space_mouse_show_in_view": "Vis 3D-musen i 3D-visningen",

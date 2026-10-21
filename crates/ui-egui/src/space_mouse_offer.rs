@@ -17,8 +17,9 @@ pub fn should_offer(device: Option<&str>, calibrated: bool, offered: &BTreeSet<S
     enabled && !calibrated && !offered.contains(device) && !device.starts_with("3dxware")
 }
 
-/// How long the notice stays when nobody is pointing at it.
-const SHOW_SECONDS: f64 = 15.0;
+/// How long the notice stays when nobody is pointing at it: long enough to read it, find the
+/// mouse and decide, which 15 seconds was too short for.
+const SHOW_SECONDS: f64 = 30.0;
 
 /// Whether the notice, first shown or last pointed at `since`, has been up long enough at `now`.
 pub fn expired(since: f64, now: f64) -> bool {
@@ -138,7 +139,7 @@ mod tests {
 
     #[test]
     fn the_notice_goes_after_fifteen_seconds() {
-        assert!(!expired(100.0, 114.9) && expired(100.0, 115.0));
+        assert!(!expired(100.0, 129.9) && expired(100.0, 130.0));
     }
 
     #[test]

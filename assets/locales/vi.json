@@ -1764,7 +1764,7 @@
   "ui.space_mouse_navigate": "Điều hướng bằng SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Không tìm thấy chuột 3D",
   "ui.space_mouse_not_calibrated": "Chưa hiệu chuẩn",
-  "ui.space_mouse_offer": "Chuột 3D của bạn chưa được hiệu chuẩn. Hiệu chuẩn sẽ sửa các trục bị hoán đổi hoặc đảo ngược.",
+  "ui.space_mouse_offer": "Hiệu chuẩn chuột 3D sẽ sửa các trục bị hoán đổi hoặc đảo ngược và chỉnh tốc độ cũng như cảm giác.",
   "ui.space_mouse_reading": "Giá trị đọc",
   "ui.space_mouse_section": "Chuột 3D",
   "ui.space_mouse_show_in_view": "Hiện chuột 3D trong khung nhìn 3D",

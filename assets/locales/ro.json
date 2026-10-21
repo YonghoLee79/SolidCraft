@@ -1751,7 +1751,7 @@
   "ui.space_mouse_navigate": "Navighează cu SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Niciun mouse 3D găsit",
   "ui.space_mouse_not_calibrated": "Necalibrat",
-  "ui.space_mouse_offer": "Mouse-ul 3D nu este calibrat. Calibrarea corectează axele inversate sau schimbate între ele.",
+  "ui.space_mouse_offer": "Calibrarea mouse-ului 3D corectează axele inversate sau schimbate între ele și îi reglează viteza și senzația.",
   "ui.space_mouse_reading": "Valoare citită",
   "ui.space_mouse_step_lift": "Ridicați capacul în sus, țineți-l, apoi eliberați-l.",
   "ui.space_mouse_step_press": "Apăsați capacul în jos, țineți-l, apoi eliberați-l.",

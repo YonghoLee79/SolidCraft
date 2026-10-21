@@ -1778,7 +1778,7 @@
   "ui.space_mouse_navigate": "Naviguer avec SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Aucune souris 3D trouvée",
   "ui.space_mouse_not_calibrated": "Non calibrée",
-  "ui.space_mouse_offer": "Votre souris 3D n'est pas calibrée. Le calibrage corrige les axes échangés ou inversés.",
+  "ui.space_mouse_offer": "Calibrer votre souris 3D corrige les axes échangés ou inversés et règle sa vitesse et sa sensation.",
   "ui.space_mouse_reading": "Lecture",
   "ui.space_mouse_reset_axes": "Réinitialiser l'attribution des axes",
   "ui.space_mouse_section": "Souris 3D",

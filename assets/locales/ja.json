@@ -1778,7 +1778,7 @@
   "ui.space_mouse_navigate": "SpaceNavigator / SpaceMouseで視点を操作",
   "ui.space_mouse_none": "3Dマウスが見つかりません",
   "ui.space_mouse_not_calibrated": "未キャリブレーション",
-  "ui.space_mouse_offer": "3Dマウスが調整されていません。調整すると、入れ替わった軸や反転した軸が直ります。",
+  "ui.space_mouse_offer": "3Dマウスを調整すると、入れ替わった軸や反転した軸が直り、速度と操作感も整います。",
   "ui.space_mouse_reading": "読み取り値",
   "ui.space_mouse_reset_axes": "軸の割り当てをリセット",
   "ui.space_mouse_section": "3Dマウス",

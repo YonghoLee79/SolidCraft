@@ -1778,7 +1778,7 @@
   "ui.space_mouse_navigate": "SpaceNavigator / SpaceMouse로 탐색",
   "ui.space_mouse_none": "3D 마우스를 찾을 수 없음",
   "ui.space_mouse_not_calibrated": "보정 안 됨",
-  "ui.space_mouse_offer": "3D 마우스가 보정되지 않았습니다. 보정하면 바뀌거나 반전된 축이 바로잡힙니다.",
+  "ui.space_mouse_offer": "3D 마우스를 보정하면 바뀌거나 반전된 축이 바로잡히고 속도와 조작감이 맞춰집니다.",
   "ui.space_mouse_reading": "읽은 값",
   "ui.space_mouse_reset_axes": "축 지정 초기화",
   "ui.space_mouse_section": "3D 마우스",

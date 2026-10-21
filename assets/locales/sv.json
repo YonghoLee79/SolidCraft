@@ -1751,7 +1751,7 @@
   "ui.space_mouse_navigate": "Navigera med SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Ingen 3D-mus hittades",
   "ui.space_mouse_not_calibrated": "Inte kalibrerad",
-  "ui.space_mouse_offer": "Din 3D-mus är inte kalibrerad. Kalibrering rättar förväxlade eller omvända axlar.",
+  "ui.space_mouse_offer": "Att kalibrera din 3D-mus rättar förväxlade eller omvända axlar och ställer in hastighet och känsla.",
   "ui.space_mouse_reading": "Avläsning",
   "ui.space_mouse_step_lift": "Lyft knappen uppåt, håll den och släpp sedan.",
   "ui.space_mouse_step_press": "Tryck ned knappen, håll den och släpp sedan.",
