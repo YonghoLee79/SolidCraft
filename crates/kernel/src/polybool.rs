@@ -396,7 +396,7 @@ fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<O
         }
         let weld = size * 1e-7;
         match rebuild(&out, size, weld, &sources) {
-            Ok(b) => return Ok(Some(b)),
+            Ok(b) => return Ok(Some(merged_pieces(a, b, size, &sources.counts))),
             Err(e) => last = e,
         }
         // Thin facets at a thread crest can be narrower than the usual reconstruction
@@ -408,13 +408,27 @@ fn faceted_boolean_untimed(a: &Body, b: &Mesh, op: BoolOp, tol: f64) -> Result<O
         for precision in [3.0 * eps, eps] {
             if precision < weld {
                 match rebuild(&out, size, precision, &sources) {
-                    Ok(b) => return Ok(Some(b)),
+                    Ok(b) => return Ok(Some(merged_pieces(a, b, size, &sources.counts))),
                     Err(e) => last = e,
                 }
             }
         }
     }
     Err(last)
+}
+
+/// A faceted boolean's result `b` (of target `a`) with the pieces the BSP's splitting planes
+/// cut faces into merged back, and the straight edges they leave split in line joined, its
+/// history carried through (as a prism boolean's result is). The splitters are every facet's
+/// plane, so a thread cut in a bore leaves the block's outer walls and their edges in pieces it
+/// never touched: a later blend of such an edge (a corner round) would start from an edge made
+/// of several, which its history can't name, and the faces after it would lose their names.
+/// Authored boundaries (painted faces, regularization protection) keep their pieces.
+fn merged_pieces(a: &Body, b: Body, size: f64, counts: &[(usize, usize)]) -> Body {
+    if a.regularization_protected || a.paint().is_some_and(|p| !p.faces.is_empty()) {
+        return b;
+    }
+    guard("heal faceted boolean", || recorded::heal_prism_result(&b, size, a.split_keep(), counts)).unwrap_or(b)
 }
 
 /// `polys` in a fixed pseudo-random order (the same every run, so results are reproducible).

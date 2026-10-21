@@ -87,10 +87,17 @@ pub(crate) fn derive(b: &ModelBody, o: &NamingOrigin, lineage: &Lineage) -> Opti
     let fid = o.feature.id;
     let mut named: Vec<Option<Named>> = h.faces.iter().map(|f| from_origins(f, &operands, fid)).collect();
     if named.iter().any(Option::is_none) {
+        // A face whose history is not known never takes a name exact history gives another face:
+        // it would make that face one of several pieces, which no attachment can tell apart (a
+        // thread's facets beside the top face of the block it cuts). It is named by its index.
+        let exact: std::collections::HashSet<String> =
+            named.iter().flatten().filter(|n| n.verified).map(|n| crate::naming::strip_piece(&n.name).to_string()).collect();
         let geometric = crate::naming::geometric_names(b, o, named.len());
-        for (slot, name) in named.iter_mut().zip(geometric) {
+        for (k, (slot, name)) in named.iter_mut().zip(geometric).enumerate() {
             if slot.is_none() {
-                *slot = Some(Named { name: crate::naming::strip_piece(&name).to_string(), aliases: Vec::new(), verified: false, origins: None });
+                let stem = crate::naming::strip_piece(&name);
+                let name = if exact.contains(stem) { format!("F{fid}:face:{k}") } else { stem.to_string() };
+                *slot = Some(Named { name, aliases: Vec::new(), verified: false, origins: None });
             }
         }
     }
