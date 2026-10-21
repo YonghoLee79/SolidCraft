@@ -418,6 +418,10 @@ preference_settings! {
     /// (`space_mouse::default_button_jobs`). Kept, like calibrations, when settings are reset.
     #[serde(deserialize_with = "button_jobs_that_read")]
     space_mouse_buttons: std::collections::BTreeMap<String, std::collections::BTreeMap<u8, crate::space_mouse::ButtonJob>> = Default::default();
+    /// The 3D mice (`space_mouse::Input::device`) whose calibration has been offered and dismissed, so
+    /// the offer (`space_mouse_offer`) is made once per device. A saved entry that is not text is dropped.
+    #[serde(deserialize_with = "devices_that_read")]
+    space_mouse_offered: std::collections::BTreeSet<String> = Default::default(), 1;
     /// Anti-aliasing samples (applies on restart).
     msaa: u32 = 4, PAGE_GRAPHICS;
     /// Soft contact shading in the GPU viewport; optional and applied immediately.
@@ -1813,6 +1817,12 @@ fn calibrations_that_read<'de, D: serde::Deserializer<'de>>(
         .collect())
 }
 
+/// The saved set of devices that read as text; anything else in it is dropped, not the whole set.
+fn devices_that_read<'de, D: serde::Deserializer<'de>>(saved: D) -> Result<std::collections::BTreeSet<String>, D::Error> {
+    let saved = Vec::<serde_json::Value>::deserialize(saved)?;
+    Ok(saved.into_iter().filter_map(|device| device.as_str().map(str::to_owned)).collect())
+}
+
 /// The saved button jobs that still read. A job this version doesn't know (from a newer release)
 /// drops that button only, with a log line, not its device's other buttons or the other devices.
 fn button_jobs_that_read<'de, D: serde::Deserializer<'de>>(
@@ -2024,6 +2034,17 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_calibration_offer_record_round_trips_and_reads_tolerantly() {
+        let prefs: super::Prefs =
+            serde_json::from_value(serde_json::json!({ "space_mouse_offered": ["spacenavd", 7, null, "hid 046d:c62b"] })).unwrap();
+        assert_eq!(prefs.space_mouse_offered, ["spacenavd".to_string(), "hid 046d:c62b".to_string()].into());
+        let again: super::Prefs = serde_json::from_value(serde_json::to_value(&prefs).unwrap()).unwrap();
+        assert_eq!(again.space_mouse_offered, prefs.space_mouse_offered);
+        // Files from before it existed read as nothing offered yet.
+        assert!(serde_json::from_value::<super::Prefs>(serde_json::json!({})).unwrap().space_mouse_offered.is_empty());
+    }
+
     /// One button job this build can't read (a newer release's) costs that button, not the lot.
     #[test]
     fn one_unreadable_button_job_keeps_the_others() {

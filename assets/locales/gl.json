@@ -1778,6 +1778,7 @@
   "ui.space_mouse_navigate": "Navegar con SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Non se atopou ningún rato 3D",
   "ui.space_mouse_not_calibrated": "Sen calibrar",
+  "ui.space_mouse_offer": "O teu rato 3D non está calibrado. Calibralo corrixe os eixes trocados ou invertidos.",
   "ui.space_mouse_reading": "Lectura",
   "ui.space_mouse_reset_axes": "Restablecer asignación de eixes",
   "ui.space_mouse_section": "Rato 3D",

@@ -1764,6 +1764,7 @@
   "ui.space_mouse_navigate": "Navigasi dengan SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Tiada tetikus 3D ditemui",
   "ui.space_mouse_not_calibrated": "Belum ditentukur",
+  "ui.space_mouse_offer": "Tetikus 3D anda belum ditentukur. Penentukuran membetulkan paksi yang bertukar atau terbalik.",
   "ui.space_mouse_reading": "Bacaan",
   "ui.space_mouse_section": "Tetikus 3D",
   "ui.space_mouse_show_in_view": "Tunjukkan tetikus 3D dalam paparan 3D",

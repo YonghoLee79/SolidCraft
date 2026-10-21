@@ -1751,6 +1751,7 @@
   "ui.space_mouse_navigate": "Navigasi dengan SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Mouse 3D tidak ditemukan",
   "ui.space_mouse_not_calibrated": "Belum dikalibrasi",
+  "ui.space_mouse_offer": "Mouse 3D Anda belum dikalibrasi. Kalibrasi memperbaiki sumbu yang tertukar atau terbalik.",
   "ui.space_mouse_reading": "Pembacaan",
   "ui.space_mouse_step_lift": "Angkat cap ke atas, tahan, lalu lepaskan.",
   "ui.space_mouse_step_press": "Tekan cap ke bawah, tahan, lalu lepaskan.",

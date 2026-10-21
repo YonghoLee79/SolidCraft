@@ -210,6 +210,7 @@ mod smart_extrude_ui_tests;
 pub mod space_mouse;
 pub mod space_mouse_calibration;
 pub mod space_mouse_model;
+pub mod space_mouse_offer;
 pub mod stand_up;
 #[cfg(test)]
 mod sweep_dialog_tests;
@@ -1625,6 +1626,7 @@ impl SolveApp {
         recovery_ui::show(self, ui.ctx());
         stand_up::show(self, ui.ctx());
         prefs_notice::show(self, ui.ctx());
+        space_mouse_offer::show(self, ui.ctx());
         context_menu::show(self, ui.ctx());
         mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());

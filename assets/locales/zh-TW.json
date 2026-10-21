@@ -1751,6 +1751,7 @@
   "ui.space_mouse_navigate": "使用 SpaceNavigator / SpaceMouse 導覽",
   "ui.space_mouse_none": "未找到 3D 滑鼠",
   "ui.space_mouse_not_calibrated": "未校準",
+  "ui.space_mouse_offer": "你的 3D 滑鼠尚未校準。校準可以修正互換或反向的軸。",
   "ui.space_mouse_reading": "讀值",
   "ui.space_mouse_step_lift": "向上提起搖桿帽，保持住，然後鬆開。",
   "ui.space_mouse_step_press": "向下按壓搖桿帽，保持住，然後鬆開。",

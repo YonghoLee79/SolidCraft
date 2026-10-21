@@ -1778,6 +1778,7 @@
   "ui.space_mouse_navigate": "使用 SpaceNavigator / SpaceMouse 导航",
   "ui.space_mouse_none": "未找到 3D 鼠标",
   "ui.space_mouse_not_calibrated": "未校准",
+  "ui.space_mouse_offer": "你的 3D 鼠标尚未校准。校准可以修正互换或反向的轴。",
   "ui.space_mouse_reading": "读数",
   "ui.space_mouse_reset_axes": "重置轴分配",
   "ui.space_mouse_section": "3D 鼠标",

@@ -1764,6 +1764,7 @@
   "ui.space_mouse_navigate": "Nawiguj za pomocą SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "Nie znaleziono myszy 3D",
   "ui.space_mouse_not_calibrated": "Nieskalibrowano",
+  "ui.space_mouse_offer": "Twoja mysz 3D nie jest skalibrowana. Kalibracja naprawia zamienione lub odwrócone osie.",
   "ui.space_mouse_reading": "Odczyt",
   "ui.space_mouse_section": "Mysz 3D",
   "ui.space_mouse_show_in_view": "Pokazuj mysz 3D w widoku 3D",

@@ -1778,6 +1778,7 @@
   "ui.space_mouse_navigate": "Навігація за допомогою SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "3D-мишу не знайдено",
   "ui.space_mouse_not_calibrated": "Не відкалібровано",
+  "ui.space_mouse_offer": "Вашу 3D-мишу не відкалібровано. Калібрування виправляє переплутані або обернені осі.",
   "ui.space_mouse_reading": "Показники",
   "ui.space_mouse_reset_axes": "Скинути призначення осей",
   "ui.space_mouse_section": "3D-миша",

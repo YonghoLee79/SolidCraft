@@ -1778,6 +1778,7 @@
   "ui.space_mouse_navigate": "Mit SpaceNavigator / SpaceMouse navigieren",
   "ui.space_mouse_none": "Keine 3D-Maus gefunden",
   "ui.space_mouse_not_calibrated": "Nicht kalibriert",
+  "ui.space_mouse_offer": "Ihre 3D-Maus ist nicht kalibriert. Die Kalibrierung behebt vertauschte oder umgekehrte Achsen.",
   "ui.space_mouse_reading": "Werte",
   "ui.space_mouse_reset_axes": "Achsenzuordnung zurücksetzen",
   "ui.space_mouse_section": "3D-Maus",

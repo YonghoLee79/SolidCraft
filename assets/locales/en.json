@@ -1778,6 +1778,7 @@
   "ui.space_mouse_navigate": "Navigate with SpaceNavigator / SpaceMouse",
   "ui.space_mouse_none": "No 3D mouse found",
   "ui.space_mouse_not_calibrated": "Not calibrated",
+  "ui.space_mouse_offer": "Your 3D mouse isn't calibrated. Calibrating fixes swapped or reversed axes.",
   "ui.space_mouse_reading": "Reading",
   "ui.space_mouse_reset_axes": "Reset axis assignment",
   "ui.space_mouse_section": "3D mouse",
