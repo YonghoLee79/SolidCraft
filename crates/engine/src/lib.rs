@@ -1173,6 +1173,8 @@ mod split_face_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod stock_size_tests;
+#[cfg(test)]
 mod thread_tests;
 #[cfg(test)]
 mod view_bounds_tests;
