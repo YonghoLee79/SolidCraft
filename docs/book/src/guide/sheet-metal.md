@@ -133,6 +133,10 @@ bin beside a row takes it out.
  "then":[{"angle":"45 deg","height":80}]}}
 ```
 
+A further bend turns the way the one before it did. `"flip": true` on a bend turns it the other
+way, which makes an offset (a jog): bend 45° out, then 45° back, and the last leg runs parallel to
+the first. In the dialog each further bend has a **turns** choice, Same way or Other way.
+
 A flange can also stand on the far edge of another flange: a return, such as a lip turned in
 along the top of a tray's walls. It runs along that edge from end to end, so it follows the
 closed end of the flange it stands on, slanted or not. Two returns of one feature whose flanges

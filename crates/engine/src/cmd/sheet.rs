@@ -21,7 +21,7 @@ pub static COMMANDS: &[CommandSpec] = &[
          height (to the outer face), angle? (default 90 deg), radius? (default: rule), \
          position?: inside|outside|middle, flip?, body?, corner_relief_shape?: notch|round|rectangular|tear and corner_relief? (size across): \
          the relief at the corners these flanges make (default: the rule's); \
-         then?: [{angle?, height}] further bends (at most 16), each a flange on the far edge of the one before, as one feature (edge only); \
+         then?: [{angle?, height, flip?}] further bends (at most 16), each a flange on the far edge of the one before, flip: true turns that bend the other way (edge only); \
          type?: base|edge|contour (default from the inputs); name?, body_name? (the new body). \
          Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused, \
          and so is the corner relief on a base or contour flange",
@@ -98,11 +98,15 @@ fn points(p: &Value, k: &str, cmd: &str) -> Result<Vec<Vec3>> {
 /// Most bends `then` may add after an edge flange's own.
 const MAX_THEN: usize = 16;
 
+/// One further bend of an edge flange: its angle, its height and, if it has its own, which way
+/// it turns (`flip`; the flange's own otherwise).
+type ThenStep = (solidcraft_doc::Expr, solidcraft_doc::Expr, Option<bool>);
+
 /// The further bends of an edge flange (`then`): each an angle and a height, made one after
 /// the other, every one on the far edge of the flange before it.
-fn then_steps(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(solidcraft_doc::Expr, solidcraft_doc::Expr)>> {
+fn then_steps(s: &Session, p: &Value, cmd: &str) -> Result<Vec<ThenStep>> {
     let Some(v) = p.get("then").filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
-    let list = "`then` must list further bends {angle?, height}: each on the far edge of the flange before it";
+    let list = "`then` must list further bends {angle?, height, flip?}: each on the far edge of the flange before it";
     let a = v.as_array().ok_or_else(|| bad(cmd, list))?;
     if a.len() > MAX_THEN {
         return Err(bad(cmd, format!("`then` may list at most {MAX_THEN} bends")));
@@ -110,14 +114,18 @@ fn then_steps(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(solidcraft_doc::
     let mut out = Vec::with_capacity(a.len());
     for (i, step) in a.iter().enumerate() {
         let o = step.as_object().ok_or_else(|| bad(cmd, format!("then[{i}]: {list}")))?;
-        if let Some(k) = o.keys().find(|k| k.as_str() != "angle" && k.as_str() != "height") {
-            return Err(bad(cmd, format!("then[{i}]: unknown key `{k}` (a bend takes angle and height)")));
+        if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "angle" | "height" | "flip")) {
+            return Err(bad(cmd, format!("then[{i}]: unknown key `{k}` (a bend takes angle, height and flip)")));
         }
+        let flip = match o.get("flip").filter(|v| !v.is_null()) {
+            Some(v) => Some(v.as_bool().ok_or_else(|| bad(cmd, format!("then[{i}]: `flip` must be true or false")))?),
+            None => None,
+        };
         let height = req_expr(cmd, step, "height").map_err(|_| bad(cmd, format!("then[{i}]: `height` is required")))?;
         check_expr(s, &height, Kind::Length, cmd, &format!("then[{i}].height"))?;
         let angle = expr(step, "angle").unwrap_or_else(|| "90 deg".into());
         check_expr(s, &angle, Kind::Angle, cmd, &format!("then[{i}].angle"))?;
-        out.push((angle, height));
+        out.push((angle, height, flip));
     }
     Ok(out)
 }
@@ -287,7 +295,7 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
                 },
             )?;
             // Each further bend stands on the far edge of the flange before it.
-            for (angle, height) in then {
+            for (angle, height, own_flip) in then {
                 let id = made.get("feature").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "no feature to bend again"))?;
                 let edges = far_edge_picks(s, id, cmd)?;
                 made = add_feature(
@@ -299,7 +307,7 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
                         angle,
                         radius: radius.clone(),
                         position: position.clone(),
-                        flip,
+                        flip: own_flip.unwrap_or(flip),
                         body: body.clone().map(BodyName),
                         corner_relief_shape: None,
                         corner_relief: None,

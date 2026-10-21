@@ -5008,6 +5008,8 @@ fn an_edge_flange_can_carry_further_bends() {
     assert_eq!(chained.doc.features.len(), walls + 2, "one flange per bend");
     let flat_chained = flat(&mut chained);
     assert_eq!(flat_chained["bends"].as_array().map(Vec::len), Some(3), "the wall's bend and the flap's two");
+    let directions: Vec<&str> = flat_chained["bends"].as_array().into_iter().flatten().filter_map(|b| b["direction"].as_str()).collect();
+    assert_eq!(directions, ["up", "up", "up"], "a further bend turns the way the one before did");
     // Each 45° bend of the flap takes (pi/4) x (radius + K x thickness) = (pi/4) x (2 + 0.4 x 2) of flat length.
     let allowance = PI / 4.0 * (2.0 + 0.4 * 2.0);
     let quarter: Vec<f64> = flat_chained["bends"]
@@ -5023,7 +5025,7 @@ fn an_edge_flange_can_carry_further_bends() {
     let mut by_hand = Session::default();
     wall_bracket(&mut by_hand);
     run(&mut by_hand, "sheet.flange", json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg"}));
-    run(&mut by_hand, "sheet.flange", json!({"edges": [[29.3, -28.3, 20]], "height": 80, "angle": "45 deg"}));
+    run(&mut by_hand, "sheet.flange", json!({"edges": [[30.3, -28.3, 20]], "height": 80, "angle": "45 deg"}));
     assert!(rel(volume(&mut chained), volume(&mut by_hand)) < 1e-9, "{} vs {}", volume(&mut chained), volume(&mut by_hand));
     assert_eq!(flat_chained["bends"], flat(&mut by_hand)["bends"]);
 
@@ -5051,5 +5053,32 @@ fn further_bends_are_checked_before_anything_is_made() {
     }
     // `then` belongs to edge flanges.
     let r = s.execute("sheet.flange", &json!({"sketch": "Base", "then": [{"height": 10}]}));
+    assert!(r.is_err(), "{r:?}");
+}
+
+/// A further bend with `flip` turns the other way: an offset (a jog) in one command, the same part
+/// as flipping the second flange by hand.
+#[test]
+fn a_further_bend_can_turn_the_other_way() {
+    let mut chained = Session::default();
+    wall_bracket(&mut chained);
+    run(
+        &mut chained,
+        "sheet.flange",
+        json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg", "then": [{"angle": "45 deg", "height": 60, "flip": true}]}),
+    );
+    assert_eq!(chained.model.state().bodies.len(), 1);
+    let directions: Vec<String> =
+        flat(&mut chained)["bends"].as_array().into_iter().flatten().filter_map(|b| b["direction"].as_str().map(str::to_string)).collect();
+    assert_eq!(directions, ["up", "up", "down"], "the flap's second bend turns back");
+
+    let mut by_hand = Session::default();
+    wall_bracket(&mut by_hand);
+    run(&mut by_hand, "sheet.flange", json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg"}));
+    run(&mut by_hand, "sheet.flange", json!({"edges": [[30.3, -28.3, 20]], "height": 60, "angle": "45 deg", "flip": true}));
+    assert!(rel(volume(&mut chained), volume(&mut by_hand)) < 1e-9, "{} vs {}", volume(&mut chained), volume(&mut by_hand));
+
+    // `flip` must be true or false.
+    let r = chained.execute("sheet.flange", &json!({"edges": [[1, 0, 20]], "height": 10, "then": [{"height": 10, "flip": "yes"}]}));
     assert!(r.is_err(), "{r:?}");
 }

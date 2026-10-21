@@ -619,13 +619,22 @@ fn further_bends_in_the_flange_dialog_make_one_chained_flap() {
         *height = "30 mm".into();
         *angle = "45 deg".into();
         // A bend added with the button starts at 45° and 20 mm; give the first a height of its own.
-        then.push(("45 deg".into(), String::new()));
+        then.push(("45 deg".into(), String::new(), false));
         assert!(apply_commands(&app, &d).is_err(), "a bend needs a height");
         let Kind::Sheet(Sm::Flange { then, .. }) = &mut d.kind else { panic!("not a flange dialog") };
         then[0].1 = "50 mm".into();
         let c = apply_commands(&app, &d).unwrap();
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].1["then"], json!([{"height": "50 mm", "angle": "45 deg"}]));
+        // A bend that turns the other way says so, against the flange's own side.
+        let Kind::Sheet(Sm::Flange { then, .. }) = &mut d.kind else { panic!("not a flange dialog") };
+        then.push(("45 deg".into(), "30 mm".into(), true));
+        assert_eq!(
+            apply_commands(&app, &d).unwrap()[0].1["then"],
+            json!([{"height": "50 mm", "angle": "45 deg"}, {"height": "30 mm", "angle": "45 deg", "flip": true}])
+        );
+        let Kind::Sheet(Sm::Flange { then, .. }) = &mut d.kind else { panic!("not a flange dialog") };
+        then.pop();
         run_all(&mut app, c);
         assert_eq!(app.session.model.state().bodies.len(), 1, "the flap is part of the sheet");
         assert_eq!(app.session.doc.features.len(), features + 2, "one flange per bend");
@@ -661,7 +670,7 @@ fn add_bend_and_remove_bend_buttons_work() {
         h.frames(3);
         assert_eq!(bends(&h).len(), want);
     }
-    assert_eq!(bends(&h)[0], ("45 deg".to_string(), "20 mm".to_string()));
+    assert_eq!(bends(&h)[0], ("45 deg".to_string(), "20 mm".to_string(), false));
     h.step(&json!({"click": {"handle": "dialog:button:Bend 2:×"}})).unwrap();
     h.frames(3);
     assert_eq!(bends(&h).len(), 1, "the x takes one bend out");

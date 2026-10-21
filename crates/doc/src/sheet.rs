@@ -1011,13 +1011,15 @@ impl SheetBody {
         mat_mul(&self.frame_mat(), &f)
     }
 
-    /// A world point on flange `i`'s far edge, in the middle of the sheet's thickness: where to
+    /// A world point on flange `i`'s far edge, nearer the top face than the bottom one: where to
     /// pick that edge for a flange that stands on it (a chain of bends, one flange after another).
+    /// The side is not left to a tie in the middle of the thickness: it decides which way the
+    /// flange bends, and `flip` turns it the other way.
     pub fn far_edge_pick(&self, i: usize) -> Option<Vec3> {
         let f = self.flanges.get(i)?;
         let (u0, u1) = self.far_edge(f);
         let mid = f.p + f.n * (self.allowance(f) + f.leg) + f.d * ((u0 + u1) / 2.0);
-        let at = apply_point(&self.world(Some(i)), v3(mid) + Vec3::Z * (self.t / 2.0));
+        let at = apply_point(&self.world(Some(i)), v3(mid) + Vec3::Z * (self.t * 0.75));
         (at.x.is_finite() && at.y.is_finite() && at.z.is_finite()).then_some(at)
     }
 

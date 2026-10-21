@@ -39,6 +39,8 @@ const RELIEF_SHAPES: [&str; 4] = ["notch", "round", "rectangular", "tear"];
 const RELIEF_SHAPE_LABELS: [&str; 4] = ["Notch", "Round", "Rectangular", "Tear"];
 /// The corner relief shapes an edge flange offers: the rule's (index 0, nothing of its own), then
 /// the shapes of `RELIEF_SHAPES` in order.
+/// Which way a further bend turns, against the bend before it.
+const BEND_WAY_LABELS: [&str; 2] = ["Same way", "Other way"];
 const FLANGE_RELIEF_LABELS: [&str; 5] = ["Rule", "Notch", "Round", "Rectangular", "Tear"];
 
 crate::dialog_descriptor::dialog_descriptors! {
@@ -76,9 +78,9 @@ crate::dialog_descriptor::dialog_descriptors! {
                 /// 0 is the rule's) and its size (empty: the rule's).
                 relief: usize,
                 relief_size: String,
-                /// Edge flanges: further bends (angle, height), each a flange on the far edge of the
-                /// one before it (the command's `then`).
-                then: Vec<(String, String)>,
+                /// Edge flanges: further bends (angle, height, turns the other way), each a flange on
+                /// the far edge of the one before it (the command's `then`).
+                then: Vec<(String, String, bool)>,
             },
             Unfold {
                 refold: bool,
@@ -222,8 +224,15 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     enter |= expr_row(ui, "Angle", angle);
                     choice_row(ui, "Bend Position", "sm_pos", position, &POSITION_LABELS);
                     // Further bends: each a flange on the far edge of the one before it.
+                    form_row(ui, "Further Bends", |ui| {
+                        let add = crate::ui_kit::button(ui, "Add bend", crate::ui_kit::Button::Normal)
+                            .on_hover_text(crate::i18n::tr_label("Another bend on the far edge of the last flange"));
+                        if add.clicked() && then.len() < 16 {
+                            then.push(("45 deg".into(), "20 mm".into(), false));
+                        }
+                    });
                     let mut drop = None;
-                    for (n, (a, h)) in then.iter_mut().enumerate() {
+                    for (n, (a, h, other)) in then.iter_mut().enumerate() {
                         form_row(ui, &format!("Bend {}", n + 2), |ui| {
                             ui.horizontal(|ui| {
                                 let close = Tokens::get().control_height;
@@ -249,17 +258,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                                 }
                             });
                         });
+                        let mut way = usize::from(*other);
+                        choice_row(ui, &format!("Bend {} turns", n + 2), &format!("sm_then_way_{n}"), &mut way, &BEND_WAY_LABELS);
+                        *other = way == 1;
                     }
                     if let Some(n) = drop {
                         then.remove(n);
                     }
-                    form_row(ui, "Further Bends", |ui| {
-                        let add = crate::ui_kit::button(ui, "Add bend", crate::ui_kit::Button::Normal)
-                            .on_hover_text(crate::i18n::tr_label("Another bend on the far edge of the last flange"));
-                        if add.clicked() && then.len() < 16 {
-                            then.push(("45 deg".into(), "20 mm".into()));
-                        }
-                    });
                     crate::ui_kit::section(ui, "flange_advanced", "Advanced", false, |ui| {
                         enter |= hint_row(ui, "Bend Radius", radius, crate::i18n::tr_label("from the rule"));
                         // The relief at the corners these flanges make: the rule's unless set here.
@@ -531,12 +536,16 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
                     put(&mut p, &[("corner_relief", relief_size)]);
                     if !then.is_empty() {
                         let mut bends = Vec::with_capacity(then.len());
-                        for (n, (a, h)) in then.iter().enumerate() {
+                        for (n, (a, h, other)) in then.iter().enumerate() {
                             if h.trim().is_empty() {
                                 return Err(format!("bend {} needs a height", n + 2));
                             }
                             let mut b = json!({"height": h});
                             put(&mut b, &[("angle", a)]);
+                            // The bend's own side: the flange's, or the other one.
+                            if *other {
+                                b["flip"] = json!(!*flip);
+                            }
                             bends.push(b);
                         }
                         p["then"] = json!(bends);
