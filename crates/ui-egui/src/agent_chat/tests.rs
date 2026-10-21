@@ -452,6 +452,9 @@ impl ChatBackend for Script {
     fn set_model(&mut self, model: &str) {
         self.calls.lock().unwrap().push(format!("set_model: {model}"));
     }
+    fn set_config_option(&mut self, id: &str, value: &str) {
+        self.calls.lock().unwrap().push(format!("set_config_option: {id}={value}"));
+    }
     fn answer_permission(&mut self, _: u64, _: Option<&str>) {}
     fn authenticate(&mut self, _: &str) {}
     fn shutdown(&mut self, _: bool) {}
@@ -801,6 +804,200 @@ fn the_remembered_model_is_set_on_the_next_session() {
     script.report(Event::Ready { agent: "fake".into(), images: false });
     poll(&mut app, &ctx);
     assert_eq!(script.calls().len(), 1);
+}
+
+fn modern_options(model: &str) -> Vec<acp::ConfigOption> {
+    vec![
+        acp::ConfigOption {
+            id: "some.provider.model".into(),
+            name: "Model".into(),
+            description: String::new(),
+            category: "model".into(),
+            current_value: model.into(),
+            options: ["fast", "smart"]
+                .into_iter()
+                .map(|v| acp::ConfigChoice { value: v.into(), name: v.into(), description: String::new(), group: None })
+                .collect(),
+        },
+        acp::ConfigOption {
+            id: "custom-mode-key".into(),
+            name: "Mode".into(),
+            description: String::new(),
+            category: "mode".into(),
+            current_value: "ask".into(),
+            options: ["ask", "plan"]
+                .into_iter()
+                .map(|v| acp::ConfigChoice { value: v.into(), name: v.into(), description: String::new(), group: None })
+                .collect(),
+        },
+    ]
+}
+
+#[cfg(unix)]
+#[test]
+fn modern_config_requests_roundtrip_success_rejection_malformed_and_retry() {
+    let dir = std::env::temp_dir().join(format!("sc-chat-config-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("requests.jsonl");
+    let script = r#"
+log="$1"; n=0
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"agentInfo":{"name":"fake"}}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1","configOptions":[{"id":"vendor.model-key","name":"Model","category":"model","type":"select","currentValue":"fast","options":[{"value":"fast","name":"Fast"},{"value":"smart","name":"Smart"}]}]}}\n' "$id" ;;
+    *'"method":"session/set_config_option"'*)
+      n=$((n+1))
+      case "$n" in
+        1|4) v=smart; [ "$n" = 4 ] && v=fast; printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"id":"vendor.model-key","name":"Model","category":"model","type":"select","currentValue":"%s","options":[{"value":"fast","name":"Fast"},{"value":"smart","name":"Smart"}]}]}}\n' "$id" "$v" ;;
+        2) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32001,"message":"rejected"}}\n' "$id" ;;
+        3) printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select"}]}}\n' "$id" ;;
+      esac ;;
+  esac
+done
+"#;
+    let argv = vec!["sh".into(), "-c".into(), script.into(), "fake".into(), log.to_string_lossy().into_owned()];
+    let (wake_tx, wake_rx) = channel();
+    let start = backend::StartContext {
+        cwd: dir.clone(),
+        bridge: None,
+        tools: None,
+        wake: Box::new(move || {
+            let _ = wake_tx.send(());
+        }),
+    };
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.agent_chat.backend = Some(Box::new(acp_client::AcpBackend::start(&argv, start).unwrap()));
+    app.agent_chat.running_id = "modern".into();
+    app.agent_chat.state = Some(State::Starting);
+    let ctx = crate::fonts::test_context();
+    let until = |app: &mut SolveApp, done: &dyn Fn(&SolveApp) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            poll(app, &ctx);
+            if done(app) {
+                return;
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "timed out; status={}", status(app));
+            wake_rx.recv_timeout(left).expect("backend wake");
+        }
+    };
+    until(&mut app, &|a| a.agent_chat.state() == State::Ready);
+    assert_eq!(app.agent_chat.model, "fast");
+    for (value, expected, saved) in [("smart", "smart", "smart"), ("fast", "smart", "smart"), ("smart", "smart", "smart"), ("fast", "fast", "fast")] {
+        set_model(&mut app, value);
+        assert!(app.agent_chat.config_pending);
+        until(&mut app, &|a| !a.agent_chat.config_pending);
+        assert_eq!(app.agent_chat.model, expected);
+        assert_eq!(app.preferences.agent_models.get("modern").map(String::as_str), Some(saved));
+    }
+    disconnect(&mut app);
+    let requests: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let configs: Vec<_> = requests.iter().filter(|v| v["method"] == "session/set_config_option").collect();
+    assert_eq!(configs.len(), 4);
+    assert_eq!(
+        configs.iter().map(|v| v["params"].clone()).collect::<Vec<_>>(),
+        ["smart", "fast", "smart", "fast"].map(|value| json!({"sessionId":"s1","configId":"vendor.model-key","value":value}))
+    );
+    assert!(!requests.iter().any(|v| v["method"] == "session/set_model"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn modern_controls_route_by_category_and_wait_for_acknowledgement() {
+    let (mut app, script, _) = app_with_script();
+    app.agent_chat.running_id = "modern".into();
+    app.agent_chat.on_event(Event::ConfigOptions(modern_options("fast")));
+    set_model(&mut app, "smart");
+    assert!(app.agent_chat.config_pending);
+    assert_eq!(app.agent_chat.model, "fast");
+    assert!(!app.preferences.agent_models.contains_key("modern"));
+    assert_eq!(script.calls(), ["set_config_option: some.provider.model=smart"]);
+    app.agent_chat.on_event(Event::ConfigOptions(modern_options("fast")));
+    assert!(app.agent_chat.config_pending, "a notification does not acknowledge the request");
+    app.agent_chat.on_event(Event::ConfigOptionFinished { id: "some.provider.model".into(), result: Ok(modern_options("smart")) });
+    assert!(!app.agent_chat.config_pending);
+    assert_eq!(app.agent_chat.model, "smart");
+    app.preferences.agent_models.insert("modern".into(), app.agent_chat.model.clone());
+    set_mode(&mut app, "ask");
+    assert_eq!(script.calls().last().map(String::as_str), Some("set_config_option: custom-mode-key=ask"));
+}
+
+#[test]
+fn modern_rejection_and_malformed_success_unlock_without_changing_confirmed_value() {
+    let (mut app, script, _) = app_with_script();
+    app.agent_chat.on_event(Event::ConfigOptions(modern_options("fast")));
+    set_model(&mut app, "smart");
+    app.agent_chat.on_event(Event::ConfigOptionFinished { id: "some.provider.model".into(), result: Err("rejected".into()) });
+    assert!(!app.agent_chat.config_pending);
+    assert_eq!(app.agent_chat.model, "fast");
+    set_model(&mut app, "smart");
+    app.agent_chat.on_event(Event::ConfigOptionFinished { id: "some.provider.model".into(), result: Err("malformed snapshot".into()) });
+    assert!(!app.agent_chat.config_pending);
+    assert_eq!(app.agent_chat.model, "fast");
+    assert_eq!(script.calls().len(), 2);
+}
+
+#[test]
+fn modern_saved_model_restore_waits_for_ack_and_manual_confirmation_persists() {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.running_id = "modern".into();
+    app.preferences.agent_models.insert("modern".into(), "smart".into());
+    script.report(Event::ConfigOptions(modern_options("fast")));
+    script.report(Event::Ready { agent: "modern".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.model, "fast");
+    assert_eq!(app.preferences.agent_models.get("modern").map(String::as_str), Some("smart"));
+    assert_eq!(script.calls(), ["set_config_option: some.provider.model=smart"]);
+    script.report(Event::ConfigOptionFinished { id: "some.provider.model".into(), result: Ok(modern_options("smart")) });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.model, "smart");
+    assert_eq!(app.preferences.agent_models.get("modern").map(String::as_str), Some("smart"));
+}
+
+#[test]
+fn modern_model_restore_then_mode_restore_are_acknowledged_before_queued_prompt() {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.running_id = "modern".into();
+    app.preferences.agent_models.insert("modern".into(), "smart".into());
+    app.agent_chat.restore_mode = Some("plan".into());
+    app.agent_chat.queued = Some(("describe the model".into(), false, None, Vec::new()));
+    script.report(Event::ConfigOptions(modern_options("fast")));
+    script.report(Event::Ready { agent: "modern".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls(), ["set_config_option: some.provider.model=smart"]);
+    assert_eq!(app.agent_chat.model, "fast");
+    assert_eq!(app.preferences.agent_models.get("modern").map(String::as_str), Some("smart"));
+    script.report(Event::ConfigOptionFinished { id: "some.provider.model".into(), result: Ok(modern_options("smart")) });
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls().get(1).map(String::as_str), Some("set_config_option: custom-mode-key=plan"));
+    assert!(app.agent_chat.queued.is_some(), "prompt waits for mode confirmation");
+    let mut confirmed = modern_options("smart");
+    confirmed[1].current_value = "plan".into();
+    script.report(Event::ConfigOptionFinished { id: "custom-mode-key".into(), result: Ok(confirmed) });
+    poll(&mut app, &ctx);
+    assert!(script.calls().iter().any(|s| s == "prompt: describe the model"));
+    assert_eq!(app.preferences.agent_models.get("modern").map(String::as_str), Some("smart"));
+}
+
+#[test]
+fn invalidated_modern_sessions_do_not_expose_stale_legacy_choices() {
+    for event in [Event::AuthRequired { methods: vec![] }, Event::Exited { tail: vec![] }] {
+        let (mut app, _, _) = app_with_script();
+        app.agent_chat.on_event(Event::ConfigOptions(modern_options("smart")));
+        app.agent_chat.config_pending = true;
+        app.agent_chat.on_event(event);
+        assert!(app.agent_chat.config_options.is_none() && !app.agent_chat.config_pending);
+        assert!(app.agent_chat.models.is_empty() && app.agent_chat.modes.is_empty());
+        assert!(app.agent_chat.model.is_empty() && app.agent_chat.mode.is_empty());
+    }
+    let (mut app, _, _) = app_with_script();
+    app.agent_chat.on_event(Event::ConfigOptions(modern_options("smart")));
+    new_chat(&mut app);
+    assert_eq!(app.agent_chat.restore_mode.as_deref(), Some("ask"));
+    assert!(app.agent_chat.config_options.is_none() && app.agent_chat.models.is_empty());
 }
 
 /// An agent that reports no models gets no picker; another agent's choice is not applied to it.
