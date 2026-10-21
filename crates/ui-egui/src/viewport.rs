@@ -1918,6 +1918,18 @@ pub(crate) fn profile_fill(sc: &mut GpuScene, app: &SolveApp, sketch: u64, index
     }
 }
 
+/// Fill and edge of an origin plane: the axis that stands on it (YZ red, XZ green, XY blue),
+/// at the shared plane opacity (#3722).
+fn origin_plane_colours(t: &Tokens, name: &str) -> (Color32, Color32) {
+    let axis = match name {
+        "YZ" => t.axis_x,
+        "XZ" => t.axis_y,
+        "XY" => t.axis_z,
+        _ => return (t.origin_plane, t.origin_plane_edge),
+    };
+    (Color32::from_rgba_unmultiplied(axis.r(), axis.g(), axis.b(), t.origin_plane.a()), axis)
+}
+
 /// An origin or construction plane: reference geometry, which a section does not cut (#1229).
 /// A reference plane's square. `through` draws it over the model (Create Sketch: a plane inside
 /// a body stays visible and pickable), else it is depth-tested like the rest of the scene.
@@ -2019,10 +2031,17 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
         let hovered = matches!(hover, Some(Hit::Plane { name: n, .. }) if n == name);
         (selected, hovered)
     };
-    let mut planes: Vec<(String, [Vec3; 4], Color32)> = origin_planes(app).into_iter().map(|(n, _, q)| (n.to_string(), q, t.origin_plane)).collect();
-    planes.extend(construction_quads(app).into_iter().map(|(n, _, q)| (n, q, t.construction_plane)));
+    // Each origin plane takes the colour of the axis that stands on it (#3722).
+    let mut planes: Vec<(String, [Vec3; 4], Color32, Color32)> = origin_planes(app)
+        .into_iter()
+        .map(|(n, _, q)| {
+            let (fill, edge) = origin_plane_colours(&t, n);
+            (n.to_string(), q, fill, edge)
+        })
+        .collect();
+    planes.extend(construction_quads(app).into_iter().map(|(n, _, q)| (n, q, t.construction_plane, t.origin_plane_edge)));
     let through = app.picking_sketch_plane();
-    for (name, q, base) in &planes {
+    for (name, q, base, edge) in &planes {
         let (selected, hovered) = plane_state(name);
         let fill = if hovered {
             t.origin_plane_hover
@@ -2031,7 +2050,7 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
         } else {
             *base
         };
-        quad(&mut sc, q, fill, if selected { t.sel_edge } else { t.origin_plane_edge }, through);
+        quad(&mut sc, q, fill, if selected { t.sel_edge } else { *edge }, through);
     }
     // Origin axes: solid near the origin, dashed beyond.
     for (name, dir) in origin_axes(app) {
@@ -6848,6 +6867,32 @@ mod grid_plane_tests {
         app.finish_sketch();
         assert!(app.ui.perspective, "the preference is left alone");
         assert!(projection(&app, rect).cam.fov > 0.0);
+    }
+
+    /// #3722: the three origin planes are the three axis colours, not one clay fill.
+    #[test]
+    fn origin_planes_are_coloured_by_the_axis_that_stands_on_them() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        app.ui.show_origin = true;
+        let scene = build_highlight(&app);
+        let tokens = crate::theme::Tokens::get();
+        // The same unpremultiply the GPU bytes use: a translucent axis colour is not the opaque bytes.
+        let stored = |axis: egui::Color32| {
+            egui::Color32::from_rgba_unmultiplied(axis.r(), axis.g(), axis.b(), tokens.origin_plane.a()).to_srgba_unmultiplied()
+        };
+        let stride = crate::gpu::TRI_SIZE;
+        let colours: Vec<[u8; 4]> =
+            scene.guide_trans.chunks(stride).map(|vertex| [vertex[stride - 4], vertex[stride - 3], vertex[stride - 2], vertex[stride - 1]]).collect();
+        assert_eq!(colours.len(), 18, "three planes, two triangles each");
+        assert_eq!(&colours[..6], &[stored(tokens.axis_z); 6], "XY is the Z axis colour");
+        assert_eq!(&colours[6..12], &[stored(tokens.axis_y); 6], "XZ is the Y axis colour");
+        assert_eq!(&colours[12..], &[stored(tokens.axis_x); 6], "YZ is the X axis colour");
+        let edge = |axis: egui::Color32| axis.to_srgba_unmultiplied();
+        let lines: Vec<[u8; 4]> =
+            scene.guide_lines.chunks(crate::gpu::LINE_SIZE).take(12).map(|vertex| [vertex[24], vertex[25], vertex[26], vertex[27]]).collect();
+        assert_eq!(&lines[..4], &[edge(tokens.axis_z); 4], "XY outline");
+        assert_eq!(&lines[4..8], &[edge(tokens.axis_y); 4], "XZ outline");
+        assert_eq!(&lines[8..], &[edge(tokens.axis_x); 4], "YZ outline");
     }
 
     /// Create Sketch shows the Origin even when the browser hides it, and draws its planes
