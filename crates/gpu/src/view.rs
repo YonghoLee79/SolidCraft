@@ -205,6 +205,8 @@ pub struct GpuImage {
     /// Bottom-left, bottom-right, top-right, top-left of the image.
     pub corners: [[f32; 3]; 4],
     pub opacity: f32,
+    /// Drawn over the model (no depth test) instead of hidden by it.
+    pub on_top: bool,
 }
 
 /// Image vertex: position (3 × f32), uv (2 × f32), opacity (f32).
@@ -586,12 +588,14 @@ pub struct Renderer {
     highlight: Batches,
     preview: Batches,
     image: wgpu::RenderPipeline,
+    /// The same, without the depth test, for see-through images.
+    image_top: wgpu::RenderPipeline,
     image_bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Textures by image id: (version, bind group).
     textures: std::collections::HashMap<u64, (u64, wgpu::BindGroup)>,
-    /// This frame's quads: (image id, vertices).
-    quads: Vec<(u64, Batch)>,
+    /// This frame's quads: (image id, on top, vertices).
+    quads: Vec<(u64, bool, Batch)>,
     access_bgl: wgpu::BindGroupLayout,
     /// The accessibility depth map (a 1 × 1 stand-in when there is none) and its version.
     access_bind: wgpu::BindGroup,
@@ -930,31 +934,35 @@ impl Renderer {
             immediate_size: 0,
         });
         const IA: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32];
-        let image = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sc_image"),
-            layout: Some(&image_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_img"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: IMG_SIZE as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &IA,
-                })],
-                compilation_options: Default::default(),
-            },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-            depth_stencil: depth(wgpu::CompareFunction::LessEqual, false),
-            multisample: wgpu::MultisampleState { count: t.samples.max(1), mask: !0, alpha_to_coverage_enabled: false },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_img"),
-                targets: &[Some(wgpu::ColorTargetState { format: t.format, blend: alpha, write_mask: wgpu::ColorWrites::ALL })],
-                compilation_options: Default::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let image_pipeline = |ds: Option<wgpu::DepthStencilState>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sc_image"),
+                layout: Some(&image_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_img"),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: IMG_SIZE as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &IA,
+                    })],
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+                depth_stencil: ds,
+                multisample: wgpu::MultisampleState { count: t.samples.max(1), mask: !0, alpha_to_coverage_enabled: false },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_img"),
+                    targets: &[Some(wgpu::ColorTargetState { format: t.format, blend: alpha, write_mask: wgpu::ColorWrites::ALL })],
+                    compilation_options: Default::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let image = image_pipeline(depth(wgpu::CompareFunction::LessEqual, false));
+        let image_top = image_pipeline(depth(wgpu::CompareFunction::Always, false));
         let access_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sc_access"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1127,6 +1135,7 @@ impl Renderer {
             ss: None,
             ss_ready: false,
             image,
+            image_top,
             image_bgl,
             sampler,
             textures: Default::default(),
@@ -1363,7 +1372,7 @@ impl Renderer {
                 }
             }
             if let Some(b) = upload(device, "sc_image_quad", &bytes, IMG_SIZE) {
-                res.quads.push((img.id, b));
+                res.quads.push((img.id, img.on_top, b));
             }
         }
         res.ss_ready = cb.ssaa != 1.0 && res.supersample(device, encoder, cb);
@@ -1467,7 +1476,7 @@ impl Renderer {
         lines(pass, &res.line, &pv.lines);
         lines(pass, &res.line, &h.lines);
         lines(pass, &res.guide_line, &h.guide_lines);
-        for (id, q) in res.quads.iter().filter(|_| !cb.product) {
+        for (id, _, q) in res.quads.iter().filter(|(_, top, _)| !*top && !cb.product) {
             if let Some((_, bind)) = res.textures.get(id) {
                 pass.set_pipeline(&res.image);
                 pass.set_bind_group(1, bind, &[]);
@@ -1484,6 +1493,16 @@ impl Renderer {
         tris(pass, &res.trans, &sk.trans);
         tris(pass, &res.trans, &h.trans);
         tris(pass, &res.guide_trans, &h.guide_trans);
+        for (id, _, q) in res.quads.iter().filter(|(_, top, _)| *top && !cb.product) {
+            if let Some((_, bind)) = res.textures.get(id) {
+                pass.set_pipeline(&res.image_top);
+                pass.set_bind_group(1, bind, &[]);
+                for (buffer, count) in &q.parts {
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(0..*count, 0..1);
+                }
+            }
+        }
         tris(pass, &res.xray, &pv.xray);
         tris(pass, &res.xray, &h.xray);
         lines(pass, &res.overlay, &m.overlays);

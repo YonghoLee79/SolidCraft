@@ -17,6 +17,8 @@ pub mod browser_canvas;
 pub mod browser_prompts;
 pub mod canvas;
 #[cfg(test)]
+mod canvas_pick_tests;
+#[cfg(test)]
 mod colour_tokens_tests;
 #[cfg(test)]
 mod colour_vision_tests;

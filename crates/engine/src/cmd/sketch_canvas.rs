@@ -12,12 +12,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("canvas.insert", "Canvas", add_canvas)
         .at("SKETCH", "INSERT")
         .icon("canvas")
-        .params("path | data (base64 PNG or JPEG); plane?: XY|XZ|YZ|{face: [x,y,z]}|… (default XY); center?: [x,y] on the plane, or at?: [x,y,z]; width?: mm (default 100); angle?: deg; opacity?: 0…1 (default 0.5); flip?; name?"),
+        .params("path | data (base64 PNG or JPEG); plane?: XY|XZ|YZ|{face: [x,y,z]}|… (default XY); center?: [x,y] on the plane, or at?: [x,y,z]; width?: mm (default 100); angle?: deg; opacity?: 0…1 (default 0.5); flip?; see_through?: drawn over the model; selectable?: (default true) clicking it in the view selects it; name?"),
     CommandSpec::new("canvas.decal", "Decal", add_decal)
         .at("SKETCH", "INSERT")
         .icon("decal")
         .params("path | data; face: [x,y,z] on a planar face (the image is centred there); width?: mm; angle?: deg; opacity?: (default 1)"),
-    CommandSpec::new("canvas.edit", "Edit Canvas", edit_canvas).at("SKETCH", "INSERT").icon("canvas").params("canvas: id or name; center?, width?, angle?: deg, opacity?, flip?, visible?, name?"),
+    CommandSpec::new("canvas.edit", "Edit Canvas", edit_canvas).at("SKETCH", "INSERT").icon("canvas").params("canvas: id or name; center?, width?, angle?: deg, opacity?, flip?, see_through?, selectable?, visible?, name?"),
     CommandSpec::new("canvas.calibrate", "Calibrate Canvas", calibrate).icon("measure")
         .params("canvas: id or name; a, b: two points on the canvas plane [x,y]; distance: their true distance (mm): scales the image about a"),
     CommandSpec::new("canvas.delete", "Delete Canvas", delete_canvas).icon("delete").params("canvas: id or name"),
@@ -71,6 +71,8 @@ fn make(s: &mut Session, p: &Value, cmd: &str, decal: bool) -> Result<Value> {
         angle: num(p, "angle").unwrap_or(0.0).to_radians(),
         opacity,
         flip: bool_(p, "flip").unwrap_or(false),
+        see_through: bool_(p, "see_through").unwrap_or(false),
+        selectable: bool_(p, "selectable").unwrap_or(true),
         visible: true,
         component,
     });
@@ -123,6 +125,12 @@ fn edit_canvas(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(f) = bool_(p, "flip") {
         c.flip = f;
     }
+    if let Some(v) = bool_(p, "see_through") {
+        c.see_through = v;
+    }
+    if let Some(v) = bool_(p, "selectable") {
+        c.selectable = v;
+    }
     if let Some(v) = bool_(p, "visible") {
         c.visible = v;
     }
@@ -168,6 +176,17 @@ mod tests {
         b.extend(h.to_be_bytes());
         b.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
         base64_encode(&b)
+    }
+
+    #[test]
+    fn see_through_and_selectable_are_set_by_insert_and_edit() {
+        let mut s = Session::default();
+        let id = s.execute("canvas.insert", &json!({"data": png(4, 4), "see_through": true, "selectable": false})).unwrap()["canvas"].clone();
+        assert_eq!((s.doc.canvases[0].see_through, s.doc.canvases[0].selectable), (true, false));
+        s.execute("canvas.edit", &json!({"canvas": id, "see_through": false, "selectable": true})).unwrap();
+        assert_eq!((s.doc.canvases[0].see_through, s.doc.canvases[0].selectable), (false, true));
+        s.execute("canvas.insert", &json!({"data": png(4, 4)})).unwrap();
+        assert_eq!((s.doc.canvases[1].see_through, s.doc.canvases[1].selectable), (false, true), "the defaults");
     }
 
     #[test]
