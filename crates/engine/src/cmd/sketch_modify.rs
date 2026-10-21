@@ -84,6 +84,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.move", "Move/Copy Sketch Entities", move_copy)
         .at("SKETCH", "MODIFY")
         .icon("sketch_move")
+        // M, as Move is in the model: sketch keys only act in a sketch (`keymap::Context`).
+        .key("M")
         .enabled(in_sketch)
         .params(concat!("entities: [ids], translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool, z?: mm along the sketch's normal (3D sketches: the moved lines and fit-point splines become drawn 3D curves that far off the plane); picking a text outline or linked point transforms its whole text source once, and copies remain editable text", created_doc!())),
     CommandSpec::new("sketch.mirror", "Mirror", mirror)
