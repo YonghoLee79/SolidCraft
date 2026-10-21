@@ -5,6 +5,59 @@
 use serde_json::{Value, json};
 use solidcraft_ui_egui::scenario::{Harness, check, rect_of};
 
+#[path = "support/raster.rs"]
+mod pdm_layout_raster;
+
+fn capture_pdm_history_layout(h: &mut Harness, layout: solidcraft_ui_egui::shell::LayoutMode) {
+    let Ok(phase) = std::env::var("SOLIDCRAFT_PDM_LAYOUT_PROOF_PHASE") else { return };
+    assert!(matches!(phase.as_str(), "before" | "after"));
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/pdm-c54-layout-proof");
+    std::fs::create_dir_all(&dir).unwrap();
+    h.ctx = egui::Context::default();
+    solidcraft_ui_egui::fonts::setup_fonts(&h.ctx);
+    solidcraft_ui_egui::theme::apply(&h.ctx);
+    let mut textures = std::collections::HashMap::new();
+    for _ in 0..8 {
+        pdm_layout_raster::paint(h, &mut textures, vec![]);
+    }
+    let output = pdm_layout_raster::paint(h, &mut textures, vec![]);
+    pdm_layout_raster::raster(h, &textures, output).save(dir.join(format!("{phase}-{layout:?}.png"))).unwrap();
+}
+
+#[test]
+fn pdm_archive_ignores_editor_history_columns_in_both_layouts() {
+    use solidcraft_ui_egui::shell::LayoutMode;
+
+    for layout in [LayoutMode::Docked, LayoutMode::Floating] {
+        let mut h = Harness::new();
+        h.app.ui.layout = layout;
+        h.app.ui.show_browser = true;
+        h.app.ui.show_timeline = true;
+        h.app.preferences.timeline_left = false;
+        h.app.preferences.timeline_under_browser = false;
+        let before = h.app.session.doc.clone();
+        solidcraft_ui_egui::pdm_panel::enter(&mut h.app).unwrap();
+        h.frames(4);
+        let full = rect_of("pdm_footer").expect("the archive browser is visible");
+
+        h.app.preferences.timeline_left = true;
+        h.app.preferences.timeline_under_browser = true;
+        for floating_browser in [false, true] {
+            h.app.preferences.browser_float = floating_browser;
+            h.frames(6);
+            let actual = rect_of("pdm_footer").expect("the archive browser remains visible");
+            if (actual.left() - full.left()).abs() > 1.0 {
+                capture_pdm_history_layout(&mut h, layout);
+            }
+            assert!((actual.left() - full.left()).abs() <= 1.0, "editor history reserved an archive column: {layout:?}, {actual:?} vs {full:?}");
+            assert!((actual.right() - full.right()).abs() <= 1.0, "archive width changed with editor preferences: {layout:?}");
+            assert!(h.app.pdm.workspace_active);
+            assert_eq!(*h.app.session.doc, *before);
+        }
+        capture_pdm_history_layout(&mut h, layout);
+    }
+}
+
 /// A box body (its sketch finished) to give feature dialogs something to work on.
 fn harness() -> Harness {
     let mut h = Harness::new();
