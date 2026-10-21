@@ -9,8 +9,9 @@ mod progress;
 mod projection;
 
 use serde_json::{Value, json};
+use solidcraft_geom::{Aabb3, Vec3};
 use solidcraft_io::{DxfEntity, DxfLayer, DxfLinetype, DxfShape};
-use solidcraft_render::Camera;
+use solidcraft_render::{Camera, StandardView};
 
 use super::CommandSpec;
 use crate::params::{bad, str_};
@@ -92,6 +93,43 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         result["dxf"] = json!(text);
     }
     Ok(result)
+}
+
+/// Parallel views of the visible bodies, one list of entities each (layers VISIBLE and, when
+/// `dashed`, HIDDEN), in millimetres along each view's right and up about the centre of the
+/// bodies' bounding box, so views that share an axis line up. The meshes are prepared once.
+pub(super) fn standard_views(s: &Session, cmd: &str, views: &[StandardView], tolerance: f64, dashed: bool) -> Result<Vec<Vec<DxfEntity>>> {
+    progress::Stage::new("dxf_meshes", 1).check().map_err(|e| bad(cmd, e))?;
+    // Its errors name this command, not the one-view export's.
+    let meshes = meshes::prepare(s, tolerance).map_err(|e| match e {
+        crate::EngineError::BadParams { msg, .. } => bad(cmd, msg),
+        e => e,
+    })?;
+    let bounds = meshes
+        .placements
+        .iter()
+        .filter_map(|p| meshes.meshes.get(p.mesh).map(|m| meshes::transformed_bounds(m, &p.transform)))
+        .fold(Aabb3::EMPTY, |b, p| b.union(&p));
+    if bounds.is_empty() || !bounds.diagonal().is_finite() {
+        return Err(bad(cmd, "there are no shown bodies to draw"));
+    }
+    let target: Vec3 = bounds.center();
+    // Outside the bodies; a parallel view looks the same from any distance.
+    let distance = 10.0 + 3.0 * bounds.diagonal();
+    let mut out = Vec::with_capacity(views.len());
+    for view in views {
+        let mut cam = Camera { target, fov: 0.0, distance, ..Default::default() };
+        cam.set_view(*view);
+        let drawing = projection::drawing(&meshes, &cam).map_err(|e| bad(cmd, e))?;
+        let entities = drawing
+            .lines
+            .into_iter()
+            .filter(|l| dashed || !l.hidden)
+            .map(|l| DxfEntity { layer: if l.hidden { "HIDDEN" } else { "VISIBLE" }.into(), shape: DxfShape::Line(l.a, l.b) })
+            .collect();
+        out.push(projection::connect(entities));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

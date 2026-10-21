@@ -36,18 +36,28 @@ impl DxfLinetype {
     }
 }
 
-/// A layer: its name, AutoCAD colour index (1 red, 3 green, 5 blue, 7 white or black) and linetype.
+/// A layer: its name, AutoCAD colour index (1 red, 3 green, 5 blue, 7 white or black), linetype
+/// and lineweight.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DxfLayer {
     pub name: String,
     pub color: i16,
     pub linetype: DxfLinetype,
+    /// The printed line width in hundredths of a millimetre (50 is 0.5 mm); `None` leaves the
+    /// viewer's default and writes nothing.
+    pub lineweight: Option<i16>,
 }
 
 impl DxfLayer {
     /// A continuous layer.
     pub fn new(name: impl Into<String>, color: i16) -> DxfLayer {
-        DxfLayer { name: name.into(), color, linetype: DxfLinetype::Continuous }
+        DxfLayer { name: name.into(), color, linetype: DxfLinetype::Continuous, lineweight: None }
+    }
+
+    /// The same layer printed `hundredths` of a millimetre wide. DXF knows only the standard
+    /// widths (0.00 to 2.11 mm); others are rounded to the nearest one by the viewer.
+    pub fn weight(self, hundredths: i16) -> DxfLayer {
+        DxfLayer { lineweight: Some(hundredths.clamp(0, 211)), ..self }
     }
 
     /// The same layer with a dashed line.
@@ -387,6 +397,9 @@ pub fn write_dxf_drawing(layers: &[DxfLayer], entities: &[DxfEntity]) -> String 
         o.code(70, 0);
         o.code(62, l.color);
         o.code(6, l.linetype.name());
+        if let Some(w) = l.lineweight {
+            o.code(370, w);
+        }
     }
     o.code(0, "ENDTAB");
     // The one text style, which a TEXT entity uses when it names none.

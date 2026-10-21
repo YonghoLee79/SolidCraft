@@ -1,2 +1,7 @@
 [alias]
 xtask = "run --package xtask --"
+
+# Local hardware tuning (i7-13620H: AVX2, FMA3). Scoped to the Windows host target so wasm and
+# cross builds keep their own CPU; binaries built this way only run on CPUs with the same features.
+[target.'cfg(all(windows, target_arch = "x86_64"))']
+rustflags = ["-C", "target-cpu=native"]
