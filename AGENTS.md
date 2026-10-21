@@ -14,6 +14,17 @@ survives only in the explicit compatibility shims listed in `docs/compatibility.
 new uses of it anywhere else. Public docs/web/Flatpak deployments use project Pages
 `/solidcraft/`; do not add permanent old-name Pages aliases.
 
+## The `kernel-smlib` branch
+This branch replaces `truck` with NVIDIA's SMLib (usd-brep, Apache-2.0), reached through
+solidcore's API (ADR 0002). Until it merges back, these rules differ from `main`'s:
+- **SMLib C++ is allowed** in the forked library tangency-labs/smlib, linked statically into the
+  app behind C shims. The shims catch every C++ exception and return status codes; no C++ type
+  crosses them. SolidCraft's own code stays Rust.
+- **The FFI crate may use `unsafe`**, only at the C boundary, like `crates/threedx-client`.
+- **wasm is not checked** on this branch until the owner decides it.
+- **OpenCASCADE is never read, built or linked**, including usd-brep's former OCCT translators.
+- **No CI runs** for pull requests into this branch for now (owner).
+
 ## Start every session here
 1. Read `plan/STATUS.md` (current milestone, next task), then the task in `plan/execution-plan.md`
    and the relevant `plan/architecture.md` section.
@@ -85,7 +96,7 @@ People trust SolidCraft with their designs; a crash loses their work. **This out
   clicks (`ui.start`) start interactive tools and dialogs, which then run commands.
 - **Layering** is enforced by `cargo xtask layers`: L0 `geom` → L1 `sketch`, `kernel`, `render`
   → L2 `doc` → L3 `io` → L4 `engine` → L5 `ui-egui` → apps. Nothing below L5 depends on
-  egui/eframe/winit/wgpu/rfd. **The UI crate is swappable.** Only `crates/kernel` may use `truck`.
+  egui/eframe/winit/wgpu/rfd. **The UI crate is swappable.** Only `crates/kernel` may use `truck` or call solidcore/SMLib.
 - **The UI is thin**: panels read engine state and act through `app.run(id, params)` /
   `app.start(id)`. Colours come from `theme::Tokens`.
 - **One set of camera controls**: every page or canvas with a camera (viewport, Render
