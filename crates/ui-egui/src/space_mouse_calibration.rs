@@ -63,8 +63,12 @@ pub(crate) fn dead_zone_pads(ui: &mut egui::Ui, calibration: &Calibration, raw: 
     const PADS: [(usize, f32, usize, f32); 3] = [(0, 1.0, 1, 1.0), (5, 1.0, 2, 1.0), (4, -1.0, 3, -1.0)];
     const SIZE: f32 = 76.0;
     let (shares, travel, moving) = (calibration.dead_zone_shares(), calibration.travel(raw), calibration.apply(raw));
+    const GAP: f32 = 12.0;
     let visuals = ui.visuals().clone();
     ui.horizontal(|ui| {
+        // The three together, centred, with small gaps.
+        ui.spacing_mut().item_spacing.x = GAP;
+        ui.add_space(((ui.available_width() - PADS.len() as f32 * SIZE - (PADS.len() - 1) as f32 * GAP) / 2.0).max(0.0));
         for (h, h_way, v, v_way) in PADS {
             ui.vertical(|ui| {
                 let (rect, response) = ui.allocate_exact_size(egui::vec2(SIZE, SIZE), egui::Sense::hover());
@@ -96,7 +100,26 @@ pub(crate) fn dead_zone_pads(ui: &mut egui::Ui, calibration: &Calibration, raw: 
                 painter.circle_filled(centre + dot * radius, 3.5, if live { visuals.selection.stroke.color } else { faint });
                 let percent = |axis: usize| format!("{} −{:.0} % +{:.0} %", NAMES[axis], shares[axis][0] * 100.0, shares[axis][1] * 100.0);
                 response.on_hover_text(format!("{}\n{}", percent(h), percent(v)));
-                crate::ui_kit::text(ui, &format!("{} · {}", NAMES[h], NAMES[v]), crate::ui_kit::Text::Note("space_mouse_pad"));
+                // As wide as the circle, so the labels don't push the circles apart.
+                ui.allocate_ui(egui::vec2(SIZE, 0.0), |ui| {
+                    crate::ui_kit::text(ui, &format!("{} · {}", NAMES[h], NAMES[v]), crate::ui_kit::Text::Note("space_mouse_pad"));
+                });
+            });
+        }
+    });
+}
+
+/// The device's six raw axes as they come, each name above its number, so the jitter at rest is there to see.
+fn reading_grid(ui: &mut egui::Ui, raw: [i16; 6]) {
+    const NAMES: [&str; 6] = ["X", "Y", "Z", "Rx", "Ry", "Rz"];
+    const CELL: f32 = 44.0;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (name, value) in NAMES.into_iter().zip(raw) {
+            ui.allocate_ui(egui::vec2(CELL, 0.0), |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                crate::ui_kit::text(ui, name, crate::ui_kit::Text::Note("space_mouse_reading_axis"));
+                crate::ui_kit::text(ui, &value.to_string(), crate::ui_kit::Text::MonoNote("space_mouse_reading_value"));
             });
         }
     });
@@ -191,12 +214,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         }
                     }
                     // The device's six raw axes as they come, so the jitter at rest is there to see.
-                    let reading = raw.map(|value| format!("{value:>6}")).join(" ");
-                    crate::ui_kit::text(
-                        ui,
-                        &format!("{}: {reading}", app.tr("ui.space_mouse_reading")),
-                        crate::ui_kit::Text::MonoNote("space_mouse_reading"),
-                    );
+                    crate::ui_kit::text(ui, app.tr("ui.space_mouse_reading"), crate::ui_kit::Text::Note("space_mouse_reading"));
+                    reading_grid(ui, raw);
                     // A reassignment made in Preferences stays on top of whatever this records.
                     if app.preferences.space_mouse_axis_source != crate::space_mouse::SAME_AXES {
                         crate::ui_kit::text(ui, app.tr("ui.space_mouse_axes_reassigned"), crate::ui_kit::Text::Note("space_mouse_axes_reassigned"));
