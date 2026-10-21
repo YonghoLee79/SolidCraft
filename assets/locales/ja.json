@@ -904,7 +904,7 @@
   "home.settings": "設定",
   "home.short_date": "{month}{day}日",
   "home.shortcuts": "キーボードショートカット",
-  "home.start_hint": "SolidCraft の起動時、ホームアイコンから、またはデザインタブの + から表示されます。",
+  "home.start_hint": "デザインを作成するか、最近使ったファイルを開くか、サンプルをご覧ください。",
   "home.whats_new": "新機能",
   "home.yesterday": "昨日",
   "install.button_tip": "SolidCraft をアプリとしてインストールします。専用のウィンドウで開き、オフラインでも使えます",

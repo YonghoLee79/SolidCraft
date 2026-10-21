@@ -904,7 +904,7 @@
   "home.settings": "Beállítások",
   "home.short_date": "{month} {day}.",
   "home.shortcuts": "Billentyűparancsok",
-  "home.start_hint": "A SolidCraft megnyitásakor, a ház ikonról és a tervfülek melletti + gombbal jeleníthető meg.",
+  "home.start_hint": "Hozzon létre egy tervet, nyisson meg egy legutóbbi fájlt, vagy fedezzen fel egy mintát.",
   "home.whats_new": "Újdonságok",
   "home.yesterday": "Tegnap",
   "install.button_tip": "A SolidCraft telepítése alkalmazásként: saját ablakban nyílik meg, és offline is működik",

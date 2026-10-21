@@ -456,7 +456,7 @@ fn recovery_panel(
                 let well =
                     Rect::from_min_size(pos2(rect.left(), rect.top() + (top_height - t.file_recovery_icon) / 2.0), Vec2::splat(t.file_recovery_icon));
                 ui.painter().rect_filled(well, t.radius_lg, t.file_recovery_well);
-                crate::icons::paint_accented(ui.painter(), well.shrink(t.space_6), "restore", Some("construction"), 1.0);
+                crate::icons::paint_accented(ui.painter(), well.shrink(t.space_6), "status_recovery", Some("construction"), 1.0);
             }
             let text_at = pos2(rect.left() + icon_width, rect.top() + (top_height - galley.size().y) / 2.0);
             ui.painter().with_clip_rect(ui.clip_rect().intersect(rect)).galley(text_at, galley, t.form_ink);

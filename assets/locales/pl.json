@@ -904,7 +904,7 @@
   "home.settings": "Ustawienia",
   "home.short_date": "{day} {month}",
   "home.shortcuts": "Skróty klawiszowe",
-  "home.start_hint": "Wyświetlana po uruchomieniu SolidCraft, po kliknięciu ikony domu i przycisku + na kartach projektów.",
+  "home.start_hint": "Utwórz projekt, otwórz ostatni plik lub obejrzyj przykład.",
   "home.whats_new": "Co nowego",
   "home.yesterday": "Wczoraj",
   "install.button_tip": "Zainstaluj SolidCraft jako aplikację: otwiera się we własnym oknie i działa offline",

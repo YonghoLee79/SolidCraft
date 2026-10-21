@@ -904,7 +904,7 @@
   "home.settings": "Настройки",
   "home.short_date": "{day} {month}",
   "home.shortcuts": "Сочетания клавиш",
-  "home.start_hint": "Показывается при запуске SolidCraft, по значку домика и по кнопке + на вкладках проектов.",
+  "home.start_hint": "Создайте проект, откройте недавний файл или изучите пример.",
   "home.whats_new": "Что нового",
   "home.yesterday": "Вчера",
   "install.button_tip": "Установить SolidCraft как приложение: отдельное окно и работа без сети",

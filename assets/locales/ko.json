@@ -904,7 +904,7 @@
   "home.settings": "설정",
   "home.short_date": "{month} {day}일",
   "home.shortcuts": "키보드 단축키",
-  "home.start_hint": "SolidCraft를 시작할 때, 집 아이콘 또는 설계 탭의 +를 누르면 표시됩니다.",
+  "home.start_hint": "설계를 만들거나, 최근 파일을 열거나, 예제를 살펴보세요.",
   "home.whats_new": "새로운 기능",
   "home.yesterday": "어제",
   "install.button_tip": "SolidCraft를 앱으로 설치합니다. 별도 창에서 열리며 오프라인에서도 작동합니다",

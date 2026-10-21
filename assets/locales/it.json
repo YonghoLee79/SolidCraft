@@ -904,7 +904,7 @@
   "home.settings": "Impostazioni",
   "home.short_date": "{day} {month}",
   "home.shortcuts": "Scorciatoie da tastiera",
-  "home.start_hint": "Visualizzata all’avvio di SolidCraft, dall’icona della casa e da + nelle schede dei progetti.",
+  "home.start_hint": "Crea un progetto, apri un file recente o esplora un esempio.",
   "home.whats_new": "Novità",
   "home.yesterday": "Ieri",
   "install.button_tip": "Installa SolidCraft come applicazione: si apre in una finestra dedicata e funziona offline",

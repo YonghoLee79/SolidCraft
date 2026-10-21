@@ -904,7 +904,7 @@
   "home.settings": "Inställningar",
   "home.short_date": "{day} {month}",
   "home.shortcuts": "Kortkommandon",
-  "home.start_hint": "Visas när SolidCraft öppnas, via husikonen och via + bland konstruktionsflikarna.",
+  "home.start_hint": "Skapa en konstruktion, öppna en nyligen använd fil eller utforska ett exempel.",
   "home.whats_new": "Nyheter",
   "home.yesterday": "I går",
   "install.button_tip": "Installera SolidCraft som en app: den öppnas i ett eget fönster och fungerar offline",

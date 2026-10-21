@@ -904,7 +904,7 @@
   "home.settings": "Settings",
   "home.short_date": "{day} {month}",
   "home.shortcuts": "Keyboard shortcuts",
-  "home.start_hint": "Shown when SolidCraft opens, from the house icon, and from + in the design tabs.",
+  "home.start_hint": "Create a design, open a recent file, or explore a sample.",
   "home.whats_new": "What's new",
   "home.yesterday": "Yesterday",
   "install.button_tip": "Install SolidCraft as an app: it opens in its own window and works offline",

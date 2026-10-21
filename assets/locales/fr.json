@@ -904,7 +904,7 @@
   "home.settings": "Paramètres",
   "home.short_date": "{day} {month}",
   "home.shortcuts": "Raccourcis clavier",
-  "home.start_hint": "S’affiche à l’ouverture de SolidCraft, depuis l’icône de maison et depuis + dans les onglets de conception.",
+  "home.start_hint": "Créez une conception, ouvrez un fichier récent ou explorez un exemple.",
   "home.whats_new": "Nouveautés",
   "home.yesterday": "Hier",
   "install.button_tip": "Installer SolidCraft comme une app : il s'ouvre dans sa propre fenêtre et fonctionne hors ligne",
