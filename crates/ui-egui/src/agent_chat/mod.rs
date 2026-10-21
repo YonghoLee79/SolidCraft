@@ -705,7 +705,8 @@ fn solidcraft_tool(title: &str) -> bool {
     title.to_ascii_lowercase().contains("solidcraft")
 }
 
-/// `solidcraft-cli` next to this program, else on the search path.
+/// `solidcraft-cli` next to this program, else on the search path, else the app binary itself
+/// (which handles `--mcp-bridge PORT` as a headless MCP server mode on non-Windows).
 #[cfg(not(target_arch = "wasm32"))]
 fn find_cli() -> Option<std::path::PathBuf> {
     let name = if cfg!(windows) { "solidcraft-cli.exe" } else { "solidcraft-cli" };
@@ -717,6 +718,17 @@ fn find_cli() -> Option<std::path::PathBuf> {
         .and_then(|e| e.parent().map(|d| d.join(name)))
         .filter(|p| p.is_file())
         .or_else(|| discover::find_in("solidcraft-cli", &discover::search_dirs()))
+        // On non-Windows the app binary itself can serve as the MCP bridge (--mcp-bridge mode).
+        .or_else(|| {
+            #[cfg(not(windows))]
+            {
+                std::env::current_exe().ok().filter(|p| p.is_file())
+            }
+            #[cfg(windows)]
+            {
+                None
+            }
+        })
 }
 
 /// The agent's working folder: an empty folder of SolidCraft's own, so an agent's own file tools
@@ -766,10 +778,17 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     let cli = find_cli();
     if chat.tools_port.is_none() {
         chat.notice(tr("ui.agent_chat_no_control"), true);
-    } else if cli.is_none() {
+    } else if cli.is_none() && entry.kind == agents::Kind::Acp {
+        // API agents use in-process tools (no CLI needed); ACP agents still need a CLI.
         chat.notice(tr("ui.agent_chat_no_cli"), true);
     }
-    let bridge = cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port });
+    // ACP agents get the MCP bridge so the agent can start its own server process.
+    // API agents skip this: their tool loop runs in-process via StartContext::tools.
+    let bridge = if entry.kind == agents::Kind::Acp {
+        cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port })
+    } else {
+        None
+    };
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
     let started: Result<Box<dyn ChatBackend>, String> = match entry.kind {
