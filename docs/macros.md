@@ -1,8 +1,7 @@
 # Macros
 
 A **JSON macro** is a command script the app records while you work. A **Rust macro** is a
-small program that calls the same commands, with loops and `if`. Python is not part of this
-MVP: a later optional Rust host can run `.py` files for people who do not write Rust.
+small program that calls the same commands, with loops and `if`.
 
 ## JSON (record / play)
 
@@ -77,4 +76,4 @@ The desktop app starts a loopback control port; Play a binary from MACRO, or set
 `SOLIDCRAFT_CONTROL_PORT`. Headless needs `solidcraft-cli` on `PATH` (or `SOLIDCRAFT_CLI`).
 The browser keeps JSON only.
 
-Desktop may spawn a user binary for a Rust macro; the CAD binary does not load plugins or CPython.
+Desktop may spawn a user binary for a Rust macro; the CAD binary does not load plugins.
