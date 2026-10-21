@@ -1541,16 +1541,26 @@ fn section_frame(_ui: &egui::Ui) -> egui::Frame {
     crate::ui_kit::Menu::frame()
 }
 
+/// A drop-down's section header stands apart from the command rows under it (#4118): one size
+/// above the row font, full-contrast ink, and a banded rule across the drop-down.
 fn section_heading(ui: &mut egui::Ui, label: &str, width: f32) {
     let t = Tokens::get();
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
-    ui.painter().text(
-        rect.left_center() + vec2(6.0, 0.0),
-        Align2::LEFT_CENTER,
-        crate::i18n::tr_label(label).to_uppercase(),
-        crate::fonts::semibold(crate::theme::Tokens::get().font_small),
-        t.text_dim,
-    );
+    let (font, ink) = section_heading_style(&t);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 26.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, t.panel_header);
+    ui.painter().line_segment([pos2(rect.left(), rect.bottom() - 0.5), pos2(rect.right(), rect.bottom() - 0.5)], Stroke::new(1.0, t.border));
+    let mut job = egui::text::LayoutJob::simple_singleline(crate::i18n::tr_label(label).to_uppercase(), crate::fonts::semibold(font), ink);
+    for section in &mut job.sections {
+        section.format.extra_letter_spacing = font * t.font_section_tracking;
+    }
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(rect.left_center() + vec2(6.0, 0.0), galley, ink);
+}
+
+/// The header font and ink, split out so a test can pin the hierarchy: a header is strictly
+/// larger and brighter than the row font and its dimmed text.
+fn section_heading_style(t: &Tokens) -> (f32, egui::Color32) {
+    (t.font_heading, t.text)
 }
 
 fn section_footer(ui: &mut egui::Ui) {
@@ -2521,6 +2531,23 @@ mod panel_drop_tests {
         h.step(&json!({"expect":{"handle_order":["button:solid.fillet","button:solid.chamfer","button:solid.shell","button:solid.extrude"],"tool":null,"dialog":null,"errors":0}})).unwrap();
         h.step(&json!({"restart":"close"})).unwrap();
         h.step(&json!({"expect":{"handle_order":["button:solid.shell","button:solid.extrude"]}})).unwrap();
+    }
+
+    /// #4118: a drop-down's section headers stand one font size above the command rows, in
+    /// full-contrast ink that stays WCAG-AA readable on the header band in both themes.
+    #[test]
+    fn drop_down_section_headers_outrank_their_command_rows() {
+        use crate::theme::{ColorVision, Tokens};
+        for dark in [false, true] {
+            let base = if dark { Tokens::dark() } else { Tokens::light() };
+            for mode in ColorVision::ALL {
+                let t = base.with_vision(dark, mode);
+                let (font, ink) = section_heading_style(&t);
+                assert!(font > t.font_button, "{mode:?} dark={dark}: the header must outsize the rows ({font} <= {})", t.font_button);
+                let contrast = crate::theme::contrast_ratio(ink, t.panel_header);
+                assert!(contrast >= 4.5, "{mode:?} dark={dark}: header ink on the band contrasts {contrast:.2}, below WCAG AA");
+            }
+        }
     }
 }
 
