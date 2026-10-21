@@ -99,3 +99,26 @@ fn point_to_point_takes_the_origin_point() {
     let p = params(&h.app, &d).unwrap();
     assert_eq!(p["translate"], json!([mm(-hi.x), mm(-hi.y), mm(-hi.z)]), "the corner goes onto the origin");
 }
+
+/// A locked axis keeps its value through a triad drag; the free axes follow (a viewport
+/// constraint only, the command parameters stay the same).
+#[test]
+fn a_locked_axis_ignores_the_triad_drag() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length": 20, "width": 20, "height": 20})).unwrap();
+    let app = SolveApp::new(s, Services::default());
+    let mut d = move_dialog(FREE);
+    assert!(has_locks(&d.kind));
+    assert!(!has_locks(&kind(ROTATE)), "Rotate has no dragged translation to lock");
+    d.extra.insert("lock_y".into(), json!(true));
+    d.extra.insert("lock_z".into(), json!(true));
+    let step = |d: &mut Dialog, started: bool, done: bool| {
+        let g = Drag { handle: gizmo::Handle::Plane(2), change: Change::Translate(Vec3::new(5.0, 7.0, 9.0)), started, done };
+        drag(&app, d, g);
+    };
+    step(&mut d, true, false);
+    step(&mut d, false, true);
+    let Kind::Move { x, y, z, .. } = &d.kind else { panic!("not a move") };
+    assert_eq!((x.as_str(), y.as_str(), z.as_str()), ("5 mm", "0 mm", "0 mm"), "only X follows the drag");
+    assert_eq!(params(&app, &d).unwrap()["translate"], json!(["5 mm", "0 mm", "0 mm"]));
+}

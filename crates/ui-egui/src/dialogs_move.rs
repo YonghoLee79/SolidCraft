@@ -20,6 +20,9 @@ pub const TRANSLATE: usize = 1;
 pub const ROTATE: usize = 2;
 pub const POINT_TO_POINT: usize = 3;
 pub const POINT_TO_POSITION: usize = 4;
+/// The per-axis lock options (label, `Dialog::extra` key): a locked axis ignores triad drags.
+/// A viewport constraint only; the solid.move parameters are unchanged.
+pub const LOCKS: [(&str, &str); 3] = [("Lock X", "lock_x"), ("Lock Y", "lock_y"), ("Lock Z", "lock_z")];
 const POINTS: u16 = VERTICES | FACES | EDGES | ORIGIN;
 
 /// A fresh Move dialog of a type (all values zero).
@@ -248,6 +251,15 @@ pub fn triad(app: &SolveApp, d: &Dialog) -> Option<gizmo::Triad> {
     Some(gizmo::Triad { center: pivot(app, d)? + t, translate: true, rotate: *mode == FREE })
 }
 
+/// Whether the move type has a dragged translation the axis locks can hold still.
+pub fn has_locks(k: &Kind) -> bool {
+    matches!(k, Kind::Move { mode, .. } if matches!(*mode, FREE | TRANSLATE))
+}
+
+fn locked(d: &Dialog, axis: usize) -> bool {
+    LOCKS.get(axis).is_some_and(|(_, key)| d.extra.get(*key).and_then(Value::as_bool).unwrap_or(false))
+}
+
 /// Apply a triad drag to the dialog's values (added to the values when the drag began).
 pub fn drag(app: &SolveApp, d: &mut Dialog, g: Drag) {
     let Kind::Move { x, y, z, rx, ry, rz, .. } = &d.kind else { return };
@@ -256,12 +268,15 @@ pub fn drag(app: &SolveApp, d: &mut Dialog, g: Drag) {
         d.extra.insert("drag0".into(), json!(v));
     }
     let v0: [f64; 6] = d.extra.get("drag0").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let keep = [locked(d, 0), locked(d, 1), locked(d, 2)];
     let Kind::Move { x, y, z, rx, ry, rz, .. } = &mut d.kind else { return };
     match g.change {
         Change::Translate(t) => {
-            *x = mm(v0[0] + t.x);
-            *y = mm(v0[1] + t.y);
-            *z = mm(v0[2] + t.z);
+            // A locked axis keeps the value it had when the drag began.
+            let pick = |i: usize, dt: f64| if keep[i] { v0[i] } else { v0[i] + dt };
+            *x = mm(pick(0, t.x));
+            *y = mm(pick(1, t.y));
+            *z = mm(pick(2, t.z));
         }
         Change::Rotate { axis, angle } => {
             let slot = match axis {
