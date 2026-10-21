@@ -416,7 +416,6 @@
   "appearance.roughness": "거칠기",
   "appearance.surface_response": "표면 반응",
   "browser.body_name": "바디{number}",
-  "browser.calibrate_title": "보정: {name}",
   "browser.capture_many": "구성요소 {count}개가 이동되었지만 위치가 캡처되지 않았습니다.",
   "browser.capture_note": "위치 캡처는 새 위치를 유지하고, 위치 복원은 이전 위치로 되돌립니다.",
   "browser.capture_one": "구성요소가 이동되었지만 위치가 캡처되지 않았습니다.",

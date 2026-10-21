@@ -416,7 +416,6 @@
   "appearance.roughness": "Ruhed",
   "appearance.surface_response": "Overfladens reaktion på lys",
   "browser.body_name": "Emne{number}",
-  "browser.calibrate_title": "Kalibrér: {name}",
   "browser.capture_many": "{count} komponenter er flyttet, men deres positioner er ikke registreret.",
   "browser.capture_note": "Registrér beholder den nye position; Fortryd sætter den tilbage.",
   "browser.capture_one": "En komponent er flyttet, men dens position er ikke registreret.",

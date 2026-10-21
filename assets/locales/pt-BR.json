@@ -416,7 +416,6 @@
   "appearance.roughness": "Rugosidade",
   "appearance.surface_response": "Resposta da superfície",
   "browser.body_name": "Corpo{number}",
-  "browser.calibrate_title": "Calibrar: {name}",
   "browser.capture_many": "{count} componentes foram movidos, mas suas posições não foram capturadas.",
   "browser.capture_note": "Capturar posição mantém a nova posição; Reverter posição restaura a anterior.",
   "browser.capture_one": "Um componente foi movido, mas sua posição não foi capturada.",

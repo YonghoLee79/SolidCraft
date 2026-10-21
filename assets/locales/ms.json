@@ -416,7 +416,6 @@
   "appearance.roughness": "Kekasaran",
   "appearance.surface_response": "Tindak balas permukaan",
   "browser.body_name": "Jasad{number}",
-  "browser.calibrate_title": "Tentukur: {name}",
   "browser.capture_many": "{count} komponen telah dialihkan tetapi kedudukannya belum dirakam.",
   "browser.capture_note": "Rakam mengekalkan kedudukan baharu; Kembalikan memulihkannya.",
   "browser.capture_one": "Satu komponen telah dialihkan tetapi kedudukannya belum dirakam.",

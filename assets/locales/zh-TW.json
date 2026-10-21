@@ -416,7 +416,6 @@
   "appearance.roughness": "粗糙度",
   "appearance.surface_response": "表面反應",
   "browser.body_name": "實體{number}",
-  "browser.calibrate_title": "校準：{name}",
   "browser.capture_many": "{count} 個元件已移動，但尚未擷取其位置。",
   "browser.capture_note": "「擷取位置」保留新位置；「還原位置」還原原先的位置。",
   "browser.capture_one": "一個元件已移動，但尚未擷取其位置。",

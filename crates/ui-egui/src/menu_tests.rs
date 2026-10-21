@@ -453,9 +453,10 @@ fn canvas_menu_hides_renames_calibrates_and_deletes() {
     act(&mut app, &t, "Rename");
     assert!(context_menu::finish_rename(&mut app, Some("Photo"), true));
     assert_eq!(app.session.doc.canvases[0].name, "Photo");
+    // Calibrating picks points on the image, so it must be showing.
+    act(&mut app, &t, "Show/Hide");
     act(&mut app, &t, "Calibrate");
-    let p = app.tree.canvas_panel.clone().unwrap();
-    assert!(p.calibrate && (p.distance - 80.0).abs() < 1e-9, "starts from the image's width");
+    assert_eq!(app.tree.calibration.as_ref().map(|c| c.canvas), Some(id), "Calibrate starts picking points on that canvas");
     act(&mut app, &t, "Delete");
     assert!(app.session.doc.canvases.is_empty());
     app.run("edit.undo", json!({})).unwrap();

@@ -318,7 +318,7 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
     if id == "canvas.edit" {
         // The browser's canvas panel (one panel for canvases).
         if let Some(first) = app.session.doc.canvases.first().map(|c| c.id) {
-            app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(app, first, false));
+            app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(app, first));
         }
         return false;
     }
@@ -828,7 +828,7 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
                 IMAGE.with(|i| *i.borrow_mut() = None);
                 app.tool = None;
                 if let Some(id) = v["canvas"].as_u64() {
-                    app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(app, id, false));
+                    app.tree.canvas_panel = Some(crate::browser::CanvasPanel::new(app, id));
                 }
             }
         }

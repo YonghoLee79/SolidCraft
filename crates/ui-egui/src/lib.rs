@@ -16,6 +16,7 @@ pub mod browser;
 pub mod browser_canvas;
 pub mod browser_prompts;
 pub mod canvas;
+pub mod canvas_calibrate;
 #[cfg(test)]
 mod colour_tokens_tests;
 #[cfg(test)]
@@ -802,6 +803,7 @@ impl SolveApp {
                     // The old document is already replaced: discard its editor without
                     // applying cancellation hooks (such as restoring its timeline marker).
                     self.dialog = None;
+                    self.tree.calibration = None;
                     self.tool = None;
                     self.preview.reset();
                     self.cam = Camera::default();

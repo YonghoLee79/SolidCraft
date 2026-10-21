@@ -416,7 +416,6 @@
   "appearance.roughness": "Chropowatość",
   "appearance.surface_response": "Reakcja powierzchni",
   "browser.body_name": "Bryła{number}",
-  "browser.calibrate_title": "Kalibruj: {name}",
   "browser.capture_many": "Przesunięto komponenty ({count}), ale ich położenia nie zostały zapamiętane.",
   "browser.capture_note": "Zapamiętaj położenie zachowuje nowe położenie; Przywróć położenie przywraca poprzednie.",
   "browser.capture_one": "Przesunięto komponent, ale jego położenie nie zostało zapamiętane.",

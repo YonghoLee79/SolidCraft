@@ -416,7 +416,6 @@
   "appearance.roughness": "Kekasaran",
   "appearance.surface_response": "Respons permukaan",
   "browser.body_name": "Bodi{number}",
-  "browser.calibrate_title": "Kalibrasi: {name}",
   "browser.capture_many": "{count} komponen dipindahkan tetapi posisinya belum ditangkap.",
   "browser.capture_note": "Tangkap menyimpan posisi baru; Kembalikan memulihkannya.",
   "browser.capture_one": "Sebuah komponen dipindahkan tetapi posisinya belum ditangkap.",

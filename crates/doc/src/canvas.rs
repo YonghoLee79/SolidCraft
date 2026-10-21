@@ -65,6 +65,13 @@ impl Canvas {
         let f = if self.flip { -1.0 } else { 1.0 };
         [rot(-hw * f, -hh), rot(hw * f, -hh), rot(hw * f, hh), rot(-hw * f, hh)]
     }
+    /// Whether a point on the plane (plane coordinates) lies on the image, edges included.
+    pub fn contains(&self, p: Vec2) -> bool {
+        let (s, c) = self.angle.sin_cos();
+        let d = p - self.center;
+        let (x, y) = (d.x * c + d.y * s, d.y * c - d.x * s);
+        x.abs() <= self.width / 2.0 && y.abs() <= self.height() / 2.0
+    }
     /// Corners on `plane` (in whatever frame the plane is given).
     pub fn world_corners(&self, plane: &Plane) -> [Vec3; 4] {
         self.corners().map(|p| plane.to_world(p))
@@ -178,5 +185,18 @@ mod tests {
         let jpg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xC0, 0, 11, 8, 0, 100, 0, 200, 3, 0, 0, 0];
         assert_eq!(image_info(&jpg), Some(("jpeg", [200, 100])));
         assert_eq!(image_info(b"nope"), None);
+    }
+
+    #[test]
+    fn contains_follows_the_turned_image() {
+        // 40 x 20 mm, centred at (10, 5), turned a quarter turn: 20 wide and 40 tall on the plane.
+        let c: Canvas = serde_json::from_value(serde_json::json!({
+            "id": 1, "name": "c", "format": "png", "data": "", "pixels": [400, 200], "plane": {"type": "origin", "name": "XY"},
+            "center": [10.0, 5.0], "width": 40.0, "angle": std::f64::consts::FRAC_PI_2,
+        }))
+        .unwrap();
+        for (p, inside) in [((10.0, 24.9), true), ((19.9, 5.0), true), ((10.0, 25.1), false), ((20.1, 5.0), false), ((29.0, 5.0), false)] {
+            assert_eq!(c.contains(Vec2::new(p.0, p.1)), inside, "{p:?}");
+        }
     }
 }

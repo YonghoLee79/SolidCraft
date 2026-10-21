@@ -416,7 +416,6 @@
   "appearance.roughness": "Érdesség",
   "appearance.surface_response": "Felületi válasz",
   "browser.body_name": "Test{number}",
-  "browser.calibrate_title": "Kalibrálás: {name}",
   "browser.capture_many": "{count} komponens el lett mozgatva, de a pozíciójuk nincs rögzítve.",
   "browser.capture_note": "A rögzítés megtartja az új pozíciót; a visszaállítás visszateszi.",
   "browser.capture_one": "Egy komponens el lett mozgatva, de a pozíciója nincs rögzítve.",

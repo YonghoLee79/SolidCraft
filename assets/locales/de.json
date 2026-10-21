@@ -416,7 +416,6 @@
   "appearance.roughness": "Rauheit",
   "appearance.surface_response": "Oberflächenverhalten",
   "browser.body_name": "Körper {number}",
-  "browser.calibrate_title": "Kalibrieren: {name}",
   "browser.capture_many": "{count} Komponenten wurden verschoben, ihre Positionen sind aber nicht erfasst.",
   "browser.capture_note": "„Position erfassen“ behält die neue Position bei; „Position zurücksetzen“ stellt die vorherige wieder her.",
   "browser.capture_one": "Eine Komponente wurde verschoben, ihre Position ist aber nicht erfasst.",

@@ -416,7 +416,6 @@
   "appearance.roughness": "Drsnost",
   "appearance.surface_response": "Odezva povrchu",
   "browser.body_name": "Těleso{number}",
-  "browser.calibrate_title": "Kalibrovat: {name}",
   "browser.capture_many": "Byly přesunuty komponenty ({count}), ale jejich polohy nejsou zachyceny.",
   "browser.capture_note": "Zachycení polohy ponechá novou polohu; vrácení obnoví původní.",
   "browser.capture_one": "Komponenta byla přesunuta, ale její poloha není zachycena.",

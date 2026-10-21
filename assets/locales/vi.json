@@ -416,7 +416,6 @@
   "appearance.roughness": "Độ nhám bề mặt",
   "appearance.surface_response": "Phản hồi bề mặt",
   "browser.body_name": "Thân khối{number}",
-  "browser.calibrate_title": "Hiệu chuẩn: {name}",
   "browser.capture_many": "{count} chi tiết đã được di chuyển nhưng vị trí chưa được ghi lại.",
   "browser.capture_note": "Ghi vị trí sẽ giữ vị trí mới; Hoàn nguyên sẽ đặt lại như cũ.",
   "browser.capture_one": "Một chi tiết đã được di chuyển nhưng vị trí chưa được ghi lại.",

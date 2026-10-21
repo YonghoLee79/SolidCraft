@@ -416,7 +416,6 @@
   "appearance.roughness": "Шероховатость",
   "appearance.surface_response": "Поведение поверхности",
   "browser.body_name": "Тело{number}",
-  "browser.calibrate_title": "Калибровка: {name}",
   "browser.capture_many": "Компоненты ({count}) перемещены, но их положения не зафиксированы.",
   "browser.capture_note": "«Зафиксировать положение» сохраняет новое положение; «Вернуть положение» восстанавливает прежнее.",
   "browser.capture_one": "Компонент перемещён, но его положение не зафиксировано.",

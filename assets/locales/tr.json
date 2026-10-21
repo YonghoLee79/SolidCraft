@@ -416,7 +416,6 @@
   "appearance.roughness": "Pürüzlülük",
   "appearance.surface_response": "Yüzey davranışı",
   "browser.body_name": "Gövde {number}",
-  "browser.calibrate_title": "Kalibre et: {name}",
   "browser.capture_many": "{count} bileşen taşındı ancak konumları yakalanmadı.",
   "browser.capture_note": "Konumu yakala yeni konumu korur; Konumu geri al önceki konuma döndürür.",
   "browser.capture_one": "Bir bileşen taşındı ancak konumu yakalanmadı.",
