@@ -436,12 +436,22 @@ pub struct Applying {
     pub(crate) started: f64,
     /// The commands being computed.
     pub(crate) cmds: Vec<(String, Value)>,
+    /// The job has been in a frame. A job that has just started is not taken up in the frame it
+    /// starts, so the dialog says it is computing before the feature appears.
+    pub(crate) seen: bool,
 }
 
 impl Applying {
     /// The evaluation is in (or its worker ended).
     fn finished(&self) -> bool {
         !matches!(self.done.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
+    }
+
+    /// The evaluation is in and the job has been in a frame. A job that has just started waits
+    /// one frame: the window thread may be held up between starting it and the check, and the
+    /// feature must not appear where the dialog says it is computing.
+    fn ready(&self) -> bool {
+        self.seen && self.finished()
     }
 }
 
@@ -477,7 +487,7 @@ fn begin_applying(app: &SolveApp, d: &Dialog) -> Option<Applying> {
         })
         .ok()?;
     match rx.recv_timeout(wait) {
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Some(Applying { done: rx, started: crate::now_ms(), cmds }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Some(Applying { done: rx, started: crate::now_ms(), cmds, seen: false }),
         _ => None,
     }
 }
@@ -2416,7 +2426,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     // OK's evaluation is in: run it, the feature taken from the cache. Inputs changed meanwhile
     // (nothing should change them) are computed in turn, off the window thread too: run here,
     // they would hold the window for the whole boolean.
-    if app.applying.as_ref().is_some_and(Applying::finished) && !cancel {
+    // A job that has just started is not in yet: it waits a frame, so the dialog says it is
+    // computing before the feature appears.
+    let ready = app.applying.as_ref().is_some_and(Applying::ready);
+    if let Some(job) = &mut app.applying {
+        job.seen = true;
+    }
+    if ready && !cancel {
         let computed = app.applying.take().map(|job| job.cmds);
         let current = apply_commands(app, &d).ok();
         let again = if current.is_some() && current != computed { begin_applying(app, &d) } else { None };
@@ -2835,7 +2851,43 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
             }
         }
     }
+    if let Kind::Section { offset, flip } = &d.kind
+        && let Some(cut) = app.session.section
+    {
+        app.tree.section_dialog = Some(SectionDraft { offset: offset.clone(), flip: *flip, plane: sels(d, 0).to_vec(), cut });
+    }
     Ok(())
+}
+
+/// Edit Section Analysis: its dialog, where the dialog that made the section shown (or hidden)
+/// now left it, so the cut moves on from there. A section made some other way opens it afresh,
+/// as the toolbar always does (a new section, in place of the old).
+pub fn edit_section(app: &mut SolveApp) {
+    app.start("inspect.section");
+    let cut = app.session.section.or(app.tree.hidden_section);
+    let Some(last) = app.tree.section_dialog.clone().filter(|last| cut.is_some_and(|c| same_cut(c, last.cut))) else { return };
+    if let Some(d) = app.dialog.as_mut().filter(|d| matches!(d.kind, Kind::Section { .. })) {
+        d.kind = Kind::Section { offset: last.offset, flip: last.flip };
+        if let Some(plane) = d.inputs.first_mut() {
+            plane.items = last.plane;
+        }
+    }
+}
+
+/// What the Section Analysis dialog's OK made: its distance, flip and plane pick, and the cut
+/// (origin, normal) they made, so Edit reopens the dialog where it was while that cut stands.
+#[derive(Clone, Debug)]
+pub struct SectionDraft {
+    pub offset: String,
+    pub flip: bool,
+    pub plane: Vec<Sel>,
+    pub cut: (Vec3, Vec3),
+}
+
+/// The same cut, up to rounding (hiding and showing a section runs it again from its plane).
+fn same_cut(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
+    let tol = 1e-9 * (1.0 + a.0.len().max(b.0.len()));
+    (a.0 - b.0).len() <= tol && (a.1 - b.1).len() <= 1e-9
 }
 
 /// Placement used to edit a definition in the selected authoring occurrence.

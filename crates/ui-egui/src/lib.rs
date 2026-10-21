@@ -20,6 +20,7 @@ pub mod canvas;
 mod colour_tokens_tests;
 #[cfg(test)]
 mod colour_vision_tests;
+pub mod command_help;
 pub mod context_menu;
 pub mod control;
 pub mod crash_ui;
@@ -246,7 +247,7 @@ pub use control::{ControlRequest, ControlResponse};
 pub struct UiState {
     /// Automation-only shell mode; never persisted in preferences.
     pub layout: shell::LayoutMode,
-    /// Ribbon tab; contextual SKETCH and SHEET METAL join the seven design tabs.
+    /// Ribbon tab; SHEET METAL and the contextual SKETCH join the seven design tabs.
     pub tab: String,
     /// Last contextual body/sketch, only used to select on entry.
     #[serde(skip)]
@@ -427,10 +428,12 @@ pub struct SolveApp {
     pub last_command: Option<(String, String)>,
     /// Esc was already acted on this frame (by the shortcuts), so later handlers skip it.
     pub esc_handled: bool,
+    /// When Esc was last pressed (input time): a second press soon after finishes the sketch.
+    pub last_escape: Option<f64>,
     pub status: Option<(String, f64, bool)>,
     pub quit_requested: bool,
     /// Autosave into the recovery folder (the desktop app turns it on).
-    pub autosave: Option<solidcraft_engine::recovery::Autosaver>,
+    pub autosave: Option<recovery_ui::Autosaves>,
     /// Designs left by crashed apps, offered for recovery.
     pub recoverable: Vec<solidcraft_engine::recovery::Entry>,
     /// The bodies of a just-opened Y-up file, offered to be stood up (`stand_up`).
@@ -555,6 +558,7 @@ impl SolveApp {
             apply_gate: None,
             last_command: None,
             esc_handled: false,
+            last_escape: None,
             status: None,
             quit_requested: false,
             autosave: None,
@@ -846,6 +850,17 @@ impl SolveApp {
             return;
         }
         workspace::select_command_tab(self, id);
+        // Move a selected assembly placement the same way as its Browser menu, retaining
+        // the exact instance path and the grounding/rigid-group restrictions.
+        if id == "solid.move"
+            && let [solidcraft_engine::Sel::Occurrence { path }] = self.session.selection.as_slice()
+        {
+            let target = context_menu::Target::Occurrence { path: path.clone() };
+            if let Some(item) = context_menu::items(self, &target).into_iter().find(|item| item.id == "ui.moveOccurrence") {
+                context_menu::run_item(self, &item, egui::Pos2::ZERO);
+            }
+            return;
+        }
         if id == "material.properties.validate" {
             self.material_card_review = Some(material_card_review::ReviewWindow::default());
             self.home.open = false;
@@ -1517,6 +1532,10 @@ impl SolveApp {
         documents::prompt(self, ui.ctx());
         update::show(self, ui.ctx());
         install::show(self, ui.ctx());
+        // Settings › AI's Add agent dialog: Settings opens over Home too (#3483).
+        if agent_chat::shown(self) {
+            agent_chat::settings::dialog(self, ui.ctx());
+        }
         if self.home.open {
             home::show(self, ui);
             if self.home.open {

@@ -1864,8 +1864,11 @@ fn c_symmetry(s: &mut Session, p: &Value) -> Result<Value> {
                 let cb = sk.curve_index(rb).ok_or_else(|| bad(cmd, format!("unknown entity `{rb}`")))?;
                 match (sk.curves.get(ca).map(|c| c.kind.clone()), sk.curves.get(cb).map(|c| c.kind.clone())) {
                     (Some(CurveKind::Line { a: a0, b: a1 }), Some(CurveKind::Line { a: b0, b: b1 })) => {
-                        out.push(add_c(sk, ConstraintKind::Symmetric { p: a0, q: b0, l })?);
-                        out.push(add_c(sk, ConstraintKind::Symmetric { p: a1, q: b1, l })?);
+                        // Opposite sides of a rectangle run in opposite directions: pair each end
+                        // with the end of the other line nearest its mirror image (#2961, #2940).
+                        let (p0, p1) = if mirror_pairing_is_crossed(sk, l, [a0, a1], [b0, b1]) { (b1, b0) } else { (b0, b1) };
+                        out.push(add_c(sk, ConstraintKind::Symmetric { p: a0, q: p0, l })?);
+                        out.push(add_c(sk, ConstraintKind::Symmetric { p: a1, q: p1, l })?);
                     }
                     (Some(_), Some(_)) => {
                         let pa = round_center(sk, ca).ok_or_else(|| bad(cmd, "symmetry needs two lines or two circles/arcs"))?;
@@ -1884,6 +1887,25 @@ fn c_symmetry(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(out)
     })?;
     Ok(json!({"constraints": ids, "sketch": info}))
+}
+
+/// True when the ends of line `a` mirror (about the line `l`) closer onto the ends of `b` crossed
+/// (`a0` with `b1`, `a1` with `b0`) than in order. A degenerate symmetry line keeps the order.
+fn mirror_pairing_is_crossed(sk: &Sketch, l: usize, a: [usize; 2], b: [usize; 2]) -> bool {
+    let Some((o, e)) = line_pts(sk, l) else { return false };
+    let d = e - o;
+    let len2 = d.x * d.x + d.y * d.y;
+    if len2 < 1e-18 {
+        return false;
+    }
+    let pt = |i: usize| sk.point(i).unwrap_or_default();
+    let near = |i: usize, j: usize| {
+        let v = pt(i) - o;
+        let t = (v.x * d.x + v.y * d.y) / len2;
+        let foot = o + d * t;
+        (foot * 2.0 - pt(i)).dist(pt(j))
+    };
+    near(a[0], b[1]) + near(a[1], b[0]) < near(a[0], b[0]) + near(a[1], b[1])
 }
 
 /// Symmetry about point `c`: two points, two circles/arcs (their centres, and equal radii) or two
