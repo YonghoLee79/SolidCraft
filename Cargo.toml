@@ -25,7 +25,6 @@ solidcraft-engine = { path = "crates/engine" }
 solidcraft-ui-egui = { path = "crates/ui-egui" }
 solidcraft-space-mouse = { path = "crates/space-mouse" }
 solidcraft-mcp = { path = "crates/mcp" }
-solidcraft-macro-client = { path = "crates/macro-client" }
 solidcraft-derive = { path = "crates/derive" }
 solidcraft-3dx-client = { path = "crates/threedx-client" }
 
@@ -37,6 +36,7 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+rhai = { version = "1.22", default-features = false, features = ["std", "serde"] }
 # command parameter and result schemas
 schemars = "1.2"
 serde_path_to_error = "0.1"

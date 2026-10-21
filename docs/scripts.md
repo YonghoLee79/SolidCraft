@@ -14,5 +14,4 @@ A script is a JSON list of commands, the same ones the UI runs:
 
 Run one with `solidcraft-cli run script.json --out part.step`; see [building](building.md) and the [command list](features.md).
 
-A [macro](macros.md) is a script the app records (JSON), or a small Rust program
-(`solidcraft-macro-client`) that calls the same commands.
+A [macro](macros.md) is a Rhai script the MACRO tab records and plays. Command scripts stay JSON.

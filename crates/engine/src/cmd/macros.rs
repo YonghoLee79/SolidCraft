@@ -1,18 +1,10 @@
-//! UI macros: record the commands a session runs, keep them as a script and replay them.
-//!
-//! [`Recorder`] lives on the [`Session`]. [`Session::execute`] feeds it every recordable command
-//! while a recording runs and is not paused (not `macro.*` itself, not undo/redo, not `live`
-//! gesture frames). A saved macro is the script format (`timeline.export_script`, docs/scripts.md)
-//! plus a name and named parameters (`{{name}}`), so one file can drive any design. An earlier
-//! step's result is kept with `"let"` and read back as `{{name.field}}`.
-//!
-//! `macro.play` replays steps as commands, each mapped from the world the way a command run from
-//! the UI is ([`crate::frames::TopLevel`]). A step that fails rolls the whole playback back, and
-//! a successful playback is a single undo step.
+//! UI macros: record commands as Rhai, play them in the engine (one undo, rollback on failure).
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
+use rhai::{Dynamic, Engine, EvalAltResult, ImmutableString, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -21,29 +13,29 @@ use crate::frames::TopLevel;
 use crate::params::{bad, str_};
 use crate::{EngineError, Result, Session};
 
-/// The most commands one macro holds. Recording stops at it; a file with more is refused.
+/// The most commands one recording holds. Recording stops at it.
 pub const MAX_STEPS: usize = 10_000;
-/// The largest macro file read (bytes).
 const MAX_MACRO_BYTES: usize = 4 << 20;
-/// The most entries `macro.list` reports.
 const MAX_LISTED: usize = 200;
+const MAX_OPS: u64 = 100_000;
 
-/// A recorded or loaded macro: what `macro.play` plays and `macro.save` writes.
+/// A recorded or loaded Rhai macro.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Macro {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Values `macro.play` binds to `{{name}}` before its steps run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<MacroParam>,
-    /// Steps as the script format holds them: `{command, params?, let?}`.
+    /// Rhai source `macro.play` evaluates.
     #[serde(default)]
+    pub source: String,
+    /// Commands captured while recording, before they are written as Rhai.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<Value>,
 }
 
-/// One named value a macro asks for when it runs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MacroParam {
     pub name: String,
@@ -53,25 +45,15 @@ pub struct MacroParam {
     pub default: Option<Value>,
 }
 
-/// The session's macro recorder. Not part of the design: opening another design starts afresh.
 #[derive(Clone, Debug, Default)]
 pub struct Recorder {
-    /// `macro.record` ran and `macro.stop` has not since.
     pub recording: bool,
-    /// Recording is on, but commands are not captured until `macro.resume`.
     pub paused: bool,
-    /// `macro.play` is replaying (no playback nests inside a playback).
     pub playing: bool,
-    /// Steps captured since `macro.record` (kept after stop until the next recording).
     pub captured: Macro,
-    /// The macro `macro.play` runs when no file is given: the last recording, or `macro.open`.
     pub loaded: Option<Macro>,
 }
 
-/// Whether a command run while a macro records is a step of it. Modelling, inspection and
-/// export count (a flatten-and-export macro is those commands). The macro's own commands,
-/// file and document lifecycle, undo and view moves do not: replaying them would replace the
-/// design or fight the recording.
 pub fn recordable(id: &str) -> bool {
     !(id.starts_with("macro.")
         || id.starts_with("file.")
@@ -82,8 +64,6 @@ pub fn recordable(id: &str) -> bool {
 }
 
 impl Recorder {
-    /// [`Session::execute`] calls this after a successful top-level command. Paused and playing
-    /// sessions capture nothing.
     pub(crate) fn note(&mut self, id: &str, params: &Value) {
         if !self.recording || self.paused || self.playing || !recordable(id) {
             return;
@@ -92,6 +72,7 @@ impl Recorder {
             self.recording = false;
             self.paused = false;
             if !self.captured.commands.is_empty() {
+                self.captured.source = rhai_from_commands(&self.captured);
                 self.loaded = Some(self.captured.clone());
             }
             return;
@@ -109,7 +90,11 @@ impl Recorder {
     }
 
     pub fn steps(&self) -> usize {
-        self.captured.commands.len()
+        if !self.captured.commands.is_empty() {
+            self.captured.commands.len()
+        } else {
+            self.loaded.as_ref().map(|m| m.source.matches("run(").count()).unwrap_or(0)
+        }
     }
 }
 
@@ -120,62 +105,56 @@ pub static COMMANDS: &[CommandSpec] = &[
         .noundo()
         .doc_only()
         .enabled(idle)
-        .params("name?: the macro's name (saved with it; defaults to the design's name) → {recording, paused, steps}: a new recording starts (what was captured before is dropped); every recordable command is captured until macro.pause or macro.stop"),
+        .params("name?: the macro's name → {recording, paused, steps}"),
     CommandSpec::new("macro.pause", "Pause Recording", pause)
         .at("MACRO", "RECORD")
         .icon("pause")
         .noundo()
         .doc_only()
         .enabled(capturing)
-        .params("→ {recording, paused: true, steps}: stop capturing without ending the recording; macro.resume continues it"),
+        .params("→ {recording, paused: true, steps}"),
     CommandSpec::new("macro.resume", "Resume Recording", resume)
         .at("MACRO", "RECORD")
         .icon("record")
         .noundo()
         .doc_only()
         .enabled(paused)
-        .params("→ {recording, paused: false, steps}: capture again, into the same recording"),
+        .params("→ {recording, paused: false, steps}"),
     CommandSpec::new("macro.stop", "Stop Recording", stop)
         .at("MACRO", "RECORD")
         .icon("stop")
         .noundo()
         .doc_only()
         .enabled(recording)
-        .params("→ {recording: false, steps, commands}: end the recording; the steps stay loaded until saved, opened over, or a new recording starts"),
+        .params("→ {recording: false, steps}: the recording is turned into Rhai and loaded"),
     CommandSpec::new("macro.play", "Play Macro", play)
         .at("MACRO", "PLAYBACK")
         .icon("play")
         .enabled(ready)
-        .params("commands?: [{command, params?, let?}] | path?: file | name?: file in the macros folder | params?: {name: value} (default: the loaded macro) → {ran, steps}. A step reads a parameter as {{name}} and an earlier step's result as {{let_name.field}}. A failed step rolls the whole playback back"),
+        .params("source?: Rhai text | path?: .rhai file | name?: file in the macros folder | params?: {name: value} (default: the loaded macro). Host: run(command, params), list_dir(path), write_file(path, text). One undo; a failure rolls back"),
     CommandSpec::new("macro.open", "Open Macro", open)
         .at("MACRO", "PLAYBACK")
         .icon("open")
         .noundo()
         .doc_only()
         .enabled(idle)
-        .params("path: a .macro.json (or plain script) file → name, steps, params: [{name, label?, default?}]"),
+        .params("path: a .rhai file → name, steps, params"),
     CommandSpec::new("macro.save", "Save Macro", save)
         .at("MACRO", "PLAYBACK")
         .icon("export")
         .noundo()
         .doc_only()
         .enabled(has_steps)
-        .params("name?: a file in the macros folder, path?: any file (default: the macro's name with .macro.json); a .rs path writes a Cargo crate → {path, steps, crate?}"),
+        .params("name?: file in the macros folder ending in .rhai, path?: any .rhai file → {path, steps}"),
     CommandSpec::new("macro.clear", "Clear Macro", clear_macro)
         .at("MACRO", "PLAYBACK")
         .icon("delete")
         .noundo()
         .doc_only()
         .enabled(has_steps)
-        .params("→ {cleared: true}: the loaded macro is dropped; a recording in progress keeps recording, empty"),
-    CommandSpec::new("macro.list", "List Macros", list).icon("folder").noundo().doc_only().params(
-        "→ {recording, paused, steps, dir, macros: [{name, bytes}]}",
-    ),
-    CommandSpec::new("macro.delete", "Delete Macro", delete)
-        .icon("delete")
-        .noundo()
-        .doc_only()
-        .params("name: a saved macro's name (see macro.list)"),
+        .params("→ {cleared: true}"),
+    CommandSpec::new("macro.list", "List Macros", list).icon("folder").noundo().doc_only().params("→ {recording, paused, steps, dir, macros}"),
+    CommandSpec::new("macro.delete", "Delete Macro", delete).icon("delete").noundo().doc_only().params("name: a saved .rhai name"),
 ];
 
 fn idle(s: &Session) -> std::result::Result<(), String> {
@@ -214,7 +193,7 @@ fn ready(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn has_steps(s: &Session) -> std::result::Result<(), String> {
-    let loaded = s.macros.loaded.as_ref().is_some_and(|m| !m.commands.is_empty());
+    let loaded = s.macros.loaded.as_ref().is_some_and(|m| !m.source.is_empty() || !m.commands.is_empty());
     if s.macros.captured.commands.is_empty() && !loaded { Err("nothing has been recorded yet".into()) } else { Ok(()) }
 }
 
@@ -246,20 +225,20 @@ fn resume(s: &mut Session, _p: &Value) -> Result<Value> {
 fn stop(s: &mut Session, _p: &Value) -> Result<Value> {
     s.macros.recording = false;
     s.macros.paused = false;
-    let steps = s.macros.steps();
+    let steps = s.macros.captured.commands.len();
     if steps > 0 {
+        s.macros.captured.source = rhai_from_commands(&s.macros.captured);
         s.macros.loaded = Some(s.macros.captured.clone());
     }
-    Ok(json!({"recording": false, "paused": false, "steps": steps, "commands": s.macros.captured.commands}))
+    Ok(json!({"recording": false, "paused": false, "steps": steps}))
 }
 
 fn clear_macro(s: &mut Session, _p: &Value) -> Result<Value> {
-    s.macros.captured.commands.clear();
+    s.macros.captured = Macro::default();
     s.macros.loaded = None;
     Ok(json!({"cleared": true}))
 }
 
-/// The macros folder: `macros` under the per-user data folder. `None` where there is no per-user folder.
 pub fn macros_dir() -> Option<PathBuf> {
     crate::recovery::data_dir().map(|d| d.join("macros"))
 }
@@ -267,13 +246,13 @@ pub fn macros_dir() -> Option<PathBuf> {
 fn named(cmd: &str, name: &str) -> Result<PathBuf> {
     if name.is_empty()
         || name.len() > 128
-        || !name.ends_with(".json")
+        || !name.ends_with(".rhai")
         || name.contains('/')
         || name.contains('\\')
         || name.contains("..")
         || !name.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | ' '))
     {
-        return Err(bad(cmd, "`name` must be one plain file name ending in .json (letters, numbers, spaces, -_.)"));
+        return Err(bad(cmd, "`name` must be one plain file name ending in .rhai (letters, numbers, spaces, -_.)"));
     }
     let dir = macros_dir().ok_or_else(|| bad(cmd, "no macros folder on this system; give a path instead"))?;
     Ok(dir.join(name))
@@ -283,93 +262,63 @@ fn is_param_name(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
 }
 
-/// A macro file, or a plain command script. Every step's command must exist.
-pub(crate) fn parse_macro(cmd: &str, raw: &Value) -> Result<Macro> {
-    let obj = match raw {
-        Value::Object(o) => o.clone(),
-        Value::Array(steps) => {
-            let mut m = serde_json::Map::new();
-            m.insert("commands".into(), Value::Array(steps.clone()));
-            m
-        }
-        _ => return Err(bad(cmd, "a macro is a JSON object with a `commands` list")),
-    };
-    let steps = obj.get("commands").and_then(Value::as_array).ok_or_else(|| bad(cmd, "missing `commands` (a list of {command, params?})"))?;
-    if steps.is_empty() {
-        return Err(bad(cmd, "the macro holds no steps"));
-    }
-    if steps.len() > MAX_STEPS {
-        return Err(bad(cmd, format!("a macro holds at most {MAX_STEPS} commands")));
-    }
-    let meta = obj.get("macro").cloned().unwrap_or(Value::Null);
-    let mut params = Vec::new();
-    if let Some(list) = obj.get("params") {
-        let list = list.as_array().ok_or_else(|| bad(cmd, "`params` must be a list of {name, label?, default?}"))?;
-        if list.len() > 100 {
-            return Err(bad(cmd, "a macro asks for at most 100 parameters"));
-        }
-        for p in list {
-            let name = p
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|n| is_param_name(n))
-                .ok_or_else(|| bad(cmd, "every parameter needs a name (letters, digits, `_` and `-`)"))?;
-            if params.iter().any(|q: &MacroParam| q.name == name) {
-                return Err(bad(cmd, format!("parameter `{name}` is given twice")));
-            }
-            params.push(MacroParam {
-                name: name.to_string(),
-                label: p.get("label").and_then(Value::as_str).map(str::to_string),
-                default: p.get("default").filter(|v| !v.is_null()).cloned(),
-            });
-        }
-    }
-    let mut commands = Vec::with_capacity(steps.len());
-    for (i, step) in steps.iter().enumerate() {
-        let id = step.get("command").and_then(Value::as_str).ok_or_else(|| bad(cmd, format!("step {}: missing `command`", i + 1)))?;
-        if id.starts_with("macro.") {
-            return Err(bad(cmd, format!("step {}: a macro cannot run `{id}` itself", i + 1)));
-        }
-        if crate::cmd::find_command(id).is_none() {
-            return Err(bad(cmd, format!("step {}: unknown command `{id}`", i + 1)));
-        }
-        if let Some(l) = step.get("let")
-            && !l.as_str().is_some_and(is_param_name)
-        {
-            return Err(bad(cmd, format!("step {}: `let` must be one word (letters, digits, `_` and `-`)", i + 1)));
-        }
-        let mut out = serde_json::Map::new();
-        out.insert("command".into(), json!(id));
-        if let Some(p) = step.get("params") {
-            out.insert("params".into(), p.clone());
-        }
-        if let Some(l) = step.get("let") {
-            out.insert("let".into(), l.clone());
-        }
-        commands.push(Value::Object(out));
-    }
-    Ok(Macro {
-        name: meta.get("name").and_then(Value::as_str).map(str::to_string).or_else(|| obj.get("name").and_then(Value::as_str).map(str::to_string)),
-        description: meta.get("description").and_then(Value::as_str).map(str::to_string),
-        params,
-        commands,
-    })
-}
-
-fn read_macro_file(cmd: &str, path: &std::path::Path) -> Result<String> {
+fn read_macro_file(cmd: &str, path: &Path) -> Result<String> {
     let text =
         solidcraft_io::vfs::read(&path.display().to_string(), MAX_MACRO_BYTES).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
     String::from_utf8(text).map_err(|_| bad(cmd, format!("{} is not text", path.display())))
 }
 
+pub(crate) fn parse_rhai_macro(cmd: &str, text: &str) -> Result<Macro> {
+    if text.len() > MAX_MACRO_BYTES {
+        return Err(bad(cmd, "the macro file is too large"));
+    }
+    if text.trim().is_empty() {
+        return Err(bad(cmd, "the macro holds no source"));
+    }
+    let mut params = Vec::new();
+    let mut name = None;
+    let mut description = None;
+    for line in text.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("//") else { continue };
+        let rest = rest.trim();
+        if let Some(spec) = rest.strip_prefix("@param") {
+            let spec = spec.trim();
+            let (left, default) = match spec.split_once('|') {
+                Some((l, r)) => (l.trim(), Some(Value::String(r.trim().to_string()))),
+                None => (spec, None),
+            };
+            let mut bits = left.split_whitespace();
+            let n = bits.next().unwrap_or("").trim();
+            if !is_param_name(n) {
+                return Err(bad(cmd, "every @param needs a name (letters, digits, `_` and `-`)"));
+            }
+            if params.iter().any(|q: &MacroParam| q.name == n) {
+                return Err(bad(cmd, format!("parameter `{n}` is given twice")));
+            }
+            let label = bits.collect::<Vec<_>>().join(" ");
+            params.push(MacroParam { name: n.to_string(), label: if label.is_empty() { None } else { Some(label) }, default });
+            if params.len() > 100 {
+                return Err(bad(cmd, "a macro asks for at most 100 parameters"));
+            }
+        } else if name.is_none() && !rest.is_empty() && !rest.starts_with('@') {
+            name = Some(rest.to_string());
+        } else if description.is_none() && !rest.is_empty() && !rest.starts_with('@') {
+            description = Some(rest.to_string());
+        }
+    }
+    Ok(Macro { name, description, params, source: text.to_string(), commands: Vec::new() })
+}
+
 fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "macro.open";
-    let path = str_(p, "path").ok_or_else(|| bad(cmd, "`path` must be a .macro.json file"))?;
-    let text = read_macro_file(cmd, std::path::Path::new(path))?;
-    let raw: Value = serde_json::from_str(&text).map_err(|e| bad(cmd, format!("not a command script: {e}")))?;
-    let m = parse_macro(cmd, &raw)?;
-    let out = json!({"name": m.name.clone().unwrap_or_default(), "steps": m.commands.len(), "params": json!(m.params)});
+    let path = str_(p, "path").ok_or_else(|| bad(cmd, "`path` must be a .rhai file"))?;
+    if !path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rhai")) {
+        return Err(bad(cmd, "`path` must end in .rhai"));
+    }
+    let text = read_macro_file(cmd, Path::new(path))?;
+    let m = parse_rhai_macro(cmd, &text)?;
+    let out = json!({"name": m.name.clone().unwrap_or_default(), "steps": m.source.matches("run(").count(), "params": json!(m.params)});
     s.macros.loaded = Some(m);
     Ok(out)
 }
@@ -379,72 +328,49 @@ fn play(s: &mut Session, p: &Value) -> Result<Value> {
     if s.macros.playing {
         return Err(bad(cmd, "a macro is already playing"));
     }
-    let from_arg = match (p.get("commands"), str_(p, "name"), str_(p, "path")) {
-        (Some(Value::Array(_)), None, None) => Some(parse_macro(cmd, &json!({"commands": p["commands"].clone()}))?),
-        (None, Some(name), None) => {
-            let path = named(cmd, name)?;
-            let text = read_macro_file(cmd, &path)?;
-            let raw: Value = serde_json::from_str(&text).map_err(|e| bad(cmd, format!("not a command script: {e}")))?;
-            Some(parse_macro(cmd, &raw)?)
+    let loaded = match (str_(p, "source"), str_(p, "name"), str_(p, "path")) {
+        (Some(src), None, None) => parse_rhai_macro(cmd, src)?,
+        (None, Some(name), None) => parse_rhai_macro(cmd, &read_macro_file(cmd, &named(cmd, name)?)?)?,
+        (None, None, Some(path)) => parse_rhai_macro(cmd, &read_macro_file(cmd, Path::new(path))?)?,
+        (None, None, None) => {
+            let mut m = s
+                .macros
+                .loaded
+                .clone()
+                .filter(|m| !m.source.is_empty() || !m.commands.is_empty())
+                .ok_or_else(|| bad(cmd, "nothing has been recorded; give source, a path or a saved macro's name"))?;
+            if m.source.is_empty() {
+                m.source = rhai_from_commands(&m);
+            }
+            m
         }
-        (None, None, Some(path)) => {
-            let text = read_macro_file(cmd, std::path::Path::new(path))?;
-            let raw: Value = serde_json::from_str(&text).map_err(|e| bad(cmd, format!("not a command script: {e}")))?;
-            Some(parse_macro(cmd, &raw)?)
-        }
-        (None, None, None) => None,
-        _ => return Err(bad(cmd, "give commands, name or path — one of them")),
-    };
-    let macro_ = match from_arg {
-        Some(m) => m,
-        None => s
-            .macros
-            .loaded
-            .clone()
-            .filter(|m| !m.commands.is_empty())
-            .ok_or_else(|| bad(cmd, "nothing has been recorded; give commands, a path or a saved macro's name"))?,
+        _ => return Err(bad(cmd, "give source, name or path — one of them")),
     };
     let given = match p.get("params") {
         None | Some(Value::Null) => &Value::Null,
         Some(v @ Value::Object(_)) => v,
         Some(_) => return Err(bad(cmd, "`params` is an object of {name: value}")),
     };
-    let mut vars: BTreeMap<String, Value> = BTreeMap::new();
     let mut missing: Vec<&str> = Vec::new();
-    for mp in &macro_.params {
+    let mut bound: Vec<(String, Value)> = Vec::new();
+    for mp in &loaded.params {
         match given.get(&mp.name).or(mp.default.as_ref()) {
-            Some(v) => {
-                vars.insert(mp.name.clone(), v.clone());
-            }
+            Some(v) => bound.push((mp.name.clone(), v.clone())),
             None => missing.push(mp.name.as_str()),
         }
     }
     if !missing.is_empty() {
-        return Err(bad(cmd, format!("macro `{}` needs values for: {}", macro_.name.as_deref().unwrap_or("macro"), missing.join(", "))));
+        return Err(bad(cmd, format!("macro `{}` needs values for: {}", loaded.name.as_deref().unwrap_or("macro"), missing.join(", "))));
     }
-    let steps = macro_.commands.clone();
     let mark = (s.doc.clone(), s.active_sketch, s.pending_moves.clone(), s.redo.clone(), s.undo.len());
     s.macros.playing = true;
-    let outcome = (|| {
-        let _top = TopLevel::enter();
-        for (i, step) in steps.iter().enumerate() {
-            let id = step.get("command").and_then(Value::as_str).unwrap_or_default();
-            let params = match step.get("params") {
-                None | Some(Value::Null) => Value::Null,
-                Some(p) => bind(cmd, i, p, &vars)?,
-            };
-            let r = s.execute(id, &params).map_err(|e| EngineError::Other(format!("macro step {} ({id}): {e}", i + 1)))?;
-            if let Some(name) = step.get("let").and_then(Value::as_str) {
-                vars.insert(name.to_string(), r);
-            }
-        }
-        Ok(steps.len())
-    })();
+    let _top = TopLevel::enter();
+    let outcome = eval_rhai(s, &loaded.source, &bound);
     s.macros.playing = false;
     match outcome {
-        Ok(ran) => {
+        Ok(()) => {
             s.undo.truncate(mark.4);
-            Ok(json!({"ran": ran, "steps": steps.len()}))
+            Ok(json!({"ran": true, "steps": loaded.source.matches("run(").count()}))
         }
         Err(e) => {
             s.doc = mark.0;
@@ -458,58 +384,93 @@ fn play(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-/// Replace `{{name}}` and `{{name.field.0}}` in a step's parameters. A string that is one whole
-/// reference keeps the value's type; a reference inside a longer string joins it as text.
-pub fn bind(cmd: &str, step: usize, v: &Value, vars: &BTreeMap<String, Value>) -> Result<Value> {
-    match v {
-        Value::Array(a) => Ok(Value::Array(a.iter().map(|x| bind(cmd, step, x, vars)).collect::<Result<Vec<_>>>()?)),
-        Value::Object(o) => Ok(Value::Object(o.iter().map(|(k, x)| bind(cmd, step, x, vars).map(|x| (k.clone(), x))).collect::<Result<_>>()?)),
-        Value::String(text) => substitute(cmd, step, text, vars),
-        other => Ok(other.clone()),
+fn eval_rhai(s: &mut Session, source: &str, bound: &[(String, Value)]) -> Result<()> {
+    let shared = Rc::new(RefCell::new(std::mem::take(s)));
+    let eval = {
+        let mut engine = Engine::new();
+        engine.set_max_operations(MAX_OPS);
+        let sh = Rc::clone(&shared);
+        engine.register_fn("run", move |cmd: ImmutableString, params: Dynamic| -> std::result::Result<Dynamic, Box<EvalAltResult>> {
+            let json_params: Value = rhai::serde::from_dynamic(&params).unwrap_or(Value::Null);
+            let v = sh.borrow_mut().execute(cmd.as_str(), &json_params).map_err(|e| Box::new(EvalAltResult::from(e.to_string())))?;
+            rhai::serde::to_dynamic(&v).map_err(|e| Box::new(EvalAltResult::from(e.to_string())))
+        });
+        let sh = Rc::clone(&shared);
+        engine.register_fn("run", move |cmd: ImmutableString| -> std::result::Result<Dynamic, Box<EvalAltResult>> {
+            let v = sh.borrow_mut().execute(cmd.as_str(), &Value::Null).map_err(|e| Box::new(EvalAltResult::from(e.to_string())))?;
+            rhai::serde::to_dynamic(&v).map_err(|e| Box::new(EvalAltResult::from(e.to_string())))
+        });
+        engine.register_fn("list_dir", list_dir_host);
+        engine.register_fn("write_file", write_file_host);
+        engine.register_fn("file_stem", file_stem_host);
+        let mut scope = Scope::new();
+        for (name, v) in bound {
+            match rhai::serde::to_dynamic(v) {
+                Ok(d) => {
+                    scope.push_dynamic(name.clone(), d);
+                }
+                Err(e) => return Err(EngineError::Other(e.to_string())),
+            }
+        }
+        engine.eval_with_scope::<Dynamic>(&mut scope, source).map(|_| ()).map_err(|e| EngineError::Other(format!("macro: {e}")))
+    };
+    match Rc::try_unwrap(shared) {
+        Ok(cell) => *s = cell.into_inner(),
+        Err(_) => return Err(EngineError::Other("macro still holds the session".into())),
+    }
+    eval
+}
+
+fn list_dir_host(path: ImmutableString) -> std::result::Result<Dynamic, Box<EvalAltResult>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        return Err(Box::new(EvalAltResult::from("list_dir is not supported in the browser")));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if path.is_empty() || path.len() > 4096 || path.contains("..") {
+            return Err(Box::new(EvalAltResult::from("list_dir: bad path")));
+        }
+        let mut names: Vec<Dynamic> = Vec::new();
+        let entries = std::fs::read_dir(path.as_str()).map_err(|e| Box::new(EvalAltResult::from(e.to_string())))?;
+        for e in entries.flatten().take(1000) {
+            let p = e.path();
+            if p.is_file() {
+                names.push(Dynamic::from(p.to_string_lossy().into_owned()));
+            }
+        }
+        names.sort_by_key(ToString::to_string);
+        Ok(Dynamic::from_array(names))
     }
 }
 
-fn substitute(cmd: &str, step: usize, text: &str, vars: &BTreeMap<String, Value>) -> Result<Value> {
-    if !text.contains("{{") {
-        return Ok(json!(text));
-    }
-    if text.starts_with("{{") && text.ends_with("}}") && text.matches("{{").count() == 1 {
-        let expr = &text[2..text.len() - 2];
-        return resolve(cmd, step, expr, vars).cloned();
-    }
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(a) = rest.find("{{") {
-        out.push_str(&rest[..a]);
-        let tail = &rest[a + 2..];
-        let Some(b) = tail.find("}}") else {
-            return Err(bad(cmd, format!("step {}: `{{{{` is not closed in `{text}`", step + 1)));
-        };
-        let v = resolve(cmd, step, &tail[..b], vars)?;
-        let piece = match v {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        out.push_str(&piece);
-        rest = &tail[b + 2..];
-    }
-    out.push_str(rest);
-    Ok(json!(out))
+fn file_stem_host(path: ImmutableString) -> ImmutableString {
+    Path::new(path.as_str()).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default().into()
 }
 
-fn resolve<'v>(cmd: &str, step: usize, expr: &str, vars: &'v BTreeMap<String, Value>) -> Result<&'v Value> {
-    let mut parts = expr.trim().split('.');
-    let name = parts.next().unwrap_or_default();
-    let mut cur =
-        vars.get(name).ok_or_else(|| bad(cmd, format!("step {}: `{{{{{name}}}}}` is not a macro parameter or an earlier step's `let`", step + 1)))?;
-    for part in parts {
-        cur = match (cur, part.parse::<usize>()) {
-            (Value::Object(o), _) => o.get(part).ok_or_else(|| bad(cmd, format!("step {}: `{{{{{expr}}}}}` reaches no value", step + 1)))?,
-            (Value::Array(a), Ok(i)) => a.get(i).ok_or_else(|| bad(cmd, format!("step {}: `{{{{{expr}}}}}` is past the end of a list", step + 1)))?,
-            _ => return Err(bad(cmd, format!("step {}: `{{{{{expr}}}}}` reaches no value", step + 1))),
-        };
+fn write_file_host(path: ImmutableString, text: ImmutableString) -> std::result::Result<Dynamic, Box<EvalAltResult>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (path, text);
+        return Err(Box::new(EvalAltResult::from("write_file is not supported in the browser")));
     }
-    Ok(cur)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if path.is_empty() || path.len() > 4096 || path.contains("..") {
+            return Err(Box::new(EvalAltResult::from("write_file: bad path")));
+        }
+        if text.len() > MAX_MACRO_BYTES {
+            return Err(Box::new(EvalAltResult::from("write_file: too large")));
+        }
+        if let Some(parent) = Path::new(path.as_str()).parent().filter(|p| !p.as_os_str().is_empty())
+            && let Err(e) = solidcraft_io::vfs::create_dir_all(&parent.display().to_string())
+        {
+            return Err(Box::new(EvalAltResult::from(e.to_string())));
+        }
+        solidcraft_io::vfs::write(path.as_str(), text.as_bytes()).map_err(|e| Box::new(EvalAltResult::from(e.to_string())))?;
+        Ok(Dynamic::UNIT)
+    }
 }
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
@@ -519,13 +480,16 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     if name.is_some() && path.is_some() {
         return Err(bad(cmd, "give a name or a path, not both"));
     }
-    let m = if !s.macros.captured.commands.is_empty() {
+    let mut m = if !s.macros.captured.commands.is_empty() || !s.macros.captured.source.is_empty() {
         s.macros.captured.clone()
-    } else if let Some(m) = s.macros.loaded.clone().filter(|m| !m.commands.is_empty()) {
+    } else if let Some(m) = s.macros.loaded.clone().filter(|m| !m.source.is_empty() || !m.commands.is_empty()) {
         m
     } else {
         return Err(bad(cmd, "nothing has been recorded yet"));
     };
+    if m.source.is_empty() {
+        m.source = rhai_from_commands(&m);
+    }
     let path = match (name, path) {
         (Some(name), None) => {
             let name = name.as_str().ok_or_else(|| bad(cmd, "`name` must be text"))?;
@@ -534,70 +498,19 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         (None, Some(path)) => path.as_str().ok_or_else(|| bad(cmd, "`path` must be a file path"))?.to_string(),
         _ => {
             let stem = m.name.as_deref().filter(|n| !n.is_empty()).unwrap_or("macro");
-            let name = format!("{stem}.macro.json");
-            named(cmd, &name)?.display().to_string()
+            named(cmd, &format!("{stem}.rhai"))?.display().to_string()
         }
     };
-    if path.ends_with(".rs") {
-        return save_rust_crate(&path, &m, p);
+    if !path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rhai")) {
+        return Err(bad(cmd, "`path` must end in .rhai"));
     }
-    let script = json!({
-        "macro": {"name": m.name, "description": m.description},
-        "params": m.params,
-        "commands": m.commands,
-        "about": {"replay": "macro.play {path}, or a Rust macro via solidcraft-macro-client"},
-    });
-    let text = serde_json::to_string_pretty(&script).map_err(|e| EngineError::Other(e.to_string()))?;
     if let Some(parent) = Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty())
         && let Err(e) = solidcraft_io::vfs::create_dir_all(&parent.display().to_string())
     {
         return Err(EngineError::Other(format!("{}: {e}", parent.display())));
     }
-    solidcraft_io::vfs::write(&path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    Ok(json!({"path": path, "steps": m.commands.len()}))
-}
-
-fn save_rust_crate(path: &str, m: &Macro, p: &Value) -> Result<Value> {
-    let crate_dir = Path::new(path).with_extension("");
-    if crate_dir.as_os_str().is_empty() {
-        return Err(bad("macro.save", "path has no crate name"));
-    }
-    let stem = crate_dir.file_name().and_then(|s| s.to_str()).unwrap_or("macro");
-    let pkg = crate_pkg_name(stem);
-    let client = match str_(p, "client_path") {
-        Some(s) => PathBuf::from(s),
-        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../macro-client"),
-    };
-    let client = std::fs::canonicalize(&client).unwrap_or(client);
-    let src_dir = crate_dir.join("src");
-    let src_dir_s = src_dir.display().to_string();
-    solidcraft_io::vfs::create_dir_all(&src_dir_s).map_err(|e| EngineError::Other(format!("{src_dir_s}: {e}")))?;
-    let main = crate_dir.join("src").join("main.rs");
-    let main_s = main.display().to_string();
-    solidcraft_io::vfs::write(&main_s, rust_source(m).as_bytes()).map_err(|e| EngineError::Other(format!("{main_s}: {e}")))?;
-    let client_toml = client.display().to_string().replace('\\', "/").replace('"', "");
-    let cargo = format!(
-        "[package]\nname = \"{pkg}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nserde_json = \"1\"\nsolidcraft-macro-client = {{ path = \"{client_toml}\" }}\n"
-    );
-    let cargo_s = crate_dir.join("Cargo.toml").display().to_string();
-    solidcraft_io::vfs::write(&cargo_s, cargo.as_bytes()).map_err(|e| EngineError::Other(format!("{cargo_s}: {e}")))?;
-    Ok(json!({"path": crate_dir.display().to_string(), "steps": m.commands.len(), "crate": true}))
-}
-
-fn crate_pkg_name(stem: &str) -> String {
-    let mut out = String::new();
-    for c in stem.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    if out.is_empty() {
-        return "solidcraft-macro".into();
-    }
-    if out.chars().next().is_some_and(|c| c.is_ascii_digit()) { format!("macro-{out}") } else { out }
+    solidcraft_io::vfs::write(&path, m.source.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    Ok(json!({"path": path, "steps": m.source.matches("run(").count()}))
 }
 
 fn saved_macros() -> Vec<(String, u64)> {
@@ -606,7 +519,7 @@ fn saved_macros() -> Vec<(String, u64)> {
     let Ok(entries) = std::fs::read_dir(&dir) else { return out };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".json")
+        if name.ends_with(".rhai")
             && entry.path().is_file()
             && let Ok(len) = entry.path().metadata().map(|m| m.len())
         {
@@ -632,38 +545,65 @@ fn delete(_: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"deleted": name}))
 }
 
-/// A recorded macro as a Rust program that talks to the live app (`solidcraft-macro-client`).
-pub fn rust_source(m: &Macro) -> String {
-    let mut out = String::from(
-        "//! Generated SolidCraft macro. `cargo run` in this crate talks to a live app\n\
-         //! (`SOLIDCRAFT_CONTROL_PORT`) or use `App::headless()` for `solidcraft-cli mcp`.\n\
-         use serde_json::Value;\n\
-         use solidcraft_macro_client::App;\n\n\
-         fn main() -> Result<(), Box<dyn std::error::Error>> {\n",
-    );
-    out.push_str("    let mut app = App::connect()?;\n");
-    if !m.params.is_empty() {
-        out.push_str("    // This recording asked for: ");
-        out.push_str(&m.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
-        out.push_str(".\n");
+fn rhai_from_commands(m: &Macro) -> String {
+    let mut out = String::new();
+    if let Some(n) = &m.name {
+        out.push_str("// ");
+        out.push_str(n);
+        out.push('\n');
+    }
+    for p in &m.params {
+        out.push_str("// @param ");
+        out.push_str(&p.name);
+        if let Some(l) = &p.label {
+            out.push(' ');
+            out.push_str(l);
+        }
+        if let Some(d) = &p.default {
+            out.push_str(" | ");
+            match d {
+                Value::String(s) => out.push_str(s),
+                other => out.push_str(&other.to_string()),
+            }
+        }
+        out.push('\n');
     }
     for step in &m.commands {
         let id = step.get("command").and_then(Value::as_str).unwrap_or("");
         let params = step.get("params").cloned().unwrap_or(Value::Null);
-        let raw = serde_json::to_string(&params).unwrap_or_else(|_| "null".into());
-        let escaped = raw.replace('\\', "\\\\").replace('"', "\\\"");
-        out.push_str("    app.run(\"");
+        out.push_str("run(\"");
         out.push_str(id);
-        out.push_str("\", serde_json::from_str::<Value>(\"");
-        out.push_str(&escaped);
-        out.push_str("\")?)?;\n");
+        out.push_str("\", ");
+        out.push_str(&json_to_rhai(&params));
+        out.push_str(");\n");
     }
-    out.push_str("    Ok(())\n}\n");
     out
 }
 
+fn json_to_rhai(v: &Value) -> String {
+    match v {
+        Value::Null => "#{ }".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+        Value::Array(a) => {
+            let parts: Vec<String> = a.iter().map(json_to_rhai).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Object(o) => {
+            let parts: Vec<String> = o
+                .iter()
+                .map(|(k, val)| {
+                    let key = if k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { k.clone() } else { format!("\"{k}\"") };
+                    format!("{key}: {}", json_to_rhai(val))
+                })
+                .collect();
+            format!("#{{{}}}", parts.join(", "))
+        }
+    }
+}
+
 impl Session {
-    /// The recorder's current state (the UI shows it while recording or paused).
     pub fn macro_state(&self) -> Value {
         json!({"recording": self.macros.recording, "paused": self.macros.paused, "steps": self.macros.steps()})
     }

@@ -1,6 +1,6 @@
 //! The Play Macro prompt: the values a macro asks for, then `macro.play`.
 //!
-//! A macro loaded from a `.macro.json` can declare parameters (`{name, label?, default?}`).
+//! A Rhai macro can declare `// @param name Label | default`.
 //! Playing one shows a row each, prefilled with its default, and runs the macro with what is typed.
 
 use egui::RichText;
