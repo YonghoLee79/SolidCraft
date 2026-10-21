@@ -268,11 +268,6 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
-fn lerp(a: Color32, b: Color32, k: f32) -> Color32 {
-    let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * k).round().clamp(0.0, 255.0) as u8;
-    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
-}
-
 /// The stock, the path so far and the collisions, drawn over the viewport.
 pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &crate::viewport::Proj) {
     let Some(d) = &app.manufacture else { return };
@@ -282,7 +277,7 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &crate::viewport::Pr
     if d.show_stock
         && let Some((_, s)) = &d.surface
     {
-        paint_stock(painter, proj, frame, s, report.stock_max);
+        paint_stock(painter, proj, frame, s, report.stock_max, (t.body, t.body_edge));
     }
     if d.show_path {
         let upto = d.step.min(report.segs.len());
@@ -316,16 +311,15 @@ pub fn paint(app: &SolveApp, painter: &egui::Painter, proj: &crate::viewport::Pr
     }
 }
 
-fn paint_stock(painter: &egui::Painter, proj: &crate::viewport::Proj, frame: &[Vec3; 4], s: &Surface, stock_max: [f64; 2]) {
+fn paint_stock(painter: &egui::Painter, proj: &crate::viewport::Proj, frame: &[Vec3; 4], s: &Surface, stock_max: [f64; 2], (base, shade): (Color32, Color32)) {
     // Height at each cell corner: the mean of the cells that meet there.
     let corner = |i: usize, j: usize| -> f64 {
         let (mut sum, mut n) = (0.0, 0.0);
         for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-            if i >= di && j >= dj {
-                if let Some(z) = (i - di < s.nx && j - dj < s.ny).then(|| s.z.get((j - dj) * s.nx + (i - di))).flatten() {
-                    sum += f64::from(*z);
-                    n += 1.0;
-                }
+            let (Some(ci), Some(cj)) = (i.checked_sub(di), j.checked_sub(dj)) else { continue };
+            if let Some(z) = (ci < s.nx && cj < s.ny).then(|| s.z.get(cj * s.nx + ci)).flatten() {
+                sum += f64::from(*z);
+                n += 1.0;
             }
         }
         if n > 0.0 { sum / n } else { 0.0 }
@@ -338,7 +332,6 @@ fn paint_stock(painter: &egui::Painter, proj: &crate::viewport::Proj, frame: &[V
     // Where the eye looks along, in model space.
     let (origin, dir) = proj.ray(proj.rect.center());
     let light = (-dir).normalized().unwrap_or(Vec3::Z);
-    let (base, shade) = (Color32::from_rgb(214, 178, 120), Color32::from_rgb(92, 72, 48));
     let mut cells: Vec<(f64, [Pos2; 4], Color32)> = Vec::with_capacity(s.nx * s.ny);
     for j in 0..s.ny {
         for i in 0..s.nx {
@@ -355,7 +348,7 @@ fn paint_stock(painter: &egui::Painter, proj: &crate::viewport::Proj, frame: &[V
                 }
             }
             if ok {
-                cells.push(((centre - origin).dot(dir), screen, lerp(shade, base, 0.25 + 0.75 * lit)));
+                cells.push(((centre - origin).dot(dir), screen, shade.lerp_to_gamma(base, 0.25 + 0.75 * lit)));
             }
         }
     }
