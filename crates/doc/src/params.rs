@@ -889,6 +889,22 @@ impl Document {
         out
     }
 
+    /// A value typed as `name = expression` (`#name = …` too) defines the user parameter `name`
+    /// there and then (#2371): it is added with that expression (a bare number in the design's
+    /// units for a length, in degrees for an angle) and the value becomes `name`. Anything else is
+    /// not a definition: None, nothing added. A name already in use is refused, not redefined.
+    pub fn define_from_value(&mut self, text: &str, kind: Kind) -> Result<Option<String>> {
+        let Some((name, rhs)) = split_definition(text) else { return Ok(None) };
+        let bare = expr::is_bare_number(rhs);
+        let unit = match kind {
+            Kind::Length if bare => Some(self.units.trim().to_string()).filter(|u| !u.is_empty()).or_else(|| Some("mm".into())),
+            Kind::Angle if bare => Some("deg".to_string()),
+            _ => None,
+        };
+        self.add_user_param(name, &self.with_design_unit(rhs, kind), unit.as_deref(), None)?;
+        Ok(Some(name.to_string()))
+    }
+
     /// Add a user parameter (refused when the name exists).
     pub fn add_user_param(&mut self, name: &str, expr_s: &str, unit: Option<&str>, comment: Option<&str>) -> Result<()> {
         if self.name_taken(name.trim()) {
@@ -899,6 +915,18 @@ impl Document {
         }
         self.set_param(name.trim(), expr_s, unit, comment)
     }
+}
+
+/// `name = expression` (or `#name = expression`): the name and the expression. None unless the
+/// left side is a plain identifier and the right side is not empty (`==` is not a definition).
+pub fn split_definition(text: &str) -> Option<(&str, &str)> {
+    let t = text.trim();
+    let t = t.strip_prefix('#').unwrap_or(t);
+    let (lhs, rhs) = t.split_once('=')?;
+    let (name, rhs) = (lhs.trim(), rhs.trim());
+    let mut chars = name.chars();
+    let identifier = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    (identifier && !rhs.is_empty() && !rhs.starts_with('=')).then_some((name, rhs))
 }
 
 /// One CSV line with quoted fields.

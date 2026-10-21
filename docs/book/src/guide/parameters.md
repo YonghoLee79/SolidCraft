@@ -25,6 +25,11 @@ or press **Ctrl+Space** to open suggestions, including in an empty field.
 **Enter/Tab** accepts it, and **Escape** dismisses the suggestions. Accepting a suggestion
 does not also submit the parameter.
 
+A parameter can also be made where a value is typed: `width = 40` (or `#width = 40`) in a
+dimension's value box adds the user parameter `width` with that expression and drives the
+dimension by it, in one step. A bare number there is in the design's units for a length and in
+degrees for an angle. A name already in use is refused rather than redefined.
+
 Expressions are unit-aware: `2 * width + 5 mm`, `angle / 2`, `sqrt(area)`, `1 in + 3 mm`, using
 `+ - * / ^`, parentheses, `sin cos tan asin acos atan atan2 sqrt abs min max floor ceil round mod
 trunc` and unit conversion. A decimal comma works too, outside parentheses: `2,5 mm` is
