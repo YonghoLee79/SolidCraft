@@ -1870,6 +1870,76 @@ mod tests {
         assert!(crate::scenario::rect_of("prefs:ok").is_some());
     }
 
+    /// Clicking an installed family reloads the interface font in the same frame the list
+    /// closes. That used to save the Preferences window as a single title row, and the saved
+    /// size then survived closing the dialog (#2571, and the same report in #2084, #2131,
+    /// #2240, #2257, #2261, #2415, #2651, #2674, #2685). The built-in row does not reload fonts.
+    #[test]
+    fn picking_an_installed_font_keeps_the_preferences_window_full() {
+        use egui::collapsing_header::CollapsingState;
+        use serde_json::json;
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.prefs", json!({"open":"General"}));
+        let family = wait_for_installed_font(&mut h);
+        if crate::scenario::handle_at(&format!("prefs:font:{family}")).is_none()
+            && let Some(combo) = crate::scenario::handle_at("prefs:ui_font")
+        {
+            h.call("ui.click", json!({"x":combo.x,"y":combo.y}));
+        }
+        let row = crate::scenario::handle_at(&format!("prefs:font:{family}")).unwrap_or_else(|| {
+            panic!("the open font list has no row for {family}; handles: {:?}", crate::scenario::handles("prefs:font"));
+        });
+        let before = prefs_window_height();
+        h.call("ui.click", json!({"x":row.x,"y":row.y}));
+        let mut heights = Vec::new();
+        for _ in 0..8 {
+            h.frame();
+            heights.push(prefs_window_height());
+        }
+        let body = egui::Id::new("sc_prefs").with("collapsing");
+        let open = CollapsingState::load(&h.ctx, body).is_none_or(|s| s.is_open());
+        assert!(
+            heights.iter().all(|height| *height > 200.0),
+            "picking {family} collapsed Preferences (before {before}, then {heights:?}, body open {open})"
+        );
+        assert!(crate::scenario::rect_of("prefs:ok").is_some(), "the footer is still drawn after picking {family}");
+        assert_eq!(h.app.preferences.ui_font, family);
+        h.call("ui.prefs", json!({"button":"ok"}));
+        h.frames(2);
+        h.call("ui.prefs", json!({"open":"General"}));
+        h.frames(2);
+        let reopened = prefs_window_height();
+        assert!(reopened > 200.0, "Preferences reopened one row high ({reopened}) after {family} was saved");
+        assert!(crate::scenario::rect_of("prefs:ok").is_some(), "the reopened window still has its footer");
+    }
+
+    /// The font list is collected on a background thread the first time General is shown.
+    fn wait_for_installed_font(h: &mut crate::scenario::Harness) -> String {
+        for _ in 0..400 {
+            if let Some(name) = crate::scenario::handles("prefs:font:")
+                .into_iter()
+                .map(|(name, _)| name.trim_start_matches("prefs:font:").to_string())
+                .find(|name| !name.is_empty())
+            {
+                return name;
+            }
+            // The list is open once the built-in row is drawn. Opening it again would close it.
+            if crate::scenario::handle_at("prefs:font_builtin").is_none()
+                && let Some(combo) = crate::scenario::handle_at("prefs:ui_font")
+            {
+                h.call("ui.click", json!({"x":combo.x,"y":combo.y}));
+            } else {
+                h.frame();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("no installed font family appeared in Preferences");
+    }
+
+    fn prefs_window_height() -> f32 {
+        crate::scenario::rect_of("prefs:window").or_else(|| crate::scenario::rect_of("dialog:window")).map(|r| r.height()).unwrap_or(0.0)
+    }
+
     #[test]
     fn number_fields_take_a_decimal_point_or_a_decimal_comma() {
         // #1347
