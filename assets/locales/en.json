@@ -832,8 +832,6 @@
   "dxf.progress.write": "Writing DXF (5/5)",
   "dxf.tolerance": "Curve tolerance",
   "dxf.tolerance_help": "Visible bodies only. Curves use straight segments. Smaller tolerance gives finer curves and uses more time and memory.",
-  "error.revolve_axis_not_in_plane": "The revolve axis does not lie in the sketch plane",
-  "error.sketch_axis_not_in_plane": "The {axis} axis does not lie in the sketch plane",
   "file_load.built": "Built so far: {built} of {total} features.",
   "file_load.converting": "Converting solid {done} of {total}",
   "file_load.inserting": "Inserting geometry",
