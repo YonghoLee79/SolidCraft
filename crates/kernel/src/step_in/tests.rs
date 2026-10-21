@@ -111,6 +111,30 @@ fn seam_only_sphere_void_is_turned_inside_out() {
     assert!(rel(m.area, area) < 1e-3, "area {} vs {area}", m.area);
 }
 
+/// A block with a closed cavity, written as BREP_WITH_VOIDS. SolidCraft writes the void's
+/// shell facing into the cavity with ORIENTED_CLOSED_SHELL `.T.`; some exporters write the
+/// same faces with `.F.` (#3730), which turned the void inside out and added its volume. Either
+/// way the cavity is taken out.
+#[test]
+fn a_void_reads_as_a_cavity_whichever_way_its_shell_flag_points() {
+    let block = box_solid(Vec3::ZERO, Vec3::new(40.0, 30.0, 12.5)).unwrap();
+    let cavity = box_solid(Vec3::new(10.0, 12.0, 4.0), Vec3::new(30.0, 18.0, 9.0)).unwrap();
+    let Ok(Some(hollow)) = boolean(&block, &cavity, BoolOp::Cut) else { panic!("cut") };
+    let want = 40.0 * 30.0 * 12.5 - 20.0 * 6.0 * 5.0;
+    assert!(rel(measure(&hollow).unwrap().volume, want) < 1e-9);
+    let text = step_export(&[&hollow], "void").unwrap();
+    let flag = |t: &str| t.lines().filter(|l| l.contains("ORIENTED_CLOSED_SHELL")).map(str::to_owned).collect::<Vec<_>>();
+    let written = flag(&text);
+    assert!(written.len() == 1 && written[0].ends_with(".T.);"), "{written:?}");
+    let flipped = text.replace(&written[0], &written[0].replace(".T.);", ".F.);"));
+    for t in [text, flipped] {
+        let imp = step_import(&t).unwrap();
+        assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+        let m = measure(&imp.bodies[0].body).unwrap();
+        assert!(rel(m.volume, want) < 1e-6, "{:?}: volume {} vs {want}", flag(&t), m.volume);
+    }
+}
+
 #[test]
 fn non_antipodal_seam_sphere_does_not_panic() {
     let text = seam_sphere_step(Vec3::ZERO, 2.0, Vec3::Z, Vec3::X, 0.0, false, 2.5);
@@ -1751,13 +1775,14 @@ fn extruded_ellipse_patch_crossing_profile_seam_stays_trimmed() {
 /// from formulas by https://github.com/dan335/step-conformance at 96f30bb, CC0 1.0):
 /// each reads back with its exact volume (from the generator's own profile), its box and its
 /// face count. Left out: `torus_ring` (meshes below its equator, a meshing issue for the
-/// tessellation work), `cone_point` and `cone_point_vertex` (#258, #3871) and the
-/// 1.4 MB `plate_900_holes`.
+/// tessellation work) and the 1.4 MB `plate_900_holes`.
 #[test]
 fn step_conformance_parts_read_back_their_exact_shape() {
     // (file, exact volume (mm³), box (min, max), kernel faces, bodies)
     #[rustfmt::skip]
-    let parts: [(&str, &str, f64, [f64; 6], usize, usize); 15] = [
+    let parts: [(&str, &str, f64, [f64; 6], usize, usize); 17] = [
+        ("cone_point", include_str!("../../../../tests/step-conformance/cone_point.step"), 1000.0 * std::f64::consts::PI, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 2, 1),
+        ("cone_point_vertex", include_str!("../../../../tests/step-conformance/cone_point_vertex.step"), 1000.0 * std::f64::consts::PI, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 2, 1),
         ("cylinder", include_str!("../../../../tests/step-conformance/cylinder.step"), 9424.778, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 3, 1),
         ("cylinder_inch", include_str!("../../../../tests/step-conformance/cylinder_inch.step"), 9424.778, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 3, 1),
         ("cylinder_nurbs", include_str!("../../../../tests/step-conformance/cylinder_nurbs.step"), 9424.778, [-10.0, -10.0, 0.0, 10.0, 10.0, 30.0], 3, 1),

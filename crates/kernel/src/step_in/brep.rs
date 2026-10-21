@@ -641,5 +641,22 @@ pub(crate) fn read_item(cx: &Ctx, id: u64) -> R<BrepOut> {
     if checked.is_err() {
         closed = false;
     }
+    // A void's faces face into the cavity, out of the material: it encloses volume of the
+    // opposite sign to the outer shell. The ORIENTED_CLOSED_SHELL flag alone doesn't say so:
+    // some exporters write .F. over a shell already facing into the cavity (#3730), others .T.
+    // A void enclosing volume of the outer shell's sign is turned inside out.
+    if e.name() == "BREP_WITH_VOIDS"
+        && checked.is_ok()
+        && let Some((outer, voids)) = shells.split_first_mut()
+        && let Some(outside) = crate::body::shell_volume(outer)
+    {
+        for void in voids {
+            if crate::body::shell_volume(void).is_some_and(|v| v * outside > 0.0) {
+                for face in void.face_iter_mut() {
+                    face.invert();
+                }
+            }
+        }
+    }
     Ok(BrepOut { solid: mt::Solid::new_unchecked(shells), failed, closed, file_faces, face_origin })
 }

@@ -433,7 +433,7 @@ pub struct SolveApp {
     pub status: Option<(String, f64, bool)>,
     pub quit_requested: bool,
     /// Autosave into the recovery folder (the desktop app turns it on).
-    pub autosave: Option<solidcraft_engine::recovery::Autosaver>,
+    pub autosave: Option<recovery_ui::Autosaves>,
     /// Designs left by crashed apps, offered for recovery.
     pub recoverable: Vec<solidcraft_engine::recovery::Entry>,
     /// The bodies of a just-opened Y-up file, offered to be stood up (`stand_up`).

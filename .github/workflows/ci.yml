@@ -8,7 +8,7 @@
 # whole workspace, as do pushes to main that change code, the nightly run and Run workflow.
 # Documentation, packaging, the other workflows and the GitHub bots' scripts select nothing:
 # no native job runs for them, on pull requests or on main.
-# Tests are built once and run in shards. A few heavy tests (see .config/nextest.toml) are
+# Tests are built once and run in one job on a big runner, slowest first. A few heavy tests (see .config/nextest.toml) are
 # skipped on pull requests and run on pushes to main and nightly. The Windows jobs (D3D12 shaders
 # and app startup), the reference tests and the doc tests run on main and nightly only, not on
 # pull requests (the fast lane, in Select checks); a break there is fixed forward on main. Only
@@ -29,8 +29,7 @@
 # reads `ci` from the newest run of a commit, so a run without it would block a PR that passed.
 # Cross-compilation is opt-in through Run workflow; release builds remain in release.yml.
 # Every Linux job runs on Blacksmith's Ubuntu 24.04 runners (blacksmith-<N>vcpu-ubuntu-2404), sized
-# per job: 16 vCPU for Build tests, Clippy and the merge queue's test shards, 8 for compiles, the
-# other test shards, doc and reference tests, 4 for the light checks, 2 for Select checks and ci.
+# per job: 32 vCPU for the tests, 16 for Build tests and Clippy, 8 for compiles, doc and reference tests, 4 for the light checks, 2 for Select checks and ci.
 # The Windows shader job runs on Blacksmith's Windows Server 2025 runners (blacksmith-8vcpu-windows-2025);
 # the Windows app startup smoke stays on windows-latest, which has a desktop session that presents frames.
 # Pull requests, forks included, the merge queue, pushes to main and the nightly run all use them:
@@ -178,9 +177,12 @@ jobs:
             git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/ci-paths"
             while IFS= read -r -d '' path; do
               case "$path" in crates/kernel/*|vendor/truck-*) kernel=true ;; esac
-              # What can change a robustness golden: the kernel and the crates a design is built with.
+              # What a pull request re-checks the goldens for: the kernel, truck and the goldens
+              # themselves (a re-record is checked before it is queued). The goldens are frozen, so
+              # on any other change they would only re-check unchanged results; the merge queue,
+              # main and the nightly run every seed before anything lands.
               case "$path" in
-                crates/kernel/*|crates/engine/*|crates/doc/*|crates/sketch/*|crates/geom/*|vendor/truck-*|tests/robustness/*) goldens=true ;;
+                crates/kernel/*|vendor/truck-*|tests/robustness/*) goldens=true ;;
               esac
               # What the Windows D3D12 jobs exercise: the GPU crate and its shaders, the app and
               # its startup, the viewport's wgpu glue, the vendored egui-wgpu, their scripts.
@@ -387,22 +389,22 @@ jobs:
         run: sccache --show-stats
 
   tests:
-    name: Native Linux tests (${{ matrix.shard }}/4)
+    name: Native Linux tests
     needs: [changes, checks, build-tests]
     if: ${{ !cancelled() && needs.changes.outputs.native == 'true' && (github.event_name != 'pull_request' || needs.checks.result == 'success') && needs.build-tests.result == 'success' }}
-    runs-on: ${{ github.event_name == 'merge_group' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    # One job on a big runner: nextest hands tests to its threads as they free up, the slowest
+    # first (priority in .config/nextest.toml), so they start at once and no core idles at the
+    # end. Four shards cut by `slice` each paid the setup (about 6 minutes) and a shard that drew
+    # several slow tests ran for 20 minutes while the others waited.
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        # Pull requests test their affected crates in 2 shards; main and the nightly use 4.
-        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1, 2]' || '[1, 2, 3, 4]') }}
     env:
       # Pictures (snapshots, screenshots, ui.render, the viewport's offscreen tests) are drawn on
       # the GPU. The runner has none: Mesa's lavapipe (software Vulkan) draws them, and a test that
       # would skip for want of an adapter fails instead.
       SOLIDCRAFT_GPU: software
       SOLIDCRAFT_REQUIRE_GPU: "1"
+      ACTION_MATRIX_JOBS: "12"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install a software Vulkan driver (lavapipe)
@@ -420,30 +422,36 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           GOLDENS: ${{ needs.changes.outputs.goldens }}
-          SHARD: ${{ matrix.shard }}
-          SHARDS: ${{ github.event_name == 'pull_request' && 2 || 4 }}
           # The robustness golden seeds a pull request skips: each takes one to twenty minutes under
           # CI load, together about four fifths of the goldens' time. Pushes to main, the merge
           # queue and the nightly run every seed.
           SLOW_SEEDS: 81|45|20|24|95|02|57|40|18|48|32|46|85|61|77|34|14
         run: |
-          # Pull requests skip the heavy tests (default-filter in .config/nextest.toml).
-          filter=()
+          # Pull requests skip the heavy tests (default-filter in .config/nextest.toml); `default()`
+          # below is that filter, so a pull request still runs only what it ran before.
+          base='default()'
+          if [ "$EVENT_NAME" = pull_request ]; then
+            # The action matrix sample (about 6 minutes on all cores) runs in the merge queue, on
+            # main and nightly, not on every pull request push.
+            base='default() & not (binary(action_matrix) & test(=action_matrix_sample))'
+          fi
           if [ "$EVENT_NAME" != pull_request ]; then
             # The boolean property tests draw new random inputs every run; they run only in the
             # nightly property-tests job, so a known kernel bug cannot turn main red at random.
-            filter=(--ignore-default-filter -E 'not (package(solidcraft-kernel) & binary(boolean_props))')
+            base='not (package(solidcraft-kernel) & binary(boolean_props))'
           elif [ "$GOLDENS" = true ]; then
             # A pull request that can change a robustness golden (tests/robustness/goldens.json)
             # also checks every seed but the slow ones, in the same run so they share its cores.
-            filter=(--ignore-default-filter -E "default() | (package(solidcraft-engine) & test(/^tests::robustness_goldens::/) & not test(/^tests::robustness_goldens::seed_($SLOW_SEEDS)\$/))")
+            base="(default() & not (binary(action_matrix) & test(=action_matrix_sample))) | (package(solidcraft-engine) & test(/^tests::robustness_goldens::/) & not test(/^tests::robustness_goldens::seed_($SLOW_SEEDS)\$/))"
           fi
           junit=${CARGO_TARGET_DIR:-target}/nextest/ci/junit.xml
           rm -f "$junit"
           # Extract into ./target: tests that run a built binary (env!("CARGO_BIN_EXE_*")) have
           # the build job's path, which is the same checkout path here.
           run=(cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite)
-          if ! "${run[@]}" --profile ci --partition "slice:$SHARD/$SHARDS" --no-tests=pass "${filter[@]}"; then
+          status=0
+          "${run[@]}" --profile ci --no-tests=pass --ignore-default-filter -E "$base" || status=1
+          if [ "$status" != 0 ]; then
             # A failed golden gets the hint to re-record it (junit.xml lists the failures).
             if [ -f "$junit" ] && tr '\n' ' ' < "$junit" | grep -q '<testcase name="tests::robustness_goldens::[^"]*"[^>]*>[[:space:]]*<failure'; then
               echo "::error::A robustness golden changed. If the new result is intended, re-record it in this pull request and say why:"
@@ -455,7 +463,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: junit-${{ matrix.shard }}
+          name: junit
           path: ${{ env.CARGO_TARGET_DIR || 'target' }}/nextest/ci/junit.xml
           retention-days: 7
 

@@ -342,3 +342,42 @@ fn a_hole_whose_first_trim_piece_is_reversed_stays_a_hole() {
     let m = measure(&imp.bodies[0].body).unwrap();
     assert!(rel(m.area, 84.0) < 1e-6, "area {}", m.area);
 }
+
+/// The box of `trimmed_surfaces_sew_into_a_solid` with one edge written as a B-spline (126)
+/// over a knot span of 1e-7 or less, as some exporters write short curves: the STEP side read
+/// that span as a single value and refused the curve, and both faces it bounds were lost.
+#[test]
+fn a_curve_over_a_tiny_knot_span_still_bounds_its_faces() {
+    let c =
+        |i: usize| -> [f64; 3] { [if i & 1 != 0 { 10.0 } else { 0.0 }, if i & 2 != 0 { 20.0 } else { 0.0 }, if i & 4 != 0 { 30.0 } else { 0.0 }] };
+    let quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+    let fmt = |p: [f64; 3]| format!("{:?},{:?},{:?}", p[0], p[1], p[2]);
+    for span in [1e-7f64, 1e-9, 1e-13] {
+        let mut ents: Vec<(i64, i64, String)> = Vec::new();
+        for (fi, q) in quads.iter().enumerate() {
+            let (a, b, cc, d) = (c(q[0]), c(q[1]), c(q[2]), c(q[3]));
+            let surf = format!("1,1,1,1,0,0,1,0,0,0.,0.,1.,1.,0.,0.,1.,1.,1.,1.,1.,1.,{},{},{},{},0.,1.,0.,1.", fmt(a), fmt(b), fmt(d), fmt(cc));
+            ents.push((128, 0, surf));
+            let s_de = 2 * ents.len() - 1;
+            let mut lines = Vec::new();
+            for (k, (p0, p1)) in [(a, b), (b, cc), (cc, d), (d, a)].into_iter().enumerate() {
+                if fi == 0 && k == 0 {
+                    ents.push((126, 0, format!("1,1,0,0,1,0,0.,0.,{span:E},{span:E},1.,1.,{},{},0.,{span:E},0.,0.,1.", fmt(p0), fmt(p1))));
+                } else {
+                    ents.push((110, 0, format!("{},{}", fmt(p0), fmt(p1))));
+                }
+                lines.push(2 * ents.len() - 1);
+            }
+            ents.push((102, 0, format!("4,{}", lines.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","))));
+            let comp = 2 * ents.len() - 1;
+            ents.push((142, 0, format!("0,{s_de},0,{comp},2")));
+            let cos = 2 * ents.len() - 1;
+            ents.push((144, 0, format!("{s_de},1,0,{cos}")));
+        }
+        let imp = iges_import(&iges_file(&ents)).unwrap();
+        assert!(imp.warnings.is_empty(), "span {span}: {:?}", imp.warnings);
+        assert!(imp.bodies[0].closed, "span {span}");
+        let m = measure(&imp.bodies[0].body).unwrap();
+        assert!(rel(m.volume, 6000.0) < 1e-6 && rel(m.area, 2200.0) < 1e-6, "span {span}: {} {}", m.volume, m.area);
+    }
+}

@@ -660,6 +660,8 @@ impl<'a> Tr<'a> {
         self.nurbs_curve_in(seq, x, self.f.unit)
     }
     fn nurbs_curve_in(&self, seq: i64, x: &Xf, unit: f64) -> R<Nurbs> {
+        /// Knot spans shorter than this are moved onto (0, 1).
+        const MIN_KNOT_SPAN: f64 = 1e-4;
         let k = self.i(seq, 1)?;
         let m = self.i(seq, 2)?;
         if !(0..=MAX_LIST as i64).contains(&k) || !(1..=32).contains(&m) || m > k.max(1) + 1 {
@@ -685,10 +687,20 @@ impl<'a> Tr<'a> {
         if knots.windows(2).any(|w| w[1] < w[0]) {
             return Err(format!("entity {seq}: knots out of order"));
         }
-        let nb = Nurbs { deg: m, knots, pts };
+        let mut nb = Nurbs { deg: m, knots, pts };
         let (a, b) = nb.range();
         if !(b > a) {
             return Err(format!("entity {seq}: empty parameter range"));
+        }
+        // Some exporters write a curve over a knot span of 1e-7 or less. The STEP side reads a
+        // span that small as a single value and refused the curve, losing the faces it bounds.
+        // Moving and scaling the knots onto (0, 1) leaves the curve's shape as it is; nothing
+        // else refers to its parameters.
+        if b - a < MIN_KNOT_SPAN {
+            let scale = 1.0 / (b - a);
+            for k in &mut nb.knots {
+                *k = (*k - a) * scale;
+            }
         }
         Ok(nb)
     }
