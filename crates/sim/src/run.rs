@@ -24,6 +24,10 @@ pub trait Backend: Send + Sync {
     /// What runs the study, for reports ("CPU", the GPU's name).
     fn name(&self) -> String;
     fn stepper(&self, lattice: &Lattice) -> Result<Box<dyn Stepper>>;
+    /// Most cells a lattice may have to run here, where the backend knows (a GPU's memory).
+    fn max_cells(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// The CPU reference (f64; slow, for tests and machines without a GPU).

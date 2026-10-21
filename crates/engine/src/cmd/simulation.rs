@@ -219,7 +219,7 @@ fn spec(s: &Session, p: &Value, cmd: &str, base: Option<Spec>) -> Result<Spec> {
 }
 
 fn max_cells(s: &Session) -> u64 {
-    if s.flow.backend.is_some() { flow::MAX_CELLS } else { flow::CPU_MAX_CELLS }
+    flow::max_cells(s.flow.backend.as_ref())
 }
 
 /// Prepare `spec` on the design as it is now: the check `sim.flow.new` makes, and the lattice a

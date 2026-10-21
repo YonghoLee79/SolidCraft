@@ -867,9 +867,14 @@ impl Prepared {
             if seen.area <= 0.0 {
                 continue;
             }
-            let target = curve.flow_at(seen.pressure) / seen.area;
             let ceiling = self.units.speed(2.0 * LATTICE_SPEED);
             let Some(speed) = self.speeds.get_mut(i) else { continue };
+            // The fan's curve is about the air that gets into the duct, the flow one cell in, which
+            // can fall short of what the opening pushes (a duct whose fan face is partly in a wall
+            // took 24% less): scale the opening's speed until that flow is on the curve.
+            let want = curve.flow_at(seen.pressure);
+            // Early on the flow lags the opening, so one step moves the speed by half again at most.
+            let target = if seen.flow > 1e-12 && *speed > 0.0 { *speed * (want / seen.flow).clamp(0.5, 1.5) } else { want / seen.area };
             // Never past what the lattice can carry.
             let next = (*speed + relax.clamp(0.0, 1.0) * (target - *speed)).clamp(0.0, ceiling);
             moved = moved.max((next - *speed).abs() / speed.abs().max(1e-12));

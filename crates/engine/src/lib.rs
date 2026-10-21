@@ -563,7 +563,7 @@ impl Session {
             return true;
         };
         let backend: flow::FlowBackend = self.flow.backend.clone().unwrap_or_else(|| Arc::new(solidcraft_sim::Cpu));
-        let max_cells = if self.flow.backend.is_some() { flow::MAX_CELLS } else { flow::CPU_MAX_CELLS };
+        let max_cells = flow::max_cells(self.flow.backend.as_ref());
         // The design itself stays as it is: the cycle's parameters go on a scratch copy.
         let mut scratch = self.scratch();
         let started = scratch

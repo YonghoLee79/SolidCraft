@@ -182,6 +182,32 @@ impl FlowGpu {
         l.max_buffer_size.min(l.max_storage_buffer_binding_size)
     }
 
+    /// Most cells whose lattice fits this device: what its buffers take and, below the largest
+    /// count it may hold at all (`cap`), the largest the device would allocate now, found by
+    /// allocating its buffers and letting them go, with an eighth spare for the rest.
+    pub fn max_cells(&self, cap: u64) -> u64 {
+        let per_buffer = self.max_population_bytes() / (Q as u64 * 4);
+        let mut cells = cap.min(per_buffer).min(u64::from(u32::MAX) / Q as u64);
+        let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+        while cells > 100_000 {
+            let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let buffer = |size: u64, usage| {
+                self.device.create_buffer(&wgpu::BufferDescriptor { label: Some("flow size probe"), size, usage, mapped_at_creation: false })
+            };
+            let pops = cells * Q as u64 * 4;
+            let held = [buffer(pops, storage), buffer(pops, storage), buffer(cells * 4, wgpu::BufferUsages::STORAGE)];
+            let failed = popped(scope.pop()).is_some();
+            for b in held {
+                b.destroy();
+            }
+            if !failed {
+                return cells - cells / 8;
+            }
+            cells -= cells / 5;
+        }
+        cells
+    }
+
     /// A lattice's state on the GPU. Errors (never panics) for a grid larger than the device's
     /// buffers, and for an opening whose inside cell is an opening too (the GPU rewrites all
     /// openings at once, so one may not read another).
@@ -432,7 +458,17 @@ impl GpuLattice {
 
 /// The GPU as a study's [`solidcraft_sim::Backend`] (native only: runs block on the device).
 #[cfg(not(target_arch = "wasm32"))]
-pub struct Backend(pub std::sync::Arc<FlowGpu>);
+pub struct Backend(pub std::sync::Arc<FlowGpu>, std::sync::OnceLock<u64>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Backend {
+    pub fn new(gpu: std::sync::Arc<FlowGpu>) -> Self {
+        Self(gpu, std::sync::OnceLock::new())
+    }
+}
+
+/// The most cells a GPU study may have, on a device with memory to spare.
+pub const MAX_CELLS: u64 = 40_000_000;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl solidcraft_sim::Backend for Backend {
@@ -442,6 +478,10 @@ impl solidcraft_sim::Backend for Backend {
 
     fn stepper(&self, lattice: &Lattice) -> solidcraft_sim::Result<Box<dyn solidcraft_sim::Stepper>> {
         Ok(Box::new(self.0.upload(lattice).map_err(sim_error)?))
+    }
+
+    fn max_cells(&self) -> Option<u64> {
+        Some(*self.1.get_or_init(|| self.0.max_cells(MAX_CELLS)))
     }
 }
 
@@ -458,7 +498,7 @@ pub struct Lazy {
 impl Lazy {
     fn gpu(&self) -> &std::result::Result<Backend, String> {
         self.gpu.get_or_init(|| match FlowGpu::headless() {
-            Ok(g) => Ok(Backend(std::sync::Arc::new(g))),
+            Ok(g) => Ok(Backend::new(std::sync::Arc::new(g))),
             Err(e) => {
                 log::warn!("Airflow studies run on the CPU: {e}");
                 Err(e.to_string())
@@ -482,6 +522,10 @@ impl solidcraft_sim::Backend for Lazy {
             Ok(g) => g.stepper(lattice),
             Err(_) => solidcraft_sim::Cpu.stepper(lattice),
         }
+    }
+
+    fn max_cells(&self) -> Option<u64> {
+        self.gpu().as_ref().ok().and_then(solidcraft_sim::Backend::max_cells)
     }
 }
 

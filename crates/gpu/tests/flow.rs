@@ -245,7 +245,7 @@ fn what_the_gpu_cannot_run_is_an_error() {
 fn a_study_runs_on_the_gpu_as_on_the_cpu() {
     use solidcraft_sim::{AIR, FanCurve, FlowSetup, Inlet, Limits, Outlet, Patch, Run, Source, State};
     let Some(gpu) = gpu() else { return };
-    let backend = solidcraft_gpu::flow::Backend(std::sync::Arc::new(gpu));
+    let backend = solidcraft_gpu::flow::Backend::new(std::sync::Arc::new(gpu));
     let (a, w, len) = (8.0, 2.0, 24.0);
     let mesh = {
         let mut m = Mesh::default();
@@ -296,7 +296,7 @@ fn a_study_runs_on_the_gpu_as_on_the_cpu() {
 fn the_default_pipe_case_runs_stably() {
     use solidcraft_sim::{AIR, FlowSetup, Inlet, Limits, Outlet, Patch, Run, Source};
     let Some(gpu) = gpu() else { return };
-    let backend = solidcraft_gpu::flow::Backend(std::sync::Arc::new(gpu));
+    let backend = solidcraft_gpu::flow::Backend::new(std::sync::Arc::new(gpu));
     let (r, wall, len, speed) = (25.0, 2.0, 300.0, 5.0);
     let outer = ok(solidcraft_kernel::cylinder(Vec3::ZERO, Vec3::Z, r + wall, len));
     let bore = ok(solidcraft_kernel::cylinder(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, r, len + 2.0));
@@ -355,4 +355,16 @@ fn the_default_pipe_case_runs_stably() {
         speed * std::f64::consts::PI * (r * 1e-3).powi(2)
     );
     assert!(last.inlets[0].pressure > 0.5 * blasius && last.inlets[0].pressure < 10.0 * blasius);
+}
+
+/// A study is sized to what the device holds: no more cells than asked, enough for a real
+/// study, and a lattice of that size uploads.
+#[test]
+fn the_cell_budget_fits_the_device() {
+    let Some(gpu) = gpu() else { return };
+    let cap = 40_000_000;
+    let fits = gpu.max_cells(cap);
+    eprintln!("{} holds {fits} cells", gpu.adapter_name());
+    assert!(fits <= cap && fits > 1_000_000, "{fits}");
+    assert!(fits as u128 * 19 * 4 <= u128::from(gpu.max_population_bytes()), "{fits}");
 }

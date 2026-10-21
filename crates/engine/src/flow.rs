@@ -23,6 +23,15 @@ pub type FlowBackend = Arc<dyn sim::Backend>;
 pub const CPU_MAX_CELLS: u64 = 2_000_000;
 pub const MAX_CELLS: u64 = 40_000_000;
 
+/// Most cells a study may have on `backend`: what its memory holds where it knows (a GPU), so a
+/// card with less memory gets coarser cells instead of failing to start.
+pub fn max_cells(backend: Option<&FlowBackend>) -> u64 {
+    match backend {
+        Some(b) => b.max_cells().unwrap_or(MAX_CELLS).min(MAX_CELLS),
+        None => CPU_MAX_CELLS,
+    }
+}
+
 #[derive(Default)]
 pub struct Studies {
     pub(crate) backend: Option<FlowBackend>,
