@@ -174,11 +174,10 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "notices",
             "Read feature notices",
-            "What each feature reports about itself, for an agent: its status (ok, warning, error, skipped), a one-line `info`, \
-             structured `values` (keys name their unit: span_mm, area_cm2) and `issues`, each {severity: error|warning|info, code, \
-             message, parameter?, value?, limit?, suggestion?: the change that clears it, entities?, at?}. A sketch reports its \
-             solve, degrees of freedom and open or untied ends; every feature its error and warning. Without `features`: every \
-             feature. The feedback block after a call names the features whose notice changed; read their values here.",
+            "What each feature reports about itself: its status (ok, warning, error, skipped), its error or warning, a one-line \
+             `info` and structured `values` (a sketch: solved, degrees of freedom, profiles; a plugin feature: its notice and \
+             published values). Without `features`: every feature. The feedback block after a call names the features whose \
+             notice changed; read their values here.",
             obj(
                 json!({"features": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Feature names or ids (default: all)"}}),
                 &[],
