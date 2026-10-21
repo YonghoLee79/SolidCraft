@@ -908,7 +908,7 @@
   "library.expand": "Parts library",
   "library.folder": "Folder…",
   "library.hide": "Hide the parts library",
-  "library.hint": "Drag a part into the view to insert it; double-click a design to open it.",
+  "library.hint": "Drag a part into the view to insert it; double-click one to open it on its own.",
   "library.insert": "Insert at the origin",
   "library.menu_hide": "Hide Parts Library",
   "library.menu_show": "Show Parts Library",
