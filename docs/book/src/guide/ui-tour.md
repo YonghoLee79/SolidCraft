@@ -8,8 +8,8 @@
   unsaved changes). On the right: Report a bug, Help (?), Preferences (which hold the theme) and the
   window's buttons.
 - **Toolbar.** The workspace switcher (DESIGN) sits on the left. The tabs (MODEL, SURFACE,
-  ASSEMBLE, INSERT, INSPECT, MANAGE and VIEW) hold sections of commands. SKETCH appears while
-  editing a sketch; SHEET METAL appears for the active sheet body. Both select automatically
+  ASSEMBLE, INSERT, INSPECT, MANAGE, VIEW and SHEET METAL) hold sections of commands. SKETCH appears while
+  editing a sketch; SHEET METAL is always there and is highlighted for the active sheet body. Both select automatically
   when entered, and the other tabs remain available. Click a
   panel's name for all its commands. Drag a command from the dropdown onto a panel's label
   or empty space to append it; the insertion line shows its destination. Drop onto an existing
@@ -66,7 +66,10 @@
 - **Dialogs** dock on the right with a live preview. Most features also show drag handles and a
   value box in the viewport.
 - **Timeline** (bottom). Every feature in order. Double-click to edit, drag the marker to roll
-  back, and drag features to reorder them.
+  back, and drag features to reorder them. Preferences can put the timeline vertically at the
+  far left of the viewport, beside the browser. Its seam handle switches between icon
+  chips and compact feature names; the browser can collapse to a rail beside either width.
+  Previous, Play and Next sit at the top. Double-click Previous to roll to the start.
 - **Command search (S).** Click the ribbon search field or press S to open the search popup
   below it. Results group commands by their ribbon path and show matching features and user
   parameters from this design. With an empty query, recent commands appear first, followed by
@@ -134,9 +137,10 @@ Imported themes are kept with your preferences, so they work in the browser app 
 vision modes still apply on top of any theme.
 
 Navigation › **Smooth wheel zoom** is on by default. Turn it off to apply each wheel or
-trackpad event immediately, with no smoothing tail. It is independent of **Animate view
-changes**, which controls axis views, Look At, Home and Fit. Re-enabling smoothing during
+trackpad event immediately, with no smoothing tail. Re-enabling smoothing during
 a wheel gesture takes effect after that gesture ends, avoiding leftover zoom being replayed.
+Every other view change (axis view, view cube, Look At, Home, Fit, named views, arrow keys)
+and every orbit, pan and zoom drag applies at once, with no animation.
 
 Navigation › **Alias** uses Alias's camera keys: Shift+Alt+left drag orbits, Shift+Alt+middle
 drag pans and Shift+Alt+right drag zooms (drag down to move away, up to move closer). Without
