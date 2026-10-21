@@ -537,6 +537,9 @@ preference_settings! {
     /// When true: Shift+click adds without removing; Primary toggles.
     /// When false (default): Shift and Primary both toggle.
     selection_shift_add_only: bool = false, 6;
+    /// V shows or hides what is under the pointer (in the 3D view or a Browser row) without
+    /// selecting it first (#4128). Over a selected item or empty space it acts on the selection.
+    hide_under_cursor: bool = true, 6;
     /// Plugin ids turned off (Preferences › Plugins). An installed plugin whose id is absent is on.
     disabled_plugins: std::collections::BTreeSet<String> = std::collections::BTreeSet::new(), PAGE_PLUGINS;
 }
@@ -1547,6 +1550,8 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
         }
         _ => {
             ui_kit::checkbox(ui, crate::i18n::tr_label("Click selects whole bodies"), &mut app.ui.pick_bodies);
+            ui_kit::checkbox(ui, crate::i18n::tr_label("V hides what is under the cursor"), &mut app.preferences.hide_under_cursor)
+                .on_hover_text(crate::i18n::tr_label("On: V shows or hides the body, sketch or plane under the pointer, or the Browser row under it, without selecting it first. Over a selected item or empty space, V acts on the selection."));
             ui_kit::section(ui, "selection_modifiers", crate::i18n::tr_label("Selection modifiers"), true, |ui| {
                 ui_kit::checkbox(ui, crate::i18n::tr_label("Shift+click adds without removing"), &mut app.preferences.selection_shift_add_only)
                     .on_hover_text(crate::i18n::tr_label("On: Shift adds items, Ctrl/Cmd toggles. Off (default): Shift and Ctrl/Cmd both toggle."));
