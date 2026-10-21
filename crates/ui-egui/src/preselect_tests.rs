@@ -964,6 +964,43 @@ fn shell_direction_and_tangent_chain_round_trip() {
 }
 
 #[test]
+fn shell_tangent_chain_highlights_and_counts_faces_without_saving_extra_picks() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length":40,"width":30,"height":20})).unwrap();
+    h.app.run("solid.fillet", json!({"edges":[[20,0,20]],"radius":4})).unwrap();
+    let top = face(&h.app, Vec3::new(20.0, 17.0, 20.0));
+    start(&mut h.app, vec![top.clone()], "solid.shell");
+    h.frames(3);
+    let shown = |app: &SolveApp| -> std::collections::BTreeSet<usize> {
+        app.highlighted()
+            .into_iter()
+            .filter_map(|sel| match sel {
+                Sel::Face { index, .. } => Some(index),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(shown(&h.app).len(), 3, "the top, round and front are one tangent chain");
+    assert!(h.widget("3 selected").is_some());
+    let d = h.app.dialog.as_ref().unwrap();
+    assert_eq!(d.inputs[0].items, vec![top.clone()]);
+    assert_eq!(apply_commands(&h.app, d).unwrap()[0].1["faces"].as_array().unwrap().len(), 1);
+
+    h.step(&json!({"click":{"handle":"dialog:Tangent Chain"}})).unwrap();
+    h.frames(3);
+    assert_eq!(shown(&h.app).len(), 1);
+    assert!(h.widget("1 selected").is_some());
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items, vec![top]);
+
+    h.step(&json!({"click":{"handle":"dialog:Tangent Chain"}})).unwrap();
+    h.frames(3);
+    assert_eq!(shown(&h.app).len(), 3);
+    h.step(&json!({"click":{"handle":"dialog:clear:Faces/Body"}})).unwrap();
+    h.frames(3);
+    assert!(h.app.dialog.as_ref().unwrap().highlighted(&h.app.session).is_empty(), "clear must also clear the expanded highlight");
+}
+
+#[test]
 fn variable_fillet_round_trip() {
     let mut app = boxed();
     let e0 = edge(&app, Vec3::new(40.0, 15.0, 20.0));
@@ -1351,7 +1388,19 @@ fn modelled_thread_preview_updates_reports_errors_and_cancels_without_changes() 
     designation(&mut h, "M8x1.3");
     wait_feature_preview(&mut h);
     assert_ne!(h.app.preview.key, first_key, "changing pitch updates the preview before OK");
+    // An 8 mm shaft is turned down for an M6.
+    let m8_key = h.app.preview.key;
     designation(&mut h, "M6x1.3");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while h.app.preview.key == m8_key && std::time::Instant::now() < deadline {
+        h.frames(2);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    wait_feature_preview(&mut h);
+    assert!(h.app.preview.error.is_none(), "{:?}", h.app.preview.error);
+    assert_eq!(h.app.preview.replaced, ["Body1"]);
+    // A shaft thinner than the thread is still refused.
+    designation(&mut h, "M10x1.5");
     for _ in 0..500 {
         h.frames(2);
         if !h.app.preview.busy && h.app.preview.error.is_some() {
@@ -1361,7 +1410,7 @@ fn modelled_thread_preview_updates_reports_errors_and_cancels_without_changes() 
     }
     assert!(h.app.preview.error.as_deref().is_some_and(|e| e.contains("does not fit")), "{:?}", h.app.preview.error);
     designation(&mut h, "M8x1.3");
-    // The M6 error stays until the new preview starts; wait for it to go, or
+    // The M10 error stays until the new preview starts; wait for it to go, or
     // `wait_feature_preview` would stop at the stale error on a host that schedules the
     // preview a few frames later.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
@@ -1449,6 +1498,32 @@ fn align_snaps_to_centres_and_edge_middles() {
     let p = apply_commands(&app, &d).unwrap().remove(0).1;
     assert_eq!(p["from"]["snap"], json!("face_center"));
     assert_eq!(p["to"]["snap"], json!("edge_mid"));
+}
+
+/// The Align dialog takes a plane (viewport or browser click) and the origin plane stays a plane
+/// in the command, so the bodies follow it when it moves.
+#[test]
+fn align_accepts_a_plane_click() {
+    let mut app = boxed();
+    let mut d = start(&mut app, vec![], "solid.align");
+    d.inputs[0].items = vec![Sel::Body { name: "Body1".into() }];
+    d.inputs[1].items = vec![face(&app, Vec3::new(20.0, 15.0, 0.0))];
+    let plane = crate::viewport::Hit::Plane { name: "XZ".into(), point: Vec3::ZERO };
+    d.active = 2;
+    let sel = d.candidate(&app.session, &plane);
+    assert_eq!(sel, Some(Sel::Plane { name: "XZ".into() }), "the To input takes a plane");
+    d.pick(&app.session, sel.unwrap());
+    let p = apply_commands(&app, &d).unwrap().remove(0).1;
+    assert_eq!(p["to_plane"], json!("XZ"));
+    assert!(p.get("to").is_none() && p["from_face"].is_array());
+    // The origin point is a From/To too.
+    let origin = crate::viewport::Hit::Vertex { body: String::new(), point: Vec3::ZERO };
+    let sel = d.candidate(&app.session, &origin);
+    assert!(sel.is_some(), "the To input takes the origin point");
+    d.inputs[2].items.clear();
+    d.pick(&app.session, sel.unwrap());
+    let p = apply_commands(&app, &d).unwrap().remove(0).1;
+    assert_eq!(p["to"], json!("origin"));
 }
 
 #[test]
@@ -2117,4 +2192,59 @@ fn convert_mesh_asks_for_the_body_and_converts_the_selected_one() {
     assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog.as_ref().and_then(|d| d.error.clone()));
     let state = h.app.session.model.state();
     assert!(!state.body("Mesh").unwrap().body.is_mesh(), "rebuilt as faces");
+}
+
+/// #3745: hovering a large body never waits for its pick index. A long modelled thread's mesh
+/// has a quarter of a million triangles and its index took a third of a second to make, on the
+/// first hover, in the frame. Now the index is made on a worker and the first hovers scan the
+/// mesh: the first hover takes a small part of what making the index takes, and still finds
+/// the face under the pointer.
+#[test]
+fn hovering_a_large_body_does_not_wait_for_its_pick_index() {
+    // A closed ball of 300 000 triangles, inserted as a mesh body.
+    let (rings, segments) = (500usize, 300usize);
+    let at = |i: usize, j: usize| {
+        let (theta, phi) = (std::f64::consts::PI * i as f64 / rings as f64, std::f64::consts::TAU * j as f64 / segments as f64);
+        [20.0 * theta.sin() * phi.cos(), 20.0 * theta.sin() * phi.sin(), 20.0 * theta.cos()]
+    };
+    let mut stl = vec![0u8; 80];
+    let mut tris: Vec<[[f64; 3]; 3]> = Vec::new();
+    for i in 0..rings {
+        for j in 0..segments {
+            let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+            if i > 0 {
+                tris.push([a, b, d]);
+            }
+            if i + 1 < rings {
+                tris.push([b, c, d]);
+            }
+        }
+    }
+    stl.extend((tris.len() as u32).to_le_bytes());
+    for t in &tris {
+        stl.extend([0u8; 12]);
+        for p in t {
+            for c in p {
+                stl.extend((*c as f32).to_le_bytes());
+            }
+        }
+        stl.extend([0u8; 2]);
+    }
+    let mut h = crate::scenario::Harness::new();
+    let path = h.dir.join("ball.stl");
+    std::fs::write(&path, stl).unwrap();
+    h.app.run("file.insert_mesh", json!({"path": path.to_string_lossy()})).unwrap();
+    let mesh = h.app.session.world_state().bodies[0].mesh();
+    assert!(mesh.triangles.len() > 250_000, "{}", mesh.triangles.len());
+    let t = std::time::Instant::now();
+    let _ = solidcraft_engine::geom::MeshIndex::new(&mesh);
+    let index_ms = t.elapsed().as_secs_f64() * 1000.0;
+    h.app.fit_view();
+    h.frames(3);
+    let at = h.at(&json!({"world": [0.0, -20.0, 0.0]})).unwrap();
+    let t = std::time::Instant::now();
+    h.step(&json!({"move": at})).unwrap();
+    let hover_ms = t.elapsed().as_secs_f64() * 1000.0;
+    assert!(matches!(h.app.viewport.hover, Some(crate::viewport::Hit::Face { .. })), "{:?}", h.app.viewport.hover);
+    assert!(hover_ms < index_ms / 3.0, "the first hover took {hover_ms:.1} ms; making the index takes {index_ms:.1} ms");
 }
