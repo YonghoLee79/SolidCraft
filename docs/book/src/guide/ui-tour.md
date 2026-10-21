@@ -7,8 +7,10 @@
   and one tab per open design (each with its own undo history, selection and camera; a dot marks
   unsaved changes). On the right: Report a bug, Help (?), Preferences (which hold the theme) and the
   window's buttons.
-- **Toolbar.** The workspace switcher (DESIGN) sits on the left. The tabs (SOLID, SURFACE,
-  SHEET METAL, PLASTIC, UTILITIES, and SKETCH while you sketch) hold panels of commands. Click a
+- **Toolbar.** The workspace switcher (DESIGN) sits on the left. The tabs (MODEL, SURFACE,
+  ASSEMBLE, INSERT, INSPECT, MANAGE, VIEW and SHEET METAL) hold sections of commands. SKETCH appears while
+  editing a sketch; SHEET METAL is always there and is highlighted for the active sheet body. Both select automatically
+  when entered, and the other tabs remain available. Click a
   panel's name for all its commands. Drag a command from the dropdown onto a panel's label
   or empty space to append it; the insertion line shows its destination. Drop onto an existing
   button to insert before it. Buttons can also move between panels, and the layout is saved.
@@ -64,9 +66,19 @@
 - **Dialogs** dock on the right with a live preview. Most features also show drag handles and a
   value box in the viewport.
 - **Timeline** (bottom). Every feature in order. Double-click to edit, drag the marker to roll
-  back, and drag features to reorder them.
-- **S box.** Press S anywhere for a command search at the cursor. Pin the commands you use most
-  to its top.
+  back, and drag features to reorder them. Preferences can put the timeline vertically at the
+  far left of the viewport, beside the browser. Its seam handle switches between icon
+  chips and compact feature names; the browser can collapse to a rail beside either width.
+  Previous, Play and Next sit at the top. Double-click Previous to roll to the start.
+- **Command search (S).** Click the ribbon search field or press S to open the search popup
+  below it. Results group commands by their ribbon path and show matching features and user
+  parameters from this design. With an empty query, recent commands appear first, followed by
+  pinned commands in the Commands group. Up/Down
+  choose, Enter runs, Tab fills the selected name, and Esc closes. A feature opens its existing
+  editor; a parameter opens Change Parameters filtered to its name. To run with explicit values,
+  enter an id and JSON object, for example `solid.extrude {"distance": 20}`. The popup validates
+  JSON as you type and shows parser errors. Shift+Enter runs it and keeps the popup open.
+  Right-click a command for its existing pin and toolbar actions.
 
 Preferences (File › Preferences) hold the theme, the units of new designs, the mouse preset, the
 visual style and autosave. Graphics › Colour vision gives the colours that carry a meaning (sketch
@@ -104,6 +116,16 @@ colours by name:
 Colours are `#rrggbb`, or `#rrggbbaa` for translucent ones. A few colours, such as the view
 triad's X, Y and Z, take a list. Any colour the file leaves out keeps the base palette's value.
 
+Tab accents also have separate fill, small-text ink and tint keys. Sketch uses
+`sketch_accent`, `sketch_ink`, `sketch_soft`; Surface, Mesh, Sheet Metal and Render
+use `<tab>_fill`, `<tab>_ink`, `<tab>_soft` (`sheet` for Sheet Metal). Form uses
+`form_fill`, `form_tab_ink`, `form_soft` because `form_ink` names the general form
+text. Model keeps `accent`, `selected_ink`, `accent_soft`. The older
+`surface_accent`, `mesh_accent`, `form_accent` and `render_accent` keys retain their
+existing roles and values. `tab_on_fill_dark` is the dark text fallback for tab
+pills when `on_accent` has less than 4.5:1 contrast with the fill. See the
+[per-tab token reference](../dev/ui-kit.md#per-tab-accent-tokens) for all pairs.
+
 - **Import…** adds a theme file and turns it on. Importing a file with the same name again updates
   that theme. A file with an unknown colour name or a malformed colour is refused, and the message
   names every problem.
@@ -115,9 +137,10 @@ Imported themes are kept with your preferences, so they work in the browser app 
 vision modes still apply on top of any theme.
 
 Navigation › **Smooth wheel zoom** is on by default. Turn it off to apply each wheel or
-trackpad event immediately, with no smoothing tail. It is independent of **Animate view
-changes**, which controls axis views, Look At, Home and Fit. Re-enabling smoothing during
+trackpad event immediately, with no smoothing tail. Re-enabling smoothing during
 a wheel gesture takes effect after that gesture ends, avoiding leftover zoom being replayed.
+Every other view change (axis view, view cube, Look At, Home, Fit, named views, arrow keys)
+and every orbit, pan and zoom drag applies at once, with no animation.
 
 Navigation › **Alias** uses Alias's camera keys: Shift+Alt+left drag orbits, Shift+Alt+middle
 drag pans and Shift+Alt+right drag zooms (drag down to move away, up to move closer). Without
