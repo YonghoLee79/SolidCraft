@@ -1,6 +1,6 @@
 //! A round face or a circular edge picked where a tool wants an axis stands for that axis (the
 //! cylinder's, or the circle's through its centre and square to its plane), as it already did
-//! for Revolve: Circular Pattern, Move's Rotate, Plane at Angle and Surface Revolve take them
+//! for Revolve: Circular Pattern, Move's Rotate and Surface Revolve take them
 //! too, and the direction inputs take their axis's direction.
 
 use serde_json::{Value, json};
