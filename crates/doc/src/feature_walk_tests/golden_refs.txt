@@ -134,7 +134,7 @@ sheet_fold
   sketches: [7]
   remap_refs: sketch
   remap_bodies: body
-sheet_swept
+sheet_path
   sketches: [1]
   remap_refs: sketch
   remap_bodies: body

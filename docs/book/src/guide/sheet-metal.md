@@ -137,7 +137,7 @@ A further bend turns the way the one before it did. `"flip": true` on a bend tur
 way, which makes an offset (a jog): bend 45° out, then 45° back, and the last leg runs parallel to
 the first. In the dialog each further bend has a **turns** choice, Same way or Other way.
 
-When the shape is easier to draw than to count out, **Swept Flange** (`sheet.swept_flange`) makes
+When the shape is easier to draw than to count out, **Path Flange** (`sheet.path_flange`) makes
 the same chain from a sketch. Sketch an open chain of lines on a plane across the edge (square to
 it), starting at the edge, then pick the edge and the lines. Each line becomes a flange as long
 as the line (measured like an edge flange's height: to the outer face from the virtual sharp),
@@ -148,7 +148,7 @@ that run straight on from each other count as one; a line that does not turn fro
 refused, and so is a line too short for its bend. Arcs are not supported yet.
 
 ```json
-{"command":"sheet.swept_flange","params":{"edge":[1,0,20],"sketch":"Path","curves":["p1","p2"]}}
+{"command":"sheet.path_flange","params":{"edge":[1,0,20],"sketch":"Path","curves":["p1","p2"]}}
 ```
 
 A flange can also stand on the far edge of another flange: a return, such as a lip turned in

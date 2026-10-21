@@ -468,8 +468,8 @@ pub struct EdgeFlange {
     pub angle: f64,
 }
 
-/// The most lines a swept flange's path may have (each one flange and its bend).
-pub const MAX_SWEPT_LINES: usize = 64;
+/// The most lines a path flange's path may have (each one flange and its bend).
+pub const MAX_PATH_LINES: usize = 64;
 
 /// A sheet metal body (see the module docs).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2288,19 +2288,19 @@ impl SheetBody {
         self.add_flanges_each(&each, radius, position, flip, ReliefOverride::default())
     }
 
-    /// A swept flange: a chain of edge flanges on the edge nearest `pick` that follows `path`, an
+    /// A path flange: a chain of edge flanges on the edge nearest `pick` that follows `path`, an
     /// open chain of world points drawn on a plane across that edge, from the end nearer the edge.
     /// Each line of the path is one flange, its length the flange's height (to the outer face from
     /// the virtual sharp, as for an edge flange), and each corner one bend: the first line's angle
     /// to the sheet makes the first bend, the turn between two lines the next. Which way the path
     /// turns says which way each bend goes. Returns the flanges made, in order, and the notes of
     /// the first one's corners.
-    pub fn add_swept(&mut self, pick: Vec3, path: &[Vec3], radius: f64, relief: ReliefOverride) -> Result<(Vec<usize>, Vec<String>)> {
-        if path.len() < 2 || path.len() > MAX_SWEPT_LINES + 1 {
-            return Err(DocError::Invalid(format!("a swept flange's path must have 1…{MAX_SWEPT_LINES} lines")));
+    pub fn add_path_flange(&mut self, pick: Vec3, path: &[Vec3], radius: f64, relief: ReliefOverride) -> Result<(Vec<usize>, Vec<String>)> {
+        if path.len() < 2 || path.len() > MAX_PATH_LINES + 1 {
+            return Err(DocError::Invalid(format!("a path flange's path must have 1…{MAX_PATH_LINES} lines")));
         }
         if !path.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
-            return Err(DocError::Invalid("the swept flange's path is not finite".into()));
+            return Err(DocError::Invalid("the path flange's path is not finite".into()));
         }
         let (panel, a, b, top, dist) = self.edge_at(pick).ok_or_else(|| DocError::Invalid("no sheet edge there".into()))?;
         if dist > self.t * 2.0 + 1e-3 {
@@ -2328,10 +2328,10 @@ impl SheetBody {
             let v = *q - *p;
             let len = v.len();
             if !(len > 1e-6) {
-                return Err(DocError::Invalid(format!("line {} of the swept flange's path has no length", k + 1)));
+                return Err(DocError::Invalid(format!("line {} of the path flange's path has no length", k + 1)));
             }
             if v.dot(along).abs() > len * 1e-4 {
-                return Err(DocError::Invalid("draw the swept flange's path on a plane across the edge (square to it)".into()));
+                return Err(DocError::Invalid("draw the path flange's path on a plane across the edge (square to it)".into()));
             }
             let heading = v.dot(up).atan2(v.dot(out));
             // A line straight on from the one before lengthens it.
@@ -2355,7 +2355,7 @@ impl SheetBody {
             if !(turn.abs() > 1e-6 && turn.abs() < std::f64::consts::PI - 1e-6) {
                 let what = if k == 0 { "the sheet" } else { "the line before it" };
                 return Err(DocError::Invalid(format!(
-                    "line {} of the swept flange's path runs straight on from {what} or back over it: each line must turn",
+                    "line {} of the path flange's path runs straight on from {what} or back over it: each line must turn",
                     k + 1
                 )));
             }

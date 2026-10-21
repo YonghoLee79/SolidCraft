@@ -1,4 +1,4 @@
-//! Sheet metal: rules, Flange (base, edge, contour), Swept Flange, Hem, Unfold/Refold, Convert to Sheet Metal,
+//! Sheet metal: rules, Flange (base, edge, contour), Path Flange, Hem, Unfold/Refold, Convert to Sheet Metal,
 //! the flat pattern (outline, bend lines, bend table) and its DXF export.
 
 use serde_json::{Value, json};
@@ -26,7 +26,7 @@ pub static COMMANDS: &[CommandSpec] = &[
          Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused, \
          and so is the corner relief on a base or contour flange",
     ),
-    CommandSpec::new("sheet.swept_flange", "Swept Flange", swept_flange).at("SHEET METAL", "CREATE").icon("swept_flange").params(
+    CommandSpec::new("sheet.path_flange", "Path Flange", path_flange).at("SHEET METAL", "CREATE").icon("path_flange").params(
         "edge: [x,y,z] on a top or bottom edge of the sheet; sketch + curves: an open chain of sketch lines drawn on a plane across \
          that edge, from the edge out (each line one flange as long as the line, to the outer face from the virtual sharp; each \
          corner one bend, turning the way the lines turn); radius? (default: rule); body?. One feature, one body",
@@ -436,13 +436,13 @@ fn fold(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
-fn swept_flange(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "sheet.swept_flange";
+fn path_flange(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sheet.path_flange";
     let edge = p.get("edge").and_then(vec3).ok_or_else(|| bad(cmd, "`edge` must be a point [x, y, z] on a sheet edge"))?;
     let sketch = sketch_id(s, p.get("sketch"), cmd, "sketch")?;
     let curves = string_list(p, "curves");
-    if curves.is_empty() || curves.len() > sheet::MAX_SWEPT_LINES {
-        return Err(bad(cmd, format!("`curves` must list the path's lines (1…{})", sheet::MAX_SWEPT_LINES)));
+    if curves.is_empty() || curves.len() > sheet::MAX_PATH_LINES {
+        return Err(bad(cmd, format!("`curves` must list the path's lines (1…{})", sheet::MAX_PATH_LINES)));
     }
     let radius = expr(p, "radius");
     if let Some(r) = &radius {
@@ -451,13 +451,7 @@ fn swept_flange(s: &mut Session, p: &Value) -> Result<Value> {
     add_feature(
         s,
         p,
-        FeatureKind::SheetSwept {
-            edge: Position(edge),
-            sketch: SketchId(sketch),
-            curves,
-            radius,
-            body: str_(p, "body").map(BodyName::from),
-        },
+        FeatureKind::SheetPath { edge: Position(edge), sketch: SketchId(sketch), curves, radius, body: str_(p, "body").map(BodyName::from) },
     )
 }
 

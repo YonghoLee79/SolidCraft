@@ -59,8 +59,8 @@ crate::dialog_descriptor::dialog_descriptors! {
             position: usize = 0 => FOLD_POSITIONS.iter().position(|x| x == position || (*x == "mould" && position == "mold")).unwrap_or(0),
             flip: bool = false => *flip,
         } => json!({"angle": angle, "position": FOLD_POSITIONS.get(*position).copied().unwrap_or("centerline"), "flip": flip});
-        Swept("sheet.swept_flange", "SWEPT FLANGE", [("Edge", EDGES, false), ("Path", CURVES, true)],
-            FeatureKind::SheetSwept { radius, .. }) {
+        Path("sheet.path_flange", "PATH FLANGE", [("Edge", EDGES, false), ("Path", CURVES, true)],
+            FeatureKind::SheetPath { radius, .. }) {
             radius: String = String::new() => radius.as_deref().map(str::to_string).unwrap_or_default(),
         } => json!({});
         ; custom {
@@ -321,9 +321,20 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
             enter |= hint_row(ui, "Bend Radius", radius, crate::i18n::tr_label("from the rule"));
             crate::ui_kit::options(ui, "sheet_options", &mut [("Flip", flip)]);
         }
-        Sm::Swept { radius } => {
+        Sm::Path { radius } => {
+            path_chain(app, inputs);
+            // What the path makes: a flange per line, as long as the line (the sketch's lengths).
+            let lengths = path_lengths(app, inputs);
+            form_row(ui, "Flanges", |ui| {
+                ui.label(if lengths.is_empty() {
+                    crate::i18n::tr_label("pick the path").to_string()
+                } else {
+                    let each: Vec<String> = lengths.iter().map(|l| format!("{l:.1}")).collect();
+                    format!("{} mm", each.join(" · "))
+                });
+            });
+            crate::ui_kit::caption(ui, "Flanges", crate::i18n::tr_label("the path's line lengths: dimension the sketch to change them"));
             enter |= hint_row(ui, "Bend Radius", radius, crate::i18n::tr_label("from the rule"));
-            crate::ui_kit::caption(ui, "Bend Radius", crate::i18n::tr_label("A flange per line, a bend per corner"));
         }
         Sm::Unfold { .. } => {}
         Sm::Convert { rule } => rule_combo(app, ui, "sm_conv_rule", rule),
@@ -475,6 +486,75 @@ fn rule_value(app: &SolveApp, rule: usize) -> Option<String> {
     rule.checked_sub(1).and_then(|i| rule_list(app).get(i).map(|r| r.name.clone()))
 }
 
+/// A path flange's path is a chain: a line picked into Path brings every line joined to it end
+/// to end, so one click takes the whole path.
+fn path_chain(app: &SolveApp, inputs: &mut [SelInput]) {
+    let edge = inputs.first().and_then(|i| i.items.edge_points().first().copied());
+    let Some(input) = inputs.get_mut(1) else { return };
+    let st = app.session.world_state();
+    let mut chained: Vec<Sel> = Vec::new();
+    for sel in &input.items {
+        let Sel::SketchCurve { id } = sel else { continue };
+        let ids = st
+            .sketches
+            .iter()
+            .rev()
+            .find_map(|ss| {
+                let ci = ss.sketch.curve_index(id)?;
+                Some(
+                    ss.sketch
+                        .chain(ci)
+                        .into_iter()
+                        .filter_map(|c| ss.sketch.curves.get(c))
+                        .filter(|c| !c.construction)
+                        .map(|c| c.id.clone())
+                        .collect(),
+                )
+            })
+            .unwrap_or_else(|| vec![id.clone()]);
+        for id in ids {
+            let sel = Sel::SketchCurve { id };
+            if !chained.contains(&sel) {
+                chained.push(sel);
+            }
+        }
+    }
+    // In order along the path, so the flanges read from the edge out.
+    let ids: Vec<String> = chained.iter().filter_map(|sel| if let Sel::SketchCurve { id } = sel { Some(id.clone()) } else { None }).collect();
+    if let Some(ss) = ids.first().and_then(|first| st.sketches.iter().rev().find(|ss| ss.sketch.curve_index(first).is_some()))
+        && let Ok(mut order) = ss.chain_order(&ids)
+    {
+        // From the end nearer the picked edge.
+        let near = |id: Option<&String>| {
+            let segs = id.and_then(|id| ss.sketch.curve_index(id)).map(|ci| ss.sketch.segs(ci)).unwrap_or_default();
+            let ends = [segs.first().map(|s| s.start()), segs.last().map(|s| s.end())];
+            ends.into_iter().flatten().map(|p| edge.map_or(0.0, |e| ss.plane.to_world(p).dist(e))).fold(f64::INFINITY, f64::min)
+        };
+        if near(order.last()) < near(order.first()) {
+            order.reverse();
+        }
+        chained = order.into_iter().map(|id| Sel::SketchCurve { id }).collect();
+    }
+    if chained != input.items {
+        input.items = chained;
+    }
+}
+
+/// The lengths of the path's lines, in the order picked (mm).
+fn path_lengths(app: &SolveApp, inputs: &[SelInput]) -> Vec<f64> {
+    let st = app.session.world_state();
+    items(inputs, 1)
+        .iter()
+        .filter_map(|sel| match sel {
+            Sel::SketchCurve { id } => st.sketches.iter().rev().find_map(|ss| {
+                let ci = ss.sketch.curve_index(id)?;
+                Some(ss.sketch.segs(ci).iter().map(|s| s.start().dist(s.end())).sum())
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 fn edge_points(inputs: &[SelInput]) -> Vec<Value> {
     items(inputs, 0).edge_points().into_iter().map(pt).collect()
 }
@@ -604,7 +684,7 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
             }
             ("sheet.fold", p)
         }
-        Sm::Swept { radius } => {
+        Sm::Path { radius } => {
             let edge = edge_points(inputs).into_iter().next().ok_or("select the sheet edge first")?;
             let curves: Vec<String> = items(inputs, 1)
                 .iter()
@@ -615,16 +695,11 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
                 .collect();
             let first = curves.first().ok_or("select the path (sketch lines across the edge)")?;
             let st = s.world_state();
-            let sketch = st
-                .sketches
-                .iter()
-                .rev()
-                .find(|ss| ss.sketch.curve_index(first).is_some())
-                .map(|ss| ss.feature)
-                .ok_or("the path's sketch is gone")?;
+            let sketch =
+                st.sketches.iter().rev().find(|ss| ss.sketch.curve_index(first).is_some()).map(|ss| ss.feature).ok_or("the path's sketch is gone")?;
             let mut p = json!({"edge": edge, "sketch": sketch, "curves": curves});
             put(&mut p, &[("radius", radius)]);
-            ("sheet.swept_flange", p)
+            ("sheet.path_flange", p)
         }
         Sm::Unfold { refold } => {
             let mut p = json!({});
@@ -758,12 +833,12 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             }
             return Some((Kind::Sheet(k), ins, extra));
         }
-        FeatureKind::SheetSwept { edge, curves, body, .. } => {
+        FeatureKind::SheetPath { edge, curves, body, .. } => {
             if let Some(bd) = body {
                 extra.insert("body".into(), json!(bd));
             }
             let k = Sm::simple_restore(kind)?;
-            let (_, mut ins) = start(app, "sheet.swept_flange")?;
+            let (_, mut ins) = start(app, "sheet.path_flange")?;
             if let Some(i) = ins.first_mut() {
                 i.items = edge_sel(s, edge.0).into_iter().collect();
             }

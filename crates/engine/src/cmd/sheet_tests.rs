@@ -5085,7 +5085,7 @@ fn a_further_bend_can_turn_the_other_way() {
 
 /// The wall bracket with a path sketched across the end edge of its wall, at half its height: the
 /// lines through `points` (sketch coordinates, x and y as the world's).
-fn swept_path(s: &mut Session, points: Value) {
+fn path_sketch(s: &mut Session, points: Value) {
     wall_bracket(s);
     run(s, "sketch.create", json!({"plane": {"origin": [0, 0, 20], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Path"}));
     let ids: Vec<String> = (1..points.as_array().map_or(0, Vec::len)).map(|k| format!("p{k}")).collect();
@@ -5093,57 +5093,66 @@ fn swept_path(s: &mut Session, points: Value) {
     run(s, "sketch.finish", json!({}));
 }
 
-/// A swept flange makes the flanges its path's lines draw, each line one flange as long as the
+/// A path flange makes the flanges its path's lines draw, each line one flange as long as the
 /// line and each corner one bend: the same part as the edge flange with further bends, in one
 /// feature and one body.
 #[test]
-fn a_swept_flange_follows_its_path() {
+fn a_path_flange_follows_its_path() {
     let a = 40.0 / 2f64.sqrt();
-    let mut swept = Session::default();
-    swept_path(&mut swept, json!([[0, 0], [a, -a], [a + 80.0, -a]]));
-    let features = swept.doc.features.len();
-    run(&mut swept, "sheet.swept_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1", "p2"]}));
-    assert_eq!(swept.doc.features.len(), features + 1, "one feature");
-    assert_eq!(swept.model.state().bodies.len(), 1, "the flap is part of the sheet");
+    let mut made = Session::default();
+    path_sketch(&mut made, json!([[0, 0], [a, -a], [a + 80.0, -a]]));
+    let features = made.doc.features.len();
+    run(&mut made, "sheet.path_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1", "p2"]}));
+    assert_eq!(made.doc.features.len(), features + 1, "one feature");
+    assert_eq!(made.model.state().bodies.len(), 1, "the flap is part of the sheet");
     let directions: Vec<String> =
-        flat(&mut swept)["bends"].as_array().into_iter().flatten().filter_map(|b| b["direction"].as_str().map(str::to_string)).collect();
+        flat(&mut made)["bends"].as_array().into_iter().flatten().filter_map(|b| b["direction"].as_str().map(str::to_string)).collect();
     assert_eq!(directions, ["up", "up", "up"]);
 
     let mut chained = Session::default();
     wall_bracket(&mut chained);
     run(&mut chained, "sheet.flange", json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg", "then": [{"angle": "45 deg", "height": 80}]}));
-    assert!(rel(volume(&mut swept), volume(&mut chained)) < 1e-9, "{} vs {}", volume(&mut swept), volume(&mut chained));
+    assert!(rel(volume(&mut made), volume(&mut chained)) < 1e-9, "{} vs {}", volume(&mut made), volume(&mut chained));
     // Drawn from its far end, the path is the same.
     let mut reversed = Session::default();
-    swept_path(&mut reversed, json!([[a + 80.0, -a], [a, -a], [0, 0]]));
-    run(&mut reversed, "sheet.swept_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1", "p2"]}));
+    path_sketch(&mut reversed, json!([[a + 80.0, -a], [a, -a], [0, 0]]));
+    run(&mut reversed, "sheet.path_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1", "p2"]}));
     assert!(rel(volume(&mut reversed), volume(&mut chained)) < 1e-9, "{} vs {}", volume(&mut reversed), volume(&mut chained));
+    // The lines given in any order are the same path.
+    let mut jumbled = Session::default();
+    path_sketch(&mut jumbled, json!([[0, 0], [a, -a], [a + 80.0, -a]]));
+    run(&mut jumbled, "sheet.path_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p2", "p1"]}));
+    assert!(rel(volume(&mut jumbled), volume(&mut chained)) < 1e-9, "{} vs {}", volume(&mut jumbled), volume(&mut chained));
     // One undo takes the whole flap away.
-    run(&mut swept, "edit.undo", json!({}));
-    assert_eq!(swept.doc.features.len(), features);
+    run(&mut made, "edit.undo", json!({}));
+    assert_eq!(made.doc.features.len(), features);
 }
 
 /// Which way the path turns says which way each bend goes: a jog turns back, and a path that
 /// leaves the sheet the other way starts with a bend down.
 #[test]
-fn a_swept_flange_turns_the_way_its_path_turns() {
+fn a_path_flange_turns_the_way_its_path_turns() {
     let a = 40.0 / 2f64.sqrt();
     let mut jog = Session::default();
-    swept_path(&mut jog, json!([[0, 0], [a, -a], [a, -a - 60.0]]));
-    run(&mut jog, "sheet.swept_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1", "p2"]}));
+    path_sketch(&mut jog, json!([[0, 0], [a, -a], [a, -a - 60.0]]));
+    run(&mut jog, "sheet.path_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1", "p2"]}));
     let directions: Vec<String> =
         flat(&mut jog)["bends"].as_array().into_iter().flatten().filter_map(|b| b["direction"].as_str().map(str::to_string)).collect();
     assert_eq!(directions, ["up", "up", "down"]);
     let mut by_hand = Session::default();
     wall_bracket(&mut by_hand);
-    run(&mut by_hand, "sheet.flange", json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg", "then": [{"angle": "45 deg", "height": 60, "flip": true}]}));
+    run(
+        &mut by_hand,
+        "sheet.flange",
+        json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg", "then": [{"angle": "45 deg", "height": 60, "flip": true}]}),
+    );
     assert!(rel(volume(&mut jog), volume(&mut by_hand)) < 1e-9, "{} vs {}", volume(&mut jog), volume(&mut by_hand));
     let box_of = |s: &mut Session| run(s, "inspect.measure", json!({}))["total"]["bbox"].clone();
     assert_eq!(box_of(&mut jog), box_of(&mut by_hand), "the same place, not only the same size");
 
     let mut down = Session::default();
-    swept_path(&mut down, json!([[0, 0], [-a, -a]]));
-    run(&mut down, "sheet.swept_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1"]}));
+    path_sketch(&mut down, json!([[0, 0], [-a, -a]]));
+    run(&mut down, "sheet.path_flange", json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1"]}));
     let mut by_hand = Session::default();
     wall_bracket(&mut by_hand);
     run(&mut by_hand, "sheet.flange", json!({"edges": [[1, 0, 20]], "height": 40, "angle": "45 deg", "flip": true}));
@@ -5152,16 +5161,16 @@ fn a_swept_flange_turns_the_way_its_path_turns() {
 
 /// A path that cannot be bent is refused, and the design stays as it was.
 #[test]
-fn a_swept_flange_refuses_a_path_it_cannot_bend() {
+fn a_path_flange_refuses_a_path_it_cannot_bend() {
     let mut s = Session::default();
     // Straight on from the wall: no bend.
-    swept_path(&mut s, json!([[0, 0], [0, -40]]));
+    path_sketch(&mut s, json!([[0, 0], [0, -40]]));
     let features = s.doc.features.len();
-    let r = s.execute("sheet.swept_flange", &json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1"]}));
+    let r = s.execute("sheet.path_flange", &json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1"]}));
     assert!(r.as_ref().is_err_and(|e| e.to_string().contains("straight on")), "{r:?}");
     assert_eq!(s.doc.features.len(), features);
     // Too short for its bend.
-    let r = s.execute("sheet.swept_flange", &json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1"], "radius": "200 mm"}));
+    let r = s.execute("sheet.path_flange", &json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1"], "radius": "200 mm"}));
     assert!(r.is_err(), "{r:?}");
     // No curves, no edge, an unknown curve.
     for p in [
@@ -5169,7 +5178,7 @@ fn a_swept_flange_refuses_a_path_it_cannot_bend() {
         json!({"sketch": "Path", "curves": ["p1"]}),
         json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["nope"]}),
     ] {
-        assert!(s.execute("sheet.swept_flange", &p).is_err(), "{p}");
+        assert!(s.execute("sheet.path_flange", &p).is_err(), "{p}");
     }
     // A path along the edge instead of across it.
     let mut along = Session::default();
@@ -5177,6 +5186,6 @@ fn a_swept_flange_refuses_a_path_it_cannot_bend() {
     run(&mut along, "sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [0, 1, 0], "y_dir": [0, 0, 1]}, "name": "Path"}));
     run(&mut along, "sketch.line", json!({"points": [[0, 10], [-20, 30]], "ids": ["p1"]}));
     run(&mut along, "sketch.finish", json!({}));
-    let r = along.execute("sheet.swept_flange", &json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1"]}));
+    let r = along.execute("sheet.path_flange", &json!({"edge": [1, 0, 20], "sketch": "Path", "curves": ["p1"]}));
     assert!(r.as_ref().is_err_and(|e| e.to_string().contains("across the edge")), "{r:?}");
 }

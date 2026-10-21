@@ -588,18 +588,18 @@ pub(super) fn sheet_eval(
             tag_flanges(sh, n0, f.id);
             rebuild_sheet(st, i)
         }
-        FeatureKind::SheetSwept { edge, sketch, curves, radius, body } => {
+        FeatureKind::SheetPath { edge, sketch, curves, radius, body } => {
             let ss = st.sketch(sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?.clone();
-            if curves.is_empty() || curves.len() > sheet::MAX_SWEPT_LINES {
-                return Err(DocError::Invalid(format!("a swept flange's path must have 1…{} lines", sheet::MAX_SWEPT_LINES)));
+            if curves.is_empty() || curves.len() > sheet::MAX_PATH_LINES {
+                return Err(DocError::Invalid(format!("a path flange's path must have 1…{} lines", sheet::MAX_PATH_LINES)));
             }
             for id in curves {
                 let ci = ss.sketch.curve_index(id).ok_or_else(|| DocError::Unknown(format!("curve `{id}`")))?;
                 if !ss.sketch.segs(ci).iter().all(|s| matches!(s, Seg2::Line { .. })) {
-                    return Err(DocError::Invalid("not supported yet: arcs in a swept flange's path (use lines; the bends are made for you)".into()));
+                    return Err(DocError::Invalid("not supported yet: arcs in a path flange's path (use lines; the bends are made for you)".into()));
                 }
             }
-            let path: Vec<Vec3> = chain_points(&ss, curves)?.into_iter().map(|p| ss.plane.to_world(p)).collect();
+            let path: Vec<Vec3> = chain_points(&ss, &ss.chain_order(curves)?)?.into_iter().map(|p| ss.plane.to_world(p)).collect();
             let i = sheet_for(st, body, Some(edge.0))?;
             let rr = match radius {
                 Some(e) => val(vals, e, Kind::Length)?,
@@ -614,7 +614,7 @@ pub(super) fn sheet_eval(
             }
             let pick = sheet_picks(sh, f, &[edge.0], warning).first().copied().unwrap_or(edge.0);
             let n0 = sh.flanges.len();
-            let (_, notes) = sh.add_swept(pick, &path, rr, sheet::ReliefOverride::default())?;
+            let (_, notes) = sh.add_path_flange(pick, &path, rr, sheet::ReliefOverride::default())?;
             if !notes.is_empty() {
                 let notes = notes.join("; ");
                 *warning = Some(match warning.take() {
