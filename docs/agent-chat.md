@@ -46,12 +46,21 @@ when you send a message or press **Connect**.
   icon, the agent's state, and a count of anything waiting for your answer. Click the icon to
   unfold it. **Close** (×) hides the panel. Neither stops the agent; **Stop** does.
 - **The agent switcher** under the title picks the agent for this conversation; switching stops
-  the one running. Next to it, when the agent has modes of its own (Claude Code has *Default*,
-  *Accept Edits*, *Plan*…), a second drop-down sets the agent's mode. When the agent reports its models (an ACP agent's
-  model list, or an endpoint's `/models`), a model drop-down shows the one in use and changes it;
-  SolidCraft remembers the last choice for each agent and puts it back on the next session. An
-  endpoint's agent also keeps it as its default model. An agent that reports no models shows no
-  drop-down.
+  the one running. When an ACP agent reports **configuration options** (including OpenCode V2),
+  a compact inline strip below it shows the agent's model, reasoning effort, mode, and any other
+  supported select options, wrapping when space is tight. Hover a selector for its full label and
+  description. Their names and choices come from the agent: not every model offers adjustable
+  reasoning effort. Changing the model can change or remove the effort choices. A selection is
+  shown as applied only after the agent reports it; a rejected change leaves the confirmed
+  selection in place and shows an error.
+- **Older agents and API endpoints** keep their model and mode drop-downs when they report those
+  choices (an ACP agent's legacy model/mode lists, or an endpoint's `/models`). SolidCraft remembers
+  the last model choice for each agent and puts it back on the next session when still available.
+  An endpoint's agent also keeps it as its default model. An agent that reports no choices shows
+  no drop-down.
+- **Reasoning effort is not permissions.** The agent's thinking setting does not change
+  SolidCraft's Ask / Edits / All approval policy. Reasoning options belong to the current session;
+  changing them here does not rewrite OpenCode's configuration or another OpenCode session.
 
 ## Files and pictures
 

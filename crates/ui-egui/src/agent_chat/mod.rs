@@ -362,6 +362,8 @@ pub struct AgentChat {
     /// The models the agent offers (none: no picker), and the current one.
     pub models: Vec<acp::ModelInfo>,
     pub model: String,
+    pub config_options: Option<Vec<acp::ConfigOption>>,
+    pub config_pending: bool,
     /// An API endpoint's models, kept per endpoint (its base URL) for the next connection.
     models_cache: std::collections::HashMap<String, Vec<acp::ModelInfo>>,
     /// The running API agent's endpoint (empty for other agents).
@@ -393,6 +395,29 @@ impl Drop for AgentChat {
 }
 
 impl AgentChat {
+    fn clear_config(&mut self) {
+        if self.config_options.take().is_some() {
+            self.models.clear();
+            self.model.clear();
+            self.modes.clear();
+            self.mode.clear();
+        }
+        self.config_pending = false;
+    }
+
+    fn apply_config_snapshot(&mut self, options: Vec<acp::ConfigOption>) {
+        self.config_options = Some(options.clone());
+        let model = options.iter().find(|o| o.category == "model");
+        self.models = model
+            .map(|o| {
+                o.options.iter().map(|x| acp::ModelInfo { id: x.value.clone(), name: x.name.clone(), description: x.description.clone() }).collect()
+            })
+            .unwrap_or_default();
+        self.model = model.map_or_else(String::new, |o| o.current_value.clone());
+        let mode = options.iter().find(|o| o.category == "mode");
+        self.modes = mode.map(|o| o.options.iter().map(|x| (x.value.clone(), x.name.clone())).collect()).unwrap_or_default();
+        self.mode = mode.map_or_else(String::new, |o| o.current_value.clone());
+    }
     /// Put a file on the next message with an id of its own; its name back.
     fn add_file(&mut self, file: attach::Attachment) -> String {
         let id = self.next_file_id();
@@ -521,7 +546,8 @@ impl AgentChat {
                 self.state = Some(State::Ready);
                 self.picking = Some(false);
                 // Keep the mode across a new chat.
-                if let Some(m) = self.restore_mode.take()
+                if self.config_options.is_none()
+                    && let Some(m) = self.restore_mode.take()
                     && self.modes.iter().any(|(id, _)| *id == m)
                     && let Some(b) = self.backend.as_mut()
                 {
@@ -568,21 +594,38 @@ impl AgentChat {
             }
             Event::Permission { key, title, options } => return Some(Outcome::Permission { key, title, options }),
             Event::Modes { current, available } => {
-                if !available.is_empty() {
+                if self.config_options.is_none() && !available.is_empty() {
                     self.modes = available;
                 }
-                self.mode = current;
+                if self.config_options.is_none() {
+                    self.mode = current;
+                }
             }
             Event::Models { current, available } => {
-                if !available.is_empty() {
+                if self.config_options.is_none() && !available.is_empty() {
                     if !self.running_endpoint.is_empty() {
                         self.models_cache.insert(self.running_endpoint.clone(), available.clone());
                     }
                     self.models = available;
                 }
-                self.model = current;
+                if self.config_options.is_none() {
+                    self.model = current;
+                }
+            }
+            Event::ConfigOptions(options) => {
+                self.apply_config_snapshot(options);
+            }
+            Event::ConfigOptionFinished { result, .. } => {
+                self.config_pending = false;
+                match result {
+                    Ok(options) => {
+                        self.apply_config_snapshot(options);
+                    }
+                    Err(message) => self.notice(message, true),
+                }
             }
             Event::AuthRequired { methods } => {
+                self.clear_config();
                 self.auth = methods;
                 self.state = Some(State::NeedsAuth);
                 self.picking = Some(false);
@@ -612,6 +655,7 @@ impl AgentChat {
                 }
             }
             Event::Exited { tail } => {
+                self.clear_config();
                 self.state = Some(State::Exited);
                 self.steering = false;
                 let last: Vec<String> = tail.into_iter().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
@@ -815,6 +859,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
 pub fn disconnect(app: &mut SolveApp) {
     end_turn(app);
     let chat = &mut app.agent_chat;
+    chat.clear_config();
     chat.stop_backend(false);
     if chat.state.is_some() {
         chat.state = Some(State::Off);
@@ -980,6 +1025,7 @@ pub fn new_chat(app: &mut SolveApp) {
             b.new_session();
         }
     }
+    chat.clear_config();
 }
 
 /// Whether New chat would throw something away that the user may want (so it asks first).
@@ -1437,6 +1483,13 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     let events = app.agent_chat.backend.as_mut().map(|b| b.poll()).unwrap_or_default();
     for e in events {
         let ready = matches!(e, Event::Ready { .. });
+        let configured = matches!(e, Event::ConfigOptionFinished { .. });
+        let confirmed_model = match &e {
+            Event::ConfigOptionFinished { id, result: Ok(options) } => {
+                options.iter().find(|o| o.category == "model").filter(|o| o.id == *id).map(|o| o.current_value.clone())
+            }
+            _ => None,
+        };
         match app.agent_chat.on_event(e) {
             Some(Outcome::TurnEnd) => {
                 end_turn(app);
@@ -1445,11 +1498,27 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
             Some(Outcome::Permission { key, title, options }) => on_permission(app, key, title, options),
             None => {}
         }
+        if let Some(model) = confirmed_model {
+            app.preferences.agent_models.insert(app.agent_chat.running_id.clone(), model.clone());
+            if let Some(a) = app.preferences.agents.iter_mut().find(|a| a.id == app.agent_chat.running_id && a.kind == agents::Kind::Api) {
+                a.model = model;
+            }
+        }
         if ready {
             apply_saved_model(app);
         }
-        if ready && let Some((text, image, at, files)) = app.agent_chat.queued.take() {
-            start_turn(app, text, image, at, files);
+        if (ready || configured) && !app.agent_chat.config_pending {
+            if app.agent_chat.config_options.is_some()
+                && let Some(mode) = app.agent_chat.restore_mode.take()
+                && mode != app.agent_chat.mode
+            {
+                set_mode(app, &mode);
+            }
+            if !app.agent_chat.config_pending
+                && let Some((text, image, at, files)) = app.agent_chat.queued.take()
+            {
+                start_turn(app, text, image, at, files);
+            }
         }
     }
     pump_tools(app);
@@ -1476,6 +1545,14 @@ pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
 /// Choose the model for this chat (the header's model picker): the agent switches to it, and it is
 /// remembered for this agent; an API endpoint's agent also keeps it as its default model.
 pub fn set_model(app: &mut SolveApp, model: &str) {
+    if let Some(options) = app.agent_chat.config_options.as_ref() {
+        let Some(option) = options.iter().find(|x| x.category == "model") else {
+            return;
+        };
+        let id = option.id.clone();
+        set_config_option(app, &id, model);
+        return;
+    }
     if !app.agent_chat.models.iter().any(|m| m.id == model) {
         return;
     }
@@ -1506,11 +1583,36 @@ pub fn models_shown(app: &SolveApp) -> bool {
 
 /// Switch the agent to one of its own modes (the header's mode picker).
 pub fn set_mode(app: &mut SolveApp, mode: &str) {
+    if let Some(options) = app.agent_chat.config_options.as_ref() {
+        let Some(option) = options.iter().find(|x| x.category == "mode") else {
+            return;
+        };
+        let id = option.id.clone();
+        set_config_option(app, &id, mode);
+        return;
+    }
     if app.agent_chat.modes.iter().any(|(id, _)| id == mode)
         && let Some(b) = app.agent_chat.backend.as_mut()
     {
         b.set_mode(mode);
         app.agent_chat.mode = mode.to_string();
+    }
+}
+
+/// Change a reported modern ACP configuration option; only acknowledged snapshots change state.
+pub fn set_config_option(app: &mut SolveApp, id: &str, value: &str) {
+    let Some(option) = app.agent_chat.config_options.as_ref().and_then(|xs| xs.iter().find(|x| x.id == id)) else {
+        return;
+    };
+    if app.agent_chat.config_pending
+        || !matches!(app.agent_chat.state(), State::Ready | State::Busy)
+        || !option.options.iter().any(|x| x.value == value)
+    {
+        return;
+    }
+    if let Some(b) = app.agent_chat.backend.as_mut() {
+        b.set_config_option(id, value);
+        app.agent_chat.config_pending = true;
     }
 }
 
@@ -1578,6 +1680,11 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     }
     if let Some(m) = p.get("model").and_then(Value::as_str) {
         set_model(app, m);
+    }
+    if let Some(option) = p.get("config_option") {
+        let id = option.get("id").and_then(Value::as_str).ok_or("config_option.id must be a string")?;
+        let value = option.get("value").and_then(Value::as_str).ok_or("config_option.value must be a string")?;
+        set_config_option(app, id, value);
     }
     if !shown(app) {
         return Ok(status(app));
@@ -1695,6 +1802,8 @@ pub fn status(app: &SolveApp) -> Value {
     let pid = c.backend.as_ref().and_then(|b| b.pid());
     json!({
         "features": app.preferences.ai_features,
+        "configOptions": c.config_options,
+        "configPending": c.config_pending,
         "toolbarButton": app.preferences.ai_toolbar_button,
         "permissions": app.preferences.ai_permissions.id(),
         "agents": agents::entries(app).iter().map(|e| json!({"id": e.id, "name": e.name, "kind": if e.kind == agents::Kind::Api { "api" } else { "acp" }, "found": e.found, "version": e.version, "login": e.login})).collect::<Vec<_>>(),
