@@ -4236,6 +4236,7 @@ dependencies = [
 name = "solidcraft-engine"
 version = "0.18.2"
 dependencies = [
+ "image",
  "log",
  "schemars",
  "serde",
