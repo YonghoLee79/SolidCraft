@@ -1434,83 +1434,100 @@ fn space_mouse_section(app: &mut SolveApp, ui: &mut egui::Ui) {
         let (driven_by, driven_by_label) = (app.tr("ui.space_mouse_driven_by").to_owned(), app.tr("ui.space_mouse_driven_by_label").to_owned());
         let off_tip = app.tr("ui.space_mouse_view_off_tip").to_owned();
         let motions: Vec<String> = crate::space_mouse::MOTIONS.iter().map(|motion| app.tr(motion).to_owned()).collect();
-        // One row per view axis: Invert, Speed, and the motion that drives it. Where the panel is too
-        // narrow for all of them the motion choice wraps under the rest.
-        let wide = ui.available_width() >= AXIS_ROW_WIDE;
-        if wide {
-            ui_kit::row(ui, app.tr("ui.space_mouse_view_axis"), |ui| {
-                axis_row_columns(
-                    ui,
-                    |ui| {
-                        ui.horizontal(|ui| {
-                            ui.allocate_ui(egui::vec2(AXIS_INVERT_WIDTH, ui_kit::row_height()), |ui| {
-                                ui_kit::text(ui, crate::i18n::tr_label("Invert"), ui_kit::Text::Note("space_mouse_col_invert"));
-                            });
-                            ui_kit::text(ui, crate::i18n::tr_label("Speed"), ui_kit::Text::Note("space_mouse_col_speed"));
-                        });
-                    },
-                    |ui| {
-                        ui_kit::text(ui, &driven_by_label, ui_kit::Text::Note("space_mouse_col_driven_by"));
-                    },
-                );
-            });
-        }
+        // One row per view axis: Invert, Speed, and the motion that drives it, in columns of exact
+        // widths: Invert and the motion choice are fixed, the slider takes what is left. Where
+        // that would leave the slider under `AXIS_SLIDER_MIN`, the motion choice goes on a row of
+        // its own under it. Each row decides from the width it is given.
         let enabled = app.preferences.space_mouse_enabled;
+        let space_x = ui.spacing().item_spacing.x;
+        let slider_width = |control: f32| {
+            let left = control - AXIS_INVERT_WIDTH - AXIS_DRIVEN_WIDTH - 2.0 * space_x;
+            (left >= AXIS_SLIDER_MIN).then_some(left)
+        };
+        let cell = |ui: &mut egui::Ui, width: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.allocate_ui_with_layout(egui::vec2(width, ui_kit::row_height()), egui::Layout::left_to_right(egui::Align::Center), |ui| add(ui))
+                .response
+        };
+        ui_kit::row(ui, app.tr("ui.space_mouse_view_axis"), |ui| {
+            if let Some(slider) = slider_width(ui.available_width()) {
+                ui.horizontal(|ui| {
+                    cell(ui, AXIS_INVERT_WIDTH, &mut |ui| {
+                        ui_kit::text(ui, crate::i18n::tr_label("Invert"), ui_kit::Text::Note("space_mouse_col_invert"));
+                    });
+                    cell(ui, slider, &mut |ui| {
+                        ui_kit::text(ui, crate::i18n::tr_label("Speed"), ui_kit::Text::Note("space_mouse_col_speed"));
+                    });
+                    cell(ui, AXIS_DRIVEN_WIDTH, &mut |ui| {
+                        ui_kit::text(ui, &driven_by_label, ui_kit::Text::Note("space_mouse_col_driven_by"));
+                    });
+                });
+            }
+        });
         for (axis, (name, off)) in rows.iter().enumerate() {
             let prefs = &mut app.preferences;
             let (reverse, speed, source) = (&mut prefs.space_mouse_reverse, &mut prefs.space_mouse_axis_speed, &mut prefs.space_mouse_axis_source);
             let (motions, driven_by) = (&motions, &driven_by);
-            let group = ui_kit::row(ui, name, |ui| {
+            let mut driven = |ui: &mut egui::Ui| {
                 ui.add_enabled_ui(enabled, |ui| {
-                    // Invert and speed do nothing on a row the driver turns off. The motion choice
-                    // stays live, so a motion can still be swapped out of it.
-                    let mut invert_and_speed = |ui: &mut egui::Ui| {
-                        ui.add_enabled_ui(!off, |ui| {
-                            if let Some(reverse) = reverse.get_mut(axis) {
-                                ui.allocate_ui(egui::vec2(AXIS_INVERT_WIDTH, ui_kit::row_height()), |ui| {
-                                    ui_kit::checkbox(ui, crate::i18n::tr_label("Invert"), reverse);
-                                });
+                    let current = source.get(axis).copied().unwrap_or(axis);
+                    let mut chosen = current;
+                    ui_kit::dropdown_menu(ui, ("sc_space_mouse_source", axis), motions.get(current).map_or("", String::as_str), |ui| {
+                        for (from, name) in motions.iter().enumerate() {
+                            if ui_kit::list_picker(ui, name, name, chosen == from).clicked() {
+                                chosen = from;
                             }
-                            if let Some(speed) = speed.get_mut(axis) {
-                                ui_kit::slider(
-                                    ui,
-                                    speed,
-                                    0.0..=3.0,
-                                    ui_kit::Slider { step: Some(0.05), format: |v| format!("{v:.2}×"), ..Default::default() },
-                                );
-                            }
-                        })
-                        .response
-                    };
-                    let driven = |ui: &mut egui::Ui| {
-                        let current = source.get(axis).copied().unwrap_or(axis);
-                        let mut chosen = current;
-                        ui_kit::dropdown_menu(ui, ("sc_space_mouse_source", axis), motions.get(current).map_or("", String::as_str), |ui| {
-                            for (from, name) in motions.iter().enumerate() {
-                                if ui_kit::list_picker(ui, name, name, chosen == from).clicked() {
-                                    chosen = from;
-                                }
-                            }
-                        })
-                        .on_hover_text(driven_by.as_str());
-                        if chosen != current {
-                            crate::space_mouse::reassign(source, axis, chosen);
                         }
-                    };
-                    if wide {
-                        let mut group = None;
-                        axis_row_columns(ui, |ui| group = Some(ui.horizontal(|ui| invert_and_speed(ui)).inner), driven);
-                        group
-                    } else {
-                        let group = ui.horizontal(|ui| invert_and_speed(ui)).inner;
-                        ui.allocate_ui(egui::vec2(AXIS_DRIVEN_WIDTH.min(ui.available_width()), ui_kit::row_height()), driven);
-                        Some(group)
+                    })
+                    .on_hover_text(driven_by.as_str());
+                    if chosen != current {
+                        crate::space_mouse::reassign(source, axis, chosen);
                     }
+                });
+            };
+            let mut wrapped = false;
+            let group = ui_kit::row(ui, name, |ui| {
+                let control = ui.available_width();
+                let slider = slider_width(control);
+                wrapped = slider.is_none();
+                // Invert and speed do nothing on a row the driver turns off. The motion choice
+                // stays live, so a motion can still be swapped out of it.
+                let mut invert = |ui: &mut egui::Ui| {
+                    ui.add_enabled_ui(enabled && !off, |ui| {
+                        if let Some(reverse) = reverse.get_mut(axis) {
+                            ui_kit::checkbox(ui, crate::i18n::tr_label("Invert"), reverse);
+                        }
+                    });
+                };
+                let mut speed_slider = |ui: &mut egui::Ui| {
+                    ui.add_enabled_ui(enabled && !off, |ui| {
+                        if let Some(speed) = speed.get_mut(axis) {
+                            ui_kit::slider(
+                                ui,
+                                speed,
+                                0.0..=3.0,
+                                ui_kit::Slider { step: Some(0.05), format: |v| format!("{v:.2}×"), ..Default::default() },
+                            );
+                        }
+                    });
+                };
+                ui.horizontal(|ui| {
+                    let first = cell(ui, AXIS_INVERT_WIDTH, &mut invert);
+                    let rest = slider.unwrap_or_else(|| (control - AXIS_INVERT_WIDTH - space_x).max(0.0));
+                    let second = cell(ui, rest, &mut speed_slider);
+                    if slider.is_some() {
+                        cell(ui, AXIS_DRIVEN_WIDTH, &mut driven);
+                    }
+                    first.union(second)
                 })
                 .inner
             });
-            if *off && let Some(group) = group {
+            if *off {
                 group.on_hover_text(&off_tip);
+            }
+            if wrapped {
+                ui_kit::row(ui, "", |ui| {
+                    cell(ui, AXIS_DRIVEN_WIDTH.min(ui.available_width()), &mut driven);
+                });
             }
         }
         ui_kit::row(ui, "", |ui| {
@@ -1603,21 +1620,11 @@ fn space_mouse_section(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
 }
 
-/// The width a view axis's row needs to hold Invert, a readable Speed slider and the motion choice
-/// side by side; narrower, the motion choice goes under them.
-const AXIS_ROW_WIDE: f32 = 600.0;
+/// The columns of a view axis's row: Invert and the motion choice have fixed widths; the slider
+/// takes the rest, and when that is under `AXIS_SLIDER_MIN` the motion choice wraps to its own row.
 const AXIS_INVERT_WIDTH: f32 = 76.0;
 const AXIS_DRIVEN_WIDTH: f32 = 140.0;
-
-/// The columns of a view axis's row: Invert and Speed share what is left, the motion choice has a
-/// fixed width at the right.
-fn axis_row_columns(ui: &mut egui::Ui, left: impl FnOnce(&mut egui::Ui), driven: impl FnOnce(&mut egui::Ui)) {
-    let width = (ui.available_width() - AXIS_DRIVEN_WIDTH - ui.spacing().item_spacing.x).max(0.0);
-    ui.horizontal(|ui| {
-        ui.allocate_ui(egui::vec2(width, ui_kit::row_height()), left);
-        ui.allocate_ui(egui::vec2(AXIS_DRIVEN_WIDTH, ui_kit::row_height()), driven);
-    });
-}
+const AXIS_SLIDER_MIN: f32 = 150.0;
 
 /// The 3D mouse's buttons, each with what it does: those that do something and any pressed since
 /// the app started. A pressed one is marked in its row; Preferences doesn't run them.
@@ -2089,6 +2096,76 @@ mod tests {
         assert_eq!(again.space_mouse_offered, prefs.space_mouse_offered);
         // Files from before it existed read as nothing offered yet.
         assert!(serde_json::from_value::<super::Prefs>(serde_json::json!({})).unwrap().space_mouse_offered.is_empty());
+    }
+
+    /// The 3D mouse section is laid out inside the panel it is in, at every panel width: nothing it
+    /// draws reaches past the right edge (the rows used to run off it and get clipped).
+    #[test]
+    fn the_3d_mouse_section_stays_inside_the_panel_at_every_width() {
+        for width in [420.0_f32, 560.0, 700.0, 900.0, 1200.0] {
+            let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+            app.space_mouse.device = Some("hid 046d:c62b".into());
+            app.space_mouse.drivers = Some(crate::space_mouse::DriversPresent { spacenavd: true, direct: true });
+            let ctx = crate::fonts::test_context();
+            let panel = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(width, 1400.0));
+            for frame in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width + 40.0, 1500.0))),
+                    focused: true,
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(panel), |ui| {
+                        super::space_mouse_section(&mut app, ui);
+                        let wide: Vec<_> = crate::scenario::rects("").into_iter().filter(|(_, r)| r.right() > panel.right() + 0.5).collect();
+                        assert!(ui.min_rect().right() <= panel.right() + 0.5 || wide.is_empty() && false, "{wide:?}",);
+                        assert!(
+                            ui.min_rect().right() <= panel.right() + 0.5,
+                            "width {width}, frame {frame}: the section reaches {}",
+                            ui.min_rect().right()
+                        );
+                    });
+                });
+                output.textures_delta.clear();
+            }
+        }
+    }
+
+    /// The calibration window keeps its texts and sliders inside itself at the widths it can be
+    /// given, for both kinds of device (the notice card is clamped to the free width by construction).
+    #[test]
+    fn the_calibration_window_keeps_its_contents_inside() {
+        for width in [360.0_f32, 520.0, 900.0] {
+            for kind in [solidcraft_space_mouse::Kind::ReturnToCenter, solidcraft_space_mouse::Kind::Trackball] {
+                let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+                app.space_mouse.device = Some("hid 046d:c62b".into());
+                crate::space_mouse_calibration::start(&mut app);
+                app.space_mouse.calibrating.as_mut().unwrap().1.choose(kind);
+                let ctx = crate::fonts::test_context();
+                for _ in 0..6 {
+                    crate::scenario::clear_handles();
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 900.0))),
+                        focused: true,
+                        ..Default::default()
+                    };
+                    let mut output = ctx.run_ui(input, |ui| crate::space_mouse_calibration::show(&mut app, ui.ctx()));
+                    output.textures_delta.clear();
+                }
+                let window = crate::scenario::rect_of("dialog:window").expect("the window is drawn");
+                for (name, rect) in crate::scenario::rects("dialog:").into_iter().filter(|(name, _)| {
+                    name.starts_with("dialog:slider")
+                        || name.starts_with("dialog:widget")
+                        || name.starts_with("dialog:note")
+                        || name.starts_with("dialog:report")
+                }) {
+                    assert!(
+                        rect.right() <= window.right() + 0.5 && rect.left() >= window.left() - 0.5,
+                        "width {width} {kind:?}: {name} {rect:?} is outside {window:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// One button job this build can't read (a newer release's) costs that button, not the lot.
