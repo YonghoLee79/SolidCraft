@@ -155,7 +155,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     let t = Tokens::get().navigation_cube(active);
     crate::scenario::publish_count("navigation_cube:active", f64::from(u8::from(active)));
     let faces = facets(&app.cam, c, HALF * f64::from(scale));
-    let hover = ui.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(rect));
+    let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| ui.is_enabled() && ui.rect_contains_pointer(rect) && !crate::shell::covered(app, *p));
     let hovered = if orbiting { None } else { hover.and_then(|p| hit(&faces, p)) };
     let painter = ui.painter_at(outer);
     paint_cube(&painter, &faces, hovered, t, true, scale);
@@ -214,8 +214,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     let home = Rect::from_center_size(c + vec2(-65.0, -65.0) * scale, vec2(26.0, 26.0) * scale);
-    crate::scenario::publish_rect("axis_view:home", home);
-    crate::scenario::publish_handle("axis_view:home", home.center());
+    crate::scenario::publish_target("axis_view:home", home);
     let home_hover = control(app, ui, home, "home", "Home: isometric view and fit model");
     if active {
         icons::paint(&painter, home.shrink(4.0 * scale), "home", if home_hover { t.accent } else { t.cube_face }, t.cube_face, t.accent);
@@ -231,7 +230,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
         let (r, u, _) = app.cam.basis();
         let tip = origin + vec2((d.dot(r) * 17.0) as f32, -(d.dot(u) * 17.0) as f32) * scale;
         painter.line_segment([origin, tip], Stroke::new(1.5, color));
-        painter.text(tip, Align2::CENTER_CENTER, label, FontId::proportional(8.0), color);
+        painter.text(tip, Align2::CENTER_CENTER, label, FontId::proportional(crate::theme::Tokens::get().font_triad), color);
     }
 }
 
@@ -272,8 +271,7 @@ mod tests {
     fn former_edge_strips_click_the_face_and_hover_without_internal_seams() {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.prefs", json!({"navigator_style":"cube"}));
-        let ctx = egui::Context::default();
-        h.app.preferences.look_at_anim = false;
+        let ctx = crate::fonts::test_context();
         for up in ["z", "y"] {
             h.call("ui.prefs", json!({"up_axis":up}));
             h.call("ui.view", json!({"view":"front"}));
@@ -337,7 +335,7 @@ mod tests {
 
     #[test]
     fn hovered_face_and_corner_have_a_pale_blue_opaque_fill_in_both_themes() {
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         let faces = facets(&Camera::default(), pos2(100.0, 100.0), HALF);
         for t in [Tokens::light(), Tokens::dark()] {
             assert_ne!(t.navigation_cube(false).cube_face, t.cube_face);
@@ -363,7 +361,7 @@ mod tests {
 
     #[test]
     fn idle_principal_views_have_square_faces_without_visible_picking_seams() {
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         for up in [UpAxis::Z, UpAxis::Y] {
             for view in [StandardView::Front, StandardView::Back, StandardView::Top, StandardView::Bottom, StandardView::Left, StandardView::Right] {
                 let mut cam = Camera { up, ..Default::default() };
@@ -427,11 +425,11 @@ mod tests {
 
     #[test]
     fn face_labels_use_normalized_font_atlas_coordinates() {
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         let output = paint_frame(&ctx, |ui| {
             let faces = facets(&Camera::default(), pos2(100.0, 100.0), HALF);
             for face in &faces {
-                face_text(ui.painter(), face, Tokens::light().cube_text, 14.0);
+                face_text(ui.painter(), face, Tokens::light().cube_text, Tokens::get().font_heading);
             }
         });
         let meshes: Vec<_> = output.shapes.iter().filter_map(|shape| if let Shape::Mesh(mesh) = &shape.shape { Some(mesh) } else { None }).collect();
@@ -444,7 +442,7 @@ mod tests {
 
     #[test]
     fn label_uvs_follow_font_atlas_growth_later_in_the_same_frame() {
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         let mut pixel_uv = Pos2::ZERO;
         let mut glyph_vertex = 0;
         let mut early_size = [0; 2];
@@ -457,7 +455,7 @@ mod tests {
             let (index, vertex) = galley.rows.first().unwrap().visuals.mesh.vertices.iter().enumerate().find(|(_, v)| v.uv.y > 1.0).unwrap();
             glyph_vertex = index;
             pixel_uv = vertex.uv;
-            face_text(ui.painter(), face, Tokens::light().cube_text, 14.0);
+            face_text(ui.painter(), face, Tokens::light().cube_text, Tokens::get().font_heading);
             early_size = ctx.fonts(|f| f.font_image_size());
             // Other widgets can allocate new glyphs after the cube has been drawn.
             let text: String = (32_u8..127).map(char::from).collect();
@@ -473,7 +471,7 @@ mod tests {
 
     #[test]
     fn rotating_cube_facets_stay_opaque_and_inside_the_projected_geometry() {
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         for up in [UpAxis::Z, UpAxis::Y] {
             for view in [StandardView::Top, StandardView::Bottom, StandardView::Front, StandardView::Back, StandardView::Left, StandardView::Right] {
                 let from = Camera { up, ..Default::default() };
@@ -510,43 +508,33 @@ mod tests {
         assert_eq!(h.app.cam.distance, cam.distance);
     }
 
+    /// A view-cube click puts the camera at the view at once and leaves nothing running: the
+    /// mouse orbit that follows moves the camera exactly as far as the pointer, in the same frame.
     #[test]
-    fn cube_navigation_eases_through_intermediate_views_and_can_be_interrupted() {
+    fn a_mouse_orbit_after_a_cube_click_follows_the_pointer_one_to_one() {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.prefs", json!({"navigator_style":"cube"}));
-        assert!(h.app.preferences.look_at_anim);
-        for (action, direction) in [(None, Some(Vec3::Z)), (Some("right"), None), (Some("clockwise"), None), (Some("home"), None)] {
-            let from = h.app.cam;
-            navigate(&mut h.app, action, direction);
-            let anim = h.app.cam_anim.expect("cube navigation must animate");
-            assert_eq!(h.app.cam, from, "starting a transition must not jump the camera");
-            let mut previous = from;
-            for frame in 1..=60 {
-                let now = anim.start + anim.duration * f64::from(frame) / 60.0 + if frame == 60 { 1e-9 } else { 0.0 };
-                let (cam, done) = anim.sample(now);
-                let angle = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
-                assert!(angle(previous.back(), cam.back()).max(angle(previous.basis().0, cam.basis().0)) < 10.0);
-                assert_eq!(done, frame == 60);
-                if frame == 30 {
-                    assert_ne!(cam.basis(), from.basis());
-                    assert_ne!(cam.basis(), anim.to.basis());
-                }
-                previous = cam;
-            }
-            h.app.cam = anim.sample(anim.start + anim.duration / 2.0).0;
-            let intermediate = h.app.cam;
-            navigate(&mut h.app, Some("left"), None);
-            assert_eq!(h.app.cam_anim.unwrap().from, intermediate, "another click starts where the camera is");
-            h.app.cam = anim.to;
-            h.app.cancel_view_animation();
-        }
+        h.app.run("solid.box", json!({"length":20,"width":20,"height":20})).unwrap();
+        h.frames(4);
+        let p = crate::scenario::handle_at("navigation_cube:top").unwrap();
+        h.call("ui.click", json!({"x":p.x,"y":p.y}));
+        assert!(h.app.cam.back().dist(Vec3::Z) < 1e-6, "the click shows the top view in its own frame");
+        assert!(h.app.viewport.orbit_free.is_none());
+        let mut expected = h.app.cam;
+        let from = h.app.cam;
+        h.call("ui.drag", json!({"x0":800,"y0":500,"x1":850,"y1":520,"button":"middle","shift":true,"steps":20}));
+        expected.orbit(50.0, 20.0);
+        assert_ne!(h.app.cam, from);
+        assert!((h.app.cam.yaw - expected.yaw).abs() < 1e-9 && (h.app.cam.pitch - expected.pitch).abs() < 1e-9, "{:?}", h.app.cam);
+        let done = h.app.cam;
+        h.frames(30);
+        assert_eq!(h.app.cam, done, "nothing keeps easing after the pointer stops");
     }
 
     #[test]
     fn cube_faces_corners_roll_and_home_drive_the_shared_command() {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.prefs", json!({"navigator_style":"cube"}));
-        h.app.preferences.look_at_anim = false;
         let before = h.app.session.doc.to_json();
         for (name, direction) in [("top", Vec3::Z), ("front", -Vec3::Y), ("right", Vec3::X), ("top_front_right", Vec3::Z - Vec3::Y + Vec3::X)] {
             h.call("ui.view", json!({"view":"iso"}));
