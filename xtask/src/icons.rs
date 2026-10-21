@@ -8,7 +8,13 @@ pub fn run(root: &Path) -> Result<(), String> {
         vec!["-B", "assets/icons/ui/design/tools/icon_status.py", "--check"],
         vec!["-B", "-m", "unittest", "discover", "-s", "tests/tools", "-p", "test_icon*.py"],
     ] {
-        let mut command = Command::new("python3");
+        let mut command = if cfg!(windows) {
+            let mut c = Command::new("cmd.exe");
+            c.arg("/c").arg("python");
+            c
+        } else {
+            Command::new("python3")
+        };
         command.args(args).current_dir(root);
         super::run(command, "UI icon standards (Python 3.11+)")?;
     }
