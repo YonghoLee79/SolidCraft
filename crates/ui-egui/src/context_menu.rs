@@ -1810,8 +1810,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     if row.show(ui).clicked() && child.enabled {
                         picked = Some(child.clone());
                     }
-                    }
-                });
+                }
             });
         });
         inside |= sub.response.contains_pointer() || pointer.is_some_and(|p| sub.response.rect.contains(p));
