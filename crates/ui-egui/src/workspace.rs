@@ -413,6 +413,7 @@ pub fn feature_icon(k: &FeatureKind) -> Option<&'static str> {
     Some(match k {
         FeatureKind::SheetBase { .. } | FeatureKind::SheetContour { .. } | FeatureKind::SheetFlange { .. } => "flange",
         FeatureKind::SheetHem { .. } => "hem",
+        FeatureKind::SheetCornerJoin { .. } => "corner_join",
         FeatureKind::SheetFold { .. } => "fold",
         FeatureKind::SheetUnfold { refold: false, .. } => "unfold",
         FeatureKind::SheetUnfold { .. } => "refold",

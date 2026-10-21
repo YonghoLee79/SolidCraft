@@ -293,6 +293,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj
         app.dialog = Some(d);
         return;
     }
+    crate::dialogs_sheet::corner_overlay(app, painter, proj, &d);
     if let Kind::Measure { result: Some(r), show, .. } = &d.kind {
         measure_line(app, painter, proj, r, *show);
         app.dialog = Some(d);
@@ -523,6 +524,7 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
     if radius_spline_handles(app, ui, painter, proj, d) {
         dir = None;
     }
+    let flange = matches!(d.kind, Kind::Sheet(crate::dialogs_sheet::Sm::Flange { .. }));
     let Some((label, kind, value)) = d.primary() else { return };
     let len = all_span.or_else(|| {
         if to_span.is_some() && value.trim().is_empty() { Some(0.0) } else { app.session.doc.eval(value, kind).ok().filter(|v| v.is_finite()) }
@@ -551,7 +553,22 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
             box_at = ts + vec2(14.0, -12.0);
         }
     }
-    value_box(ui, label, value, box_at, focus || *value != before);
+    let mut show_box = true;
+    if flange && let Some(panel) = app.viewport.dialog_rect {
+        let label_width =
+            painter.layout_no_wrap(crate::i18n::tr_label(label).to_owned(), egui::FontId::proportional(t.font_label), t.text_dim).size().x;
+        let width = label_width + ui.spacing().item_spacing.x + 88.0;
+        if panel.intersects(egui::Rect::from_min_size(box_at, vec2(width, 40.0))) {
+            let left = panel.left() - width - 8.0;
+            show_box = left >= proj.rect.left() + 8.0;
+            if show_box {
+                box_at.x = left;
+            }
+        }
+    }
+    if show_box {
+        value_box(ui, label, value, box_at, focus || *value != before);
+    }
     if *value != before
         && let Kind::Extrude { all, .. } = &mut d.kind
     {
