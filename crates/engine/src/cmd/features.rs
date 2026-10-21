@@ -1590,12 +1590,19 @@ fn plane_offset(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(face) = p.get("base").filter(|b| b.get("face").is_some()) {
         let base = super::sketch::face::capture(s, face, cmd)?;
         super::sketch::face::capture_positions(s, &base)?;
-        let kind = FeatureKind::ConstructionPlane { plane: solidcraft_doc::PlaneRef::Offset { base: Box::new(base), distance: d } };
+        let kind = FeatureKind::ConstructionPlane {
+            plane: solidcraft_doc::PlaneRef::Offset { base: Box::new(base), distance: d },
+            size: Default::default(),
+        };
         // The capture is already in the authoring frame.
         return add_feature_in(s, p, kind, false);
     }
     let base = plane_param(s, p.get("base"), cmd)?;
-    add_feature(s, p, FeatureKind::ConstructionPlane { plane: solidcraft_doc::PlaneRef::Offset { base: Box::new(base), distance: d } })
+    add_feature(
+        s,
+        p,
+        FeatureKind::ConstructionPlane { plane: solidcraft_doc::PlaneRef::Offset { base: Box::new(base), distance: d }, size: Default::default() },
+    )
 }
 
 fn plane_angle(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1607,7 +1614,10 @@ fn plane_angle(s: &mut Session, p: &Value) -> Result<Value> {
     add_feature(
         s,
         p,
-        FeatureKind::ConstructionPlane { plane: solidcraft_doc::PlaneRef::AtAngle { base: Box::new(base), axis_origin, axis_dir, angle } },
+        FeatureKind::ConstructionPlane {
+            plane: solidcraft_doc::PlaneRef::AtAngle { base: Box::new(base), axis_origin, axis_dir, angle },
+            size: Default::default(),
+        },
     )
 }
 

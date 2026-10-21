@@ -66,7 +66,7 @@ pub(crate) fn icon_of(k: &FeatureKind) -> &'static str {
         FeatureKind::Pattern { pattern: solidcraft_engine::doc::PatternKind::Path { .. }, .. } => "pattern_path",
         FeatureKind::Pattern { .. } => "pattern_circ",
         FeatureKind::Mirror { .. } => "mirror",
-        FeatureKind::ConstructionPlane { plane } => construction_plane_icon(plane),
+        FeatureKind::ConstructionPlane { plane, .. } => construction_plane_icon(plane),
         FeatureKind::ConstructionAxis { def } => match def {
             AxisDef::ThroughFace { .. } => "axis_through_cylinder",
             AxisDef::NormalToFace { .. } => "axis_normal_to_face",
@@ -122,6 +122,7 @@ fn construction_plane_icon(plane: &PlaneRef) -> &'static str {
         PlaneRef::ThreePoints { .. } => "plane_three_points",
         PlaneRef::Tangent { .. } => "plane_tangent",
         PlaneRef::AlongPath { .. } => "plane_along_path",
+        PlaneRef::Offset { base, .. } if matches!(base.as_ref(), PlaneRef::ThreePoints { .. }) => "plane_three_points",
         PlaneRef::Perpendicular { .. } => "plane_perpendicular",
         _ => "plane",
     }
@@ -605,7 +606,7 @@ mod tests {
             ("along_path", PlaneRef::AlongPath { path: reference(), t: "0.5".into() }),
             ("perpendicular", PlaneRef::Perpendicular { plane: reference(), line: reference() }),
         ] {
-            cases.push((format!("construct.plane.{id}"), FeatureKind::ConstructionPlane { plane }));
+            cases.push((format!("construct.plane.{id}"), FeatureKind::ConstructionPlane { plane, size: Default::default() }));
         }
         for (id, feature) in cases {
             let command = solidcraft_engine::find_command(&id).unwrap();

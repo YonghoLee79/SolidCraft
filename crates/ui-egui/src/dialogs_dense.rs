@@ -36,6 +36,7 @@ pub(super) fn command(kind: &Kind) -> Option<&'static str> {
         Kind::Loft { .. } => Some("solid.loft"),
         Kind::Sweep { .. } => Some("solid.sweep"),
         Kind::Midplane => Some("construct.plane.midplane"),
+        Kind::ThreePointPlane { .. } => Some("construct.plane.three_points"),
         Kind::MeshConvert { .. } => Some("mesh.convert"),
         Kind::Construct { command, .. } => Some(command),
         Kind::PathPlane { .. } => Some("construct.plane.along_path"),
@@ -646,6 +647,14 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
         }
         Kind::MeshConvert { tolerance } => {
             form_row(ui, "Tolerance", |ui| enter |= field(ui, tolerance));
+        }
+        Kind::ThreePointPlane { offset, large } => {
+            enter |= expr_row(ui, "Offset", offset);
+            form_row(ui, "Display size", |ui| {
+                let mut i = usize::from(*large);
+                ui_kit::segmented(ui, &mut i, &["Normal", "Large (3×)"], Default::default());
+                *large = i == 1;
+            });
         }
         Kind::Construct { t: Some(t), .. } => {
             form_row(ui, "Position (0 to 1)", |ui| enter |= field(ui, t));

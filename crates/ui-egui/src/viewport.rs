@@ -155,6 +155,13 @@ pub struct ViewportState {
 /// Something under the cursor.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
+    /// Where two curves of one shown sketch cross (`a`, `b` are curve ids; `at` is sketch-local).
+    SketchCrossing {
+        sketch: u64,
+        a: String,
+        b: String,
+        at: Vec2,
+    },
     SketchPoint {
         sketch: u64,
         id: String,
@@ -1040,7 +1047,12 @@ pub fn construction_quads(app: &SolveApp) -> Vec<(String, Vec3, [Vec3; 4])> {
     solidcraft_engine::view::construction_planes(&app.session)
         .into_iter()
         .filter(|(_, n, _)| app.session.construction_visible(n))
-        .map(|(_, name, pl)| {
+        .map(|(id, name, pl)| {
+            let big = match app.session.doc.feature(id).map(|f| &f.kind) {
+                Some(solidcraft_engine::doc::FeatureKind::ConstructionPlane { size, .. }) => size.scale(),
+                _ => 1.0,
+            };
+            let h = h * big;
             let (o, x, y) = (pl.origin, pl.x * h, pl.y * h);
             (name, pl.normal(), [o - x - y, o + x - y, o + x + y, o - x + y])
         })
@@ -1217,6 +1229,9 @@ pub fn same_target(a: &Hit, b: &Hit) -> bool {
     match (a, b) {
         (Hit::SketchPoint { sketch: s, id: i, .. }, Hit::SketchPoint { sketch: t, id: j, .. })
         | (Hit::SketchCurve { sketch: s, id: i, .. }, Hit::SketchCurve { sketch: t, id: j, .. }) => s == t && i == j,
+        (Hit::SketchCrossing { sketch: s, a: a1, b: b1, at: p }, Hit::SketchCrossing { sketch: t, a: a2, b: b2, at: q }) => {
+            s == t && a1 == a2 && b1 == b2 && p.dist(*q) < 1e-9
+        }
         (Hit::Vertex { body: a, point: p }, Hit::Vertex { body: b, point: q }) => a == b && p.dist(*q) < 1e-9,
         (Hit::Edge { body: a, index: i, .. }, Hit::Edge { body: b, index: j, .. })
         | (Hit::Face { body: a, index: i, .. }, Hit::Face { body: b, index: j, .. }) => a == b && i == j,
@@ -1294,6 +1309,8 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
             }
         }
     }
+    // How close the nearest sketch point or vertex is, to rank crossings against them.
+    let mut pv_near = best.v.iter().map(|x| x.0).fold(f32::INFINITY, f32::min);
     hits.extend(best.hits());
     // Sketch curves (the active sketch wins ties).
     let mut bestc = Near::new(all);
@@ -1423,7 +1440,30 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
             bestv.offer(dd, Hit::Vertex { body: String::new(), point: Vec3::ZERO });
         }
     }
+    pv_near = bestv.v.iter().map(|x| x.0).fold(pv_near, f32::min);
     hits.extend(bestv.hits());
+    // Crossings of shown sketches, only where the active input takes them. Points and
+    // vertices win unless the crossing is nearer the cursor by more than 2 px.
+    let first_crossing = hits.len();
+    if app.dialog.as_ref().and_then(|d| d.active_input()).is_some_and(|i| i.accept & crate::selection::CROSSINGS != 0) {
+        let mut bestx = Near::new(all);
+        for sid in visible_sketches(app) {
+            let Some(ss) = st.sketch(sid) else { continue };
+            // A plane seen edge-on (or behind the eye) has no point under the cursor.
+            let Some(w) = ss.plane.intersect_ray(o, d) else { continue };
+            let Some(tol) = crate::gizmo::mm_per_px(proj, w).map(|m| 8.0 * m) else { continue };
+            let Some(c) = solidcraft_engine::crossing_near(&ss.sketch, ss.plane.to_local(w), tol, |_| true) else { continue };
+            let (Some(ca), Some(cb)) = (ss.sketch.curves.get(c.a), ss.sketch.curves.get(c.b)) else { continue };
+            let Some(sp) = proj.to_screen(ss.plane.to_world(c.at)) else { continue };
+            let dd = sp.distance(pos);
+            if bestx.wants(dd) {
+                bestx.offer(dd, Hit::SketchCrossing { sketch: sid, a: ca.id.clone(), b: cb.id.clone(), at: c.at });
+            }
+        }
+        let first_x = bestx.v.iter().map(|x| x.0).fold(f32::INFINITY, f32::min);
+        let at = if first_x + 2.0 < pv_near { 0 } else { first_crossing };
+        hits.splice(at..at, bestx.hits());
+    }
     hits.extend(beste.hits());
     // Origin axes.
     let size = origin_size(app.cam.half_height());
@@ -1738,6 +1778,7 @@ const AXIS_LEN: f64 = 1.8;
 /// The hit as a plain selection (no command filter).
 pub fn hit_sel(h: &Hit) -> Option<Sel> {
     Some(match h {
+        Hit::SketchCrossing { sketch, a, b, at } => Sel::SketchCrossing { sketch: *sketch, a: a.clone(), b: b.clone(), at: *at },
         Hit::SketchPoint { id, .. } => Sel::SketchPoint { id: id.clone() },
         Hit::SketchCurve { id, .. } => Sel::SketchCurve { id: id.clone() },
         Hit::Vertex { body, point } => Sel::Vertex { body: body.clone(), point: *point },
@@ -1780,6 +1821,8 @@ pub fn candidates(app: &SolveApp, hits: &[Hit]) -> Vec<(Hit, Sel)> {
 fn pick_allowed(app: &SolveApp, h: &Hit) -> bool {
     let off = |k: &str| app.ui.pick_off.iter().any(|x| x == k);
     match h {
+        // Crossings are only ever picked into a dialog input.
+        Hit::SketchCrossing { .. } => false,
         Hit::SketchCurve { .. } => !off("sketch") && !off("sketch_curves"),
         Hit::SketchPoint { .. } => !off("sketch") && !off("sketch_points"),
         Hit::Profile { .. } => !off("sketch"),
@@ -3498,7 +3541,7 @@ fn hover_highlight(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
                 }
             }
         }
-        Some(Hit::SketchPoint { sketch, at, .. }) => {
+        Some(Hit::SketchPoint { sketch, at, .. } | Hit::SketchCrossing { sketch, at, .. }) => {
             if let Some(ss) = st.sketch(*sketch)
                 && let Some(p) = proj.to_screen(ss.plane.to_world(*at))
             {
@@ -3989,6 +4032,21 @@ fn view_menu(app: &mut SolveApp, ui: &mut egui::Ui, button: Rect) -> bool {
 mod tests {
     use super::*;
     use crate::navigation::*;
+
+    #[test]
+    fn construction_quads_large_plane_is_three_times() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", serde_json::json!({"length": 40, "width": 30, "height": 20})).unwrap();
+        for (name, size) in [("Small", "default"), ("Big", "large")] {
+            let pts =
+                serde_json::json!({"a": {"point": [0, 0, 0]}, "b": {"point": [10, 0, 0]}, "c": {"point": [0, 10, 0]}, "name": name, "size": size});
+            h.app.run("construct.plane.three_points", pts).unwrap();
+        }
+        let quads = construction_quads(&h.app);
+        let diagonal = |n: &str| quads.iter().find(|q| q.0 == n).map(|q| q.2[0].dist(q.2[2])).unwrap();
+        assert!(diagonal("Small") > 0.0);
+        assert!((diagonal("Big") - 3.0 * diagonal("Small")).abs() < 1e-9, "{} vs {}", diagonal("Big"), diagonal("Small"));
+    }
 
     /// Every tangent seam Continuity Analysis reports keeps its colour while the pointer rests on
     /// a face (#1247): a 60 x 40 x 20 box with its four top edges rounded (6 mm) has eight, four

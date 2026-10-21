@@ -33,7 +33,7 @@ fn offset_plane_from_a_planar_face_follows_the_face() {
     assert!((above.normal().z.abs() - 1.0).abs() < 1e-9, "{above:?}");
     // Stored as an exact face attachment, not a frozen copy of the plane.
     let feature = s.doc.find_feature("Above").unwrap();
-    let FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { base, .. } } = &feature.kind else { panic!("offset plane") };
+    let FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { base, .. }, .. } = &feature.kind else { panic!("offset plane") };
     assert!(matches!(base.as_ref(), PlaneRef::Face { anchor: Some(_), .. }), "{base:?}");
 
     // Side face (x = 40), 3 mm out.

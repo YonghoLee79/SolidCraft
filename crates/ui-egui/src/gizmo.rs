@@ -220,7 +220,7 @@ fn hit(s: &Shapes, p: Pos2) -> Option<Handle> {
 }
 
 /// Millimetres per screen pixel at a point.
-fn mm_per_px(proj: &Proj, c: Vec3) -> Option<f64> {
+pub(crate) fn mm_per_px(proj: &Proj, c: Vec3) -> Option<f64> {
     let (_, view) = proj.ray(proj.to_screen(c)?);
     let u = view.any_perp().normalized()?;
     let (a, b) = (proj.to_screen(c)?, proj.to_screen(c + u)?);

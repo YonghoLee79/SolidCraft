@@ -1,15 +1,156 @@
-//! Where two sketch curves visibly cross: the shared finder behind the crossing snaps. It reuses
-//! the Trim/Break pair finders, so a crossing here is exactly a point Trim would cut at.
+//! Where two sketch curves visibly cross: the shared finder behind the crossing snaps and the
+//! references that resolve a crossing. It holds the Trim/Break pair finders, so a crossing here
+//! is exactly a point Trim would cut at.
+
+use std::f64::consts::TAU;
 
 use solidcraft_geom::{Seg2, Vec2};
-use solidcraft_sketch::Sketch;
 
-use super::sketch_freeform::{cuts_pair, pieces};
-use super::sketch_modify::cut_pair;
+use crate::{Shape, Sketch, intersections};
+
+/// Trim's tolerance for a point on a cut.
+pub const TRIM_TOL: f64 = 1e-7;
+
+/// Parameter of `p` on the bounded shape, ends included.
+pub fn on_bounded(sh: &Shape, p: Vec2) -> Option<f64> {
+    if sh.dist(p) > TRIM_TOL * 10.0 {
+        return None;
+    }
+    let t = sh.param(p);
+    let (t0, t1) = sh.range();
+    let slack = match *sh {
+        Shape::Line { a, b } => TRIM_TOL * 10.0 / a.dist(b).max(1e-12),
+        Shape::Round { r, .. } => TRIM_TOL * 10.0 / r.max(1e-12),
+    };
+    if sh.is_full() || (t >= t0 - slack && t <= t1 + slack) { Some(t) } else { None }
+}
+
+/// Points where curve `oi` (shape `other`) meets the shape `sh` of the curve being cut, with
+/// the parameter on `sh`. `ends` adds `other`'s end points touching `sh`; `sh_infinite` lets an
+/// infinite `sh` (#1359) meet `other` beyond its two points.
+pub fn cut_pair(sk: &Sketch, sh: &Shape, sh_infinite: bool, oi: usize, other: &Shape, ends: bool) -> Vec<(f64, Vec2)> {
+    let mut pts = intersections(sh, other);
+    if ends {
+        // Overlapping or touching ends that the analytic intersection misses (parallel lines).
+        if let Shape::Line { a, b } = *other {
+            pts.extend([a, b]);
+        }
+        if let Shape::Round { sweep, .. } = *other
+            && sweep < TAU - 1e-12
+        {
+            pts.extend([other.point(0.0), other.point(sweep)]);
+        }
+    }
+    // An infinite line (#1359) cuts wherever its line crosses, beyond its two points too.
+    let other_infinite = sk.curves.get(oi).is_some_and(|c| c.infinite);
+    let mut out: Vec<(f64, Vec2)> = Vec::new();
+    for q in pts {
+        if (other_infinite || on_bounded(other, q).is_some())
+            && let Some(t) = if sh_infinite { Some(sh.param(q)) } else { on_bounded(sh, q) }
+            && !out.iter().any(|(_, x)| x.dist(q) < TRIM_TOL * 10.0)
+        {
+            out.push((t, q));
+        }
+    }
+    out
+}
+
+/// Exact pieces of a free-form curve (polyline lines for the few kinds without them).
+pub fn pieces(sk: &Sketch, ci: usize) -> Vec<Seg2> {
+    sk.exact_segs(ci).unwrap_or_else(|| sk.segs(ci))
+}
+
+/// Position along the pieces (piece index + local parameter) closest to `p`, and the distance.
+pub fn locate(segs: &[Seg2], p: Vec2) -> (f64, f64) {
+    segs.iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = s.closest_param(p);
+            (i as f64 + t, s.point_at(t).dist(p))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap_or((0.0, f64::INFINITY))
+}
+
+pub fn point_at(segs: &[Seg2], u: f64) -> Vec2 {
+    let n = segs.len();
+    let i = (u.floor() as usize).min(n.saturating_sub(1));
+    segs.get(i).map(|s| s.point_at((u - i as f64).clamp(0.0, 1.0))).unwrap_or_default()
+}
+
+/// Closest point on curve `ci` (exact pieces, or the analytic shape).
+pub fn project(sk: &Sketch, ci: usize, p: Vec2) -> Vec2 {
+    if sk.curves.get(ci).is_some_and(|c| c.kind.is_freeform()) {
+        let segs = pieces(sk, ci);
+        let (u, _) = locate(&segs, p);
+        return point_at(&segs, u);
+    }
+    sk.shape(ci).map(|s| s.project(p)).unwrap_or(p)
+}
+
+fn seg_x(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
+    let (r, s) = (b - a, d - c);
+    let den = r.cross(s);
+    if den.abs() < 1e-15 {
+        return None;
+    }
+    let (t, u) = ((c - a).cross(s) / den, (c - a).cross(r) / den);
+    ((-1e-9..=1.0 + 1e-9).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u)).then(|| a + r * t)
+}
+
+/// Where curve `oi` meets curve `ci` (polyline crossings refined onto both exact curves; `ends`
+/// adds `oi`'s end points lying on `ci`): (position along `ci`, the point). `mine` is `ci`'s
+/// polyline and `segs` its exact pieces. `unbounded` lets an infinite line `oi` (#1359) meet `ci`
+/// beyond its two points.
+pub fn cuts_pair(sk: &Sketch, ci: usize, mine: &[Vec2], segs: &[Seg2], oi: usize, ends: bool, unbounded: bool) -> Vec<(f64, Vec2)> {
+    let tol = 1e-6;
+    let mut other = sk.polyline(oi);
+    if unbounded
+        && sk.curves.get(oi).is_some_and(|c| c.infinite)
+        && let Some(Shape::Line { a, b }) = sk.shape(oi)
+        && let Some(d) = (b - a).normalized()
+    {
+        other = vec![a - d * 1e7, b + d * 1e7];
+    }
+    let mut found: Vec<Vec2> = Vec::new();
+    for w in mine.windows(2) {
+        for v in other.windows(2) {
+            if let Some(x) = seg_x(w[0], w[1], v[0], v[1]) {
+                found.push(x);
+            }
+        }
+    }
+    // End points of the other curve lying on this one.
+    if ends && let Some((a, b)) = sk.curves.get(oi).and_then(|c| c.kind.ends()) {
+        for q in [a, b].iter().filter_map(|q| sk.point(*q)) {
+            if locate(segs, q).1 < 1e-6 {
+                found.push(q);
+            }
+        }
+    }
+    let mut out: Vec<(f64, Vec2)> = Vec::new();
+    for x in found {
+        // Refine onto both exact curves by alternating projection.
+        let mut q = x;
+        for _ in 0..40 {
+            let n = project(sk, ci, project(sk, oi, q));
+            if n.dist(q) < 1e-13 {
+                q = n;
+                break;
+            }
+            q = n;
+        }
+        let (u, d) = locate(segs, q);
+        if d < tol && project(sk, oi, q).dist(q) < tol && !out.iter().any(|(_, y)| y.dist(q) < tol * 10.0) {
+            out.push((u, q));
+        }
+    }
+    out
+}
 
 /// How near a crossing (sketch units) an existing point must be to be the point there: the
 /// crossing snap reuses it rather than adding one (Trim's own tolerance for a point on a cut).
-pub const AT_CROSSING: f64 = super::sketch_modify::TOL * 10.0;
+pub const AT_CROSSING: f64 = TRIM_TOL * 10.0;
 
 /// Tangent directions closer than this (sin of 0.5°) touch rather than cross.
 const PARALLEL: f64 = 0.008_726_6;
@@ -104,7 +245,7 @@ pub fn crossing_near(sk: &Sketch, at: Vec2, tol: f64, allowed: impl Fn(usize) ->
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use solidcraft_sketch::CurveKind;
+    use crate::CurveKind;
 
     use super::*;
 

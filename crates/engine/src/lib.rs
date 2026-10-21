@@ -145,6 +145,13 @@ pub enum Sel {
     Axis {
         name: String,
     },
+    /// Where curves `a` and `b` (ids) of a sketch cross, at `at` in sketch coordinates.
+    SketchCrossing {
+        sketch: u64,
+        a: String,
+        b: String,
+        at: solidcraft_geom::Vec2,
+    },
     /// A body vertex at a point.
     Vertex {
         body: String,

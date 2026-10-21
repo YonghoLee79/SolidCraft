@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::Session;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
-use solidcraft_engine::doc::{AxisRef, Direction, FeatureKind, FilletStyle, HoleKind, Operation, PatternKind, PlaneRef, ProfileSel, ThinSide};
+use solidcraft_engine::doc::{
+    AxisRef, Direction, FeatureKind, FilletStyle, HoleKind, Operation, PatternKind, PlaneRef, PlaneSize, ProfileSel, ThinSide,
+};
 use solidcraft_engine::geom::{Aabb3, Vec3};
 
 use crate::SolveApp;
@@ -106,11 +108,11 @@ crate::dialog_descriptor::dialog_descriptors! {
             angle: String = "5 deg".into() => angle.to_string(),
         } => json!({"angle": angle});
         OffsetPlane("construct.plane.offset", "OFFSET PLANE", [("Plane", PLANES | PLANAR_FACES, false)],
-            FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { distance, .. } }) {
+            FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { distance, .. }, .. }) {
             offset: String = "0 mm".into() => distance.to_string(),
         } => json!({"offset": offset});
         AnglePlane("construct.plane.at_angle", "PLANE AT ANGLE", [("Plane", PLANES, false), ("Axis", AXES, false)],
-            FeatureKind::ConstructionPlane { plane: PlaneRef::AtAngle { angle, .. } }) {
+            FeatureKind::ConstructionPlane { plane: PlaneRef::AtAngle { angle, .. }, .. }) {
             angle: String = "45 deg".into() => angle.to_string(),
         } => json!({"angle": angle});
         Scale("solid.scale", "SCALE", [("Bodies", BODIES, true)],
@@ -211,6 +213,11 @@ crate::dialog_descriptor::dialog_descriptors! {
             },
             /// Halfway between two planes or planar faces.
             Midplane,
+            /// The plane through three picked points, optionally offset, drawn at normal or large size.
+            ThreePointPlane {
+                offset: String,
+                large: bool,
+            },
             /// An imported mesh body rebuilt as editable faces (#3001).
             MeshConvert {
                 tolerance: String,
@@ -535,6 +542,7 @@ fn fits(a: Accept, s: &Sel) -> bool {
         Sel::Feature { .. } => a & selection::FEATURES != 0,
         // Sketch points go into a sketch command's own inputs (Entities, a base point), so a
         // box selection and a pre-selection reach them the way a click already does.
+        Sel::SketchCrossing { .. } => a & selection::CROSSINGS != 0,
         Sel::SketchPoint { .. } => a & (selection::POINTS | selection::SKETCH_POINTS) != 0,
         Sel::SketchConstraint { .. } | Sel::Occurrence { .. } | Sel::ExternalSketchCurve { .. } | Sel::ExternalSketchPoint { .. } => false,
     }
@@ -641,6 +649,13 @@ impl Dialog {
                 Kind::Midplane,
                 vec![SelInput::new("First plane", PLANES | PLANAR_FACES, false), SelInput::new("Second plane", PLANES | PLANAR_FACES, false)],
             ),
+            "construct.plane.three_points" => {
+                let pt = |label| SelInput::new(label, selection::VERTICES | selection::POINTS | selection::CROSSINGS, false);
+                Dialog::new(
+                    Kind::ThreePointPlane { offset: "0 mm".into(), large: false },
+                    vec![pt("First point"), pt("Second point"), pt("Third point")],
+                )
+            }
             id if construct_picks(id).is_some() => {
                 let (command, title, picks) = construct_picks(id)?;
                 let inputs = picks.iter().map(|(label, accept, _)| SelInput::new(label, *accept, false)).collect();
@@ -922,6 +937,7 @@ impl Dialog {
                 | Kind::Sweep { .. }
                 | Kind::PathPlane { .. }
                 | Kind::Midplane
+                | Kind::ThreePointPlane { .. }
                 | Kind::Construct { .. }
                 | Kind::Move { .. }
                 | Kind::Hole { .. }
@@ -961,6 +977,7 @@ impl Dialog {
             Kind::PatternCirc { angle, .. } => ("Angle", ValueKind::Angle, angle),
             Kind::Section { offset, .. } => ("Distance", ValueKind::Length, offset),
             Kind::OffsetPlane { offset } => ("Distance", ValueKind::Length, offset),
+            Kind::ThreePointPlane { offset, .. } => ("Offset", ValueKind::Length, offset),
             Kind::PathPlane { t, .. } => ("Position (0 to 1)", ValueKind::Unitless, t),
             Kind::Rib { thickness, .. } => ("Thickness", ValueKind::Length, thickness),
             Kind::Emboss { depth, .. } => ("Depth", ValueKind::Length, depth),
@@ -1620,6 +1637,7 @@ fn title(k: &Kind) -> &'static str {
         Kind::Measure { .. } => "MEASURE",
         Kind::Material { .. } => "PHYSICAL MATERIAL",
         Kind::Midplane => "MIDPLANE",
+        Kind::ThreePointPlane { .. } => "PLANE THROUGH THREE POINTS",
         Kind::MeshConvert { .. } => "CONVERT MESH",
         Kind::Construct { title, .. } => title,
         Kind::PathPlane { .. } => "PLANE ALONG PATH",
@@ -1680,6 +1698,8 @@ fn hint(inp: &SelInput) -> &'static str {
         "click an axis or sketch line"
     } else if a & CURVES != 0 {
         "click sketch curves"
+    } else if a & selection::CROSSINGS != 0 {
+        "click a vertex, sketch point or crossing"
     } else if a & (selection::POINTS | selection::SKETCH_POINTS) != 0 {
         "click sketch points"
     } else if a & BODIES != 0 {
@@ -1843,16 +1863,26 @@ fn placement_row(d: &mut Dialog, ui: &mut egui::Ui) {
 fn selection_label(s: &Session, item: &Sel) -> String {
     match item {
         Sel::SketchCurve { id } => id.clone(),
-        Sel::SketchPoint { id } => crate::sketch_modify_ui::point_id(s, item).unwrap_or(id).to_string(),
+        Sel::SketchPoint { id } => {
+            let shown = crate::sketch_modify_ui::point_id(s, item).unwrap_or(id);
+            // "<sketch id>:<point id>" from outside the active sketch reads "<point> · <sketch>".
+            let owner = shown.split_once(':').and_then(|(o, p)| Some((s.doc.feature(o.parse().ok()?)?, p)));
+            match owner {
+                Some((f, p)) => format!("{p} · {}", f.name),
+                None => shown.to_string(),
+            }
+        }
+        Sel::SketchCrossing { a, b, .. } => format!("{a} × {b}"),
         Sel::Plane { name } | Sel::Axis { name } | Sel::Body { name } => name.clone(),
         Sel::Face { body, index, .. } => format!("{body} · face {index}"),
         Sel::Edge { body, index, .. } => format!("{body} · edge {index}"),
         Sel::Feature { id } => s.doc.feature(*id).map(|f| f.name.clone()).unwrap_or_else(|| format!("Feature {id}")),
-        Sel::Vertex { body, point } if body.is_empty() => {
+        Sel::Vertex { body, point } if body.is_empty() && s.active_sketch.is_some() => {
             let state = s.world_state();
             let p = s.active_sketch.and_then(|id| state.sketch(id)).map(|sk| sk.plane.to_local(*point)).unwrap_or_default();
             format!("({:.2}, {:.2}) mm", p.x, p.y)
         }
+        Sel::Vertex { point, .. } => format!("({:.2}, {:.2}, {:.2}) mm", point.x, point.y, point.z),
         _ => format!("{item:?}"),
     }
 }
@@ -3343,6 +3373,16 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let b = plane_arg(app, sels(d, 1).first())?;
             ("construct.plane.midplane", json!({"a": a, "b": b}))
         }
+        Kind::ThreePointPlane { offset, large } => {
+            need(0, "the first point")?;
+            need(1, "the second point")?;
+            need(2, "the third point")?;
+            let a = point_arg(sels(d, 0).first())?;
+            let b = point_arg(sels(d, 1).first())?;
+            let c = point_arg(sels(d, 2).first())?;
+            let size = if *large { "large" } else { "default" };
+            ("construct.plane.three_points", json!({"a": a, "b": b, "c": c, "offset": offset, "size": size}))
+        }
         Kind::Construct { command, keys, t, .. } => {
             let mut p = serde_json::Map::new();
             for (i, key) in keys.iter().enumerate() {
@@ -3968,8 +4008,8 @@ fn emboss_face_sel(s: &Session, component: u64, face: &solidcraft_engine::doc::E
 }
 
 /// The construct tools that take only picks (#2474, #2494): their command, dialog title and
-/// inputs as (label, what it accepts, parameter). Offset Plane, Midplane, Plane Along Path and
-/// Plane At Angle have dialogs of their own.
+/// inputs as (label, what it accepts, parameter). Offset Plane, Midplane, Plane Along Path,
+/// Plane At Angle and Plane Through Three Points have dialogs of their own.
 fn construct_picks(id: &str) -> Option<(&'static str, &'static str, &'static [(&'static str, Accept, &'static str)])> {
     const PLANE: Accept = PLANES | PLANAR_FACES;
     const POINT: Accept = selection::VERTICES | selection::POINTS;
@@ -4004,11 +4044,6 @@ fn construct_picks(id: &str) -> Option<(&'static str, &'static str, &'static [(&
         "construct.plane.two_edges" => {
             ("construct.plane.two_edges", "PLANE THROUGH TWO EDGES", &[("First edge", LINE, "a"), ("Second edge", LINE, "b")])
         }
-        "construct.plane.three_points" => (
-            "construct.plane.three_points",
-            "PLANE THROUGH THREE POINTS",
-            &[("First point", POINT, "a"), ("Second point", POINT, "b"), ("Third point", POINT, "c")],
-        ),
         "construct.plane.tangent" => ("construct.plane.tangent", "TANGENT PLANE", &[("Face", FACES, "face")]),
         "construct.plane.perpendicular" => {
             ("construct.plane.perpendicular", "PERPENDICULAR PLANE", &[("Plane", PLANE, "plane"), ("Line", LINE, "line")])
@@ -4057,11 +4092,34 @@ fn plane_arg(app: &SolveApp, sel: Option<&Sel>) -> Result<Value, String> {
     }
 }
 
+/// A picked vertex, sketch point or sketch crossing as `construct.plane.*` takes a point.
+fn point_arg(sel: Option<&Sel>) -> Result<Value, String> {
+    match sel {
+        Some(Sel::Vertex { point, .. }) => Ok(json!({"vertex": pt3(*point)})),
+        Some(Sel::SketchPoint { id }) => {
+            let (sketch, point) = id.split_once(':').ok_or("the picked sketch point has no sketch")?;
+            let sketch: u64 = sketch.parse().map_err(|_| "the picked sketch point has no sketch")?;
+            Ok(json!({"sketch": sketch, "point": point}))
+        }
+        Some(Sel::SketchCrossing { sketch, a, b, at }) => {
+            Ok(json!({"type": "sketch_crossing", "sketch": sketch, "a": a, "b": b, "near": [at.x, at.y]}))
+        }
+        _ => Err("pick a vertex, sketch point or crossing".into()),
+    }
+}
+
 /// A stored construction reference back into a dialog pick.
 fn geo_sel(s: &Session, g: &solidcraft_engine::doc::construct::GeoRef) -> Option<Sel> {
     match g {
         solidcraft_engine::doc::construct::GeoRef::Plane { plane } => plane_sel(s, plane),
         solidcraft_engine::doc::construct::GeoRef::Face { at, .. } => face_sel(s, *at),
+        // Reopening never resolves the reference, so a plane whose point is gone still opens.
+        solidcraft_engine::doc::construct::GeoRef::Vertex { at, .. } => Some(Sel::Vertex { body: String::new(), point: *at }),
+        solidcraft_engine::doc::construct::GeoRef::SketchPoint { sketch, point } => Some(Sel::SketchPoint { id: format!("{sketch}:{point}") }),
+        solidcraft_engine::doc::construct::GeoRef::SketchCrossing { sketch, a, b, near } => {
+            Some(Sel::SketchCrossing { sketch: *sketch, a: a.clone(), b: b.clone(), at: *near })
+        }
+        // ponytail: a fixed `Point` (typed commands only) has no pick form, so its field stays empty.
         _ => None,
     }
 }
@@ -4100,6 +4158,25 @@ fn pt3(v: Vec3) -> Value {
 /// A point of expressions: numbers as numbers, expressions as strings.
 fn pt_expr(p: &solidcraft_engine::doc::PointExpr) -> Value {
     Value::Array(p.iter().map(|e| e.parse::<f64>().ok().filter(|x| x.is_finite()).map_or_else(|| json!(e), |x| json!(x))).collect())
+}
+
+/// The three points of a three-point plane, and its offset when it has one.
+fn three_points_of(
+    plane: &PlaneRef,
+) -> Option<(
+    &solidcraft_engine::doc::construct::GeoRef,
+    &solidcraft_engine::doc::construct::GeoRef,
+    &solidcraft_engine::doc::construct::GeoRef,
+    Option<&solidcraft_engine::doc::expr::Expr>,
+)> {
+    match plane {
+        PlaneRef::ThreePoints { a, b, c } => Some((a, b, c, None)),
+        PlaneRef::Offset { base, distance } => match base.as_ref() {
+            PlaneRef::ThreePoints { a, b, c } => Some((a, b, c, Some(distance))),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// A dialog that edits an existing feature, filled from it. The timeline is rolled back to just
@@ -4602,7 +4679,17 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { base, .. } } => {
+        FeatureKind::ConstructionPlane { plane, size } if three_points_of(plane).is_some() => {
+            let (a, b, c, offset) = three_points_of(plane)?;
+            let mut d = start("construct.plane.three_points")?;
+            d.kind =
+                Kind::ThreePointPlane { offset: offset.map(|e| e.to_string()).unwrap_or_else(|| "0 mm".into()), large: *size == PlaneSize::Large };
+            for (inp, g) in d.inputs.iter_mut().zip([a, b, c]) {
+                inp.items = geo_sel(s, g).into_iter().collect();
+            }
+            d
+        }
+        FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { base, .. }, .. } => {
             let mut d = start("construct.plane.offset")?;
             d.kind = Kind::simple_restore(&f.kind)?;
             if let Some(inp) = d.inputs.first_mut() {
@@ -4610,7 +4697,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::ConstructionPlane { plane: PlaneRef::AlongPath { path, t } } => {
+        FeatureKind::ConstructionPlane { plane: PlaneRef::AlongPath { path, t }, .. } => {
             let mut d = start("construct.plane.along_path")?;
             let (item, sketch) = match path.as_ref() {
                 solidcraft_engine::doc::construct::GeoRef::SketchCurve { sketch, curve } => (Sel::SketchCurve { id: curve.clone() }, Some(*sketch)),
@@ -4627,7 +4714,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::ConstructionPlane { plane: PlaneRef::Midplane { a, b } } => {
+        FeatureKind::ConstructionPlane { plane: PlaneRef::Midplane { a, b }, .. } => {
             let mut d = start("construct.plane.midplane")?;
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = geo_sel(s, a).into_iter().collect();
@@ -4637,7 +4724,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::ConstructionPlane { plane: PlaneRef::AtAngle { base, axis_origin, axis_dir, .. } } => {
+        FeatureKind::ConstructionPlane { plane: PlaneRef::AtAngle { base, axis_origin, axis_dir, .. }, .. } => {
             let mut d = start("construct.plane.at_angle")?;
             d.kind = Kind::simple_restore(&f.kind)?;
             if let Some(inp) = d.inputs.first_mut() {
@@ -5031,5 +5118,28 @@ mod awaiting_selection_tests {
         for failure in ["Offset distance must be positive", "the sketch has no curves", "Selection is not on this sketch", "", "sel"] {
             assert!(!awaiting_selection(failure), "{failure}");
         }
+    }
+}
+
+#[cfg(test)]
+mod chip_label_tests {
+    //! What a picked point's chip says in the Plane Through Three Points dialog.
+    use super::*;
+    use solidcraft_engine::Session;
+
+    #[test]
+    fn point_chips_name_what_was_picked() {
+        let mut s = Session::default();
+        s.execute("sketch.create", &json!({"plane": "XY", "name": "Outline"})).unwrap();
+        s.execute("sketch.point", &json!({"point": [30, 5], "id": "apex"})).unwrap();
+        s.execute("sketch.finish", &json!({})).unwrap();
+        let sid = s.doc.features.last().map(|f| f.id).unwrap();
+        let at = Vec3::new(1.0, 2.5, 20.0);
+        for body in ["Base", ""] {
+            assert_eq!(selection_label(&s, &Sel::Vertex { body: body.into(), point: at }), "(1.00, 2.50, 20.00) mm");
+        }
+        assert_eq!(selection_label(&s, &Sel::SketchPoint { id: format!("{sid}:apex") }), "apex · Outline");
+        let x = Sel::SketchCrossing { sketch: sid, a: "l1".into(), b: "l2".into(), at: Default::default() };
+        assert_eq!(selection_label(&s, &x), "l1 × l2");
     }
 }

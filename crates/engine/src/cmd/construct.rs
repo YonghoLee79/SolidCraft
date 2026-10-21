@@ -8,15 +8,14 @@
 
 use serde_json::Value;
 use solidcraft_doc::construct::{AxisDef, GeoRef, PointDef};
-use solidcraft_doc::{FeatureKind, PlaneRef};
+use solidcraft_doc::{FeatureKind, PlaneRef, PlaneSize};
 
 use super::CommandSpec;
 use super::features::{add_feature, check_expr, plane_param, sketch_id};
-use crate::params::{bad, req_expr, str_, vec3};
+use crate::params::{bad, req_expr, str_, vec2, vec3};
 use crate::{Result, Session};
 
-const REF: &str =
-    "{face|edge|vertex|point: [x,y,z]} | {plane: XY|name|{origin, normal}} | {axis: X|Y|Z|name} | {construct_point: name} | {sketch, point|curve}";
+const REF: &str = "{face|edge|vertex|point: [x,y,z]} | {plane: XY|name|{origin, normal}} | {axis: X|Y|Z|name} | {construct_point: name} | {sketch, point|curve|crossing: [curve, curve], near: [x,y]}";
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("construct.axis.through_cylinder", "Axis Through Cylinder/Cone/Torus", axis_face)
@@ -74,7 +73,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("construct.plane.three_points", "Plane Through Three Points", plane_points)
         .at("SOLID", "CONSTRUCT")
         .icon("plane_three_points")
-        .params("a, b, c: point refs; name?"),
+        .params("a, b, c: point refs; offset?: expr (length, default 0; negative goes to the other side); size?: \"default\" | \"large\" (how big it is drawn); name?"),
     CommandSpec::new("construct.plane.tangent", "Tangent Plane", plane_tangent)
         .at("SOLID", "CONSTRUCT")
         .icon("plane_tangent")
@@ -102,6 +101,12 @@ fn geo(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Result<GeoRef> 
         GeoRef::Vertex { at, edges: None }
     } else if let Some(sk) = v.get("sketch") {
         let sketch = sketch_id(s, Some(sk), cmd, what)?;
+        if let Some(c) = v.get("crossing") {
+            let ids = c.as_array().filter(|a| a.len() == 2).and_then(|a| Some((a.first()?.as_str()?, a.get(1)?.as_str()?)));
+            let near = v.get("near").and_then(vec2).ok_or_else(|| bad(cmd, format!("`{what}`: a crossing needs `near`: [x, y]")))?;
+            let (a, b) = ids.ok_or_else(|| bad(cmd, format!("`{what}`: `crossing` is a list of two curve ids")))?;
+            return Ok(GeoRef::SketchCrossing { sketch, a: a.to_string(), b: b.to_string(), near });
+        }
         match (str_(v, "point"), str_(v, "curve")) {
             (Some(point), _) => GeoRef::SketchPoint { sketch, point: point.to_string() },
             (None, Some(curve)) => GeoRef::SketchCurve { sketch, curve: curve.to_string() },
@@ -150,7 +155,7 @@ fn point(s: &mut Session, p: &Value, def: PointDef) -> Result<Value> {
 }
 
 fn plane(s: &mut Session, p: &Value, plane: PlaneRef) -> Result<Value> {
-    add_feature(s, p, FeatureKind::ConstructionPlane { plane })
+    add_feature(s, p, FeatureKind::ConstructionPlane { plane, size: Default::default() })
 }
 
 fn axis_face(s: &mut Session, p: &Value) -> Result<Value> {
@@ -232,7 +237,23 @@ fn plane_edges(s: &mut Session, p: &Value) -> Result<Value> {
 fn plane_points(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "construct.plane.three_points";
     let (a, b, c) = (geo(s, p.get("a"), cmd, "a")?, geo(s, p.get("b"), cmd, "b")?, geo(s, p.get("c"), cmd, "c")?);
-    plane(s, p, PlaneRef::ThreePoints { a: Box::new(a), b: Box::new(b), c: Box::new(c) })
+    let mut pl = PlaneRef::ThreePoints { a: Box::new(a), b: Box::new(b), c: Box::new(c) };
+    // A literal zero is plain three points; a parameter that happens to be 0 stays an offset so
+    // that the plane follows it.
+    if p.get("offset").is_some_and(|v| !v.is_null()) {
+        let d = req_expr(cmd, p, "offset")?;
+        check_expr(s, &d, solidcraft_doc::expr::Kind::Length, cmd, "offset")?;
+        let zero = solidcraft_doc::expr::is_literal(&d) && s.doc.eval(&d, solidcraft_doc::expr::Kind::Length).is_ok_and(|v| v == 0.0);
+        if !zero {
+            pl = PlaneRef::Offset { base: Box::new(pl), distance: d };
+        }
+    }
+    let size = match p.get("size").filter(|v| !v.is_null()).map(|v| v.as_str()) {
+        None | Some(Some("default")) => PlaneSize::Default,
+        Some(Some("large")) => PlaneSize::Large,
+        Some(_) => return Err(bad(cmd, "`size` must be \"default\" or \"large\"")),
+    };
+    add_feature(s, p, FeatureKind::ConstructionPlane { plane: pl, size })
 }
 
 fn plane_tangent(s: &mut Session, p: &Value) -> Result<Value> {

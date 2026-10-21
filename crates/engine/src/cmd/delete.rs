@@ -106,7 +106,9 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
             },
             Sel::Edge { .. } | Sel::Vertex { .. } => skip("edges and vertices are deleted with their body or face".into()),
             Sel::Profile { .. } => skip("a profile goes with its sketch".into()),
-            Sel::ExternalSketchCurve { .. } | Sel::ExternalSketchPoint { .. } => skip("edit the source sketch to delete its geometry".into()),
+            Sel::ExternalSketchCurve { .. } | Sel::ExternalSketchPoint { .. } | Sel::SketchCrossing { .. } => {
+                skip("edit the source sketch to delete its geometry".into())
+            }
         }
     }
     features.dedup();

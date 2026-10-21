@@ -6,6 +6,7 @@ use std::f64::consts::TAU;
 use serde_json::{Value, json};
 use solidcraft_doc::ProfileSel;
 use solidcraft_geom::Vec2;
+use solidcraft_sketch::crossing::{cut_pair, on_bounded};
 use solidcraft_sketch::{ConstraintKind, Curve, CurveKind, Shape, Sketch, intersections};
 
 use super::sketch::{add_c, edit, ids_of, solve_current};
@@ -103,7 +104,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params(concat!("entities: [ids], count, spacing; count2?, spacing2?; direction?, direction2?: sketch line ids (live references); dir?, dir2?: [x,y] vectors (defaults: sketch x, perpendicular to direction 1); alignment?, alignment2?: left|center|right (default right). Signed spacings reverse each direction. reversed?, reversed2?: bool (default false); reverses placement and the extra side of even centered totals. Quantities include the original. Adds associative pattern constraints. Returns pattern id. pattern?: existing pattern id to edit (omitted values retained; surviving instance ids retained)", created_doc!())),
 ];
 
-pub(super) const TOL: f64 = 1e-7;
+pub(super) const TOL: f64 = solidcraft_sketch::crossing::TRIM_TOL;
 const MAX_COPIES: usize = 500;
 
 fn curve_arg(sk: &Sketch, p: &Value, cmd: &str) -> Result<usize> {
@@ -118,50 +119,6 @@ fn curve_arg(sk: &Sketch, p: &Value, cmd: &str) -> Result<usize> {
         return Err(bad(cmd, "break the offset association before editing its output"));
     }
     Ok(c)
-}
-
-/// Parameter of `p` on the bounded shape, ends included.
-fn on_bounded(sh: &Shape, p: Vec2) -> Option<f64> {
-    if sh.dist(p) > TOL * 10.0 {
-        return None;
-    }
-    let t = sh.param(p);
-    let (t0, t1) = sh.range();
-    let slack = match *sh {
-        Shape::Line { a, b } => TOL * 10.0 / a.dist(b).max(1e-12),
-        Shape::Round { r, .. } => TOL * 10.0 / r.max(1e-12),
-    };
-    if sh.is_full() || (t >= t0 - slack && t <= t1 + slack) { Some(t) } else { None }
-}
-
-/// Points where curve `oi` (shape `other`) meets the shape `sh` of the curve being cut, with
-/// the parameter on `sh`. `ends` adds `other`'s end points touching `sh`; `sh_infinite` lets an
-/// infinite `sh` (#1359) meet `other` beyond its two points.
-pub(super) fn cut_pair(sk: &Sketch, sh: &Shape, sh_infinite: bool, oi: usize, other: &Shape, ends: bool) -> Vec<(f64, Vec2)> {
-    let mut pts = intersections(sh, other);
-    if ends {
-        // Overlapping or touching ends that the analytic intersection misses (parallel lines).
-        if let Shape::Line { a, b } = *other {
-            pts.extend([a, b]);
-        }
-        if let Shape::Round { sweep, .. } = *other
-            && sweep < TAU - 1e-12
-        {
-            pts.extend([other.point(0.0), other.point(sweep)]);
-        }
-    }
-    // An infinite line (#1359) cuts wherever its line crosses, beyond its two points too.
-    let other_infinite = sk.curves.get(oi).is_some_and(|c| c.infinite);
-    let mut out: Vec<(f64, Vec2)> = Vec::new();
-    for q in pts {
-        if (other_infinite || on_bounded(other, q).is_some())
-            && let Some(t) = if sh_infinite { Some(sh.param(q)) } else { on_bounded(sh, q) }
-            && !out.iter().any(|(_, x)| x.dist(q) < TOL * 10.0)
-        {
-            out.push((t, q));
-        }
-    }
-    out
 }
 
 /// Points where other curves meet curve `ci` (crossings and end points touching it), with the

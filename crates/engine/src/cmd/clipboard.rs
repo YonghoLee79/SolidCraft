@@ -142,7 +142,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         if let Some(t) = translate {
-            if let FeatureKind::Sketch { plane, .. } | FeatureKind::ConstructionPlane { plane } = &mut kind {
+            if let FeatureKind::Sketch { plane, .. } | FeatureKind::ConstructionPlane { plane, .. } = &mut kind {
                 explicit_planes(plane);
             }
             let mut m = solidcraft_doc::IDENTITY;

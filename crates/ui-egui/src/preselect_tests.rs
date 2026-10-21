@@ -2052,6 +2052,245 @@ fn midplane_asks_for_two_planes_then_builds_the_one_between_them() {
     assert!((pl.origin.z - 10.0).abs() < 1e-6, "{pl:?}");
 }
 
+/// Two lines crossing at (10, 10) in a shown sketch on XY, seen from the top, with a dialog whose
+/// active input accepts `accept`. Returns the harness and the crossing's screen position.
+fn crossing_scene(accept: crate::selection::Accept) -> (crate::scenario::Harness, [f64; 2]) {
+    let mut h = crate::scenario::Harness::new();
+    h.app.ui.show_origin = false;
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.run("sketch.line", json!({"points":[[0,0],[20,20]],"ids":["l1"]})).unwrap();
+    h.app.run("sketch.line", json!({"points":[[0,20],[20,0]],"ids":["l2"]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.call("ui.view", json!({"view":"top"}));
+    h.frames(3);
+    h.app.start("construct.plane.midplane");
+    h.frames(2);
+    h.app.dialog.as_mut().unwrap().inputs[0].accept = accept;
+    let at = h.at(&json!({"world":[10,10,0]})).unwrap();
+    (h, at)
+}
+
+fn crossing_hits(h: &crate::scenario::Harness, at: [f64; 2]) -> Vec<crate::viewport::Hit> {
+    let proj = crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap());
+    crate::viewport::pick(&h.app, &proj, egui::pos2(at[0] as f32, at[1] as f32))
+}
+
+fn crossing_of(hits: &[crate::viewport::Hit]) -> Option<&crate::viewport::Hit> {
+    hits.iter().find(|x| matches!(x, crate::viewport::Hit::SketchCrossing { .. }))
+}
+
+#[test]
+fn crossing_is_picked_only_when_asked() {
+    use crate::selection::{CROSSINGS, POINTS, VERTICES};
+    let (h, at) = crossing_scene(VERTICES | POINTS | CROSSINGS);
+    let hits = crossing_hits(&h, at);
+    match crossing_of(&hits) {
+        Some(crate::viewport::Hit::SketchCrossing { a, b, at, .. }) => {
+            assert!(at.dist(solidcraft_engine::geom::Vec2::new(10.0, 10.0)) < 1e-9, "{at:?}");
+            let mut ids = [a.as_str(), b.as_str()];
+            ids.sort();
+            assert_eq!(ids, ["l1", "l2"]);
+        }
+        _ => panic!("no crossing in {hits:?}"),
+    }
+    let (h, at) = crossing_scene(POINTS);
+    assert!(crossing_of(&crossing_hits(&h, at)).is_none());
+    let (mut h, at) = crossing_scene(VERTICES | POINTS | CROSSINGS);
+    h.app.dialog = None;
+    assert!(crossing_of(&crossing_hits(&h, at)).is_none());
+}
+
+#[test]
+fn point_at_crossing_wins() {
+    use crate::selection::{CROSSINGS, POINTS, VERTICES};
+    let (mut h, at) = crossing_scene(VERTICES | POINTS | CROSSINGS);
+    h.app.dialog = None;
+    h.app.run("sketch.edit", json!({"sketch": h.app.session.world_state().sketches[0].feature})).ok();
+    h.app.run("sketch.point", json!({"point":[10,10]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.frames(3);
+    h.app.start("construct.plane.midplane");
+    h.frames(2);
+    h.app.dialog.as_mut().unwrap().inputs[0].accept = VERTICES | POINTS | CROSSINGS;
+    let hits = crossing_hits(&h, at);
+    let pi = hits.iter().position(|x| matches!(x, crate::viewport::Hit::SketchPoint { .. })).expect("the point");
+    if let Some(ci) = hits.iter().position(|x| matches!(x, crate::viewport::Hit::SketchCrossing { .. })) {
+        assert!(pi < ci);
+    }
+    let (hit, _) = crate::viewport::candidate(&h.app, &hits).expect("a candidate");
+    assert!(matches!(hit, crate::viewport::Hit::SketchPoint { .. }), "{hit:?}");
+}
+
+#[test]
+fn crossing_nearer_than_a_point_wins() {
+    use crate::selection::{CROSSINGS, POINTS, VERTICES};
+    let (mut h, at) = crossing_scene(VERTICES | POINTS | CROSSINGS);
+    let one_mm = h.at(&json!({"world":[11,10,0]})).unwrap();
+    let px_per_mm = (one_mm[0] - at[0]).abs();
+    h.app.dialog = None;
+    h.app.run("sketch.edit", json!({"sketch": h.app.session.world_state().sketches[0].feature})).ok();
+    h.app.run("sketch.point", json!({"point":[10.0 + 6.0 / px_per_mm, 10]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.frames(3);
+    h.app.start("construct.plane.midplane");
+    h.frames(2);
+    h.app.dialog.as_mut().unwrap().inputs[0].accept = VERTICES | POINTS | CROSSINGS;
+    let hits = crossing_hits(&h, at);
+    assert!(hits.iter().any(|x| matches!(x, crate::viewport::Hit::SketchPoint { .. })), "the point is in reach: {hits:?}");
+    let (hit, _) = crate::viewport::candidate(&h.app, &hits).expect("a candidate");
+    assert!(matches!(hit, crate::viewport::Hit::SketchCrossing { .. }), "{hit:?}");
+}
+
+#[test]
+fn hidden_or_edge_on_sketch_offers_no_crossings() {
+    use crate::selection::{CROSSINGS, POINTS, VERTICES};
+    let (mut h, at) = crossing_scene(VERTICES | POINTS | CROSSINGS);
+    assert!(crossing_of(&crossing_hits(&h, at)).is_some(), "control: shown sketch offers it");
+    let sid = h.app.session.world_state().sketches[0].feature;
+    h.app.session.visibility.hidden_sketches.push(sid);
+    assert!(crossing_of(&crossing_hits(&h, at)).is_none(), "hidden");
+    h.app.session.visibility.hidden_sketches.clear();
+    h.call("ui.view", json!({"view":"front"}));
+    h.frames(3);
+    let at = h.at(&json!({"world":[10,10,0]})).unwrap();
+    assert!(crossing_of(&crossing_hits(&h, at)).is_none(), "edge-on");
+}
+
+/// A box, plus a shown sketch with two crossing lines and a point; returns the harness and the
+/// sketch's feature id.
+fn three_point_scene() -> (crate::scenario::Harness, u64) {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"name":"Base"})).unwrap();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.run("sketch.line", json!({"points":[[0,0],[20,20]],"ids":["l1"]})).unwrap();
+    h.app.run("sketch.line", json!({"points":[[0,20],[20,0]],"ids":["l2"]})).unwrap();
+    h.app.run("sketch.point", json!({"point":[30,5],"id":"apex"})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    let sid = h.app.session.world_state().sketches[0].feature;
+    (h, sid)
+}
+
+fn three_point_picks(sid: u64) -> [Sel; 3] {
+    [
+        Sel::Vertex { body: "Base".into(), point: Vec3::new(0.0, 0.0, 0.0) },
+        Sel::SketchPoint { id: format!("{sid}:apex") },
+        Sel::SketchCrossing { sketch: sid, a: "l1".into(), b: "l2".into(), at: solidcraft_engine::geom::Vec2::new(10.0, 10.0) },
+    ]
+}
+
+#[test]
+fn three_point_plane_asks_for_three_points() {
+    use crate::selection::{CROSSINGS, POINTS, VERTICES};
+    let mut h = crate::scenario::Harness::new();
+    h.app.start("construct.plane.three_points");
+    h.frames(2);
+    let d = h.app.dialog.as_ref().expect("a dialog");
+    match &d.kind {
+        Kind::ThreePointPlane { offset, large } => assert_eq!((offset.as_str(), *large), ("0 mm", false)),
+        _ => panic!("wrong dialog"),
+    }
+    assert_eq!(d.inputs.len(), 3);
+    assert!(d.inputs.iter().all(|i| i.accept == VERTICES | POINTS | CROSSINGS));
+    let status = h.app.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+    assert!(!status.contains("is required"), "{status}");
+}
+
+#[test]
+fn three_point_plane_advances_after_each_pick() {
+    let (mut h, sid) = three_point_scene();
+    h.app.start("construct.plane.three_points");
+    h.frames(2);
+    let picks = three_point_picks(sid);
+    for (i, p) in picks.into_iter().enumerate() {
+        assert_eq!(h.app.dialog.as_ref().unwrap().active, i);
+        let s = &h.app.session;
+        h.app.dialog.as_mut().unwrap().pick(s, p);
+    }
+}
+
+#[test]
+fn three_point_plane_from_vertex_point_and_crossing() {
+    use solidcraft_engine::doc::{FeatureKind, PlaneRef, PlaneSize};
+    let (mut h, sid) = three_point_scene();
+    h.app.start("construct.plane.three_points");
+    h.frames(2);
+    for (i, p) in three_point_picks(sid).into_iter().enumerate() {
+        h.app.dialog.as_mut().unwrap().inputs[i].items = vec![p];
+    }
+    if let Kind::ThreePointPlane { offset, large } = &mut h.app.dialog.as_mut().unwrap().kind {
+        *offset = "5 mm".into();
+        *large = true;
+    }
+    h.frames(2);
+    h.step(&json!({"key":"Enter"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog.as_ref().and_then(|d| d.error.clone()));
+    let f = h.app.session.doc.features.last().unwrap();
+    match &f.kind {
+        FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { base, .. }, size } => {
+            assert!(matches!(base.as_ref(), PlaneRef::ThreePoints { .. }), "{base:?}");
+            assert_eq!(*size, PlaneSize::Large);
+        }
+        k => panic!("{k:?}"),
+    }
+}
+
+#[test]
+fn three_point_plane_keeps_its_values_when_reopened_and_confirmed() {
+    use solidcraft_engine::doc::{FeatureKind, PlaneRef, PlaneSize};
+    let (mut h, sid) = three_point_scene();
+    let [a, b, c] = three_point_picks(sid);
+    let r = |p: &Sel| match p {
+        Sel::Vertex { point, .. } => json!({"vertex":[point.x, point.y, point.z]}),
+        Sel::SketchPoint { .. } => json!({"sketch": sid, "point": "apex"}),
+        _ => json!({"type":"sketch_crossing","sketch":sid,"a":"l1","b":"l2","near":[10,10]}),
+    };
+    h.app.run("construct.plane.three_points", json!({"a": r(&a), "b": r(&b), "c": r(&c), "offset":"5 mm", "size":"large"})).unwrap();
+    let id = h.app.session.doc.features.last().unwrap().id;
+    let parts = |h: &crate::scenario::Harness| match &h.app.session.doc.feature(id).unwrap().kind {
+        FeatureKind::ConstructionPlane { plane: PlaneRef::Offset { base, distance }, size } => match base.as_ref() {
+            PlaneRef::ThreePoints { a, b, c } => (format!("{a:?} {b:?} {c:?}"), distance.to_string(), *size),
+            p => panic!("{p:?}"),
+        },
+        k => panic!("{k:?}"),
+    };
+    let before = parts(&h);
+    assert_eq!(before.1, "5 mm");
+    assert_eq!(before.2, PlaneSize::Large);
+    h.app.edit_feature(id);
+    h.frames(2);
+    h.step(&json!({"key":"Enter"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog.as_ref().and_then(|d| d.error.clone()));
+    assert_eq!(parts(&h), before);
+}
+
+#[test]
+fn three_point_plane_reopens_with_its_values() {
+    let (mut h, sid) = three_point_scene();
+    let [a, b, c] = three_point_picks(sid);
+    let r = |p: &Sel| match p {
+        Sel::Vertex { point, .. } => json!({"vertex":[point.x, point.y, point.z]}),
+        Sel::SketchPoint { .. } => json!({"sketch": sid, "point": "apex"}),
+        _ => json!({"type":"sketch_crossing","sketch":sid,"a":"l1","b":"l2","near":[10,10]}),
+    };
+    h.app.run("construct.plane.three_points", json!({"a": r(&a), "b": r(&b), "c": r(&c), "offset":"5 mm", "size":"large"})).unwrap();
+    let id = h.app.session.doc.features.last().unwrap().id;
+    let d = crate::dialogs::for_feature(&h.app, id, None).unwrap();
+    match &d.kind {
+        Kind::ThreePointPlane { offset, large } => assert_eq!((offset.as_str(), *large), ("5 mm", true)),
+        _ => panic!("wrong dialog"),
+    }
+    assert!(d.inputs.iter().all(|i| i.items.len() == 1));
+    assert!(matches!(d.inputs[0].items[0], Sel::Vertex { .. }));
+    assert!(matches!(d.inputs[1].items[0], Sel::SketchPoint { .. }));
+    assert!(matches!(d.inputs[2].items[0], Sel::SketchCrossing { .. }));
+    // The crossing's curve is gone: the plane has an error, yet it still opens with all three picks.
+    h.app.run("sketch.edit", json!({"sketch": sid})).unwrap();
+    h.app.run("sketch.delete", json!({"entities":["l2"]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    let d = crate::dialogs::for_feature(&h.app, id, None).expect("opens despite the error");
+    assert!(d.inputs.iter().all(|i| i.items.len() == 1), "{:?}", d.inputs.iter().map(|i| i.items.len()).collect::<Vec<_>>());
+}
+
 /// #2474, #2494: every construct tool asks for what it needs. Started from the toolbar with
 /// nothing selected, none of them runs its command and reports that `a` (or `face`, `edge`…)
 /// is required; a construct command added later without a dialog fails here too.

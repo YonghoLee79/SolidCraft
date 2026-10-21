@@ -78,7 +78,9 @@ fn a_sketch_on_a_fixed_plane_costs_the_same_in_a_large_placed_design() {
     // A construction plane, then sketches on the origin planes, on an offset of one and on the
     // construction plane, as commands make them one after another: no body is moved and no
     // file digested again.
-    let plane = doc.add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Origin { name: "XZ".into() } }, Some("Datum")).unwrap();
+    let plane = doc
+        .add_feature(FeatureKind::ConstructionPlane { plane: PlaneRef::Origin { name: "XZ".into() }, size: Default::default() }, Some("Datum"))
+        .unwrap();
     assert_eq!(counted(|| model.evaluate(&doc)), Counts::default(), "construction plane");
     assert!(model.result(plane).unwrap().error.is_none());
     let datum = doc.feature(plane).unwrap().name.clone();
