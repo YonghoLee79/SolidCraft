@@ -110,6 +110,10 @@ fn usable(app: &SolveApp) -> bool {
 /// The edges seen within reach of `pos`, when a tile of this view is in; otherwise `None`, and
 /// a tile around `pos` is asked for.
 pub(crate) fn edges_near(app: &SolveApp, proj: &Proj, pos: Pos2, st: &Arc<ModelState>) -> Option<NearEdges> {
+    // The CPU indexes apply the same section predicate as the viewport shader.
+    if crate::viewport::section_plane(app).is_some() {
+        return None;
+    }
     if !usable(app) {
         return None;
     }
