@@ -1816,7 +1816,7 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     if shown {
         crate::edit_clipboard::handle(app, ctx);
     } else {
-        crate::edit_clipboard::flush(ctx);
+        crate::edit_clipboard::flush(app, ctx);
     }
     for (k, repeat) in keys {
         use egui::Key;
@@ -1841,8 +1841,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 _ if !shown => {}
                 Key::Z => drop(app.run("edit.undo", json!({}))),
                 Key::Y => drop(app.run("edit.redo", json!({}))),
-                // Copy, Cut and Paste (`edit_clipboard::handle`).
-                Key::C | Key::X | Key::V if !mods.shift && !mods.alt => {}
+                // Copy, Cut and Paste, and Paste New with Shift (`edit_clipboard::handle`).
+                Key::C | Key::X if !mods.shift && !mods.alt => {}
+                Key::V if !mods.alt => {}
                 Key::S => save(app),
                 _ => crate::keymap::press(app, &crate::keymap::key_name(k, mods)),
             }
@@ -1887,6 +1888,7 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 } else if app.dialog.is_some() {
                     crate::dialogs::cancel(app);
                 } else if !app.session.selection.is_empty() || app.session.active_sketch.is_none() {
+                    crate::edit_clipboard::drop_cut(app);
                     app.tree.picked_joints.clear();
                     let _ = app.run("select.clear", json!({}));
                 }

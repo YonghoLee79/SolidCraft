@@ -65,7 +65,7 @@ pub use eval::{
     state_in_frame, state_in_frame_at, suggested_thread, tangent_face_chain, through_all_distance, world_state, world_state_reusing,
 };
 pub use expr::Expr;
-pub use names::{BodyName, FeatureName, SketchId};
+pub use names::{BodyName, FeatureName, SketchId, copy_name};
 pub use params::{ParamRow, ParamUser, cycles};
 pub use points::{Dir, FacePick, Position, plain};
 pub use solidcraft_kernel as kernel;

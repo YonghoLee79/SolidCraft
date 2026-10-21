@@ -35,6 +35,12 @@ struct DocView {
     hidden_profiles: Vec<u64>,
     shown_dims: Vec<u64>,
     locked_bodies: Vec<String>,
+    /// Bodies and components copied or cut in this design: their names and paths mean nothing
+    /// in another one (copied features stay with the session the same way).
+    copied_bodies: Vec<String>,
+    copied_placements: Vec<Vec<u64>>,
+    cut_bodies: Vec<String>,
+    cut_placements: Vec<Vec<u64>>,
 }
 
 impl DocSlot {
@@ -89,6 +95,10 @@ fn take_view(app: &mut SolveApp) -> DocView {
         hidden_profiles: std::mem::take(&mut u.hidden_profiles),
         shown_dims: std::mem::take(&mut u.shown_dims),
         locked_bodies: std::mem::take(&mut u.locked_bodies),
+        copied_bodies: std::mem::take(&mut app.copied_bodies),
+        copied_placements: std::mem::take(&mut app.copied_placements),
+        cut_bodies: std::mem::take(&mut app.cut_bodies),
+        cut_placements: std::mem::take(&mut app.cut_placements),
     }
 }
 
@@ -100,6 +110,10 @@ fn put_view(app: &mut SolveApp, v: DocView) {
     u.hidden_profiles = v.hidden_profiles;
     u.shown_dims = v.shown_dims;
     u.locked_bodies = v.locked_bodies;
+    app.copied_bodies = v.copied_bodies;
+    app.copied_placements = v.copied_placements;
+    app.cut_bodies = v.cut_bodies;
+    app.cut_placements = v.cut_placements;
 }
 
 /// Put `slot` into the app and return what was there.
