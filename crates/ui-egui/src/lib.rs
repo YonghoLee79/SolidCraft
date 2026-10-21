@@ -951,6 +951,10 @@ impl SolveApp {
             self.finish_sketch();
             return;
         }
+        if id == "sketch.cancel" {
+            self.cancel_sketch();
+            return;
+        }
         // Press Pull: edges get a fillet, faces and profiles an extrude.
         if id == "solid.press_pull" {
             let edges = self.session.selection.iter().any(|s| matches!(s, solidcraft_engine::Sel::Edge { .. }));
@@ -1100,13 +1104,25 @@ impl SolveApp {
     /// Finish the active sketch: stop editing, restore the history marker Edit Sketch moved and
     /// return to the view from before the sketch.
     pub fn finish_sketch(&mut self) {
+        self.leave_sketch("sketch.finish");
+    }
+
+    /// Cancel Sketch (#3838): leave the sketch without its changes. When the command refuses (the
+    /// undo history no longer leads back to where the sketch was opened), the sketch stays open.
+    pub fn cancel_sketch(&mut self) {
+        self.leave_sketch("sketch.cancel");
+    }
+
+    fn leave_sketch(&mut self, command: &str) {
         sketch_text_move::cancel_drag(self);
         if sketch_text::editing(self) || self.dialog.as_ref().is_some_and(|d| matches!(d.kind, dialogs::Kind::TextMove(_))) {
             dialogs::cancel(self);
         }
         dim_view::cancel();
         self.tool = None;
-        let _ = self.run("sketch.finish", json!({}));
+        if self.run(command, json!({})).is_err() && command != "sketch.finish" {
+            return;
+        }
         if let Some(marker) = self.pre_sketch_marker.take() {
             self.restore_marker(marker);
         }
