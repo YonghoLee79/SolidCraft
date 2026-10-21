@@ -361,6 +361,9 @@ preference_settings! {
     zoom_reverse: bool = false, 1 => check("Reverse zoom direction");
     /// What an orbit turns around.
     orbit_around: OrbitAround = OrbitAround::default(), 1;
+    /// Free orbit: orbiting carries on past straight up and down, turning the view upside down
+    /// (off: it stops there, the up axis upright).
+    free_orbit: bool = false, 1 => check("Free orbit", "Orbiting carries on past straight up and down, turning the view upside down; off, the up axis stays upright");
     /// The cursor preference as releases before the origin option saved it (`true` = the point
     /// under the cursor). [`migrate`] folds it into `orbit_around` when saved preferences are
     /// read, so an existing choice survives the upgrade; this version only writes `false`.
@@ -1217,6 +1220,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                     app.preferences.orbit_around = *mode;
                 }
             });
+            setting::free_orbit(app, ui);
             ui_kit::row(ui, app.tr_label("Middle double-click"), |ui| {
                 let current = MiddleDoubleClick::of(app);
                 ui_kit::dropdown_menu(ui, "pref_middle_double_click", crate::i18n::tr_label(current.label()), |ui| {
@@ -2169,6 +2173,17 @@ mod tests {
         let mut other = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         other.load_prefs(&app.prefs());
         assert_eq!(other.preferences.nav, OPENSCAD_NAV);
+    }
+
+    #[test]
+    fn free_orbit_defaults_off_and_persists() {
+        assert!(!serde_json::from_value::<Prefs>(json!({})).unwrap().free_orbit);
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        set(&mut app, &json!({"free_orbit": true})).unwrap();
+        assert!(app.preferences.free_orbit);
+        let mut other = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        other.load_prefs(&app.prefs());
+        assert!(other.preferences.free_orbit);
     }
 
     #[test]

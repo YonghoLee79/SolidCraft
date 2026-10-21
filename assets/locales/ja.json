@@ -1441,6 +1441,8 @@
   "ui.flip": "反転",
   "ui.format": "形式",
   "ui.frame_rate": "フレームレート",
+  "ui.free_orbit": "自由回転",
+  "ui.free_orbit_tip": "真上や真下を越えても回転を続け、ビューが上下逆さまになります。オフにすると上方向の軸は直立したままです",
   "ui.front": "正面",
   "ui.fully_constrained": "完全拘束",
   "ui.function": "関数",

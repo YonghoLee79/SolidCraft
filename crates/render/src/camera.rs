@@ -347,18 +347,110 @@ impl Camera {
         self.target = self.target - r * (dx * k) + u * (dy * k);
     }
     /// Orbit by pixel deltas. The model follows the cursor: dragging right turns the side
-    /// facing the viewer to the right.
+    /// facing the viewer to the right. The elevation stops just short of straight up and down.
     pub fn orbit(&mut self, dx: f64, dy: f64) {
-        let lim = std::f64::consts::FRAC_PI_2 - 1e-4;
-        self.yaw = (self.yaw + dx * 0.008) % std::f64::consts::TAU;
-        self.pitch = (self.pitch + dy * 0.008).clamp(-lim, lim);
+        self.orbit_with(dx, dy, false);
+    }
+    /// [`Camera::orbit`], or with `over_poles` a turn that carries on past straight up or down.
+    /// Past the pole the view is upside down: the pitch folds back within ±π/2 and the heading
+    /// and roll turn half round ([`Camera::flipped`]), so the stored angles keep their range. Upside
+    /// down, both drags are mirrored so the model still follows the cursor.
+    pub fn orbit_with(&mut self, dx: f64, dy: f64, over_poles: bool) {
+        use std::f64::consts::{FRAC_PI_2, PI, TAU};
+        if !over_poles {
+            let lim = FRAC_PI_2 - 1e-4;
+            self.yaw = (self.yaw + dx * 0.008) % TAU;
+            self.pitch = (self.pitch + dy * 0.008).clamp(-lim, lim);
+            return;
+        }
+        let s = if self.upside_down() { -1.0 } else { 1.0 };
+        self.yaw = (self.yaw + s * dx * 0.008) % TAU;
+        let p = (self.pitch + s * dy * 0.008 + PI).rem_euclid(TAU) - PI;
+        self.pitch = if p.is_finite() { p } else { self.pitch };
+        if self.pitch.abs() > FRAC_PI_2 {
+            *self = self.flipped();
+        }
     }
     /// Orbit by pixel deltas about `pivot`: the camera turns rigidly about it, so the pivot keeps
     /// its place in the camera's frame and on screen, in perspective as in parallel views.
     pub fn orbit_about(&mut self, dx: f64, dy: f64, pivot: Vec3) {
+        self.orbit_about_with(dx, dy, pivot, false);
+    }
+    /// [`Camera::orbit_about`], past the poles with `over_poles` (see [`Camera::orbit_with`]).
+    pub fn orbit_about_with(&mut self, dx: f64, dy: f64, pivot: Vec3, over_poles: bool) {
         let keep = self.frame_coords(pivot);
-        self.orbit(dx, dy);
+        self.orbit_with(dx, dy, over_poles);
         self.place(pivot, keep);
+    }
+    /// Turn the view about its own axes, in radians: `tilt` about the picture's right, `spin`
+    /// about its up and `roll` about the viewing direction, each the way an upright view's pitch,
+    /// yaw and roll turn it. With no world axis involved the turn carries on over straight up and
+    /// down and keeps its way however the view is rolled; the angles describe the result with
+    /// the pitch within ±π/2.
+    pub fn turn_in_view(&mut self, tilt: f64, spin: f64, roll: f64) {
+        if !(tilt.is_finite() && spin.is_finite() && roll.is_finite()) {
+            return;
+        }
+        let (r, u, b) = self.basis();
+        self.turn_by(r * -tilt + u * -spin + b * roll);
+    }
+    /// Turn the view rigidly by the world rotation vector `w` (its axis, its length in radians,
+    /// right-handed), about the target.
+    pub fn turn_by(&mut self, w: Vec3) {
+        if !w.is_finite() {
+            return;
+        }
+        let (r, _, b) = self.basis();
+        let (Some(k), a) = (w.normalized(), w.len()) else { return };
+        let (s, c) = a.sin_cos();
+        let turn = |v: Vec3| v * c + k.cross(v) * s + k * (k.dot(v) * (1.0 - c));
+        self.set_axes(turn(r), turn(b));
+    }
+    /// The world rotation vector that turns this view's orientation into `other`'s the shorter
+    /// way ([`Camera::turn_by`] with it gives `other`'s orientation). No angle is involved, so it
+    /// is as smooth straight up and down as anywhere.
+    pub fn turn_to(&self, other: &Camera) -> Vec3 {
+        let (q, p) = (self.orientation(), other.orientation());
+        // p · q⁻¹, the half turn with the smaller angle.
+        let w = p.w * q.w + p.x * q.x + p.y * q.y + p.z * q.z;
+        let v = Vec3::new(
+            -p.w * q.x + p.x * q.w - p.y * q.z + p.z * q.y,
+            -p.w * q.y + p.x * q.z + p.y * q.w - p.z * q.x,
+            -p.w * q.z - p.x * q.y + p.y * q.x + p.z * q.w,
+        );
+        let (w, v) = if w < 0.0 { (-w, v * -1.0) } else { (w, v) };
+        let s = v.len();
+        if s < 1e-12 {
+            return v * 2.0;
+        }
+        v * (2.0 * s.atan2(w) / s)
+    }
+    /// Point the camera's right along `right` and its back along `back` (orthonormal), keeping
+    /// the heading straight up or down, where any heading will do with the matching roll.
+    fn set_axes(&mut self, right: Vec3, back: Vec3) {
+        let Some(fb) = self.up.to_frame(back).normalized() else { return };
+        // atan2, not asin: exact near straight up and down, where asin loses half the digits.
+        let mut level = Camera { pitch: fb.z.atan2(fb.x.hypot(fb.y)), roll: 0.0, ..*self };
+        if fb.x.hypot(fb.y) > 1e-9 {
+            level.yaw = (-fb.x).atan2(-fb.y);
+        }
+        let (r0, u0, _) = level.basis();
+        let roll = right.dot(u0).atan2(right.dot(r0));
+        if level.pitch.is_finite() && level.yaw.is_finite() && roll.is_finite() {
+            *self = Camera { roll, ..level };
+        }
+    }
+    /// Whether the picture's up points away from the world's up (a roll past a quarter turn
+    /// either way, as an orbit over a pole leaves it).
+    pub fn upside_down(&self) -> bool {
+        self.roll.cos() < 0.0
+    }
+    /// The same view described from the other side of the pole: the pitch reflected about ±π/2
+    /// (out of or back into ±π/2), the heading and the roll half a turn round.
+    pub fn flipped(&self) -> Camera {
+        use std::f64::consts::{PI, TAU};
+        let pitch = if self.pitch >= 0.0 { PI - self.pitch } else { -PI - self.pitch };
+        Camera { yaw: (self.yaw + PI) % TAU, pitch, roll: (self.roll + PI) % TAU, ..*self }
     }
     /// Where `p` lies from the target along the camera's right, up and back axes.
     pub fn frame_coords(&self, p: Vec3) -> Vec3 {
@@ -467,6 +559,120 @@ mod tests {
                 assert!((cam.eye() - pivot).len() > 1.0);
             }
         }
+    }
+
+    /// Over the poles, a vertical drag turns the view right round: smoothly (no step turns
+    /// the view by more than the step's angle), with the pitch kept within ±π/2, upside down
+    /// between the top and the bottom, and level again after a whole turn. Without it the turn
+    /// stops short of straight up.
+    #[test]
+    fn orbit_over_poles_turns_right_round() {
+        let mut c = Camera { distance: 50.0, ..Default::default() };
+        c.set_view(StandardView::Front);
+        let start = c;
+        let steps = 397; // never exactly on a pole, where either way up is right
+        let step = std::f64::consts::TAU / 0.008 / f64::from(steps);
+        for i in 1..=steps {
+            let before = c;
+            c.orbit_with(0.0, step, true);
+            let turned = f64::from(i) * step * 0.008;
+            let expected = Camera { pitch: turned, ..start };
+            assert!(c.back().dist(expected.back()) < 1e-9 && c.basis().1.dist(expected.basis().1) < 1e-9, "step {i}: {c:?}");
+            assert!(c.pitch.abs() <= std::f64::consts::FRAC_PI_2 && c.is_valid());
+            assert!(c.back().dist(before.back()) < step * 0.008 * 1.01);
+            let past_top = turned > std::f64::consts::FRAC_PI_2 + 1e-9 && turned < 1.5 * std::f64::consts::PI - 1e-9;
+            assert_eq!(c.upside_down(), past_top, "step {i} at {turned}");
+        }
+        assert!(c.back().dist(start.back()) < 1e-9 && c.basis().0.dist(start.basis().0) < 1e-9);
+        let mut held = start;
+        held.orbit_with(0.0, 1000.0, false);
+        assert!(held.pitch < std::f64::consts::FRAC_PI_2 && !held.upside_down());
+    }
+
+    /// How the view turned from `a` to `b`, in `a`'s own frame: where the back moved along `a`'s
+    /// right and up, and how far the right moved toward `a`'s up.
+    fn step_in_view(a: &Camera, b: &Camera) -> [f64; 3] {
+        let (r, u, _) = a.basis();
+        let (r2, _, b2) = b.basis();
+        [b2.dot(r), b2.dot(u), r2.dot(u)]
+    }
+
+    /// Turning about the view's own axes, tilting and spinning (and rolling) at once, carries on
+    /// over straight up and down at the same rate the same way: every step is the same turn in
+    /// the view's frame (no bounce at the pole, none when the roll passes a quarter turn), and the
+    /// pitch stays within ±π/2. Upright and level, a small turn is the orbit's.
+    #[test]
+    fn turn_in_view_keeps_its_way_over_the_poles() {
+        for (tilt, spin, roll) in [(0.02, 0.0, 0.0), (0.02, 0.013, 0.0), (0.017, -0.011, 0.006), (0.0, 0.02, 0.009)] {
+            for up in [UpAxis::Z, UpAxis::Y] {
+                let mut c = Camera { distance: 50.0, up, ..Default::default() };
+                c.set_view(StandardView::Front);
+                let mut prev = c;
+                c.turn_in_view(tilt, spin, roll);
+                let first = step_in_view(&prev, &c);
+                for i in 0..2000 {
+                    prev = c;
+                    c.turn_in_view(tilt, spin, roll);
+                    let step = step_in_view(&prev, &c);
+                    let same = step.iter().zip(first).all(|(a, b)| (a - b).abs() < 1e-9);
+                    assert!(same, "{tilt} {spin} {roll} step {i}: {step:?} vs {first:?} at {c:?}");
+                    assert!(c.pitch.abs() <= std::f64::consts::FRAC_PI_2 && c.is_valid());
+                }
+            }
+        }
+        let mut orbited = Camera { distance: 50.0, ..Default::default() };
+        orbited.set_view(StandardView::Front);
+        let mut turned = orbited;
+        orbited.orbit(0.0, 1.0);
+        turned.turn_in_view(0.008, 0.0, 0.0);
+        assert!(orbited.back().dist(turned.back()) < 1e-12 && orbited.basis().0.dist(turned.basis().0) < 1e-12);
+        let mut orbited = Camera { distance: 50.0, ..Default::default() };
+        orbited.set_view(StandardView::Front);
+        let mut turned = orbited;
+        orbited.orbit(1.0, 0.0);
+        turned.turn_in_view(0.0, 0.008, 0.0);
+        assert!(orbited.back().dist(turned.back()) < 1e-12 && orbited.basis().0.dist(turned.basis().0) < 1e-12);
+    }
+
+    /// The flipped description is the same view.
+    #[test]
+    fn flipped_is_the_same_view() {
+        for (yaw, pitch, roll) in [(0.3, 0.5, 0.0), (-2.0, -1.2, 0.4), (3.0, 1.5, std::f64::consts::PI), (0.0, 0.0, 0.0)] {
+            for up in [UpAxis::Z, UpAxis::Y] {
+                let c = Camera { yaw, pitch, roll, up, ..Default::default() };
+                let (f, (r, u, b)) = (c.flipped(), c.basis());
+                let (r2, u2, b2) = f.basis();
+                assert!(r.dist(r2) < 1e-12 && u.dist(u2) < 1e-12 && b.dist(b2) < 1e-12, "{c:?} -> {f:?}");
+                assert_ne!(f.upside_down(), c.upside_down());
+                let back = f.flipped();
+                assert!((back.pitch - c.pitch).abs() < 1e-12 && back.basis().0.dist(r) < 1e-12);
+            }
+        }
+    }
+
+    /// Upside down past the top, the model still follows the cursor both ways, and orbiting
+    /// about a point keeps it on its pixel.
+    #[test]
+    fn upside_down_orbit_follows_the_cursor() {
+        let mut c = Camera { distance: 50.0, ..Default::default() };
+        c.set_view(StandardView::Front);
+        c.orbit_with(0.0, 2.4 / 0.008, true);
+        assert!(c.upside_down());
+        let near = c.target + c.back() * 5.0;
+        let (x0, y0, _) = c.to_screen(near, 800.0, 600.0, 10.0).unwrap();
+        let mut right = c;
+        right.orbit_with(20.0, 0.0, true);
+        assert!(right.to_screen(near, 800.0, 600.0, 10.0).unwrap().0 > x0 + 1.0, "dragging right moves the near side right");
+        let mut down = c;
+        down.orbit_with(0.0, 20.0, true);
+        assert!(down.to_screen(near, 800.0, 600.0, 10.0).unwrap().1 > y0 + 1.0, "dragging down moves the near side down");
+        let pivot = Vec3::new(12.0, -7.0, 9.0);
+        let before = c.to_screen(pivot, 800.0, 600.0, 100.0).unwrap();
+        for _ in 0..40 {
+            c.orbit_about_with(5.0, 12.0, pivot, true);
+        }
+        let after = c.to_screen(pivot, 800.0, 600.0, 100.0).unwrap();
+        assert!((after.0 - before.0).abs() < 1e-6 && (after.1 - before.1).abs() < 1e-6, "{before:?} -> {after:?}");
     }
 
     #[test]

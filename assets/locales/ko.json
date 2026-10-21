@@ -1441,6 +1441,8 @@
   "ui.flip": "뒤집기",
   "ui.format": "형식",
   "ui.frame_rate": "프레임 속도",
+  "ui.free_orbit": "자유 회전",
+  "ui.free_orbit_tip": "바로 위와 아래를 지나서도 계속 회전해 뷰가 뒤집힙니다. 끄면 위쪽 축이 똑바로 유지됩니다",
   "ui.front": "정면",
   "ui.fully_constrained": "완전 구속",
   "ui.function": "함수",

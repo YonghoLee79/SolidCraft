@@ -1441,6 +1441,8 @@
   "ui.flip": "Umkehren",
   "ui.format": "Format",
   "ui.frame_rate": "Bildrate",
+  "ui.free_orbit": "Freies Drehen",
+  "ui.free_orbit_tip": "Das Drehen geht über senkrecht oben und unten hinaus und stellt die Ansicht auf den Kopf; ausgeschaltet bleibt die Hochachse aufrecht",
   "ui.front": "Vorne",
   "ui.fully_constrained": "Vollständig bestimmt",
   "ui.function": "Funktion",

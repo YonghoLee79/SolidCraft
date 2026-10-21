@@ -1441,6 +1441,8 @@
   "ui.flip": "翻转",
   "ui.format": "格式",
   "ui.frame_rate": "帧率",
+  "ui.free_orbit": "自由环绕",
+  "ui.free_orbit_tip": "环绕越过正上方和正下方时继续旋转，视图会上下颠倒；关闭时向上轴保持竖直",
   "ui.front": "前视",
   "ui.fully_constrained": "完全约束",
   "ui.function": "函数",

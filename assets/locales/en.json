@@ -1441,6 +1441,8 @@
   "ui.flip": "Flip",
   "ui.format": "Format",
   "ui.frame_rate": "Frame rate",
+  "ui.free_orbit": "Free orbit",
+  "ui.free_orbit_tip": "Orbiting carries on past straight up and down, turning the view upside down; off, the up axis stays upright",
   "ui.front": "Front",
   "ui.fully_constrained": "Fully constrained",
   "ui.function": "Function",
