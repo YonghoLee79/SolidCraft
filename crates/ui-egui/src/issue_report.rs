@@ -353,11 +353,17 @@ pub fn draft_for(app: &SolveApp, dialog: Option<&dialogs::Dialog>, error: Option
 /// and how to replay it. The design stays on this computer; the draft says how to share it.
 pub fn crash_draft(report: &serde_json::Value) -> Draft {
     let s = |k: &str| report.get(k).and_then(serde_json::Value::as_str).unwrap_or("?").to_string();
-    let what = match report.get("kind").and_then(serde_json::Value::as_str) {
+    let kind = report.get("kind").and_then(serde_json::Value::as_str);
+    let what = match kind {
         Some("command_panic") => "An internal error stopped a command (the design was left unchanged)",
         Some("kernel_panic_recovered") => "The geometry kernel hit an internal error (caught; the operation failed)",
-        Some("unclean_exit") => "SolidCraft closed unexpectedly (abort, stack overflow, a crash in a graphics driver or the process was killed)",
+        Some("unclean_exit") => "An earlier SolidCraft session ended without recording a clean exit",
         _ => "SolidCraft hit an internal error",
+    };
+    let detection = if kind == Some("unclean_exit") {
+        "\n\nDetected on a later launch; the exact exit time was not recorded. A system shutdown or forced stop can also cause an unclean exit."
+    } else {
+        ""
     };
     let command = report.get("command").and_then(|c| c.get("command")).and_then(serde_json::Value::as_str);
     let frames: Vec<&str> =
@@ -376,7 +382,7 @@ pub fn crash_draft(report: &serde_json::Value) -> Draft {
     let field = |o: Option<&serde_json::Value>, k: &str| o.and_then(|o| o.get(k)).and_then(serde_json::Value::as_str).unwrap_or("?").to_string();
     let system = report.get("system");
     let mut body = format!(
-        "## What happened\n{what}{}.\n\nMessage: {}\nLocation: {}\nThread: {}\nHappened {} time(s), first {}\n\n## Backtrace\n{}\n## Command\n{}\n## Recent commands\n{}\n\n## Reproduction\nCrash report `{}` on the reporter's computer holds {}. Replay it with `solidcraft-cli crashes replay {}`.\nOnly attach the design if it can be shared publicly.\n\n## Environment\n{}\n",
+        "## What happened\n{what}{}.{detection}\n\nMessage: {}\nLocation: {}\nThread: {}\nRecorded {} time(s), first recorded {}\n\n## Backtrace\n{}\n## Command\n{}\n## Recent commands\n{}\n\n## Reproduction\nCrash report `{}` on the reporter's computer holds {}. Replay it with `solidcraft-cli crashes replay {}`.\nOnly attach the design if it can be shared publicly.\n\n## Environment\n{}\n",
         command.map(|c| format!(" while running `{c}`")).unwrap_or_default(),
         limited(&s("message"), 2000),
         s("location"),
@@ -558,7 +564,7 @@ pub(crate) fn receive(app: &mut SolveApp, token: u64, image: Arc<ColorImage>) {
     }
 }
 
-/// The report window is hidden only while a frame is captured, so it cannot cover the evidence.
+/// The report card is hidden only while a frame is captured, so it cannot cover the evidence.
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     if pending(app) {
         return;
@@ -583,7 +589,6 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         app.viewport.boxsel = None;
         app.viewport.axis_drag = None;
         app.viewport.orbit_free = None;
-        app.viewport.orbit_snap = None;
         crate::dim_view::drag_end();
         crate::sketch3d::drag_end();
         crate::drag_snap::clear();
@@ -665,7 +670,7 @@ mod tests {
             h.app.preferences.ui_scale = scale;
             h.call("ui.resize", json!({"width":size[0],"height":size[1]}));
             h.app.issue_report.draft = Some(draft_for(&h.app, None, None));
-            h.frames(4);
+            h.frames(16);
             let before = (h.app.session.doc.to_json(), h.app.session.revision, h.app.session.undo.len());
             let commands = click_commands(&mut h, "Continue on GitHub");
             assert!(!commands.iter().any(|c| matches!(c, egui::OutputCommand::OpenUrl(_))));
@@ -693,7 +698,7 @@ mod tests {
                     draft.steps = "Reproduction context. ".repeat(100);
                 }
                 h.app.issue_report.draft = Some(draft);
-                h.frames(4);
+                h.frames(16);
                 if field == "issue_report_technical" {
                     h.call("ui.scroll", json!({"x":800,"y":600,"delta":-1000}));
                     h.step(&json!({"widget":"Technical details"})).unwrap();
@@ -717,7 +722,7 @@ mod tests {
                     ..Default::default()
                 };
                 let app = &mut h.app;
-                let output = h.ctx.run_ui(raw, |ui| {
+                let mut output = h.ctx.run_ui(raw, |ui| {
                     app.logic(ui.ctx());
                     app.ui(ui);
                 });
@@ -739,8 +744,43 @@ mod tests {
                 if copy_needed {
                     assert!(output.platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(text) if text == &body)));
                 }
+                output.textures_delta.clear();
                 assert!(draft.opened_github && !draft.missing_description);
             }
+        }
+    }
+
+    #[test]
+    fn crash_draft_marks_later_detection_without_losing_native_evidence() {
+        let message =
+            "SolidCraft 0.3.2 (started 2026-10-01T10:00:00Z) crashed with ACCESS_VIOLATION (0xc0000005) in driver.dll+0x1234 between commands";
+        let frame = "0xc0000005 ACCESS_VIOLATION at driver.dll+0x1234";
+        let report = json!({
+            "kind": "unclean_exit", "count": 2, "first_seen": "2026-10-12T16:23:41Z",
+            "message": message, "location": "native exception in driver.dll+0x1234",
+            "backtrace": [frame], "native": {"code": "0xc0000005", "module": "driver.dll", "offset": "0x1234"},
+        });
+        let draft = crash_draft(&report);
+        for expected in [
+            "Recorded 2 time(s), first recorded 2026-10-12T16:23:41Z",
+            "Detected on a later launch; the exact exit time was not recorded.",
+            "A system shutdown or forced stop can also cause an unclean exit.",
+            message,
+            frame,
+        ] {
+            assert!(draft.body.contains(expected), "missing {expected}: {}", draft.body);
+        }
+        assert!(!draft.body.contains("Happened 2 time(s)"));
+    }
+
+    #[test]
+    fn crash_draft_only_explains_later_detection_for_unclean_exits() {
+        for kind in ["command_panic", "panic", "kernel_panic_recovered"] {
+            let report = json!({"kind": kind, "count": 1, "first_seen": "2026-10-12T16:23:41Z"});
+            let draft = crash_draft(&report);
+            assert!(draft.body.contains("Recorded 1 time(s), first recorded 2026-10-12T16:23:41Z"), "{kind}: {}", draft.body);
+            assert!(!draft.body.contains("Detected on a later launch"), "{kind}: {}", draft.body);
+            assert!(!draft.body.contains("exact exit time was not recorded"), "{kind}: {}", draft.body);
         }
     }
 
@@ -784,7 +824,7 @@ mod tests {
         app.run("solid.combine", json!({"target":"Stock","tools":["Cutter"],"operation":"cut","keep_tools":true})).unwrap();
         assert!(app.session.model.results.iter().all(|r| r.error.is_none()));
         let before = (app.session.doc.to_json(), app.session.undo.len(), app.session.redo.len(), app.cam);
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         help::run(&mut app, &ctx, "report");
         let draft = app.issue_report.draft.as_ref().unwrap();
         assert!(draft.description.is_empty(), "user answers start empty, without template instructions");
@@ -845,7 +885,7 @@ mod tests {
         draft.image = Some(Arc::new(ColorImage::new([2, 2], vec![egui::Color32::GREEN; 4])));
         let reviewed = draft.report_body();
         h.app.issue_report.draft = Some(draft);
-        h.frames(4);
+        h.frames(16);
         assert!(h.widget("Opens your browser and copies the report text for you to paste into GitHub.").is_some());
         assert!(h.widget("Reports are public. A GitHub account is required.").is_some());
         let commands = click_commands(&mut h, "Continue on GitHub");
@@ -877,7 +917,7 @@ mod tests {
         assert!(!draft_url("", &reviewed).1, "the fallback title must be what crosses the URL limit");
         assert!(draft_url(&draft.report_title(), &reviewed).1);
         h.app.issue_report.draft = Some(draft);
-        h.frames(4);
+        h.frames(16);
         assert!(h.widget("Opens your browser and copies the report text for you to paste into GitHub.").is_some());
         let commands = click_commands(&mut h, "Continue on GitHub");
         assert!(commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(text) if text == &reviewed)));
@@ -990,7 +1030,7 @@ mod tests {
     #[test]
     fn issue_report_boundary_preserves_opacity_widget_state_and_real_focus() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         let focus = egui::Id::new("report-review-focus");
         let state = egui::Id::new("cad-layout-state");
         begin(&mut app, &ctx, None, None);
@@ -1028,7 +1068,7 @@ mod tests {
         h.app.home.open = false;
         h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
         h.app.run("sketch.line", json!({"points":[[0,0],[20,0]],"id":"line"})).unwrap();
-        h.frames(3);
+        h.frames(16);
         let at = h.call("ui.at", json!({"sketch":[0,0]}));
         let p = egui::pos2(at["result"][0].as_f64().unwrap() as f32, at["result"][1].as_f64().unwrap() as f32);
         h.app.synthetic.push(egui::Event::PointerMoved(p));
@@ -1059,7 +1099,7 @@ mod tests {
         assert_eq!(before, (h.app.session.doc.to_json(), h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision));
         let token = h.app.issue_report.pending.as_ref().unwrap().token;
         receive(&mut h.app, token, Arc::new(ColorImage::new([2, 2], vec![egui::Color32::GREEN; 4])));
-        h.frames(3);
+        h.frames(16);
         h.step(&json!({"widget":"Close draft"})).unwrap();
         assert!(h.app.viewport.point_drag.is_none());
         assert_eq!(before, (h.app.session.doc.to_json(), h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.revision));
@@ -1185,7 +1225,7 @@ mod tests {
     #[test]
     fn issue_report_capture_accepts_only_its_matching_unchanged_frame() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         begin(&mut app, &ctx, None, None);
         let token = app.issue_report.pending.as_ref().unwrap().token;
         let (reply, _receiver) = std::sync::mpsc::channel();
@@ -1210,7 +1250,7 @@ mod tests {
     fn issue_report_capture_rejects_changed_inputs_timeout_and_malformed_images() {
         let mut app = app();
         combine(&mut app);
-        let ctx = egui::Context::default();
+        let ctx = crate::fonts::test_context();
         let dialog = app.dialog.clone();
         begin(&mut app, &ctx, dialog.as_ref(), Some("bad Boolean"));
         app.dialog.as_mut().unwrap().extra.insert("direction".into(), json!("negative"));

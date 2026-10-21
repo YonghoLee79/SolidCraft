@@ -22,8 +22,7 @@
 //!   into `$SOLIDCRAFT_SCENARIO_SHOTS` when that is set; `{"debug": 1}`
 //!   prints the UI state (`"widgets"`: also every widget's text; `"handles"`: every published
 //!   handle, browser rows as `row:<label>` and their fold arrows as `fold:<label>`)
-//! - `{"camera": {"yaw": rad, "pitch": rad}}` puts the camera at an orbit; `{"view_anim": "top",
-//!   "max_deg": 10}` animates to a view and fails if any frame turns the view more than that
+//! - `{"camera": {"yaw": rad, "pitch": rad}}` puts the camera at an orbit
 //! - AT may also be `{"plane": "XY"}` (the middle of an origin plane's square), `{"axis": "Z"}`,
 //!   `{"dimension": "d1"}`, `{"handle": "arrow"}` (a manipulator handle: see [`publish_handle`]),
 //!   `{"browser": "Bodies"}` (a browser row by its label) or `{"chevron": "Bodies"}` (its fold arrow)
@@ -67,6 +66,17 @@ pub fn publish_handle(name: &str, at: egui::Pos2) {
     HANDLES.with(|h| h.borrow_mut().push((name.to_string(), at)));
 }
 
+/// Publish a rectangle and its centered interaction handle with the same explicit identity.
+pub(crate) fn publish_target(name: &str, rect: egui::Rect) {
+    publish_target_as(name, name, rect);
+}
+
+/// Publish centered geometry with explicit, independently named handle and rectangle aliases.
+pub(crate) fn publish_target_as(handle: &str, rect_name: &str, rect: egui::Rect) {
+    publish_handle(handle, rect.center());
+    publish_rect(rect_name, rect);
+}
+
 /// Where a handle was drawn last frame.
 pub fn handle_at(name: &str) -> Option<egui::Pos2> {
     HANDLES.with(|h| h.borrow().iter().rfind(|(n, _)| n == name).map(|x| x.1))
@@ -84,6 +94,11 @@ pub fn publish_rect(name: &str, r: egui::Rect) {
 
 pub fn rect_of(name: &str) -> Option<egui::Rect> {
     RECTS.with(|h| h.borrow().iter().rfind(|(n, _)| n == name).map(|x| x.1))
+}
+
+#[cfg(test)]
+pub(crate) fn rects(prefix: &str) -> Vec<(String, egui::Rect)> {
+    RECTS.with(|r| r.borrow().iter().filter(|(name, _)| name.starts_with(prefix)).cloned().collect())
 }
 
 /// A number about this frame's drawing, by name ("axis_view_highlights": the axis view's highlighted tips).
@@ -160,7 +175,11 @@ impl Harness {
     pub fn new() -> Harness {
         let mut h = Harness {
             app: SolveApp::new(Session::default(), Services::default()),
-            ctx: egui::Context::default(),
+            ctx: {
+                let ctx = egui::Context::default();
+                crate::fonts::setup_bundled_fonts(&ctx);
+                ctx
+            },
             output: Default::default(),
             dir: scratch_dir(),
             next_file: Rc::new(RefCell::new(None)),
@@ -249,14 +268,16 @@ impl Harness {
     pub fn settle(&mut self) {
         for _ in 0..2000 {
             // Queued input used up and the view no longer moving.
-            if self.app.synthetic.is_empty() && self.app.cam_anim.is_none() && self.app.viewport.orbit_snap.is_none() {
+            if self.app.synthetic.is_empty() {
                 break;
             }
             self.frame();
         }
         // A file opening, recovering or saving in the background: wait for it (as a person would).
         let began = std::time::Instant::now();
-        while (!self.app.file_load.idle() || self.app.saving.is_some()) && began.elapsed() < std::time::Duration::from_secs(120) {
+        while (!self.app.file_load.idle() || self.app.saving.is_some() || crate::open_meshing::active(&self.app))
+            && began.elapsed() < std::time::Duration::from_secs(120)
+        {
             self.frame();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -354,36 +375,6 @@ impl Harness {
             (Some(x), Some(y)) => Ok([x, y]),
             _ => Err(format!("{v} is not on screen: {r}")),
         }
-    }
-
-    /// Animate the view to `v` (as the axis view does), sampling the camera every frame: no
-    /// frame may turn the view (its right or back vector) by more than `max_deg`, the last
-    /// included, so the move ends without a jump.
-    fn view_anim(&mut self, v: &str, max_deg: f64) -> Result<(), String> {
-        let basis = |c: &solidcraft_engine::render::Camera| c.basis();
-        let mut prev = basis(&self.app.cam);
-        self.app.animate_view(v);
-        if self.app.cam_anim.is_none() && self.app.viewport.orbit_snap.is_none() {
-            return Err(format!("view_anim {v}: no animation started"));
-        }
-        let mut worst = (0.0f64, 0usize);
-        for i in 0..240 {
-            self.frame();
-            let now = basis(&self.app.cam);
-            let ang = |a: solidcraft_engine::geom::Vec3, b: solidcraft_engine::geom::Vec3| a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
-            let d = ang(prev.0, now.0).max(ang(prev.2, now.2));
-            if d > worst.0 {
-                worst = (d, i);
-            }
-            prev = now;
-            if self.app.cam_anim.is_none() && self.app.viewport.orbit_snap.is_none() {
-                if worst.0 > max_deg {
-                    return Err(format!("view_anim {v}: frame {} of {} turns the view {:.1}° (limit {max_deg}°)", worst.1 + 1, i + 1, worst.0));
-                }
-                return Ok(());
-            }
-        }
-        Err(format!("view_anim {v}: still animating after 240 frames"))
     }
 
     /// Run one step.
@@ -493,13 +484,10 @@ impl Harness {
                 if let Some(p) = c.get("pitch").and_then(Value::as_f64) {
                     self.app.cam.pitch = p;
                 }
-                self.app.cam_anim = None;
                 self.frames(2);
                 // Where `camera.panned` and `camera.zoomed` checks measure from.
                 self.cam_mark = Some(self.app.cam);
                 return Ok(());
-            } else if let Some(v) = s.get("view_anim").and_then(Value::as_str) {
-                return self.view_anim(v, s.get("max_deg").and_then(Value::as_f64).unwrap_or(10.0));
             } else if s.get("autosave").is_some() {
                 self.start_autosave();
                 return Ok(());
@@ -515,6 +503,7 @@ impl Harness {
                 }
                 drop(old);
                 self.ctx = egui::Context::default();
+                crate::fonts::setup_bundled_fonts(&self.ctx);
                 self.ctx.enable_accesskit();
                 self.install();
                 self.start_autosave();
@@ -664,14 +653,7 @@ pub fn check(h: &mut Harness, e: &Value) -> Result<(), String> {
             }
             "camera" => {
                 // {"camera": {"yaw_deg": y, "pitch_deg": p, "back"?: [x,y,z]}}: where the camera
-                // looks from (yaw and pitch in its up-axis frame, ±0.5°),
-                // once any view animation has finished.
-                for _ in 0..240 {
-                    if h.app.cam_anim.is_none() {
-                        break;
-                    }
-                    h.frame();
-                }
+                // looks from (yaw and pitch in its up-axis frame, ±0.5°).
                 let (yaw, pitch) = (h.app.cam.yaw.to_degrees(), h.app.cam.pitch.to_degrees());
                 let near = |got: f64, want: &Value| want.as_f64().is_none_or(|w| ((got - w + 540.0).rem_euclid(360.0) - 180.0).abs() < 0.5);
                 if !near(yaw, &v["yaw_deg"]) || !near(pitch, &v["pitch_deg"]) {
@@ -778,7 +760,8 @@ pub fn check(h: &mut Harness, e: &Value) -> Result<(), String> {
                 if r.width() < lo - 0.5 || r.width() > hi + 0.5 {
                     return Err(format!("dialog width {:.0}, want {lo}..{hi}", r.width()));
                 }
-                if (r.right() - vp.right()).abs() > 2.0 || r.top() < vp.top() || r.bottom() > vp.bottom() + 1.0 {
+                let clearance = if rect_of("dialog:header").is_some() { crate::theme::Tokens::get().space_8 } else { 0.0 };
+                if (r.right() - (vp.right() - clearance)).abs() > 0.5 || r.top() < vp.top() || r.bottom() > vp.bottom() + 1.0 {
                     return Err(format!("dialog {r:?} is not docked right inside the viewport {vp:?}"));
                 }
             }
@@ -1077,3 +1060,7 @@ pub fn check(h: &mut Harness, e: &Value) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "scenario_publication_tests.rs"]
+mod publication_tests;
