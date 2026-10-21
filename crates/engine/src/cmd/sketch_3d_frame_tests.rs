@@ -431,3 +431,28 @@ fn what_cannot_leave_the_plane_says_so() {
     let e = flat.execute("sketch.move3d", &json!({"point": format!("{l}.end"), "by": [0, 0, 1]})).unwrap_err().to_string();
     assert!(e.contains("3D Sketch"), "{e}");
 }
+
+/// Move/Copy moves drawn 3D geometry as it moves plane geometry: a drawn point (`wire@index`)
+/// or a whole drawn curve, along the sketch plane and `z` along its normal, in a placed
+/// occurrence too. Copying drawn geometry is refused rather than half done.
+#[test]
+fn move_copy_moves_drawn_points_and_curves() {
+    let (mut s, _, _, _) = second_frame();
+    let sketch = s.active_sketch.unwrap();
+    let point = run(&mut s, "sketch.point3d", json!({"point":[17,32,45]}))["point"].as_str().unwrap().to_string();
+    let line = run(&mut s, "sketch.line3d", json!({"points":[[10,30,40],[10,30,50]]}))["curves"][0].as_str().unwrap().to_string();
+    let plane = s.world_state().sketch(sketch).unwrap().plane;
+    let (x, n) = (plane.x, plane.normal());
+    let shown = |s: &Session, w: &str| s.world_state().sketch(sketch).unwrap().sketch.wires.iter().find(|q| q.id == w).unwrap().fit.clone();
+    let undo = s.undo.len();
+    run(&mut s, "sketch.move", json!({"entities":[format!("{point}@0")],"translate":[3,0],"z":2}));
+    near(shown(&s, &point)[0], Vec3::new(17.0, 32.0, 45.0) + x * 3.0 + n * 2.0);
+    assert_eq!(s.undo.len(), undo + 1, "one undo step");
+    run(&mut s, "sketch.move", json!({"entities":[line.clone()],"translate":[0,0],"z":-5}));
+    let fit = shown(&s, &line);
+    near(fit[0], Vec3::new(10.0, 30.0, 40.0) - n * 5.0);
+    near(fit[1], Vec3::new(10.0, 30.0, 50.0) - n * 5.0);
+    let e = s.execute("sketch.move", &json!({"entities":[format!("{point}@0")],"translate":[1,0],"copy":true})).unwrap_err().to_string();
+    assert!(e.contains("not supported yet"), "{e}");
+    near(shown(&s, &point)[0], Vec3::new(17.0, 32.0, 45.0) + x * 3.0 + n * 2.0);
+}

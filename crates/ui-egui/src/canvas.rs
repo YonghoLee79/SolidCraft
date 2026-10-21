@@ -73,7 +73,13 @@ pub fn anchor(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Option<Vec3>)> {
                 None => (app.session.active_sketch?, id.as_str()),
             };
             let ss = st.sketch(sketch)?;
-            (ss.plane.to_world(ss.sketch.point(ss.sketch.resolve_point(point)?)?), None)
+            // A drawn 3D point, `<wire>@<index>` (Move/Copy in a 3D sketch picks these).
+            if let Some((wire, index)) = point.split_once('@') {
+                let fit = &ss.sketch.wires.iter().find(|w| w.id == wire)?.fit;
+                (*fit.get(index.parse::<usize>().ok()?)?, None)
+            } else {
+                (ss.plane.to_world(ss.sketch.point(ss.sketch.resolve_point(point)?)?), None)
+            }
         }
         Sel::Body { name } => (st.body(name)?.mesh().bounds().center(), None),
         Sel::Plane { name } => {
@@ -269,6 +275,7 @@ pub(crate) fn owns_pointer(app: &SolveApp, proj: &Proj, p: Pos2) -> bool {
     // The triad only registers an egui hit widget after a handle is under the pointer.
     // Test its geometry before navigation, including the first frame entering a handle.
     app.dialog.as_ref().and_then(|d| crate::dialogs_move::triad(app, d)).is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p))
+        || app.dialog.as_ref().and_then(|d| sketch_move_triad(app, d, anchor(app, d)?.0)).is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p))
         || (app.dialog.is_none()
             && app.tool.is_none()
             && crate::browser::occurrence_triad_model(app).is_some_and(|t| crate::gizmo::contains_pointer(proj, &t, p)))
@@ -327,12 +334,93 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj
         app.dialog = Some(d);
         return;
     }
+    // Move/Copy Sketch Entities: a triad in the sketch's own frame that travels with what moves,
+    // as Move's does. Its X and Y arrows, the XY square and the ball (a free drag in the sketch
+    // plane) set X and Y Distance, the ring Angle; a 3D sketch adds Z and the two upright squares.
+    if let Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { .. }) = d.kind
+        && let Some((pivot, _)) = anchor(app, &d)
+    {
+        let mut dragging = false;
+        // Picking comes first: over sketch geometry not picked yet, a click picks it even under a
+        // handle (the triad sits on what is picked, so the next pick is often beneath it).
+        let picked = d.inputs.first().map(|i| i.items.as_slice()).unwrap_or_default();
+        let unpicked = match &app.viewport.hover {
+            Some(crate::viewport::Hit::SketchCurve { id, .. }) => !picked.iter().any(|s| matches!(s, Sel::SketchCurve { id: p } if p == id)),
+            Some(crate::viewport::Hit::SketchPoint { id, .. }) => !picked.iter().any(|s| matches!(s, Sel::SketchPoint { id: p } if p == id)),
+            _ => false,
+        };
+        crate::gizmo::give_way(unpicked);
+        if let Some(t) = sketch_move_triad(app, &d, pivot)
+            && let Some(g) = crate::gizmo::show(ui, painter, proj, egui::Id::new("sc_sketch_move_triad"), &t, snap_step(app.cam.half_height()))
+        {
+            sketch_move_drag(app, &mut d, &t, g);
+            dragging = true;
+        }
+        crate::gizmo::give_way(false);
+        let at = sketch_move_triad(app, &d, pivot).map_or(pivot, |t| t.center);
+        let focus = std::mem::take(&mut d.focus);
+        if let Some(bs) = proj.to_screen(at)
+            && let Some((label, _, value)) = d.primary()
+        {
+            value_box(ui, label, value, bs + vec2(crate::gizmo::LEN_PX as f32 + 16.0, -12.0), focus || dragging);
+        }
+        app.dialog = Some(d);
+        return;
+    }
     if let Some((base, dir)) = anchor(app, &d)
         && let Some(bs) = proj.to_screen(base)
     {
         draw(app, ui, painter, proj, &mut d, base, bs, dir);
     }
     app.dialog = Some(d);
+}
+
+/// Move/Copy Sketch Entities' triad: at `pivot` (what is picked) carried by the move so far, in
+/// the sketch's x, y and normal. A flat sketch moves in its plane (no Z arrow, no upright
+/// squares); only the ring about the normal turns (Angle).
+fn sketch_move_triad(app: &SolveApp, d: &Dialog, pivot: Vec3) -> Option<crate::gizmo::Triad> {
+    let Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { x, y, z, three_d, .. }) = &d.kind else { return None };
+    let st = app.session.world_state();
+    let plane = app.session.active_sketch.and_then(|id| st.sketch(id))?.plane;
+    let (px, py, pn) = (plane.x.normalized()?, plane.y.normalized()?, plane.normal().normalized()?);
+    let len = |v: &String| app.session.doc.eval(v, ValueKind::Length).ok().filter(|v| v.is_finite()).unwrap_or(0.0);
+    let dz = if *three_d { len(z) } else { 0.0 };
+    Some(crate::gizmo::Triad {
+        center: pivot + px * len(x) + py * len(y) + pn * dz,
+        translate: true,
+        rotate: true,
+        frame: [px, py, pn],
+        axes: [true, true, *three_d],
+        rings: [false, false, true],
+    })
+}
+
+/// A triad drag on Move/Copy Sketch Entities, added to the values it had when the drag began.
+fn sketch_move_drag(app: &SolveApp, d: &mut Dialog, t: &crate::gizmo::Triad, g: crate::gizmo::Drag) {
+    let Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { x, y, z, angle, .. }) = &d.kind else { return };
+    if g.started || !d.extra.contains_key("drag0") {
+        let len = |v: &String| app.session.doc.eval(v, ValueKind::Length).ok().filter(|v| v.is_finite()).unwrap_or(0.0);
+        let deg = app.session.doc.eval(angle, ValueKind::Angle).ok().filter(|v| v.is_finite()).unwrap_or(0.0).to_degrees();
+        d.extra.insert("drag0".into(), serde_json::json!([len(x), len(y), len(z), deg]));
+    }
+    let v0: [f64; 4] = d.extra.get("drag0").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { x, y, z, angle, three_d, .. }) = &mut d.kind else { return };
+    match g.change {
+        crate::gizmo::Change::Translate(v) => {
+            *x = format_len(v0[0] + v.dot(t.frame[0]));
+            *y = format_len(v0[1] + v.dot(t.frame[1]));
+            if *three_d {
+                *z = format_len(v0[2] + v.dot(t.frame[2]));
+            }
+        }
+        crate::gizmo::Change::Rotate { angle: a, .. } => {
+            let deg = v0[3] + a.to_degrees();
+            *angle = format!("{} deg", (deg * 100.0).round() / 100.0);
+        }
+    }
+    if g.done {
+        d.extra.remove("drag0");
+    }
 }
 
 /// A round step for dragged values at this zoom (1, 2 or 5 times a power of ten).
@@ -464,18 +552,6 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
             && let Some(l2) = app.session.doc.eval(spacing2, ValueKind::Length).ok().filter(|v| v.is_finite())
         {
             drag_arrow(ui, painter, proj, base, bs, n2, l2, false, egui::Id::new("sc_manipulator2"), half_height, spacing2);
-        }
-    }
-    // Move/Copy in a 3D sketch: Y and Z Distance get arrows of their own beside X's, along the
-    // sketch's y axis and its normal, so a point can be dragged any of the three ways.
-    if let Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { y, z, three_d: true, .. }) = &mut d.kind
-        && let Some(plane) = app.session.active_sketch.and_then(|id| app.session.world_state().sketch(id).map(|ss| ss.plane))
-    {
-        for (axis, value, id) in [(plane.y, y, "sc_manipulator_y"), (plane.normal(), z, "sc_manipulator_z")] {
-            let l = app.session.doc.eval(value, ValueKind::Length).ok().filter(|v| v.is_finite()).unwrap_or(0.0);
-            if let Some(axis) = axis.normalized() {
-                drag_arrow(ui, painter, proj, base, bs, axis, l, true, egui::Id::new(id), half_height, value);
-            }
         }
     }
     // An offset plane shows where it will be.
@@ -676,16 +752,8 @@ fn drag_arrow(
     }
     // Paint the value just read from this frame's pointer, including the value box anchor.
     // Using the old distance here made both trail the drag by another frame.
-    let handle = if id == egui::Id::new("sc_manipulator") {
-        "arrow"
-    } else if id == egui::Id::new("sc_manipulator_y") {
-        "arrow_y"
-    } else if id == egui::Id::new("sc_manipulator_z") {
-        "arrow_z"
-    } else {
-        "arrow2"
-    };
-    crate::scenario::publish_handle(handle, ts);
+    crate::scenario::publish_handle(if id == egui::Id::new("sc_manipulator") { "arrow" } else { "arrow2" }, ts);
+
     let hot = r.hovered() || r.dragged();
     let col = if hot { t.accent } else { t.manipulator };
     arrow(painter, bs, ts, col);

@@ -247,7 +247,7 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) -
 // Moving along X, Y or Z (off the plane) is Move/Copy's job, which has an arrow for each.
 
 /// The drawn 3D point under `pos`: (wire id, fit index, point).
-fn drawn_at(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<(String, usize, Vec3)> {
+pub(crate) fn drawn_at(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<(String, usize, Vec3)> {
     drawn_points(app).into_iter().find(|(_, _, p)| proj.to_screen(*p).is_some_and(|s| s.distance(pos) < 8.0))
 }
 

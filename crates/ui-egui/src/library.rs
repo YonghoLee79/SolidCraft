@@ -336,7 +336,13 @@ fn card(ui: &mut egui::Ui, l: &mut LibraryState, e: &Entry) -> egui::Response {
         }
     }
     let name = if e.name.chars().count() > 16 { format!("{}…", e.name.chars().take(15).collect::<String>()) } else { e.name.clone() };
-    painter.text(egui::pos2(rect.center().x, pic.bottom() + 9.0), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(t.font_small), t.text);
+    painter.text(
+        egui::pos2(rect.center().x, pic.bottom() + 9.0),
+        egui::Align2::CENTER_CENTER,
+        name,
+        egui::FontId::proportional(t.font_small),
+        t.text,
+    );
     crate::scenario::publish_handle(&format!("library:{}", e.name), rect.center());
     resp.on_hover_text(e.path.to_string_lossy().to_string())
 }

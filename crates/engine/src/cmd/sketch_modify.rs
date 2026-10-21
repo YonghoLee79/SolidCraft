@@ -1967,6 +1967,44 @@ fn move_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let t = if p.get("translate").is_some() { req_vec2(cmd, p, "translate")? } else { Vec2::ZERO };
     let ang = if p.get("angle").is_some() { num(p, "angle").ok_or_else(|| bad(cmd, "`angle` must be finite"))? } else { 0.0 }.to_radians();
     let copy = bool_(p, "copy").unwrap_or(false);
+    let z = match p.get("z") {
+        None => 0.0,
+        Some(v) => v.as_f64().filter(|z| z.is_finite() && z.abs() <= 1e6).ok_or_else(|| bad(cmd, "`z` must be a distance in mm"))?,
+    };
+    // Drawn 3D geometry picked too: `wire@index` (a drawn point) or a drawn curve's id. It moves
+    // in 3D (`sketch_3d::move_drawn`); the rest is plane geometry, moved as before.
+    let sketch = super::sketch::target_sketch(s, p, cmd)?;
+    let raw = s.model.state().sketch(sketch).map(|ss| ss.sketch.clone());
+    let wires: Vec<String> = raw.as_ref().map(|sk| sk.wires.iter().map(|w| w.id.clone()).collect()).unwrap_or_default();
+    let (mut drawn, mut plane_picks) = (Vec::new(), Vec::new());
+    for e in string_list(p, "entities") {
+        match e.split_once('@') {
+            Some((w, i)) if wires.iter().any(|x| x == w) => {
+                drawn.push((w.to_string(), Some(i.parse::<usize>().map_err(|_| bad(cmd, format!("`{e}`: no such drawn point")))?)))
+            }
+            None if wires.contains(&e) => drawn.push((e, None)),
+            _ => plane_picks.push(e),
+        }
+    }
+    if !drawn.is_empty() && copy {
+        return Err(bad(cmd, "not supported yet: copying drawn 3D curves or points"));
+    }
+    let mut p = p.clone();
+    if let Some(o) = p.as_object_mut() {
+        o.insert("entities".into(), json!(plane_picks));
+    }
+    let p = &p;
+    if !drawn.is_empty() {
+        let c = match (p.get("center"), &raw) {
+            (Some(_), Some(sk)) => point_or_ref(sk, p, "center", cmd)?,
+            _ => Vec2::ZERO,
+        };
+        let rot = rotate(c, ang);
+        let (moved, info) = super::sketch_3d::move_drawn(s, p, cmd, &drawn, &|q: Vec2| rot(q) + t, z)?;
+        if plane_picks.is_empty() {
+            return Ok(json!({"curves": drawn.iter().map(|(w, _)| w.clone()).collect::<Vec<_>>(), "moved_drawn": moved, "sketch": info}));
+        }
+    }
     let (out, info) = edit(s, p, cmd, false, |sk, _| {
         let (mut cs, mut ps) = entities(sk, p, cmd)?;
         let c = if p.get("center").is_some() { point_or_ref(sk, p, "center", cmd)? } else { Vec2::ZERO };
@@ -2001,10 +2039,6 @@ fn move_copy(s: &mut Session, p: &Value) -> Result<Value> {
         Ok((ids_of(sk, &cs), point_ids(sk, &own)))
     })?;
     let (out, moved_points) = out;
-    let z = match p.get("z") {
-        None => 0.0,
-        Some(v) => v.as_f64().filter(|z| z.is_finite() && z.abs() <= 1e6).ok_or_else(|| bad(cmd, "`z` must be a distance in mm"))?,
-    };
     if z != 0.0 {
         // Off the plane: what moved (or its copy) becomes drawn 3D curves `z` along the normal.
         let id = super::sketch::target_sketch(s, p, cmd)?;

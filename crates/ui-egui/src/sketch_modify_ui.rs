@@ -124,7 +124,10 @@ pub enum Mod {
 
 impl Mod {
     pub fn previews(&self) -> bool {
-        matches!(self, Self::Mirror | Self::PatternRect { .. } | Self::PatternCirc { .. } | Self::Offset { .. } | Self::Corner { .. })
+        matches!(
+            self,
+            Self::Mirror | Self::Move { .. } | Self::PatternRect { .. } | Self::PatternCirc { .. } | Self::Offset { .. } | Self::Corner { .. }
+        )
     }
 
     pub fn title(&self) -> &'static str {

@@ -194,43 +194,111 @@ fn second_occurrence_drawn_wire_fit_picks_and_world_drag_stay_aligned() {
     assert!(restored.sketch(sketch).unwrap().sketch.wires[0].fit[0].dist(Vec3::new(2.0, 3.0, 5.0)) < 1e-6);
 }
 
-/// Move/Copy in a 3D sketch has an arrow for each of X, Y and Z Distance. Looking straight down
-/// on the sketch (its own top view) the Z arrow points at the viewer; it is drawn up and to the
-/// left instead, and dragging it lifts the point off the plane by the drag's length at the
-/// view's scale.
+fn move_kind(h: &crate::scenario::Harness) -> (String, String, String) {
+    match h.app.dialog.as_ref().map(|d| d.kind.clone()) {
+        Some(crate::dialogs::Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { x, y, z, .. })) => (x, y, z),
+        _ => panic!("Move/Copy stays open"),
+    }
+}
+
+fn mm(h: &crate::scenario::Harness, v: &str) -> f64 {
+    h.app.session.doc.eval(v, solidcraft_engine::doc::expr::Kind::Length).unwrap()
+}
+
+fn has(h: &mut crate::scenario::Harness, handle: &str) -> bool {
+    h.at(&json!({"handle":format!("move_{handle}")})).is_ok()
+}
+
+/// Move/Copy in a 3D sketch has the triad in the sketch's frame: X, Y and Z arrows, the three
+/// plane squares, the ring for Angle and the ball. Looking straight down on the sketch the Z
+/// arrow points at the viewer; it is drawn up and to the left, and dragging it lifts the point
+/// by the drag's length at the view's scale. The lifted point is picked again by a click, and
+/// moves on.
 #[test]
-fn move_copy_has_x_y_and_z_arrows_and_z_lifts_a_point_in_the_top_view() {
-    use crate::dialogs::Kind;
+fn move_copy_triad_in_a_3d_sketch_lifts_and_moves_drawn_points() {
     use solidcraft_engine::Sel;
-    use crate::sketch_modify_ui::Mod;
     let mut h = crate::scenario::Harness::new();
     let sketch = h.app.run("sketch.create", json!({"plane":"XY","name":"Top"})).unwrap()["sketch"].as_u64().unwrap();
     h.app.ui.show_origin = false;
     h.app.run("sketch.options", json!({"sketch_3d":true})).unwrap();
     let point = h.app.run("sketch.point", json!({"point":[10,5]})).unwrap()["point"].as_str().unwrap().to_string();
+    h.app.run("sketch.point", json!({"point":[-30,-20]})).unwrap();
     h.call("ui.view", json!({"view":"top"}));
+    h.call("ui.view", json!({"view":"fit"}));
     h.settle();
     h.step(&json!({"start":"sketch.move"})).unwrap();
     h.app.dialog.as_mut().unwrap().inputs[0].items = vec![Sel::SketchPoint { id: format!("{sketch}:{point}") }];
     h.frames(3);
-    for arrow in ["arrow", "arrow_y", "arrow_z"] {
-        assert!(h.at(&json!({"handle":arrow})).is_ok(), "Move/Copy shows {arrow}");
+    for handle in ["x", "y", "z", "xy", "yz", "xz", "rz", "ball"] {
+        assert!(has(&mut h, handle), "the 3D sketch triad shows {handle}");
     }
-    let [x0, y0] = h.at(&json!({"handle":"arrow_z"})).unwrap();
+    assert!(!has(&mut h, "rx") && !has(&mut h, "ry"), "Angle turns about the normal only");
+    let [x0, y0] = h.at(&json!({"handle":"move_z"})).unwrap();
     let base = h.at(&json!({"world":[10,5,0]})).unwrap();
     assert!(x0 < base[0] - 20.0 && y0 < base[1] - 20.0, "the head-on Z arrow is drawn up and to the left");
     let along = 40.0 / std::f64::consts::SQRT_2;
     h.call("ui.drag", json!({"x0":x0,"y0":y0,"x1":x0-along,"y1":y0-along,"steps":8}));
-    let Some(Kind::SketchModify(Mod::Move { z, .. })) = h.app.dialog.as_ref().map(|d| d.kind.clone()) else { panic!("Move/Copy stays open") };
-    let lift = h.app.session.doc.eval(&z, solidcraft_engine::doc::expr::Kind::Length).unwrap();
-    assert!(lift > 0.5, "dragging the Z arrow up sets Z Distance: {z}");
+    let lift = mm(&h, &move_kind(&h).2);
+    assert!(lift > 0.5, "dragging the Z arrow up sets Z Distance: {lift}");
     let history = h.app.session.undo.len();
     h.frames(2);
     h.step(&json!({"key":"Enter"})).unwrap();
     h.settle();
-    let st = h.app.session.model.state();
-    let sk = &st.sketch(sketch).unwrap().sketch;
-    let lifted = sk.wires.iter().flat_map(|w| w.fit.iter()).find(|p| (p.x - 10.0).abs() < 1e-6 && (p.y - 5.0).abs() < 1e-6).expect("the point left the plane");
-    assert!((lifted.z - lift).abs() < 1e-6, "lifted {} mm, Z Distance {lift}", lifted.z);
+    let sk = h.app.session.model.state().sketch(sketch).unwrap().sketch.clone();
+    let wire =
+        sk.wires.iter().find(|w| w.fit.iter().any(|p| (p.x - 10.0).abs() < 1e-6 && (p.y - 5.0).abs() < 1e-6)).expect("the point left the plane");
+    assert!((wire.fit[0].z - lift).abs() < 1e-6, "lifted {} mm, Z Distance {lift}", wire.fit[0].z);
     assert_eq!(h.app.session.undo.len(), history + 1, "one undo step");
+    // The lifted point is picked by a click in Move/Copy, and moves 5 mm along X.
+    h.step(&json!({"start":"sketch.move"})).unwrap();
+    h.step(&json!({"click":{"world":[10,5,lift]}})).unwrap();
+    let picked = h.app.dialog.as_ref().unwrap().inputs[0].items.clone();
+    assert_eq!(picked, vec![Sel::SketchPoint { id: format!("{}@0", wire.id) }]);
+    if let Some(crate::dialogs::Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { x, .. })) = h.app.dialog.as_mut().map(|d| &mut d.kind) {
+        *x = "5 mm".into();
+    }
+    h.frames(2);
+    h.step(&json!({"key":"Enter"})).unwrap();
+    h.settle();
+    let moved = h.app.session.model.state().sketch(sketch).unwrap().sketch.wires.iter().find(|w| w.id == wire.id).unwrap().fit[0];
+    assert!(moved.dist(solidcraft_engine::geom::Vec3::new(15.0, 5.0, lift)) < 1e-6, "{moved:?}");
+}
+
+/// In a flat sketch the triad moves things in the sketch plane: X and Y arrows, the XY square,
+/// the ring and the ball, and no Z. It travels with the move (it stays its own size): dragging
+/// the square sets X and Y Distance, and the triad's centre follows.
+#[test]
+fn move_copy_triad_in_a_flat_sketch_moves_in_the_plane_and_follows() {
+    use solidcraft_engine::Sel;
+    let mut h = crate::scenario::Harness::new();
+    let sketch = h.app.run("sketch.create", json!({"plane":"XY","name":"Flat"})).unwrap()["sketch"].as_u64().unwrap();
+    h.app.ui.show_origin = false;
+    let point = h.app.run("sketch.point", json!({"point":[10,5]})).unwrap()["point"].as_str().unwrap().to_string();
+    h.app.run("sketch.point", json!({"point":[-30,-20]})).unwrap();
+    h.call("ui.view", json!({"view":"top"}));
+    h.call("ui.view", json!({"view":"fit"}));
+    h.settle();
+    h.step(&json!({"start":"sketch.move"})).unwrap();
+    h.app.dialog.as_mut().unwrap().inputs[0].items = vec![Sel::SketchPoint { id: format!("{sketch}:{point}") }];
+    h.frames(3);
+    for handle in ["x", "y", "xy", "rz", "ball"] {
+        assert!(has(&mut h, handle), "the flat sketch triad shows {handle}");
+    }
+    for handle in ["z", "yz", "xz", "rx", "ry"] {
+        assert!(!has(&mut h, handle), "no {handle} in a flat sketch");
+    }
+    let [bx, by] = h.at(&json!({"handle":"move_ball"})).unwrap();
+    let [sx, sy] = h.at(&json!({"handle":"move_xy"})).unwrap();
+    h.call("ui.drag", json!({"x0":sx,"y0":sy,"x1":sx+60.0,"y1":sy-30.0,"steps":8}));
+    let (x, y, z) = move_kind(&h);
+    let (dx, dy) = (mm(&h, &x), mm(&h, &y));
+    assert!(dx > 0.1 && dy > 0.1 && mm(&h, &z).abs() < 1e-9, "the square moves along X and Y only: {x}, {y}, {z}");
+    h.frames(2);
+    let [ax, ay] = h.at(&json!({"handle":"move_ball"})).unwrap();
+    assert!(ax > bx + 30.0 && ay < by - 10.0, "the triad follows the move: from {bx},{by} to {ax},{ay}");
+    h.step(&json!({"key":"Enter"})).unwrap();
+    h.settle();
+    let st = h.app.session.model.state();
+    let p = st.sketch(sketch).unwrap().sketch.points.iter().find(|q| q.id == point).unwrap().pos;
+    assert!((p.x - (10.0 + dx)).abs() < 1e-6 && (p.y - (5.0 + dy)).abs() < 1e-6, "{p:?}");
 }
