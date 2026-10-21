@@ -1243,18 +1243,47 @@ fn cache_key(f: &Feature, chain_fp: u64, local: u64, ctx: u64, state: &ModelStat
     h.finish()
 }
 
-/// What a feature reads of where components are placed: the components (their first
-/// placement) and occurrence paths whose geometry it finds in its own frame, or every one.
+/// What a feature reads of placements: components (their first placement), occurrence paths
+/// and bodies in its timeline input, whose geometry it finds in its evaluating frame, or all.
 #[derive(Default)]
 struct PlacementReads {
     all: bool,
     components: std::collections::BTreeSet<u64>,
     paths: Vec<Vec<u64>>,
+    bodies: std::collections::BTreeSet<String>,
 }
 
 impl PlacementReads {
     fn is_empty(&self) -> bool {
-        !self.all && self.components.is_empty() && self.paths.is_empty()
+        !self.all && self.components.is_empty() && self.paths.is_empty() && self.bodies.is_empty()
+    }
+
+    /// A body's complete placement in the feature's input state, including its offset. Later
+    /// transfers do not change where an earlier feature read it.
+    fn placed_body(&mut self, st: Option<&ModelState>, name: &str) {
+        if st.is_some_and(|st| st.body(name).is_some()) {
+            self.bodies.insert(name.to_owned());
+        } else {
+            self.all = true;
+        }
+    }
+
+    /// The same target selection as `apply_traced`, expanded only over the timeline input.
+    fn drawn_targets(&mut self, st: Option<&ModelState>, f: &Feature) {
+        let Some(st) = st else {
+            self.all = true;
+            return;
+        };
+        let (_, targets) = feature_op(f);
+        let names = if targets.is_empty() { &f.participants } else { &targets };
+        let all = names.len() == 1 && names.first().is_some_and(|n| n == "*");
+        if all || names.is_empty() {
+            self.bodies.extend(st.bodies.iter().filter(|b| all || b.component == f.component || b.feature == f.id).map(|b| b.name.clone()));
+        } else {
+            for name in names {
+                self.placed_body(Some(st), name);
+            }
+        }
     }
 
     /// The component of body `name` in `st`; every component when the body is not there (a
@@ -1413,9 +1442,15 @@ fn placement_digest(doc: &Document, f: &Feature, st: Option<&ModelState>) -> u64
         // frame, not every occurrence: moving an unrelated one leaves it (and its cache) alone.
         FeatureKind::Mirror { placements, bodies, .. } if !placements.is_empty() => return mirror_placements_digest(doc, f, placements, bodies),
         // A combine moves tools placed differently from its target into the target's frame (#3383).
-        FeatureKind::Combine { .. } => reads.all = true,
+        FeatureKind::Combine { target, tools, .. } => {
+            frame = st.and_then(|st| st.body(target)).map(|b| body_world(doc, b));
+            reads.placed_body(st, target);
+            for tool in tools {
+                reads.placed_body(st, tool);
+            }
+        }
         // Joins, cuts and intersects meet their targets where those are placed (#3383).
-        kind if drawn_tools_change_bodies(kind) && (drawn_tool_targets(kind) || !f.participants.is_empty()) => reads.all = true,
+        kind if drawn_tools_change_bodies(kind) => reads.drawn_targets(st, f),
         FeatureKind::Sketch { plane, sketch } => {
             match crate::face_anchor::plane_face_anchor(plane) {
                 // Read in the frame of the placement it was drawn in, its face through the
@@ -1464,7 +1499,18 @@ fn placement_digest(doc: &Document, f: &Feature, st: Option<&ModelState>) -> u64
             None => u8::MAX.hash(&mut h),
         }
     }
-    serde_json::to_string(&doc.body_offsets).unwrap_or_default().hash(&mut h);
+    for name in &reads.bodies {
+        name.hash(&mut h);
+        match st.and_then(|st| st.body(name)) {
+            Some(b) => hash_placement(&crate::mat_mul(&inverse, &body_world(doc, b)), &mut h),
+            None => u8::MAX.hash(&mut h),
+        }
+    }
+    // Legacy and component-wide reads still need the conservative offset dependency. Body
+    // reads above already include just their own offsets, in the frame that evaluates them.
+    if reads.all || !reads.components.is_empty() || !reads.paths.is_empty() {
+        serde_json::to_string(&doc.body_offsets).unwrap_or_default().hash(&mut h);
+    }
     // Never 0: the feature reads placements.
     h.finish() | 1
 }
@@ -6599,21 +6645,6 @@ impl Drop for ToolFrames {
     fn drop(&mut self) {
         let before = std::mem::take(&mut self.0);
         TOOL_FRAMES.with(|t| *t.borrow_mut() = before);
-    }
-}
-
-/// Whether a feature with drawn tools names the bodies it changes: they may lie in another
-/// component, where its tools meet them (#3383), so [`placement_digest`] reads every placement.
-/// Without targets it changes only bodies of its own component.
-fn drawn_tool_targets(kind: &FeatureKind) -> bool {
-    match kind {
-        FeatureKind::Extrude { targets, .. }
-        | FeatureKind::Revolve { targets, .. }
-        | FeatureKind::Loft { targets, .. }
-        | FeatureKind::Sweep { targets, .. }
-        | FeatureKind::Pipe { targets, .. }
-        | FeatureKind::Coil { targets, .. } => !targets.is_empty(),
-        _ => false,
     }
 }
 

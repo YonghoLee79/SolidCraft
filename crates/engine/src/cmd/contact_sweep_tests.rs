@@ -27,6 +27,24 @@ fn rail_value(s: &Session) -> f64 {
 }
 
 #[test]
+fn joint_pose_contact_reuses_reference_geometry_across_new_placements() {
+    let mut s = slider();
+    // Measure the swept-contact geometry factory, separately from other joint work.
+    super::ContactGeometry::new(&s).unwrap();
+    for value in [11., 12., 13., 14.] {
+        let result = run(&mut s, "joint.drive", json!({"joint":"Rail","value":value}));
+        let (_, work) = crate::kernel::profile::capture(|| super::ContactGeometry::new(&s).unwrap());
+        assert!(result["stopped_by_contact"].is_null(), "{result}");
+        assert!((rail_value(&s) - value).abs() < 1e-8);
+        assert_eq!(work.tessellate_ms, 0., "unchanged contact bodies were tessellated for slider value {value}");
+    }
+    // Reusing geometry must still stop a genuine collision, including an endpoint beyond it.
+    let result = run(&mut s, "joint.drive", json!({"joint":"Rail","value":-30}));
+    assert!(result["stopped_by_contact"].is_object(), "{result}");
+    assert!(rail_value(&s).abs() < 2e-3);
+}
+
+#[test]
 fn slider_cannot_tunnel_to_a_collision_free_endpoint() {
     let mut s = slider();
     let result = run(&mut s, "joint.drive", json!({"joint": "Rail", "value": -30}));
