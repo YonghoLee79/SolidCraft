@@ -1266,6 +1266,8 @@ fn step_insert_delete_removes_assembly_and_undo_restores_it() {
     let kept = s.doc_mut().add_component(Some("Kept"), 0).unwrap();
     let kept_occurrence = s.doc.occurrence_of(kept).unwrap().clone();
     run(&mut s, "file.insert_step", json!({"path": path.to_string_lossy(), "name": "Imported"}));
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert!(reopened.find_feature("Imported").unwrap().inserted, "the insert keeps its mark through save");
     run(&mut s, "solid.mirror", json!({"bodies": ["Part"], "plane": {"origin": [0, 30, 0], "normal": [0, 1, 0]}}));
     assert!(s.model.state().body("Part (3)").is_some());
     assert!(!s.doc.assembly.joints.is_empty());

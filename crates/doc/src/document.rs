@@ -2335,6 +2335,12 @@ pub struct Feature {
     /// mean that numbering.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kernel_piece_order: bool,
+    /// Made by inserting a file (STEP, IGES or a mesh file) into the design: the feature built
+    /// the component tree its component is the top of, and deleting it removes that tree
+    /// ([`Document::remove_component_tree`]). Not set on other imported bodies, such as the
+    /// independent base of a copied component.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inserted: bool,
     #[serde(flatten)]
     pub kind: FeatureKind,
 }
@@ -3037,6 +3043,7 @@ impl Document {
             participants: Vec::new(),
             shell_piece_order: false,
             kernel_piece_order: false,
+            inserted: false,
             kind,
         };
         self.place_feature(f);
@@ -3130,15 +3137,12 @@ impl Document {
         self.name_feature_inputs(id);
     }
 
-    /// Delete a feature (and, for a sketch, the features that use it). An imported file's feature
-    /// inside a component (an inserted STEP or mesh file) takes the component tree it made with
-    /// it: everything in that tree and every assembly record that refers to it
-    /// ([`Document::remove_component_tree`]).
+    /// Delete a feature (and, for a sketch, the features that use it). The feature of an inserted
+    /// file or a linked design takes the component tree it made with it: everything in that tree
+    /// and every assembly record that refers to it ([`Document::remove_component_tree`]). Other
+    /// imported bodies (a copied component's independent base) go alone.
     pub fn delete_feature(&mut self, id: u64) -> Result<Vec<u64>> {
-        let owned = self
-            .feature(id)
-            .filter(|f| f.component != 0 && matches!(f.kind, FeatureKind::Import { .. } | FeatureKind::MeshImport { .. }))
-            .map(|f| f.component);
+        let owned = self.feature(id).filter(|f| self.feature_owns_component(f)).map(|f| f.component);
         match owned {
             Some(root) => Ok(self.remove_component_tree(root)?.deleted),
             None => self.delete_features(&[id]),

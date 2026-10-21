@@ -21,6 +21,14 @@ pub struct RemovedTree {
 }
 
 impl Document {
+    /// Did feature `f` make the component tree it sits at the top of: an inserted file
+    /// (`Feature::inserted`) or a linked design's bodies? Deleting it then removes that tree.
+    pub fn feature_owns_component(&self, f: &crate::Feature) -> bool {
+        f.component != 0
+            && matches!(f.kind, FeatureKind::Import { .. } | FeatureKind::MeshImport { .. })
+            && (f.inserted || self.links.get(&f.component).is_some_and(|link| link.feature == f.id))
+    }
+
     /// Remove component `root` with every component inside it, the features made in them, their
     /// occurrences, the joints, motion links, joint origins, contact sets, motion keys and
     /// exploded moves that refer to those occurrences, the bodies' component assignments, and the
