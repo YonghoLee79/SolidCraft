@@ -2210,7 +2210,10 @@ pub const SAVE: &str = "__save";
 /// that capture, revert or keep moving.
 pub fn needs_capture(app: &SolveApp, what: &str) -> bool {
     !app.session.pending_moves.is_empty()
-        && !matches!(what, "component.capture_position" | "component.revert_position" | "occurrence.move" | "edit.undo" | "edit.redo")
+        && !matches!(
+            what,
+            "component.capture_position" | "component.revert_position" | "occurrence.move" | "occurrence.drag" | "edit.undo" | "edit.redo"
+        )
         && app.tree.capture_prompt.is_none()
 }
 
