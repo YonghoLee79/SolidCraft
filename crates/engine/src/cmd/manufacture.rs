@@ -416,6 +416,7 @@ const MAX_PART_TRIANGLES: usize = 6_000_000;
 
 fn simulate(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "manufacture.simulate";
+    object(p, cmd)?;
     let job = s.doc.manufacture.clone();
     let setup_id = match p.get("setup") {
         Some(v) => number_id(v, "setup", cmd)?,

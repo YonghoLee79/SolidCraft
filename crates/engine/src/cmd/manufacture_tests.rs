@@ -141,7 +141,8 @@ fn simulate_reports_gouges_into_the_model_and_volumes() {
     let free = run(&mut s, "manufacture.simulate", json!({"part": false}));
     assert_eq!(free["counts"]["gouge"], 0);
     let removed = free["volumes"]["removed"].as_f64().unwrap();
-    assert!((removed - 20.0 * 14.0 * 4.0).abs() < 20.0 * 14.0 * 4.0 * 0.1, "{removed}");
+    // The pocket, plus the 3 mm of stock standing above the part's top.
+    assert!((removed - 20.0 * 14.0 * 7.0).abs() < 20.0 * 14.0 * 7.0 * 0.1, "{removed}");
     let early = run(&mut s, "manufacture.simulate", json!({"part": false, "until": 40}));
     assert!(early["volumes"]["removed"].as_f64().unwrap() < removed && early["steps"] == 40);
     // It does not change the design.
