@@ -22,7 +22,7 @@ const OPENING_DOC: &str = "Openings are faces: `{\"face\": [x, y, z] (a point on
 
 pub static COMMANDS: &[CommandSpec] = &[
 CommandSpec::new("sim.flow.new", "Airflow Study", flow_new).noundo().at("SIMULATION", "STUDY").icon("sim_flow")
-    .params("Set up an Airflow study (steady, low-speed air through ducts, fans and cooling paths); `sim.flow.run` runs it. body: the duct's body; inlets: list of openings each with `speed` (m/s) or `fan`: {\"type\": \"axial\" | \"radial\" | \"linear\", \"free_flow_cfm\", \"max_pressure_pa\"} or {\"curve\": [[cfm, pa], ...]}; outlets: list of openings (where the air is expected to leave; measured, and the air flows on past them into open air); bodies?: every body in the air's way (default: all visible bodies); cell?: cell size, mm (default: about 8 cells across the narrowest opening); pad?: open air around the bodies, mm (default 20); turbulence?: bool (default true); surface?: the walls' finish, smooth | machined | resin | fdm (default smooth), or roughness_mm?: their equivalent sand-grain roughness (it acts through the turbulence model); max_steps?: (default 200000); name?: the study's name. The design is unchanged. Openings: see sim.flow.edit."),
+    .params("Set up an Airflow study (steady, low-speed air through ducts, fans and cooling paths); `sim.flow.run` runs it. body: the duct's body; inlets: list of openings each with `speed` (m/s) or `fan`: {\"type\": \"axial\" | \"radial\" | \"linear\", \"free_flow_cfm\", \"max_pressure_pa\"} or {\"curve\": [[cfm, pa], ...]}; outlets: list of openings (where the air is expected to leave; measured, and the air flows on past them into open air); bodies?: every body in the air's way (default: all visible bodies); cell?: cell size, mm (default: about 8 cells across the narrowest opening); pad?: open air around the bodies, mm (default 20); turbulence?: bool (default true); surface?: the walls' finish, smooth | rough (an FDM print's walls; default smooth), or roughness_mm?: their equivalent sand-grain roughness (it acts through the turbulence model); max_steps?: (default 200000); name?: the study's name. The design is unchanged. Openings: see sim.flow.edit."),
 CommandSpec::new("sim.flow.edit", "Edit Airflow Study", flow_edit).noundo().icon("sim_flow")
     .params("Change a study's setup: study: its name; any of sim.flow.new's keys (inlets/outlets replace the lists). Its results are cleared."),
 CommandSpec::new("sim.flow.run", "Run Airflow Study", flow_run).noundo().icon("sim_flow")
@@ -216,7 +216,7 @@ fn spec(s: &Session, p: &Value, cmd: &str, base: Option<Spec>) -> Result<Spec> {
         (Some(_), Some(_)) => return Err(bad(cmd, "give `surface` or `roughness_mm`, not both")),
         (Some(name), None) => match flow::SURFACES.iter().find(|(n, _)| *n == name) {
             Some((_, k)) => *k,
-            None => return Err(bad(cmd, format!("surface `{name}`: use smooth, machined, resin or fdm"))),
+            None => return Err(bad(cmd, format!("surface `{name}`: use smooth or rough"))),
         },
         (None, Some(k)) if k.is_finite() && (0.0..=5.0).contains(&k) => k,
         (None, Some(_)) => return Err(bad(cmd, "`roughness_mm` is 0…5")),
@@ -1019,7 +1019,8 @@ mod tests {
             json!({"body": "Duct", "inlets": inlet, "surface": "sandpaper"}),
             json!({"body": "Duct", "inlets": inlet, "roughness_mm": -0.1}),
             json!({"body": "Duct", "inlets": inlet, "roughness_mm": f64::MAX}),
-            json!({"body": "Duct", "inlets": inlet, "surface": "fdm", "roughness_mm": 0.1}),
+            json!({"body": "Duct", "inlets": inlet, "surface": "rough", "roughness_mm": 0.1}),
+            json!({"body": "Duct", "inlets": inlet, "surface": "fdm"}),
         ] {
             assert!(s.execute("sim.flow.new", &p).is_err(), "{p}");
         }
@@ -1040,7 +1041,7 @@ mod tests {
         let mut s = Session::default();
         duct(&mut s);
         let inlet = json!([{"face": [0, 1, 6], "speed": 0.05}]);
-        s.execute("sim.flow.new", &json!({"body": "Duct", "name": "D", "inlets": inlet, "cell": 1, "pad": 4, "surface": "fdm"})).unwrap();
+        s.execute("sim.flow.new", &json!({"body": "Duct", "name": "D", "inlets": inlet, "cell": 1, "pad": 4, "surface": "rough"})).unwrap();
         assert_eq!(s.flow.get("D").map(|st| st.spec.roughness), Some(0.06));
         let listed = s.execute("sim.flow.list", &json!({})).unwrap();
         assert!(listed.to_string().contains("\"roughness_mm\":0.06"), "{listed}");

@@ -188,7 +188,7 @@ pub fn rows(app: &SolveApp, ui: &mut egui::Ui, k: &mut Sim) -> bool {
     enter |= field(ui, "Open air", &mut f.pad, "mm", "");
     crate::ui_kit::checkbox(ui, tr("sim.turbulence"), &mut f.turbulence);
     // In the order of the engine's surface finishes.
-    let labels = ["sim.surface_smooth", "sim.surface_machined", "sim.surface_resin", "sim.surface_fdm"].map(tr);
+    let labels = ["sim.surface_smooth", "sim.surface_rough"].map(tr);
     choice_row(ui, tr("sim.label_surface"), "sim_surface", &mut f.surface, &labels);
     text(ui, &crate::i18n::format("sim.runs_on", &[("solver", &app.session.flow_backend_name())]), Text::Hint("sim_runs_on"));
     enter

@@ -22,8 +22,8 @@ in the design changes; studies are kept beside the design in `<design>.sim.json`
    also lets the solver time its steps for the jets they make; without them a fast jet can make
    the run unstable.
 4. **Bodies in the air's way.** By default every visible body: the bed, the nozzle, the hotend.
-5. **Surface finish.** Smooth, machined or moulded, resin print (SLA) or FDM print, or a
-   roughness of your own (`roughness_mm`, the equivalent sand-grain roughness). See
+5. **Surface finish.** Smooth (machined, moulded or resin printed) or rough (an FDM print),
+   or from a script a roughness of your own (`roughness_mm`, the equivalent sand-grain roughness). See
    [Surface finish](#surface-finish) for what it changes.
 6. **Cell size.** `auto` puts about eight cells across the narrowest opening and keeps cells no
    thicker than the thinnest walls. Smaller is more accurate and slower (cells are cubes, so
@@ -72,15 +72,12 @@ are using. Without a GPU, studies run on the CPU up to 2 million cells.
 A rough wall slows the air near it more than a smooth one. The study models this the way
 Cebeci and Chang did for mixing-length models: roughness shifts the wall distance y⁺ used in
 the near-wall damping by Δy⁺ = 0.9 (√k⁺ − k⁺ e^(−k⁺/6)), where k⁺ is the roughness in wall
-units. The presets are equivalent sand-grain roughness, taken as about three times the mean
-roughness Ra usually reported for each finish:
+units. The two presets are equivalent sand-grain roughness:
 
-| finish | roughness |
-|---|---|
-| smooth | 0 |
-| machined or moulded | 0.005 mm |
-| resin print (SLA) | 0.01 mm |
-| FDM print | 0.06 mm |
+| finish | roughness | for |
+|---|---|---|
+| smooth | 0 | machined, moulded or resin-printed walls, whose roughness sits far inside the viscous layer |
+| rough | 0.06 mm | an FDM print's walls: about three times the mean roughness Ra usually reported for them |
 
 Below k⁺ of about 4.5 the roughness sits inside the wall's viscous layer and changes nothing:
 the wall is *hydraulically smooth*. At part-cooling speeds that covers most prints. At 5 m/s

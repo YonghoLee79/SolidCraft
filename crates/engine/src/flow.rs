@@ -100,9 +100,11 @@ pub struct Spec {
     pub max_steps: u64,
 }
 
-/// Surface finishes as equivalent sand-grain roughness, mm: about three times the arithmetic
-/// mean roughness Ra commonly reported for each (a rough guide; a measured Ra gives a better one).
-pub const SURFACES: [(&str, f64); 4] = [("smooth", 0.0), ("machined", 0.005), ("resin", 0.01), ("fdm", 0.06)];
+/// Surface finishes as equivalent sand-grain roughness, mm: smooth (machined, moulded or resin
+/// printed walls, whose roughness is far inside the viscous layer) and rough, about three times
+/// the arithmetic mean roughness Ra commonly reported for an FDM print's walls (a rough guide; a
+/// measured Ra gives a better one, as `roughness_mm`).
+pub const SURFACES: [(&str, f64); 2] = [("smooth", 0.0), ("rough", 0.06)];
 
 pub struct Study {
     pub name: String,
