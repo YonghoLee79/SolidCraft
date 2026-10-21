@@ -1171,9 +1171,9 @@ mod sketch_edit_removed_tests;
 #[cfg(test)]
 mod split_face_tests;
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod stock_size_tests;
+#[cfg(test)]
+mod tests;
 #[cfg(test)]
 mod thread_tests;
 #[cfg(test)]
