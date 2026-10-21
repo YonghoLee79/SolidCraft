@@ -2317,3 +2317,26 @@ fn step_conformance_parts_read_back_their_exact_shape() {
         }
     }
 }
+
+/// A plate with a counterbored hole, through STEP and back: no line is drawn or picked down the
+/// hole's walls, whichever way the file split or closed those faces, and every
+/// rim around the hole still is.
+#[test]
+fn an_imported_hole_shows_no_seam_down_its_wall() {
+    let plate = box_solid(Vec3::ZERO, Vec3::new(30.0, 30.0, 8.0)).unwrap();
+    let bore = cylinder(Vec3::new(15.0, 15.0, -1.0), Vec3::Z, 2.0, 10.0).unwrap();
+    let sink = cylinder(Vec3::new(15.0, 15.0, 6.0), Vec3::Z, 4.0, 3.0).unwrap();
+    let holed = boolean(&boolean(&plate, &bore, BoolOp::Cut).unwrap().unwrap(), &sink, BoolOp::Cut).unwrap().unwrap();
+    let text = step_export(&[&holed], "seams").unwrap();
+    let body = &step_import(&text).unwrap().bodies[0].body;
+    let m = body.display_mesh(body.size() * 1e-3).unwrap();
+    let round = |f: u32| !matches!(crate::face_surface(body, f as usize), Some(crate::FaceSurface::Plane { .. }));
+    for (i, e) in m.edges.iter().enumerate() {
+        let (Some(a), Some(z)) = (e.first(), e.last()) else { continue };
+        let faces = &m.edge_faces[i];
+        let along_the_wall = a.dist(*z) > 1e-6 && (a.z - z.z).abs() > 1e-6 && faces.iter().all(|f| round(*f));
+        assert!(!(along_the_wall && m.edge_pickable(i)), "edge {i} down the hole's wall is drawn: faces {faces:?}, {a:?}..{z:?}");
+    }
+    let rims = (0..m.edges.len()).filter(|i| m.edge_pickable(*i) && crate::edge_circle(body, *i).is_some()).count();
+    assert!(rims >= 3, "the hole's three rims are still edges: {rims}");
+}
