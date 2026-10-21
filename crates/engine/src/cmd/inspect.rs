@@ -31,9 +31,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("hole")
         .noundo()
         .params(
-            "max_diameter?: expr (only holes no wider than this); bodies?: [names] (default all); holes_only?: bool (default true: cylinders that lean in, holes not bosses); \
+            "max_diameter?: expr (only holes no wider than this); min_diameter?: expr (only holes wider than this); bodies?: [names] (default all); holes_only?: bool (default true: cylinders that lean in, holes not bosses); \
              type?: feature type (Hole, Extrude, the feature's base name, or solid.hole); feature?: feature name or id. \
-             At least one of max_diameter, type and feature. \
+             At least one of max_diameter, min_diameter, type and feature. \
              → holes: [{body, diameter, axis, center, concave, edges: [[x,y,z] on the round edges that close the hole, both ends, as solid.chamfer takes them], feature?: {id, name, type}}], count, edges (every closing edge, flat)",
         ),
     CommandSpec::new("material.assign", "Physical Material", physical_material)
@@ -357,20 +357,24 @@ fn describe(_s: &mut Session, p: &Value) -> Result<Value> {
 
 fn find_holes(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "inspect.find_holes";
-    let max_diameter = match expr(p, "max_diameter") {
-        Some(e) => {
-            let d = s.doc.eval(&e, solidcraft_doc::expr::Kind::Length)?;
-            if !(d.is_finite() && d > 0.0 && d <= 1e6) {
-                return Err(bad(cmd, "`max_diameter` must be a positive length in millimetres"));
+    let length = |key: &str| -> Result<Option<f64>> {
+        match expr(p, key) {
+            Some(e) => {
+                let d = s.doc.eval(&e, solidcraft_doc::expr::Kind::Length)?;
+                if !(d.is_finite() && d > 0.0 && d <= 1e6) {
+                    return Err(bad(cmd, format!("`{key}` must be a positive length in millimetres")));
+                }
+                Ok(Some(d))
             }
-            Some(d)
+            None => Ok(None),
         }
-        None => None,
     };
+    let max_diameter = length("max_diameter")?;
+    let min_diameter = length("min_diameter")?;
     let type_filter = str_(p, "type");
     let feature_filter = str_(p, "feature");
-    if max_diameter.is_none() && type_filter.is_none() && feature_filter.is_none() {
-        return Err(bad(cmd, "give `max_diameter`, `type` or `feature`"));
+    if max_diameter.is_none() && min_diameter.is_none() && type_filter.is_none() && feature_filter.is_none() {
+        return Err(bad(cmd, "give `max_diameter`, `min_diameter`, `type` or `feature`"));
     }
     if let Some(want) = feature_filter
         && !s.doc.features.iter().any(|f| f.name.eq_ignore_ascii_case(want) || f.id.to_string() == want)
@@ -405,6 +409,9 @@ fn find_holes(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(solidcraft_kernel::FaceSurface::Cylinder { origin, axis, radius }) = spot.surface else { continue };
             let diameter = 2.0 * radius;
             if max_diameter.is_some_and(|max| diameter > max + tol) {
+                continue;
+            }
+            if min_diameter.is_some_and(|min| diameter <= min + tol) {
                 continue;
             }
             let axis = Vec3::from(axis);
@@ -503,7 +510,7 @@ fn find_holes(s: &mut Session, p: &Value) -> Result<Value> {
             all_edges.extend(es.iter().cloned());
         }
     }
-    Ok(json!({"max_diameter": max_diameter, "holes": holes, "count": holes.len(), "edges": all_edges}))
+    Ok(json!({"max_diameter": max_diameter, "min_diameter": min_diameter, "holes": holes, "count": holes.len(), "edges": all_edges}))
 }
 
 struct HoleGroup {

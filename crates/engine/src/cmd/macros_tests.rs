@@ -138,6 +138,11 @@ fn find_holes_filters_by_size_feature_name_and_type() {
 
     let typed = run(&mut s, "inspect.find_holes", json!({"type": "Hole", "max_diameter": "20 mm"}));
     assert_eq!(typed["count"], 2, "both hole features, not the boss: {typed}");
+    let large = run(&mut s, "inspect.find_holes", json!({"min_diameter": "5 mm"}));
+    assert_eq!(large["count"], 2, "both holes are wider than 5 mm: {large}");
+    let only_big = run(&mut s, "inspect.find_holes", json!({"min_diameter": "8 mm"}));
+    assert_eq!(only_big["count"], 1, "only the 12 mm hole: {only_big}");
+    assert_eq!(only_big["holes"][0]["feature"]["name"], "Big");
     assert!(error(&mut s, "inspect.find_holes", json!({"feature": "NoSuch"})).contains("NoSuch"));
     assert!(error(&mut s, "inspect.find_holes", json!({})).contains("max_diameter"));
 
@@ -197,6 +202,18 @@ fn the_example_macros_run() {
     assert!(volume(&mut s) < before, "only the small holes were chamfered");
     let big = run(&mut s, "inspect.find_holes", json!({"feature": "Big"}));
     assert_eq!(big["count"], 1, "the 12 mm hole is still a hole: {big}");
+
+    let mut t = Session::default();
+    run(&mut t, "solid.box", json!({"length": 40, "width": 30, "height": 10}));
+    run(&mut t, "solid.hole", json!({"position": [10, 10, 10], "diameter": "4 mm", "name": "Small"}));
+    run(&mut t, "solid.hole", json!({"position": [30, 20, 10], "diameter": "8 mm", "name": "Wide"}));
+    t.macros.loaded = Some(example("chamfer-large-holes.macro.json"));
+    let before = volume(&mut t);
+    let r = run(&mut t, "macro.play", json!({}));
+    assert_eq!(r["ran"], 2, "{r}");
+    assert!(volume(&mut t) < before, "the hole larger than 5 mm was chamfered");
+    let small = run(&mut t, "inspect.find_holes", json!({"feature": "Small"}));
+    assert_eq!(small["count"], 1, "the 4 mm hole is still a hole: {small}");
 
     let dir = temp_dir("dxf");
     let mut s = Session::default();

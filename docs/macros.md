@@ -21,9 +21,11 @@ whole value, which keeps a list or a number as it is). An earlier step's result 
 ```
 
 `inspect.find_holes` finds cylindrical holes. `max_diameter` keeps only holes no wider than
-that. `type` keeps holes made by a feature of that type (`Hole`, `Extrude`, the feature's base
-name, or `solid.hole`). `feature` keeps holes made by that feature's name or id. Each hole's
-`edges` are the round edges that close it, both ends, which is what Chamfer and Fillet take.
+that; `min_diameter` keeps only holes wider than that. `type` keeps holes made by a feature of
+that type (`Hole`, `Extrude`, the feature's base name, or `solid.hole`). `feature` keeps holes
+made by that feature's name or id. Each hole's `edges` are the round edges that close it, both
+ends, which is what Chamfer and Fillet take.
 
 Examples: [examples/macros](../examples/macros) — a plate from five values, chamfer every hole
-under 8 mm on both sides, and flatten a sheet-metal part to DXF.
+under 8 mm on both sides, chamfer every hole larger than 5 mm, and flatten a sheet-metal part
+to DXF.
