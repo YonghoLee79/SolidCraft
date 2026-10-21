@@ -60,34 +60,23 @@ fn mcp_connect_serves_before_the_app_runs_and_reaches_it_once_it_does() {
     let listener = TcpListener::bind(&addr).unwrap();
     let app = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        // Like the app: the first line of a connection must carry the token, later lines may
-        // leave it out, and the connection serves requests until the server hangs up. The server
-        // sends more than one request per tool call (`model.health` before and after it).
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut first = true;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap() == 0 {
-                break;
-            }
-            let req: Value = serde_json::from_str(&line).unwrap();
-            let reply = if !first || req["token"] == json!(token) {
-                json!({"id": req["id"], "ok": true, "result": {"bodies": [], "method": req["method"]}})
-            } else {
-                json!({"id": req["id"], "ok": false, "error": format!("unauthorized: token {}", req["token"])})
-            };
-            first = false;
-            writeln!(&stream, "{reply}").unwrap();
-        }
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        let req: Value = serde_json::from_str(&line).unwrap();
+        let reply = if req["token"] == json!(token) {
+            json!({"id": req["id"], "ok": true, "result": {"bodies": [], "method": req["method"]}})
+        } else {
+            json!({"id": req["id"], "ok": false, "error": format!("unauthorized: token {}", req["token"])})
+        };
+        writeln!(&stream, "{reply}").unwrap();
     });
     let r = ask(4, "tools/call", measure);
     assert_ne!(r["result"]["isError"], true, "{r}");
     assert!(text(&r).contains("engine.execute"), "{r}");
+    app.join().unwrap();
 
-    // The fake app serves the connection until the server hangs up, which it does on exit.
     drop(stdin);
     assert!(child.wait().unwrap().success());
-    app.join().unwrap();
     std::fs::remove_dir_all(&control_dir).ok();
 }
 
