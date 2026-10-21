@@ -12,12 +12,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("canvas.insert", "Canvas", add_canvas)
         .at("SKETCH", "INSERT")
         .icon("canvas")
-        .params("path | data (base64 PNG or JPEG); plane?: XY|XZ|YZ|{face: [x,y,z]}|… (default XY); center?: [x,y] on the plane, or at?: [x,y,z]; width?: mm (default 100); angle?: deg; opacity?: 0…1 (default 0.5); flip?; name?"),
+        .params("path | data (base64 PNG or JPEG); plane?: XY|XZ|YZ|{face: [x,y,z]}|… (default XY); center?: [x,y] on the plane, or at?: [x,y,z]; width?: mm shown (default 100) or scale?: factor (1 = 100 mm), not both; scale_x?, scale_y?: stretch factors; angle?: deg; opacity?: 0…1 (default 0.5); flip?; flip_v?; name?"),
     CommandSpec::new("canvas.decal", "Decal", add_decal)
         .at("SKETCH", "INSERT")
         .icon("decal")
         .params("path | data; face: [x,y,z] on a planar face (the image is centred there); width?: mm; angle?: deg; opacity?: (default 1)"),
-    CommandSpec::new("canvas.edit", "Edit Canvas", edit_canvas).at("SKETCH", "INSERT").icon("canvas").params("canvas: id or name; center?, width?, angle?: deg, opacity?, flip?, visible?, name?"),
+    CommandSpec::new("canvas.edit", "Edit Canvas", edit_canvas).at("SKETCH", "INSERT").icon("canvas").params("canvas: id or name; center?, width?: mm shown, scale?, scale_x?, scale_y?: factors, angle?: deg, opacity?, flip?, flip_v?, visible?, name?"),
     CommandSpec::new("canvas.calibrate", "Calibrate Canvas", calibrate).icon("measure")
         .params("canvas: id or name; a, b: two points on the canvas plane [x,y]; distance: their true distance (mm): scales the image about a"),
     CommandSpec::new("canvas.delete", "Delete Canvas", delete_canvas).icon("delete").params("canvas: id or name"),
@@ -39,6 +39,67 @@ fn image_bytes(p: &Value, cmd: &str) -> Result<Vec<u8>> {
     Ok(b)
 }
 
+/// One factor: absent is fine; present it must be a number in (1e-6, 1e6).
+fn factor(p: &Value, key: &str, cmd: &str) -> Result<Option<f64>> {
+    match p.get(key) {
+        None => Ok(None),
+        Some(v) => v
+            .as_f64()
+            .filter(|x| x.is_finite() && *x > 1e-6 && *x < 1e6)
+            .map(Some)
+            .ok_or_else(|| bad(cmd, format!("`{key}` must be a positive number"))),
+    }
+}
+
+/// The width, the stretches and the shown size must be finite, positive and below 1e7 mm.
+fn check_size(c: &Canvas, cmd: &str) -> Result<()> {
+    let size = c.size();
+    let ok = c.width.is_finite()
+        && c.width > 0.0
+        && c.scale_x.is_finite()
+        && c.scale_x > 0.0
+        && c.scale_y.is_finite()
+        && c.scale_y > 0.0
+        && size.x > 0.0
+        && size.y > 0.0
+        && size.x < 1e7
+        && size.y < 1e7;
+    if ok { Ok(()) } else { Err(bad(cmd, "the shown width and height must be positive and below 10 000 000 mm")) }
+}
+
+/// Applies `width`, `scale`, `scale_x`, `scale_y` and `flip_v` to `c`. `width` is the shown
+/// width: the stored width is `width / scale_x`.
+fn apply_shape(c: &mut Canvas, p: &Value, cmd: &str) -> Result<()> {
+    let (scale, sx, sy) = (factor(p, "scale", cmd)?, factor(p, "scale_x", cmd)?, factor(p, "scale_y", cmd)?);
+    let width = match p.get("width") {
+        None => None,
+        Some(v) => Some(v.as_f64().filter(|w| *w > 1e-6 && *w < 1e7).ok_or_else(|| bad(cmd, "`width` must be positive"))?),
+    };
+    if width.is_some() && scale.is_some() {
+        return Err(bad(cmd, "give `width` or `scale`, not both"));
+    }
+    if let Some(x) = sx {
+        c.scale_x = x;
+    }
+    if let Some(y) = sy {
+        c.scale_y = y;
+    }
+    if let Some(k) = scale {
+        c.width = 100.0 * k;
+    }
+    if let Some(w) = width {
+        if !(c.scale_x.is_finite() && c.scale_x > 1e-6) {
+            return Err(bad(cmd, "the canvas has an invalid `scale_x`; set `scale_x` too"));
+        }
+        c.width = w / c.scale_x;
+    }
+    if let Some(v) = bool_(p, "flip_v") {
+        c.flip_v = v;
+    }
+    // The picture's proportions count: a tall picture is as tall as it shows.
+    check_size(c, cmd)
+}
+
 fn make(s: &mut Session, p: &Value, cmd: &str, decal: bool) -> Result<Value> {
     let bytes = image_bytes(p, cmd)?;
     let (format, pixels) = image_info(&bytes).ok_or_else(|| bad(cmd, "only PNG and JPEG images can be inserted"))?;
@@ -48,10 +109,6 @@ fn make(s: &mut Session, p: &Value, cmd: &str, decal: bool) -> Result<Value> {
     // A decal sits where the face was picked.
     let at = p.get("at").or_else(|| p.get("plane").and_then(|v| v.get("face"))).and_then(crate::params::vec3).map(|q| pl.to_local(q));
     let center = p.get("center").and_then(vec2).or(at).unwrap_or(Vec2::ZERO);
-    let width = num(p, "width").unwrap_or(100.0);
-    if !(width > 1e-6 && width < 1e7) {
-        return Err(bad(cmd, "`width` must be positive"));
-    }
     let opacity = num(p, "opacity").unwrap_or(if decal { 1.0 } else { 0.5 }).clamp(0.0, 1.0);
     // It belongs to the active component (its plane is in that frame) and moves with it.
     let component = s.active_component;
@@ -59,7 +116,7 @@ fn make(s: &mut Session, p: &Value, cmd: &str, decal: bool) -> Result<Value> {
     let id = super::next_free_id(cmd, doc.canvases.iter().map(|c| c.id))?;
     let base = if decal { "Decal" } else { "Canvas" };
     let name = str_(p, "name").map(str::to_string).unwrap_or_else(|| format!("{base}{id}"));
-    doc.canvases.push(Canvas {
+    let mut c = Canvas {
         id,
         name: name.clone(),
         format: format.into(),
@@ -67,13 +124,18 @@ fn make(s: &mut Session, p: &Value, cmd: &str, decal: bool) -> Result<Value> {
         pixels,
         plane,
         center,
-        width,
+        width: 100.0,
+        scale_x: 1.0,
+        scale_y: 1.0,
         angle: num(p, "angle").unwrap_or(0.0).to_radians(),
         opacity,
         flip: bool_(p, "flip").unwrap_or(false),
+        flip_v: false,
         visible: true,
         component,
-    });
+    };
+    apply_shape(&mut c, p, cmd)?;
+    doc.canvases.push(c);
     Ok(json!({"canvas": id, "name": name, "pixels": pixels}))
 }
 
@@ -103,16 +165,12 @@ fn find(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
 fn edit_canvas(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "canvas.edit";
     let i = find(s, p, cmd)?;
-    let width = num(p, "width");
-    if width.is_some_and(|w| !(w > 1e-6 && w < 1e7)) {
-        return Err(bad(cmd, "`width` must be positive"));
+    let mut c = s.doc.canvases.get(i).cloned().ok_or_else(|| bad(cmd, "canvas"))?;
+    if ["width", "scale", "scale_x", "scale_y", "flip_v"].iter().any(|k| p.get(k).is_some()) {
+        apply_shape(&mut c, p, cmd)?;
     }
-    let c = s.doc_mut().canvases.get_mut(i).ok_or_else(|| bad(cmd, "canvas"))?;
     if let Some(v) = p.get("center").and_then(vec2) {
         c.center = v;
-    }
-    if let Some(w) = width {
-        c.width = w;
     }
     if let Some(a) = num(p, "angle") {
         c.angle = a.to_radians();
@@ -129,7 +187,9 @@ fn edit_canvas(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(n) = str_(p, "name").filter(|n| !n.trim().is_empty()) {
         c.name = n.to_string();
     }
-    Ok(json!({"canvas": c.id}))
+    let id = c.id;
+    *s.doc_mut().canvases.get_mut(i).ok_or_else(|| bad(cmd, "canvas"))? = c;
+    Ok(json!({"canvas": id}))
 }
 
 fn calibrate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -168,6 +228,50 @@ mod tests {
         b.extend(h.to_be_bytes());
         b.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
         base64_encode(&b)
+    }
+
+    #[test]
+    fn canvas_insert_and_edit_take_stretches_flips_and_width_as_shown() {
+        let mut s = Session::default();
+        let r = s.execute("canvas.insert", &json!({"data": png(400, 200), "scale": 0.8, "scale_x": 1.5, "flip_v": true})).unwrap();
+        let id = r["canvas"].clone();
+        let c = s.doc.canvases[0].clone();
+        assert_eq!((c.width, c.scale_x, c.scale_y, c.flip_v), (80.0, 1.5, 1.0, true));
+        assert_eq!(c.size(), solidcraft_geom::Vec2::new(120.0, 40.0));
+        // `width` is the width shown: with Scale X 1.5, 150 shown is 100 stored.
+        s.execute("canvas.edit", &json!({"canvas": id, "width": 150, "scale_y": 2})).unwrap();
+        let c = s.doc.canvases[0].clone();
+        assert!((c.width - 100.0).abs() < 1e-9 && (c.size().x - 150.0).abs() < 1e-9 && (c.size().y - 100.0).abs() < 1e-9, "{c:?}");
+        s.execute("canvas.edit", &json!({"canvas": id, "flip_v": false})).unwrap();
+        assert!(!s.doc.canvases[0].flip_v);
+        // Calibrating scales both ways and keeps the stretch.
+        s.execute("canvas.calibrate", &json!({"canvas": id, "a": [0, 0], "b": [10, 0], "distance": 20})).unwrap();
+        let c = &s.doc.canvases[0];
+        assert_eq!((c.scale_x, c.scale_y), (1.5, 2.0));
+        assert!((c.width - 200.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hostile_stretches_and_sizes_are_refused() {
+        let mut s = Session::default();
+        let id = s.execute("canvas.insert", &json!({"data": png(400, 200)})).unwrap()["canvas"].clone();
+        let before = s.doc.canvases.clone();
+        for bad in [
+            json!({"scale_x": 0}),
+            json!({"scale_y": -1}),
+            json!({"scale": 1e300}),
+            json!({"scale_x": "big"}),
+            json!({"width": 10, "scale": 2}),
+            json!({"scale_y": 999_999, "scale": 999}),
+        ] {
+            let mut edit = bad.clone();
+            edit["canvas"] = id.clone();
+            assert!(s.execute("canvas.edit", &edit).is_err(), "edit {bad}");
+            let mut insert = bad.clone();
+            insert["data"] = json!(png(400, 200));
+            assert!(s.execute("canvas.insert", &insert).is_err(), "insert {bad}");
+        }
+        assert_eq!(s.doc.canvases, before);
     }
 
     #[test]
