@@ -57,12 +57,14 @@ pub struct ControlRequest {
     pub method: String,
     pub params: Value,
     pub reply: Sender<ControlResponse>,
+    /// Set once the window starts on it; until then it waits its turn (`control.running`, #3654).
+    pub started: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ControlRequest {
     pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx }, rx)
+        (Self { method: method.into(), params, reply: tx, started: Default::default() }, rx)
     }
 }
 
@@ -100,7 +102,7 @@ fn key_from(name: &str) -> Option<egui::Key> {
 fn execute(app: &mut SolveApp, id: &str, params: Value) -> Result<Value, String> {
     let r = app.run(id, params);
     if r.is_ok()
-        && !matches!(id, "view.navigate" | "view.ambient_occlusion" | "view.graphics_preset")
+        && !matches!(id, "view.navigate" | "view.ambient_occlusion" | "view.graphics_preset" | "view.history_layout")
         && app.session.active_sketch.is_none()
         && app.session.world_state().bodies.len() == 1
         && app.session.undo.len() <= 2
@@ -388,15 +390,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         }
         "ui.view" => {
             let v = s("view").unwrap_or("home");
-            app.viewport.orbit_snap = None;
             app.viewport.orbit_free = None;
-            if p.get("animate").and_then(Value::as_bool).unwrap_or(false) {
-                if v != "fit" && v != "home" && StandardView::parse(v).is_none() {
-                    return err(format!("unknown view `{v}`"));
-                }
-                app.animate_view(v);
-                return ok(json!({ "animating": true, "to": app.cam_anim.map(|a| a.to) }));
-            }
             app.cancel_view_animation();
             match v {
                 "fit" => app.fit_view(),
@@ -889,7 +883,6 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
         return serde_json::to_value(app.cam).map_err(|e| e.to_string());
     }
     app.cancel_view_animation();
-    app.viewport.orbit_snap = None;
     app.viewport.orbit_free = None;
     app.cam = cam;
     match fit {
@@ -1418,23 +1411,6 @@ mod tests {
         let mut h = crate::scenario::Harness::new();
         h.app = SolveApp::new(s, Services::default());
         h.frames(2);
-        let before = h.app.cam;
-        // Reading during an animated view change leaves it running (no frames run between).
-        fn raw(h: &mut crate::scenario::Harness, method: &str, params: Value) -> Value {
-            let (req, _rx) = ControlRequest::new(method, params);
-            match handle(&mut h.app, &h.ctx, &req) {
-                Outcome::Done(v) => v,
-                Outcome::Screenshot { .. } => Value::Null,
-            }
-        }
-        raw(&mut h, "ui.view", json!({"view": "top", "animate": true}));
-        let r = raw(&mut h, "ui.camera", Value::Null);
-        assert!(r["ok"] == true && h.app.cam_anim.is_some(), "{r}");
-        // Setting it, even to where it is now, ends the animation there.
-        let yaw = h.app.cam.yaw;
-        let r = raw(&mut h, "ui.camera", json!({ "yaw": yaw }));
-        assert!(r["ok"] == true && h.app.cam_anim.is_none(), "{r}");
-        h.app.cam = before;
         let mut cam = |p: Value| {
             let r = h.call("ui.camera", p);
             assert_eq!(r["ok"], true, "{r}");

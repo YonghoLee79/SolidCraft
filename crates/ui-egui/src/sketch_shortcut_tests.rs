@@ -123,3 +123,28 @@ fn construction_key_outside_a_sketch_opens_nothing_and_keys_in_a_sketch_keep_it(
     assert_eq!(h.app.session.world_state().sketches.len(), 1);
     assert_eq!(tool(&h), Some("sketch.circle.center"));
 }
+
+#[test]
+fn move_key_keeps_sketch_mode_behavior_and_honors_a_sketch_move_binding() {
+    let mut h = Harness::new();
+    h.app.run("component.create", json!({"name":"Carriage"})).unwrap();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.run("sketch.line", json!({"points":[[0,0],[10,0]]})).unwrap();
+    let sketch = h.app.session.active_sketch;
+    let selection = vec![Sel::SketchCurve { id: "l1".into() }];
+    h.app.session.selection = selection.clone();
+
+    press(&mut h, "M");
+    assert!(h.app.dialog.is_none(), "the default body Move shortcut is disabled in a sketch");
+    assert!(h.app.tree.occurrence_move.is_none());
+    assert_eq!(h.app.session.active_sketch, sketch);
+    assert_eq!(h.app.session.selection, selection);
+
+    crate::keymap::bind(&mut h.app, "sketch.move", "M", true).unwrap();
+    press(&mut h, "M");
+    let dialog = h.app.dialog.as_ref().expect("a rebound M opens Sketch Move in an active sketch");
+    assert!(matches!(dialog.kind, crate::dialogs::Kind::SketchModify(crate::sketch_modify_ui::Mod::Move { .. })));
+    assert_eq!(dialog.inputs[0].items, selection);
+    assert_eq!(h.app.session.active_sketch, sketch);
+    assert!(h.app.tree.occurrence_move.is_none(), "M must not open component Move while editing its sketch");
+}

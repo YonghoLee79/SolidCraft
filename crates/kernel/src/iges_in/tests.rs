@@ -299,6 +299,30 @@ fn trimmed_surfaces_sew_into_a_solid() {
     assert!(rel(m.volume, 6000.0) < 1e-6 && rel(m.area, 2200.0) < 1e-6, "{} {}", m.volume, m.area);
 }
 
+/// Trim pieces whose ends miss each other by a hundredth of a millimetre, far past the file's
+/// stated resolution: the loop is closed and the box sews into a solid. A gap of half a
+/// millimetre is no corner written loosely, and stays open.
+#[test]
+fn trim_loops_with_small_gaps_still_close() {
+    let with_gap = |gap: f64| {
+        let mut ents = Vec::new();
+        trimmed_box(&mut ents, 0.0);
+        // The edge from (0, 0, 0) towards (0, 20, 0) stops `gap` short of that corner, in both
+        // faces that run along it (the first face's first line, the fifth face's last).
+        ents[1].2 = format!("0.,0.,0.,0.,{:?},0.", 20.0 - gap);
+        ents[36].2 = format!("0.,{:?},0.,0.,0.,0.", 20.0 - gap);
+        iges_import(&iges_file(&ents))
+    };
+    let imp = with_gap(0.01).unwrap();
+    assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+    assert!(imp.bodies[0].closed);
+    let m = measure(&imp.bodies[0].body).unwrap();
+    assert!(rel(m.volume, 6000.0) < 1e-3 && rel(m.area, 2200.0) < 1e-3, "{} {}", m.volume, m.area);
+    if let Ok(imp) = with_gap(0.5) {
+        assert!(imp.bodies.iter().all(|b| !b.closed), "a 0.5 mm gap was closed");
+    }
+}
+
 #[test]
 fn surfaces_in_separate_groups_remain_separate_parts() {
     let mut ents = Vec::new();
