@@ -694,3 +694,68 @@ fn flipped_offset_sketch_plane_follows_its_parameter() {
     run(&mut s, "parameters.change", json!({"name": "d", "expression": "50 mm"}));
     assert!((volume(&mut s) - 400.0 * 50.0).abs() < 1e-6, "{}", volume(&mut s));
 }
+
+/// #2371: `name = value` typed as a dimension's value defines the user parameter `name` there and
+/// then, and the dimension follows it.
+#[test]
+fn a_dimension_value_can_define_a_parameter() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [30, 0]], "ids": ["l1"]}));
+    let before = s.undo.len();
+    let r = run(&mut s, "sketch.dimension", json!({"entities": ["l1"], "value": "width = 40"}));
+    assert_eq!(s.undo.len(), before + 1, "one step");
+    let dim = r["param"].as_str().unwrap().to_string();
+    assert_eq!(expr_of(&mut s, &dim), "width");
+    assert_eq!(expr_of(&mut s, "width"), "40");
+    assert_eq!(s.doc.param("width").unwrap().unit, "mm");
+    let length = |s: &Session| {
+        let state = s.model.state();
+        let sk = &state.sketch(s.active_sketch.unwrap()).unwrap().sketch;
+        sk.point(sk.resolve_point("l1.end").unwrap()).unwrap().x - sk.point(sk.resolve_point("l1.start").unwrap()).unwrap().x
+    };
+    assert!((length(&s) - 40.0).abs() < 1e-6);
+    run(&mut s, "parameters.change", json!({"name": "width", "expression": "55"}));
+    assert!((length(&s) - 55.0).abs() < 1e-6, "the dimension follows the parameter");
+
+    // The same in the value box of an existing dimension, and with Onshape-style `#name`.
+    run(&mut s, "parameters.change", json!({"name": dim, "expression": "#span = width / 2"}));
+    assert_eq!(expr_of(&mut s, &dim), "span");
+    assert!((length(&s) - 27.5).abs() < 1e-6);
+
+    // An angle in degrees; a name in use is refused, nothing changes.
+    run(&mut s, "sketch.line", json!({"points": [[0, 10], [20, 20]], "ids": ["l2"]}));
+    let a = run(&mut s, "sketch.dimension", json!({"entities": ["l1", "l2"], "value": "tilt = 30"}));
+    assert_eq!(s.doc.param("tilt").unwrap().unit, "deg");
+    assert!(a["param"].is_string());
+    let before = s.doc.to_json();
+    let e = err(&mut s, "parameters.change", json!({"name": dim, "expression": "width = 10"}));
+    assert!(e.contains("already a parameter `width`"), "{e}");
+    assert_eq!(s.doc.to_json(), before);
+}
+
+/// Only `identifier = expression` is a definition: comparisons, `==` and expressions stay values.
+#[test]
+fn only_a_plain_name_on_the_left_defines_a_parameter() {
+    use solidcraft_doc::split_definition;
+    assert_eq!(split_definition("width = 40"), Some(("width", "40")));
+    assert_eq!(split_definition(" #w_2=a*2 "), Some(("w_2", "a*2")));
+    for text in ["40", "width", "a == b", "2w = 3", "a b = 3", "= 4", "x =", "width / 2"] {
+        assert_eq!(split_definition(text), None, "{text}");
+    }
+}
+
+/// In an inch design a bare number in the definition is inches.
+#[test]
+fn a_defined_length_takes_the_design_units() {
+    let mut s = Session::default();
+    run(&mut s, "document.units", json!({"units": "in"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [30, 0]], "ids": ["l1"]}));
+    run(&mut s, "sketch.dimension", json!({"entities": ["l1"], "value": "w = 2"}));
+    assert_eq!(s.doc.param("w").unwrap().unit, "in");
+    let state = s.model.state();
+    let sk = &state.sketch(s.active_sketch.unwrap()).unwrap().sketch;
+    let end = sk.point(sk.resolve_point("l1.end").unwrap()).unwrap();
+    assert!((end.x - 50.8).abs() < 1e-6, "{end:?}");
+}

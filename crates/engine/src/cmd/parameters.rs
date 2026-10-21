@@ -11,7 +11,7 @@ use crate::{EngineError, Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("parameters.change", "Change Parameters", change_param).at("SOLID", "MODIFY").icon("params").params(
-        "name, expression (number or text), unit?: mm|cm|m|in|ft|deg|rad|\"\" (new parameters default to their value's unit), comment?, \
+        "name, expression (number or text; \"other = expression\" adds the user parameter other and takes it), unit?: mm|cm|m|in|ft|deg|rad|\"\" (new parameters default to their value's unit), comment?, \
              favorite?: bool, new_name?: rename (references follow); or delete: name; or changes: {name: expression, …} (existing \
          parameters, checked together and rebuilt once, all or nothing) → changed?: {name: value} (with changes), recomputed: features rebuilt, \
          restored: features whose earlier result for the same inputs was reused (e.g. a value set back)",
@@ -105,6 +105,14 @@ fn change_param(s: &mut Session, p: &Value) -> Result<Value> {
         None
     } else {
         return Err(bad(cmd, "`expression` must be a number or text"));
+    };
+    // `width = 40` defines the parameter `width`, and this one takes `width` (#2371).
+    let e = match e {
+        Some(text) => {
+            let kind = s.doc.param(&name).and_then(|x| expr::unit_info(&x.unit)).map_or(Kind::Unitless, |(k, _)| k);
+            Some(s.doc_mut().define_from_value(&text, kind)?.unwrap_or(text))
+        }
+        None => None,
     };
     let (unit, comment) = (str_(p, "unit"), str_(p, "comment"));
     match &e {
