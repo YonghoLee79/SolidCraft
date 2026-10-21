@@ -1152,16 +1152,63 @@ fn color_of(t: &Tr, seq: i64) -> Option<[f32; 3]> {
     }
 }
 
+/// Split faces into groups that share edges.
+fn group_faces(faces: Vec<FaceB>) -> Vec<Vec<FaceB>> {
+    let n = faces.len();
+    if n <= 1 {
+        return if n == 0 { Vec::new() } else { vec![faces] };
+    }
+    let mut edge_faces: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (fi, f) in faces.iter().enumerate() {
+        for &(e, _) in f.loops.iter().flatten() {
+            edge_faces.entry(e).or_default().push(fi);
+        }
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut [usize], mut i: usize) -> usize {
+        while i < p.len() && i != p[i] {
+            let next = p[i];
+            if next < p.len() {
+                p[i] = p[next];
+            }
+            i = next;
+        }
+        i
+    }
+    for list in edge_faces.values() {
+        if let Some(&first) = list.first() {
+            let root_first = find(&mut parent, first);
+            for &other in list.iter().skip(1) {
+                let root_other = find(&mut parent, other);
+                if root_first != root_other && root_other < parent.len() {
+                    parent[root_other] = root_first;
+                }
+            }
+        }
+    }
+    let mut group_map: HashMap<usize, usize> = HashMap::new();
+    let mut groups: Vec<Vec<FaceB>> = Vec::new();
+    for (fi, f) in faces.into_iter().enumerate() {
+        let root = find(&mut parent, fi);
+        let group_idx = match group_map.get(&root) {
+            Some(&gi) => gi,
+            None => {
+                let gi = groups.len();
+                groups.push(Vec::new());
+                group_map.insert(root, gi);
+                gi
+            }
+        };
+        if let Some(grp) = groups.get_mut(group_idx) {
+            grp.push(f);
+        }
+    }
+    groups
+}
+
 /// Write faces sewn by `sw` as a shell; the shell's id and whether it closes.
 fn write_shell(o: &mut Out, sw: &Sewer, faces: &[FaceB], styles: &mut Vec<(u64, [f32; 3])>) -> (u64, bool) {
-    let vids: Vec<u64> = sw
-        .verts
-        .iter()
-        .map(|p| {
-            let c = o.point(*p);
-            o.add(format!("VERTEX_POINT('',#{c})"))
-        })
-        .collect();
+    let mut vids: HashMap<usize, u64> = HashMap::new();
     let mut eids: HashMap<usize, u64> = HashMap::new();
     let mut count: HashMap<usize, (usize, usize)> = HashMap::new();
     for &(e, d) in faces.iter().flat_map(|f| f.loops.iter().flatten()) {
@@ -1182,7 +1229,17 @@ fn write_shell(o: &mut Out, sw: &Sewer, faces: &[FaceB], styles: &mut Vec<(u64, 
                 let id = match eids.get(&e) {
                     Some(id) => *id,
                     None => {
-                        let (Some(a), Some(b)) = (vids.get(ed.v[0]), vids.get(ed.v[1])) else { continue };
+                        let mut vertex = |vi: usize| -> Option<u64> {
+                            if let Some(&id) = vids.get(&vi) {
+                                return Some(id);
+                            }
+                            let p = sw.verts.get(vi)?;
+                            let c = o.point(*p);
+                            let id = o.add(format!("VERTEX_POINT('',#{c})"));
+                            vids.insert(vi, id);
+                            Some(id)
+                        };
+                        let (Some(a), Some(b)) = (vertex(ed.v[0]), vertex(ed.v[1])) else { continue };
                         let id = o.add(format!("EDGE_CURVE('',#{a},#{b},#{},{})", ed.curve, if ed.rev { ".F." } else { ".T." }));
                         eids.insert(e, id);
                         id
@@ -1298,7 +1355,7 @@ fn translate(text: &str) -> std::result::Result<(String, Vec<String>), String> {
     Ok((s, t.warnings))
 }
 
-/// Sew surfaces within their owning group, keeping different parts separate.
+/// Sew surfaces within their owning group, keeping different parts and disconnected lumps separate.
 fn sew_surfaces(
     t: &mut Tr,
     seqs: impl Iterator<Item = usize>,
@@ -1306,7 +1363,8 @@ fn sew_surfaces(
     styles: &mut Vec<(u64, [f32; 3])>,
     faces: &mut Vec<FaceB>,
     sw: &mut Sewer,
-) -> R<Option<u64>> {
+    items: &mut Vec<u64>,
+) -> R<()> {
     faces.clear();
     sw.verts.clear();
     sw.grid.clear();
@@ -1323,17 +1381,21 @@ fn sew_surfaces(
         }
     }
     if faces.is_empty() {
-        return Ok(None);
+        return Ok(());
     }
-    orient(faces);
-    let (shell, closed) = write_shell(&mut t.o, sw, faces, styles);
-    let name = name.replace('\'', "''");
-    Ok(Some(if closed {
-        t.o.add(format!("MANIFOLD_SOLID_BREP('{name}',#{shell})"))
-    } else {
-        t.warn("the surfaces do not close into a solid: imported as an open body");
-        t.o.add(format!("SHELL_BASED_SURFACE_MODEL('{name}',(#{shell}))"))
-    }))
+    let base = name.replace('\'', "''");
+    for (k, mut group) in group_faces(std::mem::take(faces)).into_iter().enumerate() {
+        orient(&mut group);
+        let (shell, closed) = write_shell(&mut t.o, sw, &group, styles);
+        let label = if k == 0 { base.clone() } else { format!("{base} {}", k + 1) };
+        items.push(if closed {
+            t.o.add(format!("MANIFOLD_SOLID_BREP('{label}',#{shell})"))
+        } else {
+            t.warn("the surfaces do not close into a solid: imported as an open body");
+            t.o.add(format!("SHELL_BASED_SURFACE_MODEL('{label}',(#{shell}))"))
+        });
+    }
+    Ok(())
 }
 
 /// A trimmed (144) or bounded (143) surface, or a bare B-spline surface, as a face.
