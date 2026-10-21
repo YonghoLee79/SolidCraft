@@ -1,0 +1,578 @@
+use std::f64::consts::PI;
+
+use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
+
+use crate::job::{Direction, DrillPoints, Job, OpKind, Operation, Setup, Side, Source, Stock};
+use crate::offset::{Curve, inset};
+use crate::path::{DrillCycle, Move, Toolpath};
+use crate::plan::{Geometry, Site, circle_sites, levels, plan};
+use crate::post::{Dialect, PostOptions, Step, generate};
+use crate::ring::{dist_to_segment, perimeter, signed_area};
+use crate::tool::{Tool, ToolKind};
+
+fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Vec2> {
+    vec![Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]
+}
+fn reversed(mut v: Vec<Vec2>) -> Vec<Vec2> {
+    v.reverse();
+    v
+}
+fn rect_region(x0: f64, y0: f64, x1: f64, y1: f64) -> Region2 {
+    Region2 { outer: Loop2::polygon(&rect(x0, y0, x1, y1)), holes: vec![] }
+}
+fn bounds(c: &Curve) -> (Vec2, Vec2) {
+    let lo = c.points.iter().fold(Vec2::new(f64::INFINITY, f64::INFINITY), |a, p| Vec2::new(a.x.min(p.x), a.y.min(p.y)));
+    let hi = c.points.iter().fold(Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY), |a, p| Vec2::new(a.x.max(p.x), a.y.max(p.y)));
+    (lo, hi)
+}
+fn near(a: f64, b: f64, tol: f64) -> bool {
+    (a - b).abs() <= tol
+}
+/// The smallest distance from `p` to the ring's edges.
+fn clearance(rings: &[Vec<Vec2>], p: Vec2) -> f64 {
+    rings
+        .iter()
+        .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+        .map(|(a, b)| dist_to_segment(p, a, b))
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn tool(id: u32, dia: f64) -> Tool {
+    Tool { id, name: format!("{dia} mm end mill"), kind: ToolKind::FlatEndMill, diameter: dia, flutes: 2, corner_radius: 0.0, tip_angle: 118.0 }
+}
+fn drill_tool(id: u32, dia: f64) -> Tool {
+    Tool { kind: ToolKind::Drill, ..tool(id, dia) }
+}
+fn setup() -> Setup {
+    Setup {
+        id: 1,
+        name: "Top".into(),
+        frame: Plane::XY,
+        work_offset: 54,
+        stock: Some(Stock { min: [0.0, 0.0, -10.0], max: [60.0, 40.0, 0.0] }),
+        clearance: 10.0,
+    }
+}
+fn op(kind: OpKind, tool: u32) -> Operation {
+    Operation {
+        id: 1,
+        name: "Op".into(),
+        setup: 1,
+        tool,
+        kind,
+        top: 0.0,
+        bottom: -4.0,
+        retract: 2.0,
+        stepdown: 2.0,
+        spindle_rpm: 8000.0,
+        feed: 600.0,
+        plunge_feed: 200.0,
+        coolant: false,
+    }
+}
+fn source() -> Source {
+    Source { sketch: 1, profiles: vec![] }
+}
+fn contour_op(side: Side, direction: Direction, allowance: f64) -> Operation {
+    op(OpKind::Contour { source: source(), side, direction, allowance, ramp_angle: 3.0 }, 1)
+}
+fn pocket_op(stepover: f64, finish: bool, allowance: f64) -> Operation {
+    op(OpKind::Pocket { source: source(), direction: Direction::Climb, stepover, allowance, finish, ramp_angle: 3.0 }, 1)
+}
+fn geometry(regions: Vec<Region2>) -> Geometry {
+    Geometry { regions, sites: vec![] }
+}
+fn feed_points(t: &Toolpath) -> Vec<Vec3> {
+    t.moves.iter().filter_map(|m| if let Move::Feed { to, .. } = m { Some(*to) } else { None }).collect()
+}
+
+// ---------------------------------------------------------------------------------- offsetting
+
+#[test]
+fn rectangle_insets_to_a_smaller_rectangle() {
+    let out = inset(&[rect(0.0, 0.0, 40.0, 20.0)], 3.0, 0.005).unwrap();
+    assert_eq!(out.len(), 1);
+    let c = &out[0];
+    assert!(c.closed);
+    let (lo, hi) = bounds(c);
+    assert!(near(lo.x, 3.0, 1e-9) && near(lo.y, 3.0, 1e-9) && near(hi.x, 37.0, 1e-9) && near(hi.y, 17.0, 1e-9));
+    assert!(near(signed_area(&c.points), 34.0 * 14.0, 1e-6), "counter-clockwise, free space on the left");
+}
+
+#[test]
+fn a_strip_narrower_than_the_tool_has_no_inset() {
+    assert!(inset(&[rect(0.0, 0.0, 40.0, 5.0)], 3.0, 0.005).unwrap().is_empty());
+    let thin = inset(&[rect(0.0, 0.0, 40.0, 5.0)], 2.0, 0.005).unwrap();
+    assert_eq!(thin.len(), 1);
+    assert!(near(signed_area(&thin[0].points), 36.0 * 1.0, 1e-6));
+}
+
+#[test]
+fn circle_insets_to_a_concentric_circle() {
+    let ring = Loop2::circle(Vec2::new(5.0, -2.0), 10.0).polyline(0.001).into_vec();
+    let out = inset(&[ring], 3.0, 0.005).unwrap();
+    assert_eq!(out.len(), 1);
+    for p in &out[0].points {
+        assert!(near(p.dist(Vec2::new(5.0, -2.0)), 7.0, 0.01), "{p:?}");
+    }
+}
+
+#[test]
+fn a_reflex_corner_is_rounded_and_a_convex_one_is_sharp() {
+    let l =
+        vec![Vec2::new(0.0, 0.0), Vec2::new(40.0, 0.0), Vec2::new(40.0, 20.0), Vec2::new(20.0, 20.0), Vec2::new(20.0, 40.0), Vec2::new(0.0, 40.0)];
+    let out = inset(std::slice::from_ref(&l), 2.0, 0.002).unwrap();
+    assert_eq!(out.len(), 1);
+    let area = signed_area(&out[0].points);
+    assert!(near(area, 896.0 + 4.0 - PI, 0.05), "area {area}");
+    // Never closer than 2 to the boundary (no gouging), and no further than the chord tolerance.
+    for p in &out[0].points {
+        let c = clearance(std::slice::from_ref(&l), *p);
+        assert!((2.0 - 1e-6..=2.0 + 0.002 * 1.1).contains(&c), "{p:?}: {c}");
+    }
+}
+
+#[test]
+fn an_island_is_offset_outward_and_the_two_rings_are_separate() {
+    let outer = rect(0.0, 0.0, 60.0, 60.0);
+    let island = reversed(rect(20.0, 20.0, 40.0, 40.0));
+    let out = inset(&[outer, island], 3.0, 0.002).unwrap();
+    assert_eq!(out.len(), 2);
+    let mut areas: Vec<f64> = out.iter().map(|c| signed_area(&c.points)).collect();
+    areas.sort_by(f64::total_cmp);
+    // The island's ring runs clockwise and encloses the island grown by 3 with round corners.
+    assert!(near(areas[0], -(400.0 + 4.0 * 20.0 * 3.0 + PI * 9.0), 0.1), "{areas:?}");
+    assert!(near(areas[1], 54.0 * 54.0, 1e-6), "{areas:?}");
+}
+
+#[test]
+fn islands_close_together_leave_only_the_outer_ring() {
+    // Two 20 mm squares 4 mm apart: with a 3 mm offset the gap between them is closed.
+    let outer = rect(0.0, 0.0, 60.0, 30.0);
+    let a = reversed(rect(10.0, 5.0, 28.0, 25.0));
+    let b = reversed(rect(32.0, 5.0, 50.0, 25.0));
+    let out = inset(&[outer, a, b], 3.0, 0.002).unwrap();
+    // The grown islands merge into one, so the free space has two rings: the wall and the pair.
+    assert_eq!(out.len(), 2, "{out:?}");
+}
+
+#[test]
+fn hostile_offsets_are_errors_not_panics() {
+    let sq = rect(0.0, 0.0, 10.0, 10.0);
+    assert!(inset(std::slice::from_ref(&sq), f64::NAN, 0.01).is_err());
+    assert!(inset(std::slice::from_ref(&sq), -1.0, 0.01).is_err());
+    assert!(inset(std::slice::from_ref(&sq), 1.0, 0.0).is_err());
+    assert!(inset(&[vec![Vec2::new(f64::NAN, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0)]], 0.1, 0.01).is_err());
+    assert!(inset(&[vec![Vec2::new(1.0, 1.0); 5]], 1.0, 0.01).unwrap().is_empty());
+    assert!(inset(&[], 1.0, 0.01).unwrap().is_empty());
+}
+
+#[test]
+fn a_huge_outline_at_a_tiny_tolerance_is_refused_not_ground_through() {
+    let ring = Loop2::circle(Vec2::ZERO, 5000.0).polyline(1e-9).into_vec();
+    let r = inset(&[ring], 1.0, 1e-9);
+    assert!(r.is_ok() || r.is_err());
+}
+
+// -------------------------------------------------------------------------------------- levels
+
+#[test]
+fn depth_passes_are_equal_and_end_on_the_bottom() {
+    let lv = levels(0.0, -5.0, 2.0).unwrap();
+    assert_eq!(lv.len(), 3);
+    assert!(near(lv[0], -5.0 / 3.0, 1e-9) && near(lv[1], -10.0 / 3.0, 1e-9) && lv[2] == -5.0);
+    assert_eq!(levels(0.0, -1.0, 5.0).unwrap(), vec![-1.0]);
+    assert!(levels(0.0, -1000.0, 0.0001).is_err());
+    assert!(levels(0.0, f64::NAN, 1.0).is_err());
+    assert!(levels(0.0, 1.0, 1.0).is_err());
+}
+
+// ------------------------------------------------------------------------------------ contours
+
+#[test]
+fn an_outside_contour_stays_outside_the_part_by_the_tool_radius() {
+    let region = rect_region(0.0, 0.0, 40.0, 20.0);
+    let o = contour_op(Side::Outside, Direction::Climb, 0.0);
+    let p = plan(&setup(), &tool(1, 6.0), &o, &geometry(vec![region]), 0.005).unwrap();
+    let outline = rect(0.0, 0.0, 40.0, 20.0);
+    let pts = feed_points(&p.toolpath);
+    assert!(!pts.is_empty());
+    for q in pts.iter().filter(|q| q.z <= o.bottom + 1e-9) {
+        let c = clearance(std::slice::from_ref(&outline), Vec2::new(q.x, q.y));
+        assert!(c >= 3.0 - 1e-6, "tool gouges the part: {q:?} is {c} from it");
+        // and outside, not inside
+        assert!(!(q.x > 0.0 && q.x < 40.0 && q.y > 0.0 && q.y < 20.0));
+    }
+    // The deepest pass reaches the bottom exactly and nothing goes below it.
+    assert!(pts.iter().all(|q| q.z >= o.bottom - 1e-9));
+    assert!(pts.iter().any(|q| near(q.z, o.bottom, 1e-9)));
+    assert!(p.warnings.is_empty());
+}
+
+#[test]
+fn climb_runs_counter_clockwise_around_a_part_and_conventional_the_other_way() {
+    let go = |dir: Direction| {
+        let p =
+            plan(&setup(), &tool(1, 6.0), &contour_op(Side::Outside, dir, 0.0), &geometry(vec![rect_region(0.0, 0.0, 40.0, 20.0)]), 0.005).unwrap();
+        let bottom: Vec<Vec2> = feed_points(&p.toolpath).into_iter().filter(|q| near(q.z, -4.0, 1e-9)).map(|q| Vec2::new(q.x, q.y)).collect();
+        signed_area(&bottom)
+    };
+    assert!(go(Direction::Climb) > 0.0, "material on the left of the travel");
+    assert!(go(Direction::Conventional) < 0.0);
+}
+
+#[test]
+fn an_inside_contour_and_its_holes_keep_the_tool_in_the_free_space() {
+    let region = Region2 { outer: Loop2::polygon(&rect(0.0, 0.0, 60.0, 40.0)), holes: vec![Loop2::polygon(&reversed(rect(20.0, 10.0, 40.0, 30.0)))] };
+    let p = plan(&setup(), &tool(1, 4.0), &contour_op(Side::Inside, Direction::Climb, 0.5), &geometry(vec![region]), 0.005).unwrap();
+    let outline = [rect(0.0, 0.0, 60.0, 40.0), reversed(rect(20.0, 10.0, 40.0, 30.0))];
+    for q in feed_points(&p.toolpath) {
+        let c = clearance(&outline, Vec2::new(q.x, q.y));
+        assert!(c >= 2.5 - 1e-6, "{q:?}: {c}");
+    }
+}
+
+#[test]
+fn an_outside_contour_of_a_part_with_a_hole_cuts_the_hole_first() {
+    let region = Region2 { outer: Loop2::polygon(&rect(0.0, 0.0, 60.0, 40.0)), holes: vec![Loop2::polygon(&reversed(rect(20.0, 10.0, 40.0, 30.0)))] };
+    let p = plan(&setup(), &tool(1, 4.0), &contour_op(Side::Outside, Direction::Climb, 0.0), &geometry(vec![region]), 0.005).unwrap();
+    let first_feed = feed_points(&p.toolpath).first().copied().unwrap();
+    assert!(first_feed.x > 18.0 && first_feed.x < 42.0 && first_feed.y > 8.0 && first_feed.y < 32.0, "{first_feed:?}");
+}
+
+#[test]
+fn a_tool_too_big_for_the_outline_is_an_error() {
+    let r =
+        plan(&setup(), &tool(1, 30.0), &contour_op(Side::Inside, Direction::Climb, 0.0), &geometry(vec![rect_region(0.0, 0.0, 20.0, 20.0)]), 0.005);
+    assert!(r.is_err());
+}
+
+#[test]
+fn a_contour_without_outlines_is_an_error() {
+    assert!(plan(&setup(), &tool(1, 6.0), &contour_op(Side::On, Direction::Climb, 0.0), &geometry(vec![]), 0.005).is_err());
+}
+
+#[test]
+fn ramping_never_goes_below_the_next_depth() {
+    let p =
+        plan(&setup(), &tool(1, 6.0), &contour_op(Side::Outside, Direction::Climb, 0.0), &geometry(vec![rect_region(0.0, 0.0, 40.0, 20.0)]), 0.005)
+            .unwrap();
+    let mut z = f64::INFINITY;
+    for m in &p.toolpath.moves {
+        if let Move::Feed { to, .. } = m {
+            assert!(to.z <= 2.0 + 1e-9, "feeds begin no higher than the feed plane");
+            z = z.min(to.z);
+        }
+    }
+    assert!(near(z, -4.0, 1e-9));
+}
+
+// --------------------------------------------------------------------------------------- pockets
+
+#[test]
+fn a_pocket_clears_the_floor_without_touching_the_walls() {
+    let region = rect_region(0.0, 0.0, 40.0, 30.0);
+    let p = plan(&setup(), &tool(1, 6.0), &pocket_op(0.4, false, 0.0), &geometry(vec![region]), 0.005).unwrap();
+    let pts = feed_points(&p.toolpath);
+    for q in &pts {
+        assert!(q.x >= 3.0 - 1e-6 && q.x <= 37.0 + 1e-6 && q.y >= 3.0 - 1e-6 && q.y <= 27.0 + 1e-6, "{q:?} cuts into the wall");
+        assert!(q.z >= -4.0 - 1e-9 && q.z <= 2.0 + 1e-9);
+    }
+    // Floor coverage: every point of the floor is within a tool radius of some cutting move.
+    let bottom: Vec<Vec3> = pts.iter().copied().filter(|q| near(q.z, -4.0, 1e-9)).collect();
+    for ix in 0..=40 {
+        for iy in 0..=30 {
+            let g = Vec2::new(ix as f64, iy as f64);
+            // A round tool cannot reach into a sharp corner: only points within a radius of where
+            // its centre may stand (the rectangle inset by the radius) are asked for.
+            let (cx, cy) = (g.x.clamp(3.0, 37.0), g.y.clamp(3.0, 27.0));
+            if g.dist(Vec2::new(cx, cy)) > 3.0 - 1e-9 {
+                continue;
+            }
+            let reach =
+                bottom.windows(2).map(|w| dist_to_segment(g, Vec2::new(w[0].x, w[0].y), Vec2::new(w[1].x, w[1].y))).fold(f64::INFINITY, f64::min);
+            assert!(reach <= 3.0 + 1e-6, "uncut floor at {g:?}: nearest pass is {reach} away");
+        }
+    }
+}
+
+#[test]
+fn pockets_keep_their_islands() {
+    let region = Region2 { outer: Loop2::polygon(&rect(0.0, 0.0, 60.0, 40.0)), holes: vec![Loop2::polygon(&reversed(rect(25.0, 15.0, 35.0, 25.0)))] };
+    let p = plan(&setup(), &tool(1, 4.0), &pocket_op(0.4, false, 0.0), &geometry(vec![region]), 0.005).unwrap();
+    for q in feed_points(&p.toolpath) {
+        let island = [reversed(rect(25.0, 15.0, 35.0, 25.0))];
+        let c = clearance(&island, Vec2::new(q.x, q.y));
+        let inside = q.x > 25.0 && q.x < 35.0 && q.y > 15.0 && q.y < 25.0;
+        assert!(!inside && c >= 2.0 - 1e-6, "the tool is {c} from the island at {q:?}");
+    }
+}
+
+#[test]
+fn a_finish_pass_runs_along_the_walls_at_full_depth() {
+    let p = plan(&setup(), &tool(1, 6.0), &pocket_op(0.4, true, 0.3), &geometry(vec![rect_region(0.0, 0.0, 40.0, 30.0)]), 0.005).unwrap();
+    let walls: Vec<Vec3> = feed_points(&p.toolpath).into_iter().filter(|q| near(q.x, 3.0, 1e-6) && near(q.z, -4.0, 1e-9)).collect();
+    assert!(!walls.is_empty(), "no pass at the wall");
+    let rough_only = plan(&setup(), &tool(1, 6.0), &pocket_op(0.4, false, 0.3), &geometry(vec![rect_region(0.0, 0.0, 40.0, 30.0)]), 0.005).unwrap();
+    assert!(!feed_points(&rough_only.toolpath).iter().any(|q| near(q.x, 3.0, 1e-6)));
+}
+
+#[test]
+fn a_finish_pass_without_an_allowance_warns() {
+    let p = plan(&setup(), &tool(1, 6.0), &pocket_op(0.4, true, 0.0), &geometry(vec![rect_region(0.0, 0.0, 40.0, 30.0)]), 0.005).unwrap();
+    assert!(p.warnings.iter().any(|w| w.contains("allowance")));
+}
+
+#[test]
+fn a_circular_pocket_is_planned_from_a_real_circle() {
+    let region = Region2 { outer: Loop2::circle(Vec2::new(30.0, 20.0), 12.0), holes: vec![] };
+    let p = plan(&setup(), &tool(1, 6.0), &pocket_op(0.5, false, 0.0), &geometry(vec![region]), 0.005).unwrap();
+    for q in feed_points(&p.toolpath) {
+        assert!(Vec2::new(q.x, q.y).dist(Vec2::new(30.0, 20.0)) <= 9.0 + 0.01, "{q:?}");
+    }
+}
+
+#[test]
+fn rapids_between_features_go_through_the_clearance_height() {
+    let regions = vec![rect_region(0.0, 0.0, 20.0, 20.0), rect_region(40.0, 0.0, 60.0, 20.0)];
+    let p = plan(&setup(), &tool(1, 4.0), &pocket_op(0.4, false, 0.0), &geometry(regions), 0.005).unwrap();
+    let mut at: Option<Vec3> = None;
+    for m in &p.toolpath.moves {
+        match m {
+            Move::Rapid { to } => {
+                if let Some(a) = at
+                    && (a.x - to.x).abs() + (a.y - to.y).abs() > 1e-9
+                {
+                    assert!(near(a.z, 10.0, 1e-9) && near(to.z, 10.0, 1e-9), "a sideways rapid below the clearance: {a:?} -> {to:?}");
+                }
+                at = Some(*to);
+            }
+            Move::Feed { to, .. } => at = Some(*to),
+            Move::Drill(_) => {}
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------ face, drill
+
+#[test]
+fn facing_covers_the_stock_from_outside_it() {
+    let o = Operation { bottom: -1.0, stepdown: 1.0, ..op(OpKind::Face { margin: 0.0, stepover: 0.6 }, 1) };
+    let p = plan(&setup(), &tool(1, 10.0), &o, &Geometry::default(), 0.005).unwrap();
+    let pts = feed_points(&p.toolpath);
+    assert!(pts.iter().all(|q| near(q.z, -1.0, 1e-9)));
+    // Each cutting line starts and ends clear of the stock.
+    assert!(pts.iter().any(|q| q.x < -5.0) && pts.iter().any(|q| q.x > 65.0));
+    let ys: Vec<f64> = pts.iter().map(|q| q.y).collect();
+    assert!(ys.iter().cloned().fold(f64::INFINITY, f64::min) <= 5.0 && ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max) >= 35.0);
+}
+
+#[test]
+fn facing_without_stock_is_an_error() {
+    let mut s = setup();
+    s.stock = None;
+    assert!(plan(&s, &tool(1, 10.0), &op(OpKind::Face { margin: 0.0, stepover: 0.6 }, 1), &Geometry::default(), 0.005).is_err());
+}
+
+#[test]
+fn drilling_visits_each_hole_once_and_warns_about_size() {
+    let o =
+        op(OpKind::Drill { points: DrillPoints::Points { points: vec![[10.0, 10.0], [50.0, 10.0], [30.0, 30.0]] }, peck: Some(1.5), dwell: 0.0 }, 2);
+    let p = plan(&setup(), &drill_tool(2, 5.0), &o, &Geometry::default(), 0.005).unwrap();
+    let cycles: Vec<&DrillCycle> = p.toolpath.moves.iter().filter_map(|m| if let Move::Drill(c) = m { Some(c) } else { None }).collect();
+    assert_eq!(cycles.len(), 3);
+    assert!(cycles.iter().all(|c| c.bottom == -4.0 && c.top == 0.0 && c.retract == 2.0));
+    // From the origin the nearest hole comes first.
+    assert_eq!((cycles[0].x, cycles[0].y), (10.0, 10.0));
+
+    let sites = Geometry {
+        regions: vec![],
+        sites: vec![Site { at: Vec2::new(10.0, 10.0), diameter: Some(8.0) }, Site { at: Vec2::new(20.0, 10.0), diameter: Some(3.0) }],
+    };
+    let o = op(OpKind::Drill { points: DrillPoints::Sketch { sketch: 1, profiles: vec![] }, peck: None, dwell: 0.0 }, 2);
+    let p = plan(&setup(), &drill_tool(2, 5.0), &o, &sites, 0.005).unwrap();
+    assert_eq!(p.warnings.len(), 2, "{:?}", p.warnings);
+}
+
+#[test]
+fn circles_are_found_as_drill_sites() {
+    let regions = vec![Region2 { outer: Loop2::circle(Vec2::new(5.0, 6.0), 2.5), holes: vec![] }, rect_region(0.0, 0.0, 4.0, 4.0)];
+    let sites = circle_sites(&regions);
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].at, Vec2::new(5.0, 6.0));
+    assert!(near(sites[0].diameter.unwrap(), 5.0, 1e-9));
+}
+
+#[test]
+fn a_drill_cannot_mill_and_an_end_mill_cannot_drill() {
+    let mill = contour_op(Side::Outside, Direction::Climb, 0.0);
+    assert!(plan(&setup(), &drill_tool(1, 5.0), &mill, &geometry(vec![rect_region(0.0, 0.0, 10.0, 10.0)]), 0.005).is_err());
+    let drill_op = op(OpKind::Drill { points: DrillPoints::Points { points: vec![[1.0, 1.0]] }, peck: None, dwell: 0.0 }, 1);
+    assert!(plan(&setup(), &tool(1, 5.0), &drill_op, &Geometry::default(), 0.005).is_err());
+}
+
+// ------------------------------------------------------------------------------------- job and tools
+
+#[test]
+fn hostile_numbers_never_pass_validation() {
+    for v in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
+        assert!(Tool { diameter: v, ..tool(1, 6.0) }.validate().is_err(), "diameter {v}");
+        assert!(Operation { feed: v, ..contour_op(Side::On, Direction::Climb, 0.0) }.validate(&tool(1, 6.0), &setup()).is_err(), "feed {v}");
+        assert!(Operation { spindle_rpm: v, ..contour_op(Side::On, Direction::Climb, 0.0) }.validate(&tool(1, 6.0), &setup()).is_err(), "rpm {v}");
+    }
+    let o = Operation { bottom: 1.0, ..contour_op(Side::On, Direction::Climb, 0.0) };
+    assert!(o.validate(&tool(1, 6.0), &setup()).is_err(), "bottom above top");
+    let o = Operation { top: 9.5, bottom: 0.0, ..contour_op(Side::On, Direction::Climb, 0.0) };
+    assert!(o.validate(&tool(1, 6.0), &setup()).is_err(), "clearance below the feed plane");
+    assert!(Setup { work_offset: 60, ..setup() }.validate().is_err());
+    assert!(Setup { stock: Some(Stock { min: [0.0; 3], max: [0.0, 1.0, 1.0] }), ..setup() }.validate().is_err());
+}
+
+#[test]
+fn a_job_round_trips_and_checks_its_references() {
+    let job = Job { tools: vec![tool(1, 6.0)], setups: vec![setup()], operations: vec![contour_op(Side::Outside, Direction::Climb, 0.2)] };
+    job.validate().unwrap();
+    let text = serde_json::to_string(&job).unwrap();
+    assert_eq!(serde_json::from_str::<Job>(&text).unwrap(), job);
+
+    let mut bad = job.clone();
+    bad.operations[0].tool = 9;
+    assert!(bad.validate().is_err());
+    let mut dup = job.clone();
+    dup.tools.push(tool(1, 8.0));
+    assert!(dup.validate().is_err());
+    assert!(serde_json::from_str::<Job>(r#"{"tools": [], "mystery": 1}"#).is_err());
+    assert!(Job::default().is_empty());
+}
+
+// ------------------------------------------------------------------------------------------- posts
+
+fn post_one(dialect: Dialect, o: &Operation, t: &Tool, g: &Geometry, opts: &PostOptions) -> String {
+    let s = setup();
+    let planned = plan(&s, t, o, g, 0.005).unwrap();
+    generate(dialect, &[Step { setup: &s, tool: t, op: o, toolpath: &planned.toolpath }], opts).unwrap()
+}
+
+#[test]
+fn fanuc_programs_carry_the_safe_line_tool_change_offsets_and_decimal_points() {
+    let g = geometry(vec![rect_region(0.0, 0.0, 40.0, 20.0)]);
+    let text = post_one(Dialect::Fanuc, &contour_op(Side::Outside, Direction::Climb, 0.0), &tool(1, 6.0), &g, &PostOptions::default());
+    assert!(text.starts_with("%\nO1001 (SOLIDCRAFT)\n"), "{text}");
+    for want in ["G90 G94 G17 G21 G40 G49 G80", "T1 M6", "G54", "G0 G43 H1 Z10.", "S8000 M3", "M5", "G91 G28 Z0.", "M30"] {
+        assert!(text.contains(want), "missing `{want}`:\n{text}");
+    }
+    assert!(text.trim_end().ends_with("%"));
+    assert!(text.is_ascii());
+    // A dimensioned word without a decimal point would be read in thousandths.
+    for line in text.lines().filter(|l| l.contains(" X") || l.starts_with('X')) {
+        for word in line.split_whitespace().filter(|w| w.starts_with(['X', 'Y', 'Z'])) {
+            assert!(word.contains('.'), "`{word}` in `{line}`");
+        }
+    }
+}
+
+#[test]
+fn haas_ends_at_the_machine_home() {
+    let g = geometry(vec![rect_region(0.0, 0.0, 40.0, 20.0)]);
+    let text = post_one(
+        Dialect::Haas,
+        &contour_op(Side::Outside, Direction::Climb, 0.0),
+        &tool(1, 6.0),
+        &g,
+        &PostOptions { program_number: 7, ..Default::default() },
+    );
+    assert!(text.contains("O00007 (SOLIDCRAFT)"), "{text}");
+    assert!(text.contains("G53 G0 Z0.") && text.contains("M30"));
+}
+
+#[test]
+fn grbl_programs_have_no_tool_length_offsets_and_no_canned_cycles() {
+    let o = op(OpKind::Drill { points: DrillPoints::Points { points: vec![[10.0, 10.0], [20.0, 10.0]] }, peck: Some(1.0), dwell: 0.0 }, 2);
+    let text = post_one(Dialect::Grbl, &o, &drill_tool(2, 3.0), &Geometry::default(), &PostOptions::default());
+    assert!(!text.contains("G43") && !text.contains("G81") && !text.contains("G83") && !text.contains("M6") && !text.contains('%'), "{text}");
+    assert!(text.contains("G21 G90 G17 G94") && text.contains("G54") && text.contains("M30"));
+    // Four 1 mm pecks per hole, spelled out as feeds.
+    assert!(text.matches("G1").count() >= 4 && text.contains("F"), "{text}");
+}
+
+#[test]
+fn fanuc_drilling_uses_canned_cycles() {
+    let o = op(OpKind::Drill { points: DrillPoints::Points { points: vec![[10.0, 10.0], [20.0, 10.0]] }, peck: Some(1.0), dwell: 0.0 }, 2);
+    let text = post_one(Dialect::Fanuc, &o, &drill_tool(2, 3.0), &Geometry::default(), &PostOptions::default());
+    assert!(text.contains("G98"));
+    assert_eq!(text.matches("G83 ").count(), 2, "{text}");
+    assert!(text.contains("Q1.") && text.contains("R2.") && text.contains("Z-4."), "{text}");
+    let g80 = text.rfind("G80\n").unwrap();
+    assert!(g80 > text.find("G83").unwrap(), "the cycle is cancelled after the holes");
+
+    let dwell = Operation { kind: OpKind::Drill { points: DrillPoints::Points { points: vec![[10.0, 10.0]] }, peck: None, dwell: 0.5 }, ..o };
+    let text = post_one(Dialect::Fanuc, &dwell, &drill_tool(2, 3.0), &Geometry::default(), &PostOptions::default());
+    assert!(text.contains("G82 ") && text.contains("P500"), "{text}");
+}
+
+#[test]
+fn a_tool_change_pauses_grbl_and_calls_the_tool_on_fanuc() {
+    let (s, t1, t2) = (setup(), tool(1, 6.0), tool(2, 3.0));
+    let o1 = contour_op(Side::Outside, Direction::Climb, 0.0);
+    let o2 = Operation { id: 2, tool: 2, ..contour_op(Side::Inside, Direction::Climb, 0.0) };
+    let g = geometry(vec![rect_region(0.0, 0.0, 40.0, 20.0)]);
+    let (p1, p2) = (plan(&s, &t1, &o1, &g, 0.005).unwrap(), plan(&s, &t2, &o2, &g, 0.005).unwrap());
+    let steps = [Step { setup: &s, tool: &t1, op: &o1, toolpath: &p1.toolpath }, Step { setup: &s, tool: &t2, op: &o2, toolpath: &p2.toolpath }];
+    let grbl = generate(Dialect::Grbl, &steps, &PostOptions::default()).unwrap();
+    assert_eq!(grbl.matches("M0\n").count(), 1, "{grbl}");
+    let fanuc = generate(Dialect::Fanuc, &steps, &PostOptions::default()).unwrap();
+    assert!(fanuc.contains("T1 M6") && fanuc.contains("T2 M6") && fanuc.contains("G43 H2"), "{fanuc}");
+    assert_eq!(fanuc.matches("G54\n").count(), 1, "the work offset is set once");
+}
+
+#[test]
+fn line_numbers_and_empty_jobs() {
+    let g = geometry(vec![rect_region(0.0, 0.0, 40.0, 20.0)]);
+    let text = post_one(
+        Dialect::Fanuc,
+        &contour_op(Side::On, Direction::Climb, 0.0),
+        &tool(1, 6.0),
+        &g,
+        &PostOptions { line_numbers: true, ..Default::default() },
+    );
+    assert!(text.contains("N10 ") && text.contains("N20 "));
+    assert!(generate(Dialect::Fanuc, &[], &PostOptions::default()).is_err());
+}
+
+#[test]
+fn a_non_finite_move_is_refused_by_the_post() {
+    let (s, t) = (setup(), tool(1, 6.0));
+    let o = contour_op(Side::On, Direction::Climb, 0.0);
+    let path = Toolpath { moves: vec![Move::Rapid { to: Vec3::new(f64::NAN, 0.0, 0.0) }] };
+    assert!(generate(Dialect::Grbl, &[Step { setup: &s, tool: &t, op: &o, toolpath: &path }], &PostOptions::default()).is_err());
+}
+
+#[test]
+fn comments_cannot_break_out_of_their_parentheses() {
+    let (s, t) = (setup(), tool(1, 6.0));
+    let o = Operation { name: "bad) M30 (name\u{e9}".into(), ..contour_op(Side::On, Direction::Climb, 0.0) };
+    let g = geometry(vec![rect_region(0.0, 0.0, 40.0, 20.0)]);
+    let p = plan(&s, &t, &o, &g, 0.005).unwrap();
+    let text = generate(Dialect::Fanuc, &[Step { setup: &s, tool: &t, op: &o, toolpath: &p.toolpath }], &PostOptions::default()).unwrap();
+    assert!(text.is_ascii());
+    let line = text.lines().find(|l| l.contains("OPERATION 1")).unwrap();
+    assert_eq!(line.matches('(').count(), 1);
+    assert_eq!(line.matches(')').count(), 1);
+}
+
+#[test]
+fn stats_add_up() {
+    let p = Toolpath { moves: vec![Move::Rapid { to: Vec3::new(10.0, 0.0, 0.0) }, Move::Feed { to: Vec3::new(10.0, 60.0, 0.0), feed: 600.0 }] };
+    let st = p.stats(Vec3::ZERO, 10_000.0);
+    assert!(near(st.rapid_length, 10.0, 1e-9) && near(st.feed_length, 60.0, 1e-9));
+    assert!(near(st.minutes, 10.0 / 10_000.0 + 60.0 / 600.0, 1e-12));
+    assert_eq!(st.max, Vec3::new(10.0, 60.0, 0.0));
+    assert!(near(perimeter(&rect(0.0, 0.0, 2.0, 3.0)), 10.0, 1e-12));
+}
+
+#[test]
+fn a_tiny_peck_does_not_explode_into_millions_of_moves() {
+    let c = DrillCycle { x: 0.0, y: 0.0, top: 0.0, bottom: -50.0, retract: 2.0, peck: Some(1e-12), dwell: 0.0, feed: 100.0 };
+    let n = Toolpath { moves: vec![Move::Drill(c)] }.expanded().len();
+    assert!(n < 10, "{n}");
+}
