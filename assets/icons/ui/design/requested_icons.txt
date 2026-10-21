@@ -259,6 +259,7 @@ surface_unstitch	false
 surface_untrim	false
 svg	false
 sweep	false
+swept_flange	false
 text	false
 thread	false
 torus	false

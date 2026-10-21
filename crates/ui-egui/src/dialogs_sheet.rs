@@ -59,6 +59,10 @@ crate::dialog_descriptor::dialog_descriptors! {
             position: usize = 0 => FOLD_POSITIONS.iter().position(|x| x == position || (*x == "mould" && position == "mold")).unwrap_or(0),
             flip: bool = false => *flip,
         } => json!({"angle": angle, "position": FOLD_POSITIONS.get(*position).copied().unwrap_or("centerline"), "flip": flip});
+        Swept("sheet.swept_flange", "SWEPT FLANGE", [("Edge", EDGES, false), ("Path", CURVES, true)],
+            FeatureKind::SheetSwept { radius, .. }) {
+            radius: String = String::new() => radius.as_deref().map(str::to_string).unwrap_or_default(),
+        } => json!({});
         ; custom {
             /// Base, edge or contour flange (`ty` follows the picks: profiles, edges, sketch lines).
             Flange {
@@ -316,6 +320,10 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
             enter |= expr_row(ui, "Angle", angle);
             enter |= hint_row(ui, "Bend Radius", radius, crate::i18n::tr_label("from the rule"));
             crate::ui_kit::options(ui, "sheet_options", &mut [("Flip", flip)]);
+        }
+        Sm::Swept { radius } => {
+            enter |= hint_row(ui, "Bend Radius", radius, crate::i18n::tr_label("from the rule"));
+            crate::ui_kit::caption(ui, "Bend Radius", crate::i18n::tr_label("A flange per line, a bend per corner"));
         }
         Sm::Unfold { .. } => {}
         Sm::Convert { rule } => rule_combo(app, ui, "sm_conv_rule", rule),
@@ -596,6 +604,28 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
             }
             ("sheet.fold", p)
         }
+        Sm::Swept { radius } => {
+            let edge = edge_points(inputs).into_iter().next().ok_or("select the sheet edge first")?;
+            let curves: Vec<String> = items(inputs, 1)
+                .iter()
+                .filter_map(|sel| match sel {
+                    Sel::SketchCurve { id } => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            let first = curves.first().ok_or("select the path (sketch lines across the edge)")?;
+            let st = s.world_state();
+            let sketch = st
+                .sketches
+                .iter()
+                .rev()
+                .find(|ss| ss.sketch.curve_index(first).is_some())
+                .map(|ss| ss.feature)
+                .ok_or("the path's sketch is gone")?;
+            let mut p = json!({"edge": edge, "sketch": sketch, "curves": curves});
+            put(&mut p, &[("radius", radius)]);
+            ("sheet.swept_flange", p)
+        }
         Sm::Unfold { refold } => {
             let mut p = json!({});
             if let Some(Sel::Body { name }) = items(inputs, 0).first() {
@@ -725,6 +755,20 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             }
             if let Some(i) = ins.get_mut(1) {
                 i.items = fixed.and_then(|f| face_sel(s, f.0)).into_iter().collect();
+            }
+            return Some((Kind::Sheet(k), ins, extra));
+        }
+        FeatureKind::SheetSwept { edge, curves, body, .. } => {
+            if let Some(bd) = body {
+                extra.insert("body".into(), json!(bd));
+            }
+            let k = Sm::simple_restore(kind)?;
+            let (_, mut ins) = start(app, "sheet.swept_flange")?;
+            if let Some(i) = ins.first_mut() {
+                i.items = edge_sel(s, edge.0).into_iter().collect();
+            }
+            if let Some(i) = ins.get_mut(1) {
+                i.items = curves.iter().map(|id| Sel::SketchCurve { id: id.clone() }).collect();
             }
             return Some((Kind::Sheet(k), ins, extra));
         }

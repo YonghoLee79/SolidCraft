@@ -926,3 +926,39 @@ fn fit_and_home_frame_the_flat_pattern() {
         assert!(!app.flat_view.fitted);
     }
 }
+
+/// The Swept Flange dialog takes the edge and the path's sketch lines: one feature, one body,
+/// and Edit Feature brings the edge and the path back.
+#[test]
+fn swept_flange_dialog_follows_the_path() {
+    for mode in [crate::shell::LayoutMode::Floating, crate::shell::LayoutMode::Docked] {
+        let mut app = plate(mode);
+        app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+        app.run("sheet.flange", json!({"edges": [[0, 30, 2.5]], "height": 30})).unwrap();
+        // A path across the wall's end edge: 30 mm out at 45°, then 30 mm on along the wall.
+        let a = 30.0 / 2f64.sqrt();
+        app.run("sketch.create", json!({"plane": {"origin": [0, 0, 15], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Path"})).unwrap();
+        app.run("sketch.line", json!({"points": [[0, 0], [a, -a], [a + 30.0, -a]], "ids": ["p1", "p2"]})).unwrap();
+        app.run("sketch.finish", json!({})).unwrap();
+        let features = app.session.doc.features.len();
+        app.start("sheet.swept_flange");
+        let mut d = app.dialog.clone().unwrap();
+        assert!(apply_commands(&app, &d).is_err(), "no edge picked yet");
+        d.inputs[0].items = vec![edge_sel(&app.session, Vec3::new(1.25, 0.0, 15.0)).expect("the wall's end edge")];
+        assert!(apply_commands(&app, &d).is_err(), "no path picked yet");
+        d.inputs[1].items = vec![Sel::SketchCurve { id: "p1".into() }, Sel::SketchCurve { id: "p2".into() }];
+        let c = apply_commands(&app, &d).unwrap();
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, "sheet.swept_flange");
+        assert_eq!(c[0].1["curves"], json!(["p1", "p2"]));
+        run_all(&mut app, c);
+        assert!(app.session.model.results.iter().all(|r| r.error.is_none()), "{:?}", app.session.model.results);
+        assert_eq!(app.session.doc.features.len(), features + 1, "one feature");
+        assert_eq!(app.session.model.state().bodies.len(), 1, "the flap is part of the sheet");
+        let f = app.session.doc.features.last().cloned().unwrap();
+        let e = edit_dialog(&app, f.id, None).unwrap();
+        assert!(matches!(&e.kind, Kind::Sheet(Sm::Swept { .. })));
+        assert_eq!((e.inputs[0].items.len(), e.inputs[1].items.len()), (1, 2));
+        assert!(apply_commands(&app, &e).is_ok());
+    }
+}
