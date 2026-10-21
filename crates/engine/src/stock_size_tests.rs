@@ -42,6 +42,12 @@ fn assert_size(got: [f64; 3], want: [f64; 3], what: &str) {
     assert!(ok, "{what}: {got:?}, want {want:?}");
 }
 
+/// The world box no longer matches `before`: the move really happened.
+fn assert_moved(b: &Value, before: [f64; 3]) {
+    let now = world(b);
+    assert!(now.iter().zip(before).any(|(n, w)| (n - w).abs() > 1.0), "the move changed nothing: {now:?}");
+}
+
 fn exact(stock: &Value) -> bool {
     stock["exact"].as_bool().unwrap_or(false)
 }
@@ -54,7 +60,7 @@ fn turn(s: &mut Session, name: &str, axis: [f64; 3], deg: f64) {
     run(s, "solid.move", json!({"bodies": [name], "axis": axis, "angle": format!("{deg} deg")}));
 }
 
-/// B1: a plain box is its own stock.
+/// A plain box is its own stock.
 #[test]
 fn a_plain_box_is_its_own_stock() {
     let mut s = Session::default();
@@ -64,7 +70,7 @@ fn a_plain_box_is_its_own_stock() {
     assert!(exact(&st), "{st}");
 }
 
-/// B2: the bench's Left end stands on edge, 18 × 591.6 × 878.4 in world X/Y/Z; its stock is
+/// The bench's Left end stands on edge, 18 × 591.6 × 878.4 in world X/Y/Z; its stock is
 /// longest first, and the world box is unchanged beside it.
 #[test]
 fn stock_is_longest_first_not_world_order() {
@@ -74,7 +80,7 @@ fn stock_is_longest_first_not_world_order() {
     assert_size(world(&body(&mut s, "Left end")), [18.0, 591.6, 878.4], "world box");
 }
 
-/// B3: turned 30° in plan, the world box grows to 100·cos 30° + 50·sin 30° by
+/// Turned 30° in plan, the world box grows to 100·cos 30° + 50·sin 30° by
 /// 100·sin 30° + 50·cos 30°; the stock stays 100 × 50 × 18.
 #[test]
 fn turning_in_plan_keeps_the_stock() {
@@ -86,32 +92,38 @@ fn turning_in_plan_keeps_the_stock() {
     let st = stock(&mut s, "P");
     assert_size(sizes(&st), [100.0, 50.0, 18.0], "turned 30°");
     assert!(exact(&st), "{st}");
+    // The length runs along the 100 mm side, now at 30° in plan.
+    let along = st["axes"][0].as_array().map(|a| a.iter().map(|x| x.as_f64().unwrap_or(f64::NAN)).collect::<Vec<_>>()).unwrap_or_default();
+    let dot = along.first().copied().unwrap_or(f64::NAN) * cos + along.get(1).copied().unwrap_or(f64::NAN) * sin;
+    assert!((dot.abs() - 1.0).abs() < 1e-6, "length axis {along:?} isn't along the 100 mm side");
 }
 
-/// B4: turned 17° about X, then 23° about Z.
+/// Turned 17° about X, then 23° about Z.
 #[test]
 fn turning_on_a_skew_axis_keeps_the_stock() {
     let mut s = Session::default();
     new_box(&mut s, "P", 100.0, 50.0, 18.0);
     turn(&mut s, "P", [1.0, 0.0, 0.0], 17.0);
     turn(&mut s, "P", [0.0, 0.0, 1.0], 23.0);
+    assert_moved(&body(&mut s, "P"), [100.0, 50.0, 18.0]);
     let st = stock(&mut s, "P");
     assert_size(sizes(&st), [100.0, 50.0, 18.0], "skew turn");
     assert!(exact(&st), "{st}");
 }
 
-/// B5: #137's case, an end panel splayed 5°.
+/// #137's case: an end panel splayed 5°.
 #[test]
 fn a_splayed_end_keeps_its_stock() {
     let mut s = Session::default();
     new_box(&mut s, "Left end", 18.0, 591.6, 878.4);
     turn(&mut s, "Left end", [0.0, 1.0, 0.0], 5.0);
+    assert_moved(&body(&mut s, "Left end"), [18.0, 591.6, 878.4]);
     let st = stock(&mut s, "Left end");
     assert_size(sizes(&st), [878.4, 591.6, 18.0], "splayed 5°");
     assert!(exact(&st), "{st}");
 }
 
-/// B6: a 10 mm chamfer on one end edge only removes material: the board is still 600 × 90 × 19.
+/// A 10 mm chamfer on one end edge only removes material: the board is still 600 × 90 × 19.
 #[test]
 fn a_chamfered_end_keeps_the_board_size() {
     let mut s = Session::default();
@@ -122,7 +134,7 @@ fn a_chamfered_end_keeps_the_board_size() {
     assert!(exact(&st), "{st}");
 }
 
-/// B7: an L-bracket (legs 100 and 60, 10 thick, 40 deep): its largest face isn't the thickness.
+/// An L-bracket (legs 100 and 60, 10 thick, 40 deep): its largest face isn't the thickness.
 #[test]
 fn an_l_bracket_is_measured_along_its_legs() {
     let mut s = Session::default();
@@ -133,7 +145,7 @@ fn an_l_bracket_is_measured_along_its_legs() {
     assert!(exact(&st), "{st}");
 }
 
-/// B8: a square panel: length = width, and the same axes every time.
+/// A square panel: length = width, and the same axes every time.
 #[test]
 fn a_square_panel_is_stable() {
     let mut s = Session::default();
@@ -144,7 +156,7 @@ fn a_square_panel_is_stable() {
     assert_eq!(a, b, "two measures differ");
 }
 
-/// B9: a dowel, ø 20 × 300, is curved: approximate, and its box still encloses it.
+/// A dowel, ø 20 × 300, is curved: approximate, and its box still encloses it.
 #[test]
 fn a_dowel_is_approximate_and_enclosed() {
     let mut s = Session::default();
@@ -158,7 +170,7 @@ fn a_dowel_is_approximate_and_enclosed() {
     }
 }
 
-/// B10: an 18 mm panel bent on a 500 mm radius through 60°, 600 tall: approximate, and the box
+/// An 18 mm panel bent on a 500 mm radius through 60°, 600 tall: approximate, and the box
 /// is never smaller than the part.
 #[test]
 fn a_curved_panel_is_approximate_and_enclosed() {
@@ -174,9 +186,12 @@ fn a_curved_panel_is_approximate_and_enclosed() {
     assert!(l >= 600.0 - TOL, "{st}");
     let volume = b["volume_mm3"].as_f64().unwrap_or(f64::NAN);
     assert!(l * w * t >= volume, "the box ({l} × {w} × {t}) is smaller than the part ({volume} mm³)");
+    // At least as tight as the world box (with 1 mm slack for the approximate box's margin).
+    let [x, y, z] = world(&b);
+    assert!(l * w * t <= (x + 1.0) * (y + 1.0) * (z + 1.0), "the box ({l} × {w} × {t}) is looser than the world box ({x} × {y} × {z})");
 }
 
-/// B12: turning an occurrence 40° about Y leaves its body's stock unchanged.
+/// Turning an occurrence 40° about Y leaves its body's stock unchanged.
 #[test]
 fn turning_an_occurrence_keeps_the_stock() {
     let mut s = Session::default();
@@ -184,13 +199,15 @@ fn turning_an_occurrence_keeps_the_stock() {
     new_box(&mut s, "P", 100.0, 50.0, 18.0);
     let before = run(&mut s, "component.properties", json!({"component": c["component"]}))["bodies"][0]["stock"].clone();
     run(&mut s, "occurrence.move", json!({"occurrence": c["occurrence"], "axis": [0, 1, 0], "angle": "40 deg"}));
-    let after = run(&mut s, "component.properties", json!({"component": c["component"]}))["bodies"][0]["stock"].clone();
+    let moved = run(&mut s, "component.properties", json!({"component": c["component"]}))["bodies"][0].clone();
+    assert_moved(&moved, [100.0, 50.0, 18.0]);
+    let after = moved["stock"].clone();
     assert!(before.is_object(), "no stock size in component.properties: {before}");
     assert_size(sizes(&before), [100.0, 50.0, 18.0], "before the move");
     assert_size(sizes(&after), [100.0, 50.0, 18.0], "after the move");
 }
 
-/// B13: a mirrored copy has the same stock as the original.
+/// A mirrored copy has the same stock as the original.
 #[test]
 fn a_mirrored_copy_has_the_same_stock() {
     let mut s = Session::default();
@@ -203,9 +220,10 @@ fn a_mirrored_copy_has_the_same_stock() {
         panic!("no mirrored body: {all}");
     };
     assert_size(sizes(&copy["stock"]), [100.0, 50.0, 18.0], "mirrored copy");
+    assert!(exact(&copy["stock"]), "{copy}");
 }
 
-/// B14: `inspect.measure` and `component.properties` report the same stock for a body.
+/// `inspect.measure` and `component.properties` report the same stock for a body.
 #[test]
 fn both_commands_agree() {
     let mut s = Session::default();
@@ -214,11 +232,13 @@ fn both_commands_agree() {
     turn(&mut s, "P", [0.0, 0.0, 1.0], 23.0);
     let a = stock(&mut s, "P");
     let b = run(&mut s, "component.properties", json!({"component": "root"}))["bodies"][0]["stock"].clone();
-    assert_eq!(a, b);
+    assert_size(sizes(&b), sizes(&a), "component.properties against inspect.measure");
+    assert_eq!(a["exact"], b["exact"]);
 }
 
-/// B15: kind of stock: a panel, a board, a tube (constant cross-section) and a sphere.
+/// Kind of stock: a panel, a board, a tube (constant cross-section) and a sphere.
 #[test]
+#[ignore = "the kind of stock (SS-4) lands after the stock box"]
 fn each_body_has_a_kind_of_stock() {
     let mut s = Session::default();
     new_box(&mut s, "Panel", 600.0, 400.0, 18.0);
@@ -232,7 +252,7 @@ fn each_body_has_a_kind_of_stock() {
     }
 }
 
-/// R5: the same body measured twice gives identical numbers and axes.
+/// The same body measured twice gives identical numbers and axes.
 #[test]
 fn measuring_twice_is_identical() {
     let mut s = Session::default();

@@ -43,7 +43,7 @@ fn corners(l: f64, w: f64, t: f64, axes: [Vec3; 3]) -> Vec<Vec3> {
     out
 }
 
-/// M1: a diagonal tensor has its diagonal as eigenvalues, along the world axes.
+/// A diagonal tensor has its diagonal as eigenvalues, along the world axes.
 #[test]
 fn diagonal_tensor_gives_its_diagonal() {
     let Some((values, axes)) = eigen_sym3([[3.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]]) else {
@@ -53,7 +53,7 @@ fn diagonal_tensor_gives_its_diagonal() {
     assert!((axes[0].x.abs() - 1.0).abs() < TOL && (axes[1].y.abs() - 1.0).abs() < TOL && (axes[2].z.abs() - 1.0).abs() < TOL, "{axes:?}");
 }
 
-/// M2: R · diag(3, 2, 1) · Rᵀ with R = 30° about Z gives the same eigenvalues along R's columns.
+/// R · diag(3, 2, 1) · Rᵀ with R = 30° about Z gives the same eigenvalues along R's columns.
 #[test]
 fn rotated_tensor_gives_the_rotation_axes() {
     let r = rot_z(30.0);
@@ -64,7 +64,7 @@ fn rotated_tensor_gives_the_rotation_axes() {
     }
 }
 
-/// M3: two equal eigenvalues still give an orthonormal basis, and the same one every run.
+/// Two equal eigenvalues still give an orthonormal basis, and the same one every run.
 #[test]
 fn repeated_eigenvalues_give_one_stable_basis() {
     let m = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]];
@@ -73,7 +73,7 @@ fn repeated_eigenvalues_give_one_stable_basis() {
     assert_eq!(a, b);
 }
 
-/// M4: a zero tensor (a point, or no mass) has a defined answer, not a panic.
+/// A zero tensor (a point, or no mass) has a defined answer, not a panic.
 #[test]
 fn zero_tensor_has_a_defined_answer() {
     let Some((values, axes)) = eigen_sym3([[0.0; 3]; 3]) else { panic!("no eigen-decomposition") };
@@ -81,7 +81,7 @@ fn zero_tensor_has_a_defined_answer() {
     assert!(orthonormal(axes), "{axes:?}");
 }
 
-/// R1: non-finite input is refused.
+/// Non-finite input is refused.
 #[test]
 fn non_finite_tensors_are_refused() {
     for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
@@ -92,7 +92,7 @@ fn non_finite_tensors_are_refused() {
     }
 }
 
-/// M5: the corners of a 100 × 50 × 18 box turned 30° about Z, measured along that turn's axes.
+/// The corners of a 100 × 50 × 18 box turned 30° about Z, measured along that turn's axes.
 #[test]
 fn box_along_its_own_axes_is_its_size() {
     let r = rot_z(30.0);
@@ -101,7 +101,7 @@ fn box_along_its_own_axes_is_its_size() {
     assert!((b.axes[0].dot(r[0]).abs() - 1.0).abs() < TOL, "length should run along the 100 mm side: {b:?}");
 }
 
-/// M6: the same corners along the world axes give the world box, 100·cos 30° + 50·sin 30° by
+/// The same corners along the world axes give the world box, 100·cos 30° + 50·sin 30° by
 /// 100·sin 30° + 50·cos 30° by 18: wrong axes still enclose the part.
 #[test]
 fn box_along_world_axes_encloses() {
@@ -129,4 +129,33 @@ fn bad_inputs_are_refused() {
     assert!(box_along(&[Vec3::new(f64::NAN, 0.0, 0.0)], world).is_none());
     let skew = [Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0)];
     assert!(box_along(&corners(1.0, 1.0, 1.0, world), skew).is_none());
+}
+
+/// Seen along Z, a box turned 30° in plan is found at its own size by its hull's edges.
+#[test]
+fn tightest_box_finds_a_turned_box() {
+    let r = rot_z(30.0);
+    let up = [Vec3::new(0.0, 0.0, 1.0)];
+    let Some((b, used)) = tightest_box(&corners(100.0, 50.0, 18.0, r), &up) else { panic!("no box") };
+    assert_eq!(used, 0);
+    assert!((b.length - 100.0).abs() < TOL && (b.width - 50.0).abs() < TOL && (b.thickness - 18.0).abs() < TOL, "{b:?}");
+}
+
+/// Of several directions, the one giving the smallest box wins; a looser one never does.
+#[test]
+fn tightest_box_keeps_the_smallest() {
+    let r = rot_z(30.0);
+    let tilted = Vec3::new(1.0, 1.0, 1.0);
+    let Some((b, used)) = tightest_box(&corners(100.0, 50.0, 18.0, r), &[tilted, Vec3::new(0.0, 0.0, 1.0)]) else { panic!("no box") };
+    assert_eq!(used, 1, "{b:?}");
+    assert!((b.volume() - 100.0 * 50.0 * 18.0).abs() < 1e-6, "{b:?}");
+}
+
+/// No points or no usable direction gives no box.
+#[test]
+fn tightest_box_needs_points_and_a_direction() {
+    let pts = corners(1.0, 1.0, 1.0, rot_z(0.0));
+    assert!(tightest_box(&[], &[Vec3::new(0.0, 0.0, 1.0)]).is_none());
+    assert!(tightest_box(&pts, &[Vec3::ZERO]).is_none());
+    assert!(tightest_box(&pts, &[]).is_none());
 }
