@@ -5,7 +5,7 @@ use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
 use crate::job::{Direction, DrillPoints, Job, OpKind, Operation, Setup, Side, Source, Stock};
 use crate::offset::{Curve, inset};
 use crate::path::{DrillCycle, Move, Toolpath};
-use crate::plan::{Geometry, Site, circle_sites, levels, plan};
+use crate::plan::{Geometry, Site, circle_sites, levels, plan, region_to_work};
 use crate::post::{Dialect, PostOptions, Step, generate};
 use crate::ring::{dist_to_segment, perimeter, signed_area};
 use crate::tool::{Tool, ToolKind};
@@ -575,4 +575,36 @@ fn a_tiny_peck_does_not_explode_into_millions_of_moves() {
     let c = DrillCycle { x: 0.0, y: 0.0, top: 0.0, bottom: -50.0, retract: 2.0, peck: Some(1e-12), dwell: 0.0, feed: 100.0 };
     let n = Toolpath { moves: vec![Move::Drill(c)] }.expanded().len();
     assert!(n < 10, "{n}");
+}
+
+// ------------------------------------------------------------------------------- sketch mapping
+
+#[test]
+fn sketch_regions_map_into_work_coordinates() {
+    // A sketch on a plane 5 above the origin, setup frame shifted by (10, 20, 2).
+    let plane = Plane::XY.offset(5.0);
+    let s = Setup { frame: Plane { origin: Vec3::new(10.0, 20.0, 2.0), ..Plane::XY }, ..setup() };
+    let region = Region2 { outer: Loop2::circle(Vec2::new(30.0, 40.0), 5.0), holes: vec![] };
+    let (mapped, z) = region_to_work(&region, &plane, &s).unwrap();
+    assert!(near(z, 3.0, 1e-9));
+    let (c, r) = crate::plan::circle_of(&mapped.outer).unwrap();
+    assert!(near(c.x, 20.0, 1e-9) && near(c.y, 20.0, 1e-9) && near(r, 5.0, 1e-9));
+}
+
+#[test]
+fn a_tilted_sketch_is_refused_and_a_flipped_one_keeps_its_shape() {
+    let region = rect_region(0.0, 0.0, 10.0, 6.0);
+    let tilted = Plane::from_normal(Vec3::ZERO, Vec3::new(0.0, 0.3, 1.0)).unwrap();
+    assert!(region_to_work(&region, &tilted, &setup()).is_err());
+    // Seen from below: the same plane, mirrored. The outline keeps its size.
+    let (m, _) = region_to_work(&region, &Plane::XY.flipped(false), &setup()).unwrap();
+    let pts = m.outer.polyline(0.01).into_vec();
+    let w = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max) - pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+    let h = pts.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max) - pts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+    assert!(near(w, 10.0, 1e-9) && near(h, 6.0, 1e-9));
+    // and a mirrored arc still sweeps through the same points
+    let arc = Region2 { outer: Loop2::circle(Vec2::new(3.0, 4.0), 2.0), holes: vec![] };
+    let (m, _) = region_to_work(&arc, &Plane::XY.flipped(false), &setup()).unwrap();
+    let (c, r) = crate::plan::circle_of(&m.outer).unwrap();
+    assert!(near(c.x, 3.0, 1e-9) && near(c.y, -4.0, 1e-9) && near(r, 2.0, 1e-9));
 }

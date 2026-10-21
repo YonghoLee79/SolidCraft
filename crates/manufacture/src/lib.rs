@@ -25,7 +25,7 @@ pub mod tool;
 pub use error::{ManufactureError, Result};
 pub use job::{Direction, DrillPoints, Job, OpKind, Operation, Setup, Side, Source, Stock};
 pub use path::{DrillCycle, Move, Stats, Toolpath};
-pub use plan::{DEFAULT_TOLERANCE, Geometry, Plan, Site, circle_of, circle_sites, levels, plan};
+pub use plan::{DEFAULT_TOLERANCE, Geometry, Plan, Site, circle_of, circle_sites, levels, plan, region_to_work};
 pub use post::{Dialect, PostOptions, Step, generate};
 pub use tool::{Tool, ToolKind};
 

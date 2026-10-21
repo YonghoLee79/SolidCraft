@@ -5,7 +5,7 @@
 //! climb milling keeps the material on the left of the travel. Rapids between features go up to
 //! the setup's clearance height first, so no rapid crosses the part.
 
-use solidcraft_geom::{Loop2, Region2, Seg2, Vec2, Vec3};
+use solidcraft_geom::{Loop2, MAX_BEZIER_CTRL, Plane, Region2, Seg2, Vec2, Vec3};
 
 use crate::error::{ManufactureError, Result, invalid};
 use crate::job::{Direction, DrillPoints, OpKind, Operation, Setup, Side};
@@ -68,6 +68,50 @@ pub fn circle_of(l: &Loop2) -> Option<(Vec2, f64)> {
 /// The drilling sites of regions: every region whose outer outline is a circle.
 pub fn circle_sites(regions: &[Region2]) -> Vec<Site> {
     regions.iter().filter_map(|r| circle_of(&r.outer)).map(|(c, rad)| Site { at: c, diameter: Some(rad * 2.0) }).collect()
+}
+
+/// A region drawn in `plane` (a sketch's plane), in `setup`'s work coordinates. The plane must be
+/// parallel to the setup's XY plane: 2.5D cuts live in planes the tool axis is perpendicular to.
+/// Also returns the work Z of the plane. A setup whose frame is mirrored against the sketch flips
+/// the region; the planner reorients outlines itself.
+pub fn region_to_work(region: &Region2, plane: &Plane, setup: &Setup) -> Result<(Region2, f64)> {
+    let n = plane.normal();
+    let axis = setup.tool_axis();
+    let along = n.dot(axis);
+    if !(along.abs() >= 1.0 - 1e-6) {
+        let tilt = along.abs().clamp(0.0, 1.0).acos().to_degrees();
+        return invalid(format!(
+            "the sketch is tilted {tilt:.1} degrees to the setup's XY plane: use a setup whose frame lies in the sketch's plane (or a parallel one)"
+        ));
+    }
+    let map = |p: Vec2| {
+        let w = setup.to_local(plane.to_world(p));
+        Vec2::new(w.x, w.y)
+    };
+    let (o, ex, ey) = (map(Vec2::ZERO), map(Vec2::X), map(Vec2::Y));
+    let flip = (ex - o).cross(ey - o) < 0.0;
+    let seg = |s: &Seg2| -> Seg2 {
+        match *s {
+            Seg2::Line { a, b } => Seg2::Line { a: map(a), b: map(b) },
+            Seg2::Arc { center, radius, start, sweep } => {
+                let c = map(center);
+                let p = map(center + Vec2::from_angle(start) * radius);
+                Seg2::Arc { center: c, radius, start: (p - c).angle(), sweep: if flip { -sweep } else { sweep } }
+            }
+            Seg2::Cubic { p0, p1, p2, p3 } => Seg2::Cubic { p0: map(p0), p1: map(p1), p2: map(p2), p3: map(p3) },
+            Seg2::Conic { a, apex, b, w } => Seg2::Conic { a: map(a), apex: map(apex), b: map(b), w },
+            Seg2::Bezier { n, p } => {
+                let mut q = [Vec2::ZERO; MAX_BEZIER_CTRL];
+                for (d, v) in q.iter_mut().zip(p.iter()) {
+                    *d = map(*v);
+                }
+                Seg2::Bezier { n, p: q }
+            }
+        }
+    };
+    let lp = |l: &Loop2| Loop2 { segs: l.segs.iter().map(&seg).collect() };
+    let z = setup.to_local(plane.origin).z;
+    Ok((Region2 { outer: lp(&region.outer), holes: region.holes.iter().map(lp).collect() }, z))
 }
 
 /// Plans `op` with `tool` in `setup` over `geometry`. `tolerance` bounds the chord error of

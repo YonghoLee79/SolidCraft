@@ -45,6 +45,7 @@ mod inspect;
 mod interference;
 pub(crate) mod joints;
 mod libraries;
+mod manufacture;
 mod material_properties;
 mod materials;
 mod measure_sel;
@@ -301,6 +302,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(view_navigation::COMMANDS.iter());
     v.extend(view_dxf::COMMANDS.iter());
     v.extend(diagnostics::COMMANDS.iter());
+    v.extend(manufacture::COMMANDS.iter());
     v.extend(render::COMMANDS.iter());
     v
 }
