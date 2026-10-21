@@ -217,6 +217,8 @@ pub fn step_import_feature_named(bytes: &[u8], file: &str, names: StepNames) -> 
         let text = step_text(bytes);
         if is_iges_path(file) { solidcraft_kernel::iges_to_step(&text).map_err(IoError::Invalid)? } else { (text, Vec::new()) }
     };
+    // The feature keeps this text and a save stores it: refuse now what could not be saved.
+    design::check_step_storable(&text)?;
     let imp = solidcraft_kernel::step_import_shared(&text)?;
     let stem = std::path::Path::new(file)
         .file_stem()
