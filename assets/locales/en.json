@@ -1028,6 +1028,8 @@
   "search.valid": "Valid",
   "settings.display_quality_note": "Finer levels draw curved faces and edges smoother and take longer to mesh. Only the viewport changes, never the design or exports.",
   "settings.frame_rate_note": "Shows frames per second in the view's bottom-right corner. While it is on, the view redraws continuously.",
+  "settings.joint_moving_first": "Invert joint selection order",
+  "settings.joint_moving_first_help": "Select the moving component first, then the fixed component, when creating a joint.",
   "settings.measure_axis_distances": "Show X/Y/Z distances",
   "settings.measure_axis_distances_help": "Show world-axis component dimensions alongside the total distance while Measure is open.",
   "settings.msaa_applies_on_restart": "Anti-aliasing applies the next time SolidCraft starts",
