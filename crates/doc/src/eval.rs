@@ -866,6 +866,49 @@ struct CachedEval<S> {
     state: S,
 }
 
+/// The results an evaluation ahead on a copy of a model computed or took from the cache, kept for
+/// the run that follows on the model itself (#1989). The evaluation cache is bounded by bytes and
+/// charges every entry its whole model, so on a design with large bodies it holds only the last
+/// few states: by the time the run came, the cache had dropped most of what was computed ahead,
+/// and the run computed it all again, on the window thread. A result made from a partial one
+/// ([`EvalKey::reads`]) is kept whole too.
+#[derive(Debug, Default)]
+pub struct KeptResults(std::sync::Mutex<std::collections::HashMap<u64, CachedEval<Arc<ModelState>>>>);
+
+impl KeptResults {
+    /// Results kept.
+    pub fn len(&self) -> usize {
+        self.0.lock().map_or(0, |m| m.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, key: u64) -> Option<CachedEval<Arc<ModelState>>> {
+        self.0.lock().ok().and_then(|m| m.get(&key).cloned())
+    }
+
+    fn put(&self, key: u64, e: &CachedEval<Arc<ModelState>>) {
+        if let Ok(mut m) = self.0.lock()
+            && (m.len() < CACHE_ENTRIES || m.contains_key(&key))
+        {
+            m.insert(key, e.clone());
+        }
+    }
+}
+
+/// Where a model keeps its results besides the cache ([`Model::keep`]). A copy of the model
+/// starts without: it keeps nothing it computes for someone else's run.
+#[derive(Debug, Default)]
+struct KeptSlot(Option<Arc<KeptResults>>);
+
+impl Clone for KeptSlot {
+    fn clone(&self) -> Self {
+        KeptSlot(None)
+    }
+}
+
 /// Results kept (the least worth dropped first, see [`Store`]).
 const CACHE_ENTRIES: usize = 4096;
 
@@ -1839,11 +1882,12 @@ impl Model {
             }
             // The same feature on the same inputs: its earlier result.
             let key = EvalKey::new(doc, &vals, f, fp, ctx, &state, &self.step_digests);
+            let kept = self.kept.0.as_ref().filter(|_| !self.no_cache);
             if !self.no_cache
-                && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.state(key.whole))
+                && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.state(key.whole)).or_else(|| kept.and_then(|k| k.get(key.whole)))
             {
                 if let Some(k) = kept {
-                    k.put(key, &c);
+                    k.put(key.whole, &c);
                 }
                 restored += 1;
                 if c.error.is_none() {
@@ -2007,9 +2051,7 @@ impl Model {
                 }
                 Err(e) => Some(e.to_string().trim_start_matches("the operation failed: ").to_string()),
             };
-            if !self.no_cache
-                && let Ok(mut m) = self.cache.lock()
-            {
+            if !self.no_cache {
                 let whole = CachedEval {
                     error: error.clone(),
                     warning: warning.clone(),
@@ -2017,11 +2059,16 @@ impl Model {
                     ms,
                     state: state.clone(),
                 };
-                if let (Some((k, _)), Some(change)) = (reads, change) {
-                    let bytes = change.retained_bytes();
-                    m.changes.put(*k, whole.with(change), bytes, ms);
+                if let Some(k) = kept {
+                    k.put(key.whole, &whole);
                 }
-                m.states.put(key.whole, whole, state.retained_bytes(), ms);
+                if let Ok(mut m) = self.cache.lock() {
+                    if let (Some((k, _)), Some(change)) = (reads, change) {
+                        let bytes = change.retained_bytes();
+                        m.changes.put(*k, whole.with(change), bytes, ms);
+                    }
+                    m.states.put(key.whole, whole, state.retained_bytes(), ms);
+                }
             }
             out.push(FeatureResult {
                 id: f.id,
@@ -2601,7 +2648,16 @@ fn apply_traced(state: &mut ModelState, f: &Feature, tools: Vec<Traced>, op: Ope
             let mut remove = Vec::new();
             for &ti in &target_idx {
                 let Some(target) = state.bodies.get(ti) else { continue };
-                match target.cut(&tools, bop)? {
+                // The tools meet the target where it is shown: in its frame (#3383).
+                let placed;
+                let tools: &[Traced] = match tool_frame(&target.name) {
+                    Some(into) => {
+                        placed = tools.iter().map(|t| tool_in(t, Some(into))).collect::<Result<Vec<_>>>()?;
+                        &placed
+                    }
+                    None => &tools,
+                };
+                match target.cut(tools, bop)? {
                     Some(b) => {
                         if let Some(mb) = state.bodies.get_mut(ti) {
                             *mb = ModelBody::traced_new(mb.name.clone(), b, mb.feature);
@@ -5912,7 +5968,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 .ok_or_else(|| DocError::Invalid("the thread removed everything".into()))?;
             // The groove's faces are its triangles, with no role to name them by.
             let groove = crate::lineage::Lineage::unnamed_faces(groove.triangles.len());
-            let lineage = mb.traced().lineage.and_then(|l| crate::lineage::Lineage::step(&nb, &[&l, &groove]));
+            let lineage = input.lineage.and_then(|l| crate::lineage::Lineage::step(&nb, &[&l, &groove]));
             let nb = Traced { body: nb, lineage, recipe: None };
             if let Some(slot) = st.bodies.get_mut(i) {
                 *slot = ModelBody::traced_new(mb.name, nb, mb.feature);
