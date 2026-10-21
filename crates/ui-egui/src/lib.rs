@@ -11,6 +11,7 @@
 pub mod access;
 pub mod agent_chat;
 pub mod agent_cursor;
+mod body_looks;
 pub mod bom_panel;
 pub mod browser;
 pub mod browser_canvas;
