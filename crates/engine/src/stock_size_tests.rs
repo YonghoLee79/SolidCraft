@@ -166,7 +166,7 @@ fn a_dowel_is_approximate_and_enclosed() {
     assert!(!exact(&st), "a cylinder can't be exact: {st}");
     assert!((l - 300.0).abs() < TOL, "{st}");
     for d in [w, t] {
-        assert!(d >= 20.0 - 1e-6 && d <= 20.5, "the box must enclose the ø 20 dowel: {st}");
+        assert!((20.0 - 1e-6..=20.5).contains(&d), "the box must enclose the ø 20 dowel: {st}");
     }
 }
 
