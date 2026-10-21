@@ -35,11 +35,9 @@ Examples live in [examples/macros](../examples/macros). Open the `.rhai` file, t
 | Example | Play on | What it shows |
 |---|---|---|
 | `setup_fixtureplate.rhai` | empty | C-shaped sketch `clearance_hole` (100×60 mm, 50×30 mm notch from the right) |
-| `example_fixtureplate.rhai` | after setup | 500×350×8 mm tray, six Ø8 holes chamfered 1 mm both ends, C cut patterned `nx`×`ny` centered on the tray |
+| `example_fixtureplate.rhai` | after setup | 500×350×8 mm tray, six Ø8 holes chamfered 1 mm both ends, C cut patterned `nx`×`ny` at `spacing_x`/`spacing_y`, centered on the tray |
 | `chamfer_holes.rhai` | a part with holes | Query holes, chamfer by size |
 | `batch_export_stl.rhai` | empty | Folder of STEP → STL |
-| `setup_flatten_export.rhai` | empty | Sheet-metal box (base flange + four walls) |
-| `flatten_export_dxf.rhai` | after setup_flatten | Unfold + DXF |
-| `gear_generator.rhai` | empty | Trapezoid spur gear (teeth, module, bore, thickness) |
+| `gear_generator.rhai` | empty | 20° full-depth involute spur gear (Machinery's Handbook) |
 
 The browser plays Rhai in the same engine. `list_dir` / `write_file` are desktop only.

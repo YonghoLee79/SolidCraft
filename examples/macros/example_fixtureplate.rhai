@@ -1,13 +1,15 @@
 // Fixture plate with patterned clearance
 // @param nx Count in X | 1
 // @param ny Count in Y | 1
+// @param spacing_x Cavity spacing in X | 80
+// @param spacing_y Cavity spacing in Y | 120
 fn as_n(v) {
     if type_of(v) == "string" { parse_float(v) } else { v }
 }
 let nx = as_n(nx);
 let ny = as_n(ny);
-let px = if nx > 1 { (500.0 - 60.0) / (nx - 1) } else { 0.0 };
-let py = if ny > 1 { (350.0 - 100.0) / (ny - 1) } else { 0.0 };
+let px = as_n(spacing_x);
+let py = as_n(spacing_y);
 let cx = (nx - 1) * px / 2.0;
 let cy = (ny - 1) * py / 2.0;
 run("solid.box", #{ length: 500, width: 350, height: 8, center: [cx, cy, 4], name: "Tray" });
