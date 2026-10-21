@@ -541,6 +541,17 @@ thread_local! {
     pub(crate) static REPHASED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// The volume one closed shell encloses, signed by the way its faces face (positive when they
+/// face out of it), from a mesh as coarse as the orientation mesh of a solid of its size.
+/// `None` when it cannot be meshed.
+pub(crate) fn shell_volume(shell: &mt::Shell) -> Option<f64> {
+    let bounds: Aabb3 = shell.vertex_iter().map(|v| from_p3(v.point())).collect();
+    let span = if bounds.is_empty() { 1.0 } else { bounds.diagonal() };
+    let deflection = Deflection { display: true, ..Deflection::chord(orientation_tolerance(span)) };
+    let v = guard("shell volume", || Ok(shell.robust_triangulation_within(deflection).to_polygon().volume())).ok()?;
+    v.is_finite().then_some(v)
+}
+
 /// Deflection the orientation mesh uses: coarse enough for a large solid, fine enough that a
 /// small one still tessellates. `unmeshed_faces` counts at the same value, so the count the
 /// orientation mesh produced is reused instead of meshing the body again.
